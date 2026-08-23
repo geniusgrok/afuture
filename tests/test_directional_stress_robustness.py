@@ -1,8 +1,11 @@
-import math
-
 import pytest
 
 from afuture.directional import fit_target_lots_to_margin_budget
+from afuture.directional_acceptance import (
+    DirectionalProductionAcceptance,
+    ProductionMechanicsConfig,
+)
+from afuture.models import AccountSnapshot, ContractSpec, Tick
 
 
 def _margin(lots, per_lot):
@@ -59,3 +62,94 @@ def test_margin_budget_rejects_invalid_budget():
             {"A2609": 100.0},
             margin_budget=-1.0,
         )
+
+
+def test_acceptance_target_lots_are_margin_feasible_before_opening_gate():
+    sim = DirectionalProductionAcceptance(
+        ProductionMechanicsConfig(
+            initial_capital=100000.0,
+            margin_rate_proxy=0.15,
+            margin_estimate_buffer=1.25,
+            max_margin_ratio=0.35,
+            min_available_ratio=0.25,
+            max_contract_volume=100,
+        )
+    )
+
+    target = sim.target_lots(
+        equity=100000.0,
+        product_weights={"A": 2.0},
+        product_open_prices={"A": 1000.0},
+        selected_symbols={"A": "A2609"},
+    )
+
+    assert target == {"A2609": 18}
+    allowed, reason, estimated = sim.check_opening_batch(
+        equity=100000.0,
+        current_margin=0.0,
+        current_lots={},
+        openings=target,
+        open_prices={"A2609": 1000.0},
+    )
+    assert allowed
+    assert reason == ""
+    assert estimated == 33750.0
+
+
+def test_live_target_builder_uses_side_specific_margin_and_same_hard_budget():
+    from afuture.directional import build_margin_aware_target_lots
+
+    account = AccountSnapshot(
+        balance=100000.0,
+        equity=100000.0,
+        available=100000.0,
+        margin=0.0,
+        realized_pnl=0.0,
+        unrealized_pnl=0.0,
+        trading_day="20260825",
+    )
+    tick = Tick(
+        symbol="A2609",
+        exchange="DCE",
+        timestamp=__import__("datetime").datetime(2026, 8, 25, tzinfo=__import__("datetime").timezone.utc),
+        bid_price=999.0,
+        ask_price=1001.0,
+        last_price=1000.0,
+        bid_volume=1000.0,
+        ask_volume=1000.0,
+        trading_day="20260825",
+        volume=5000.0,
+        open_interest=30000.0,
+    )
+    spec = ContractSpec(
+        symbol="A2609",
+        exchange="DCE",
+        multiplier=10.0,
+        price_tick=1.0,
+        margin_rate_long=0.15,
+        margin_rate_short=0.20,
+    )
+
+    long_target = build_margin_aware_target_lots(
+        account,
+        {"A": 2.0},
+        {"A": tick},
+        {"A2609": spec},
+        max_contract_volume=100,
+        max_margin_ratio=0.35,
+        min_available_ratio=0.25,
+        margin_estimate_buffer=1.25,
+    )
+    short_target = build_margin_aware_target_lots(
+        account,
+        {"A": -2.0},
+        {"A": tick},
+        {"A2609": spec},
+        max_contract_volume=100,
+        max_margin_ratio=0.35,
+        min_available_ratio=0.25,
+        margin_estimate_buffer=1.25,
+    )
+
+    assert long_target == {"A2609": 18}
+    assert short_target == {"A2609": -14}
