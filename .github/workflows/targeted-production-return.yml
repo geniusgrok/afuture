@@ -48,7 +48,7 @@ jobs:
           AFUTURE_CTP_BROKER: test-broker
         run: afuture validate --config config/afuture.directional-live.example.toml
 
-  absolute-cap-probe:
+  gross-breach-audit:
     if: github.event_name == 'pull_request' && github.head_ref == 'codex/afuture-production-return-100-20260823'
     runs-on: ubuntu-latest
     steps:
@@ -66,7 +66,7 @@ jobs:
           unzip -q /tmp/specific.zip -d /tmp/specific
           test -s /tmp/specific/return_target_specific_contracts.csv
           test -s /tmp/specific/broad_daily_universe.csv
-      - name: Probe 2 percent governor with 1.90x absolute target cap
+      - name: Audit realized gross breaches on the 116 percent candidate
         run: |
           python - <<'PY'
           import json
@@ -94,20 +94,6 @@ jobs:
           close = continuous.pivot(index='date', columns='product', values='close').sort_index().reindex(index=open_prices.index, columns=products)
           weights = ExecutionAlignedAggressivePolicy(products=products).weight_history(open_prices, close)
           weights = weights.loc['2024-08-21':'2026-08-20']
-          gross_by_day = list(weights.abs().sum(axis=1).astype(float))
-
-          class AbsoluteCapGovernor:
-              def __init__(self):
-                  self.base = DirectionalRiskGovernor(loss_trigger=0.02)
-                  self.index = 0
-
-              def scale(self, completed_returns):
-                  base_scale = self.base.scale(completed_returns)
-                  raw_gross = gross_by_day[self.index]
-                  self.index += 1
-                  if raw_gross <= 0:
-                      return base_scale
-                  return min(base_scale, 1.90 / raw_gross)
 
           config = ProductionMechanicsConfig(
               max_contract_volume=35,
@@ -119,20 +105,19 @@ jobs:
           prepared = DirectionalProductionAcceptance(config).prepare_contracts(specific)
           directional_risk.PRODUCTION_GROSS_HEADROOM_SCALE = 1.0
           sim = DirectionalProductionAcceptance(config)
-          sim.risk_governor = AbsoluteCapGovernor()
+          sim.risk_governor = DirectionalRiskGovernor(loss_trigger=0.02)
           result = sim.simulate(specific, weights, cost_bps=5.0, prepared=prepared)
           stats = _result_stats(result)
-          row = {
-              'loss_trigger': 0.02,
-              'target_gross_cap': 1.90,
-              'annualized_return': stats['annualized_return'],
-              'total_return': stats['total_return'],
-              'max_drawdown': stats['max_drawdown'],
-              'sharpe': stats['sharpe'],
-              'halted': stats['halted'],
-              'daily_circuit_days': stats['daily_circuit_days'],
-              'margin_reject_days': stats['margin_reject_days'],
-              'max_realized_gross_notional_ratio': stats['max_realized_gross_notional_ratio'],
-          }
-          print('ABSOLUTE_CAP', json.dumps(row, sort_keys=True))
+          daily = result.daily.copy()
+          daily['gross_ratio'] = daily['gross_notional'] / daily['equity']
+          breaches = daily[daily['gross_ratio'] > 2.0 + 1e-10].copy()
+          columns = ['equity', 'daily_return', 'turnover_notional', 'gross_notional', 'gross_ratio', 'risk_scale', 'daily_circuit']
+          rows = []
+          for day, row in breaches.sort_values('gross_ratio', ascending=False)[columns].iterrows():
+              payload = {'date': str(pd.Timestamp(day).date())}
+              payload.update({key: (bool(value) if key == 'daily_circuit' else float(value)) for key, value in row.items()})
+              rows.append(payload)
+          print('CANDIDATE', json.dumps(stats, sort_keys=True))
+          print('GROSS_BREACH_COUNT', len(rows))
+          print('GROSS_BREACHES', json.dumps(rows, sort_keys=True))
           PY
