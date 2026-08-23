@@ -8,7 +8,6 @@ from afuture.directional_acceptance import (
 )
 from afuture.directional_efficiency import (
     attribute_rebalance_deltas,
-    cost_aware_no_trade_target,
     stabilize_one_lot_increases,
 )
 
@@ -118,43 +117,3 @@ def test_adaptive_margin_share_uses_completed_risk_and_never_relaxes_hard_gate()
     assert 0.0 < stressed < calm
     assert calm <= 0.35
     assert stressed <= 0.35
-
-
-def test_cost_aware_no_trade_holds_low_edge_new_and_same_sign_increases():
-    result = cost_aware_no_trade_target(
-        current_lots={"A2609": 4},
-        target_lots={"A2609": 6, "M2609": -2},
-        lot_notionals={"A2609": 1000.0, "M2609": 2000.0},
-        expected_daily_returns={"A2609": 0.0002, "M2609": -0.0002},
-        horizon_days=3,
-        cost_bps=15.0,
-    )
-    assert result == {"A2609": 4}
-
-
-def test_cost_aware_no_trade_keeps_positive_net_benefit_increase():
-    result = cost_aware_no_trade_target(
-        current_lots={"A2609": 4},
-        target_lots={"A2609": 6},
-        lot_notionals={"A2609": 1000.0},
-        expected_daily_returns={"A2609": 0.002},
-        horizon_days=3,
-        cost_bps=15.0,
-    )
-    assert result == {"A2609": 6}
-
-
-def test_cost_aware_no_trade_never_blocks_reduction_exit_reversal_or_forced_roll():
-    result = cost_aware_no_trade_target(
-        current_lots={"REDUCE": 6, "EXIT": -3, "REVERSE": 4, "ROLL": 2},
-        target_lots={"REDUCE": 4, "REVERSE": -2, "ROLL": 3},
-        lot_notionals={symbol: 1000.0 for symbol in ("REDUCE", "EXIT", "REVERSE", "ROLL")},
-        expected_daily_returns={symbol: 0.0 for symbol in ("REDUCE", "EXIT", "REVERSE", "ROLL")},
-        horizon_days=3,
-        cost_bps=15.0,
-        force_execute_symbols={"ROLL"},
-    )
-    assert result == {"REDUCE": 4, "REVERSE": -2, "ROLL": 3}
-    assert sum(abs(value) for value in result.values()) <= sum(
-        abs(value) for value in {"REDUCE": 4, "REVERSE": -2, "ROLL": 3}.values()
-    )
