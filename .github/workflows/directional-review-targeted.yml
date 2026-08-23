@@ -4,16 +4,20 @@ on:
   push:
     branches:
       - codex/afuture-microstructure-cost-alpha-20260824
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: directional-review-targeted-${{ github.ref }}
+  group: directional-review-targeted-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
+    if: github.event_name != 'pull_request' || github.head_ref == 'codex/afuture-microstructure-cost-alpha-20260824'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
