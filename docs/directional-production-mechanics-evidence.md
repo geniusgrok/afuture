@@ -19,10 +19,10 @@
 
 ```text
 input artifact id = 9473260618
-workflow run       = 32624688557
-PR head            = 198cad7ee62e0e6892ddf5c725525fb46c7383e2
-PR merge ref       = 7664851987a59c2d87d1084376ffbd9649863b2c
-artifact id        = 9489421243
+workflow run       = 32634296589
+PR head            = 921bd8b4820a8c1efa9c804a8ea1a1b56c2d188f
+PR merge ref       = 1ec387433ee5011e44bc214e4e4c83a28e72c93c
+artifact id        = 9491959916
 artifact           = stress-80-l3-1ec387433ee5011e44bc214e4e4c83a28e72c93c
 SHA-256            = e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d
 ```
@@ -73,17 +73,14 @@ Soft target share：
 
 ```text
 hard_share = min(max_margin_ratio, 1 - min_available_ratio)
-soft_target_margin_share = max(0, hard_share - max_daily_loss_ratio)
+conservative = max(0, hard_share - max_daily_loss_ratio)
+shock = clamp(max(3%, abs(latest completed return), two-day sample volatility), 3%, 5%)
+soft_target_margin_share = min(conservative, conservative * (1 - max(0, shock - 3%)))
 ```
 
-当前配置为：
+当前配置中 `hard_share=35%`，无历史或平静 completed-return evidence 的 `conservative=30%`；当已完成收益绝对值或两日样本波动高于 3% 时，soft target 只会进一步收缩，永远不会向 35% hard margin gate 扩张。
 
-```text
-hard_share = min(35%, 75%) = 35%
-soft target margin share = 35% - 5% = 30%
-```
-
-含义：正常目标不再故意贴着 35% hard margin boundary；保留现有 5% daily-loss budget 作为 mark-to-market 余量。**35% hard margin gate 没有变成 40%，也没有被绕过。**
+含义：正常目标不再故意贴着 35% hard margin boundary，并在已完成账户证据变差时主动增加 headroom。**35% hard margin gate 没有变成 40%，也没有被绕过。**
 
 - Live：使用 Broker `ContractSpec` 的多/空保证金率、当前 tick mid、合约乘数和 `margin_estimate_buffer` 逐手估算；
 - Acceptance：历史 Broker margin schedule 不可得，因此仍明确使用 12%/15% proxy；

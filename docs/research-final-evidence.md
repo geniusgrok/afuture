@@ -81,7 +81,7 @@ Final OOS 已被观察，因此 `pristine_final_oos=false`。
 - reductions 优先；
 - Broker 是唯一 order/fill/position truth；
 - integer lots / multiplier / max contract volume 35；
-- **margin-aware target sizing**：当前 35% margin / 25% available / 5% daily-loss 配置下，正常 target margin share 为 30%；
+- **adaptive margin-aware target sizing**：当前 35% margin / 25% available / 5% daily-loss 配置下，无历史/平静 target margin share 上限为 30%，completed shock 高于 3% 时只进一步收缩；
 - live 使用 Broker side-specific margin metadata；历史使用显式 12%/15% proxy；
 - margin-fitted openings 仍由原 `RiskManager` 35%/25% hard gates 最终否决；
 - 5% daily-loss 是同交易日 circuit，后续交易日满足完整安全条件才恢复；

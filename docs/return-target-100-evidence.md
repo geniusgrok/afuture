@@ -97,7 +97,7 @@ else
 
 ```text
 fixed input artifact id = 9473260618
-workflow run             = 32624688557
+workflow run             = 32634296589
 PR head                  = 921bd8b4820a8c1efa9c804a8ea1a1b56c2d188f
 PR merge ref             = 1ec387433ee5011e44bc214e4e4c83a28e72c93c
 artifact id              = 9491959916
@@ -116,7 +116,7 @@ Stress margin proxy         = 15%
 margin buffer               = 1.25
 max margin ratio            = 35%
 min available ratio         = 25%
-soft target margin share    = 30%
+calm soft target share      = 30% (completed shock can contract it)
 daily loss limit            = 5%
 total drawdown limit        = 30%
 max contract volume         = 35

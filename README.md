@@ -31,7 +31,7 @@
 
 更早的 Stress 只有 `0.9249%` 年化、14/484 个活跃日并因 margin hard gate 永久 HALT；PR #13 已先修复到 `20.4057%` / 472 active days。本轮 execution-efficiency 收口进一步把最终 Stress 提升到 **28.9559%** / 474 active days，同时 Base 从 PR #13 的 108.8461% 提升到 **109.0636%**。当前版本通过 margin-aware target sizing 消除了这个结构性失败：Stress 在完整区间持续运行，但在更高成本和更高保证金假设下年化仍只有 **28.9559%**，远未达到 80%。因此准确结论是：**Base 固定历史生产机械门通过，Stress 生存性显著改善，但 80% Stress 收益目标未被证明。**
 
-最终 L3 证据：workflow run `32634296589`，PR merge ref `7664851987a59c2d87d1084376ffbd9649863b2c`，artifact `stress-80-l3-1ec387433ee5011e44bc214e4e4c83a28e72c93c`，artifact id `9491959916`，SHA-256 `e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d`。固定输入 artifact id 仍为 `9473260618`。
+最终 L3 证据：workflow run `32634296589`，PR merge ref `1ec387433ee5011e44bc214e4e4c83a28e72c93c`，artifact `stress-80-l3-1ec387433ee5011e44bc214e4e4c83a28e72c93c`，artifact id `9491959916`，SHA-256 `e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d`。固定输入 artifact id 仍为 `9473260618`。
 
 ### Float-notional specific-contract L4（研究层）
 
