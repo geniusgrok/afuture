@@ -2,6 +2,7 @@ name: stress-80-efficiency-targeted
 
 # Development gate for isolated execution-efficiency candidates. Expensive fixed L3
 # runs only when the PR is explicitly marked ready for an economic promotion decision.
+# The current draft contains only efficiency rules that already survived targeted gates.
 on:
   push:
     branches:
