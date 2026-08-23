@@ -336,3 +336,23 @@ def test_manager_flatten_only_emits_reducing_fak_orders():
     assert broker.orders
     assert all(order.offset is not Offset.OPEN for order in broker.orders)
     assert all(order.order_type is OrderType.FAK for order in broker.orders)
+
+
+def test_manager_flatten_closes_both_sides_when_same_contract_is_hedged():
+    broker = _Broker()
+    broker.positions = [
+        ContractPosition("A2609", "DCE", long_today=3, short_today=3)
+    ]
+    manager = _manager(broker)
+    manager.bootstrap(NOW)
+    manager.observe(broker.ticks["A2609"])
+
+    result = manager.flatten(NOW)
+
+    assert result.action == "reduce"
+    assert len(broker.orders) == 2
+    assert {order.side.value for order in broker.orders} == {"BUY", "SELL"}
+    assert {order.volume for order in broker.orders} == {3}
+    assert all(order.offset is not Offset.OPEN for order in broker.orders)
+    assert all(order.order_type is OrderType.FAK for order in broker.orders)
+    assert all(order.reference == "directional:flatten" for order in broker.orders)
