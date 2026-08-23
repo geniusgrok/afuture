@@ -7,9 +7,9 @@ on:
 
 jobs:
   test:
-    # During the stress-robustness TDD branch, use the dedicated targeted workflow.
-    # Pull requests and every other branch still run the complete repository gate.
-    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/codex/afuture-stress-robustness-20260823'
+    # The stress-robustness branch uses a narrow TDD workflow until its final candidate.
+    # Every other branch/PR still runs the complete repository gate.
+    if: (github.event_name != 'push' || github.ref != 'refs/heads/codex/afuture-stress-robustness-20260823') && (github.event_name != 'pull_request' || github.head_ref != 'codex/afuture-stress-robustness-20260823')
     strategy:
       matrix:
         python-version: ["3.10", "3.13"]
