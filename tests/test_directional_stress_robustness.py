@@ -31,14 +31,14 @@ def test_margin_budget_fits_stress_target_without_relaxing_hard_cap():
     assert abs(fitted["A2609"]) <= abs(requested["A2609"])
 
 
-def test_margin_sizing_share_reserves_existing_daily_loss_capacity():
-    # The 35% hard halt is unchanged. Sizing leaves the existing 5% daily-loss
-    # allowance as equity headroom so normal mark-to-market does not target the halt.
+def test_margin_sizing_share_reserves_full_existing_daily_loss_budget():
+    # The 35% hard halt is unchanged. Keep the configured 5% daily-loss budget as
+    # absolute equity headroom between normal target sizing and the hard margin gate.
     assert margin_sizing_share(
         max_margin_ratio=0.35,
         min_available_ratio=0.25,
         max_daily_loss_ratio=0.05,
-    ) == pytest.approx(0.3325)
+    ) == pytest.approx(0.30)
 
 
 def test_margin_budget_preserves_sign_and_allocates_integer_residual_deterministically():
@@ -77,7 +77,7 @@ def test_margin_budget_rejects_invalid_budget():
         )
 
 
-def test_acceptance_target_lots_leave_daily_loss_margin_headroom_before_hard_gate():
+def test_acceptance_target_lots_leave_full_daily_loss_margin_headroom_before_hard_gate():
     sim = MarginAwareDirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=100000.0,
@@ -97,7 +97,7 @@ def test_acceptance_target_lots_leave_daily_loss_margin_headroom_before_hard_gat
         selected_symbols={"A": "A2609"},
     )
 
-    assert target == {"A2609": 17}
+    assert target == {"A2609": 16}
     allowed, reason, estimated = sim.check_opening_batch(
         equity=100000.0,
         current_margin=0.0,
@@ -107,11 +107,11 @@ def test_acceptance_target_lots_leave_daily_loss_margin_headroom_before_hard_gat
     )
     assert allowed
     assert reason == ""
-    assert estimated == 31875.0
-    assert estimated / 100000.0 < 0.35
+    assert estimated == 30000.0
+    assert estimated / 100000.0 == pytest.approx(0.30)
 
 
-def test_live_target_builder_uses_side_specific_margin_and_daily_loss_headroom():
+def test_live_target_builder_uses_side_specific_margin_and_full_daily_loss_headroom():
     from afuture.directional import build_margin_aware_target_lots
 
     account = AccountSnapshot(
@@ -167,5 +167,5 @@ def test_live_target_builder_uses_side_specific_margin_and_daily_loss_headroom()
         **common,
     )
 
-    assert long_target == {"A2609": 17}
-    assert short_target == {"A2609": -13}
+    assert long_target == {"A2609": 16}
+    assert short_target == {"A2609": -12}
