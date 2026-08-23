@@ -10,8 +10,8 @@ def test_directional_risk_governor_uses_only_completed_returns_and_scales_defens
     governor = DirectionalRiskGovernor()
 
     assert governor.scale([]) == 0.95
-    assert governor.scale([-0.0199, 0.01]) == 0.95
-    assert governor.scale([-0.02]) == 0.2375
+    assert governor.scale([-0.0299]) == 0.95
+    assert governor.scale([-0.03]) == 0.2375
     assert governor.scale([-0.04, 0.01]) == 0.2375
 
 
