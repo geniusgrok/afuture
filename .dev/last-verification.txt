@@ -1,54 +1,6 @@
-source_sha=a9f2dd697d32d30308314e38dffb46cd6105b0db
-test_exit=1
+source_sha=62072c0ddd2ec53af8fbb619c81946fb1c3e57a9
+test_exit=0
 research_exit=not-run
 --- targeted tail ---
-.................................................FFF                     [100%]
-=================================== FAILURES ===================================
-_ test_net_switch_benefit_uses_comparable_return_units_without_threshold_grid __
-
-    def test_net_switch_benefit_uses_comparable_return_units_without_threshold_grid():
->       benefit = policy_module._net_switch_benefit(
-                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            incumbent_expected_daily=0.001,
-            candidate_expected_daily=0.002,
-            transition_turnover=2.0,
-            horizon_days=3,
-            cost_bps=15.0,
-        )
-E       AttributeError: module 'afuture.execution_aligned_policy' has no attribute '_net_switch_benefit'
-
-tests/test_execution_cost_meta.py:26: AttributeError
-________ test_zero_transition_cost_path_is_exactly_legacy_meta_behavior ________
-
-    def test_zero_transition_cost_path_is_exactly_legacy_meta_behavior():
-        open_prices, close = _history()
-        policy = ExecutionAlignedAggressivePolicy(products=tuple(close.columns))
-        legacy = policy.weight_history(open_prices, close)
->       zero_cost, audit = policy.weight_history_with_audit(
-                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            open_prices,
-            close,
-            transition_cost_bps=0.0,
-        )
-E       AttributeError: 'ExecutionAlignedAggressivePolicy' object has no attribute 'weight_history_with_audit'
-
-tests/test_execution_cost_meta.py:47: AttributeError
-___ test_cost_aware_meta_is_causal_and_can_reject_a_non_positive_net_switch ____
-
-    def test_cost_aware_meta_is_causal_and_can_reject_a_non_positive_net_switch():
-        open_prices, close = _history()
-        policy = ExecutionAlignedAggressivePolicy(products=tuple(close.columns))
->       costed, audit = policy.weight_history_with_audit(
-                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            open_prices,
-            close,
-            transition_cost_bps=15.0,
-        )
-E       AttributeError: 'ExecutionAlignedAggressivePolicy' object has no attribute 'weight_history_with_audit'
-
-tests/test_execution_cost_meta.py:73: AttributeError
-=========================== short test summary info ============================
-FAILED tests/test_execution_cost_meta.py::test_net_switch_benefit_uses_comparable_return_units_without_threshold_grid - AttributeError: module 'afuture.execution_aligned_policy' has no attribute '_net_switch_benefit'
-FAILED tests/test_execution_cost_meta.py::test_zero_transition_cost_path_is_exactly_legacy_meta_behavior - AttributeError: 'ExecutionAlignedAggressivePolicy' object has no attribute 'weight_history_with_audit'
-FAILED tests/test_execution_cost_meta.py::test_cost_aware_meta_is_causal_and_can_reject_a_non_positive_net_switch - AttributeError: 'ExecutionAlignedAggressivePolicy' object has no attribute 'weight_history_with_audit'
-3 failed, 49 passed in 6.13s
+....................................................                     [100%]
+52 passed in 10.40s
