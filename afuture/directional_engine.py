@@ -58,6 +58,33 @@ class DirectionalTradingEngine(TradingEngine):
             self.emergency_stop(f"directional tick handling failed: {exc}")
             return
         super().on_tick(tick)
+        if (
+            self.halted
+            or not self._initialized
+            or not self._directional_initialized
+            or self.state.runtime_mode != RuntimeMode.RUNNING.value
+        ):
+            return
+        try:
+            result = self.directional_manager.enforce_realized_gross_limit(
+                self._reference_now()
+            )
+        except Exception as exc:
+            self.emergency_stop(f"directional gross guard failed: {exc}")
+            return
+        if result.action not in {"hold", "wait"}:
+            self._record(
+                "directional_gross_guard",
+                {
+                    "action": result.action,
+                    "reason": result.reason,
+                    "order_ids": list(result.order_ids),
+                },
+            )
+        if result.action == "reject" and self.directional_manager.has_risk():
+            self.enter_reduce_only(
+                result.reason or "directional realized gross guard rejected"
+            )
 
     def run_once(self) -> None:
         super().run_once()
@@ -139,9 +166,6 @@ class DirectionalTradingEngine(TradingEngine):
                     circuit_day = ""
             self.state.directional_daily_circuit_day = circuit_day
         else:
-            # Any reason other than the known recoverable daily circuit invalidates
-            # automatic recovery. Total drawdown, margin/cash and infrastructure faults
-            # therefore remain manual/fail-closed halts.
             self.state.directional_daily_circuit_day = ""
 
         if (
@@ -220,9 +244,6 @@ class DirectionalTradingEngine(TradingEngine):
             self.state.last_account_trading_day = new_day
 
     def _capture_quality_trade(self, trade: Trade) -> None:
-        # Directional expectations are registered at submission time. They are enough to
-        # identify the fill; querying Broker.get_order() here creates an unnecessary
-        # adapter dependency and can race order-cache propagation.
         expected = self.directional_manager.directional_order_expectation(
             trade.order_id
         )
@@ -242,8 +263,6 @@ class DirectionalTradingEngine(TradingEngine):
             if isinstance(trade, Trade)
             else None
         )
-        # Base handler owns validation, expected-position mutation, persistence and pair
-        # quality. Directional observability is layered around it, never instead of it.
         super()._handle_trade_event(trade)
         if expected is not None and not self.halted:
             self.directional_manager._finalize_quality_cycle_if_settled(
@@ -258,8 +277,6 @@ class DirectionalTradingEngine(TradingEngine):
             is not None
         ):
             self.directional_manager.note_directional_quality_order(order)
-            # Do not finalize here. Some gateways publish terminal order status before the
-            # corresponding trade callback; finalizing would discard the fill expectation.
 
     def stop(self) -> None:
         try:

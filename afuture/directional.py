@@ -150,6 +150,84 @@ def build_target_lots(
     return targets
 
 
+def build_realized_gross_reductions(
+    current_lots: Mapping[str, int],
+    lot_notionals: Mapping[str, float],
+    *,
+    equity: float,
+    max_gross_ratio: float = MAX_GROSS_LEVERAGE,
+    cost_rate: float = 0.0,
+) -> dict[str, int]:
+    """Return reduction-only deltas required by the observed gross hard ceiling.
+
+    The target policy is never pre-haircut. This guard acts only after broker/mark truth
+    shows gross above the configured ceiling. Integer reductions include the equity cost
+    of the reduction itself so a historical cost model cannot leave the account above
+    the same ceiling immediately after enforcing it.
+    """
+    if max_gross_ratio <= 0:
+        raise ValueError("max_gross_ratio must be positive")
+    if cost_rate < 0:
+        raise ValueError("cost_rate cannot be negative")
+    if equity <= 0 or not current_lots:
+        return {}
+
+    notionals: dict[str, float] = {}
+    gross = 0.0
+    for symbol, raw_volume in current_lots.items():
+        volume = int(raw_volume)
+        if volume == 0:
+            continue
+        lot_notional = float(lot_notionals.get(symbol, 0.0))
+        if lot_notional <= 0:
+            raise ValueError(f"missing positive lot notional: {symbol}")
+        notionals[symbol] = lot_notional
+        gross += abs(volume) * lot_notional
+
+    limit = float(max_gross_ratio) * float(equity)
+    if gross <= limit + 1e-10:
+        return {}
+
+    denominator = 1.0 - float(max_gross_ratio) * float(cost_rate)
+    if denominator <= 0:
+        return {
+            symbol: -int(volume)
+            for symbol, volume in current_lots.items()
+            if int(volume) != 0
+        }
+    required_reduction = max(0.0, (gross - limit) / denominator)
+    retain_scale = max(0.0, 1.0 - required_reduction / gross)
+
+    targets: dict[str, int] = {}
+    candidates: list[tuple[float, str, float]] = []
+    reduction_notional = 0.0
+    for symbol in sorted(notionals):
+        volume = int(current_lots[symbol])
+        magnitude = abs(volume)
+        lot_notional = notionals[symbol]
+        ideal = magnitude * retain_scale
+        target_magnitude = floor(ideal)
+        targets[symbol] = target_magnitude if volume > 0 else -target_magnitude
+        reduction_notional += (magnitude - target_magnitude) * lot_notional
+        if target_magnitude < magnitude:
+            candidates.append((ideal - target_magnitude, symbol, lot_notional))
+
+    for _, symbol, lot_notional in sorted(
+        candidates, key=lambda item: (-item[0], item[1])
+    ):
+        if reduction_notional - lot_notional + 1e-10 < required_reduction:
+            continue
+        volume = int(current_lots[symbol])
+        targets[symbol] += 1 if volume > 0 else -1
+        reduction_notional -= lot_notional
+
+    return {
+        symbol: int(targets[symbol]) - int(current_lots[symbol])
+        for symbol in sorted(targets)
+        if int(targets[symbol]) != int(current_lots[symbol])
+    }
+
+
 def build_rebalance_plan(
     positions: Iterable[ContractPosition], target_lots: Mapping[str, int]
 ) -> RebalancePlan:

@@ -16,6 +16,7 @@ import pandas as pd
 from .directional import (
     DirectionalConfig,
     DirectionalContractSelector,
+    build_realized_gross_reductions,
     build_rebalance_plan,
     build_target_lots,
 )
@@ -224,6 +225,79 @@ class DirectionalPortfolioManager:
             plan.reductions,
             now,
             reference="directional:flatten",
+        )
+
+    def enforce_realized_gross_limit(self, now: datetime) -> DirectionalActionResult:
+        """Reduce broker-truth positions only after marked gross exceeds the hard cap."""
+        if not self._initialized:
+            return DirectionalActionResult(
+                "reject", "directional manager is not initialized"
+            )
+        if not self.broker.is_ready():
+            return DirectionalActionResult("reject", "broker is not ready")
+        if self.broker.get_active_orders():
+            return DirectionalActionResult(
+                "wait", "active orders must settle before realized gross guard"
+            )
+
+        positions = [
+            position for position in self.broker.get_positions() if not position.empty
+        ]
+        if not positions:
+            return DirectionalActionResult("hold", "directional portfolio is flat")
+        symbols = {position.symbol for position in positions}
+        try:
+            specs = self._ensure_specs(symbols)
+            account = self.broker.get_account()
+        except Exception as exc:
+            return DirectionalActionResult(
+                "reject", f"realized gross guard unavailable: {exc}"
+            )
+        if account.equity <= 0:
+            return DirectionalActionResult(
+                "reject", "realized gross guard requires positive equity"
+            )
+
+        current_lots: dict[str, int] = {}
+        lot_notionals: dict[str, float] = {}
+        for position in positions:
+            if position.long_total > 0 and position.short_total > 0:
+                return DirectionalActionResult(
+                    "reject",
+                    f"realized gross guard cannot net opposing position: {position.symbol}",
+                )
+            tick = self._ticks.get(position.symbol)
+            if tick is None:
+                return DirectionalActionResult(
+                    "wait", f"realized gross guard awaits quote: {position.symbol}"
+                )
+            spec = specs[position.symbol]
+            lot_notional = float(tick.mid_price) * float(spec.multiplier)
+            if lot_notional <= 0:
+                return DirectionalActionResult(
+                    "reject", f"realized gross guard invalid quote: {position.symbol}"
+                )
+            current_lots[position.symbol] = int(position.net_volume)
+            lot_notionals[position.symbol] = lot_notional
+
+        try:
+            reductions = build_realized_gross_reductions(
+                current_lots,
+                lot_notionals,
+                equity=float(account.equity),
+                max_gross_ratio=float(self.config.max_gross_leverage),
+            )
+        except ValueError as exc:
+            return DirectionalActionResult("reject", str(exc))
+        if not reductions:
+            return DirectionalActionResult(
+                "hold", "realized gross is within directional limit"
+            )
+        return self._submit_reductions(
+            positions,
+            reductions,
+            now,
+            reference="directional:gross-guard",
         )
 
     def has_risk(self) -> bool:
