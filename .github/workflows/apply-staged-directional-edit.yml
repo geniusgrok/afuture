@@ -6,6 +6,13 @@ on:
       - codex/afuture-stress-80-efficiency-20260823
     paths:
       - .github/scripts/staged_directional_edit.py
+      - .github/workflows/apply-staged-directional-edit.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/scripts/staged_directional_edit.py
+      - .github/workflows/apply-staged-directional-edit.yml
 
 permissions:
   contents: write
