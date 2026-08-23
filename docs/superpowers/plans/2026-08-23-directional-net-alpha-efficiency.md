@@ -117,3 +117,7 @@ All hard risk values and production truth/causality rules from the spec are mand
 - [ ] Run affected L2 after final behavior change; then one complete L4 on the stable candidate.
 - [ ] Review PR diff for scope/causality/risk/documentation consistency.
 - [ ] Mark PR ready, require green CI, squash merge to `main`, and verify main SHA/tree.
+
+## Final disposition
+
+Tasks 1–6 were executed. Task 1 attribution was promoted as behavior-neutral instrumentation. Tasks 2–4 produced negative evidence; Task 5 was correctly skipped because no independent family passed; Task 6 margin candidate failed the fixed Stress screen. Final candidate changes no production Alpha/risk behavior. Detailed evidence: `docs/directional-net-alpha-efficiency-evidence.md`.

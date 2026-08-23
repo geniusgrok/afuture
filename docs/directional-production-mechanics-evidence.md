@@ -9,6 +9,8 @@
 1. **Float-notional specific-contract L4**：`2024-08-21 ~ 2026-08-20` Base 5bp 年化 **107.4623%**，Stress 15bp 年化 **58.1372%**；存在明确 selection bias；
 2. **当前 production-mechanics L3**：同区间 Base 年化 **109.0636%**、最大回撤 **15.8529%**；Stress 年化 **28.9559%**、最大回撤 **28.1152%**。两者全区间均未永久 HALT。
 
+口径提醒：58.1372% 来自较早归档的 Float 权重 lineage；PR #14 当前冻结权重的同口径 Float 15bp 年化为 **109.3145%**。两条权重路径不同，不能伪造 `58.1372% -> 28.9559%` 的逐机制可加分解。
+
 本轮解决的是此前 Stress 的结构性保证金失败，而不是通过放宽账户硬门制造收益。上一版 Stress 仅 14/484 个活跃日、年化 0.9249% 并因 margin hard gate HALT；当前版本在相同 15bp 成本、15% margin proxy 和全部原硬门下有 **474/484 个活跃日、0 margin reject、无永久 HALT**。
 
 但 **28.9559% 仍远低于 80%**。同一历史已经被多轮观察，因此停止继续针对该区间扫参数或删模板以追逐 80%。固定历史结果也不能外推成真实账户未来收益保证。
@@ -191,3 +193,19 @@ Stress turnover attribution（notional）：entry/exit `189,920,240`、resize `5
 
 因此 28.9559% 仍不是 80%。本轮证据反而证明高换手中有相当部分是有效 Alpha 迁移，不能无限压低 turnover；在同一已反复观察历史上继续调整门槛直到得到 80% 会增加 selection bias，而不是提高实盘可信度。
 
+## 12. PR #15 production attribution 收口
+
+固定 input artifact `9473260618` 上，行为中性 attribution milestone 的 workflow `32642547947` / artifact `9494018121` 精确复现 PR #14 Base/Stress 经济结果。Stress 现金桥接为：
+
+```text
+initial equity        500,000.000
++ gross signal PnL    700,245.000
+- 15bp cost           385,377.435
+= final equity        814,867.565
+```
+
+Stress 生产路径的 costless realized-path annualized proxy 为 **88.0480%**；把实际 15bp 成本放回同一 realized path 后为 **28.9559%**，对应 **59.0921 个百分点**的 pathwise cost drag proxy。该数值是同一路径的成本归因，不是假设重新下单后的独立 counterfactual。
+
+容量端同时观察到：integer rounding `86,822,426.49` notional-days、35-lot clipping `6,215,900.00`、unavailable-contract `2,580,836.72`、margin-fit `39,374,570.00`、one-lot stabilization `1,751,885.00`；completed-return governor 在 70 天累计降低 `103.0` gross-ratio-days。由于改变任一容量环节都会改变后续 equity/lots/risk state，这些 exposure losses **不能伪装成可加的年化收益百分点**。
+
+Daily circuit 在 Stress 有 2 个受影响日、`1,440,740` turnover、`2,161.11` 直接成本，对当前 realized path 的成本拖累 proxy 为 0.2707 个百分点；其“机会收益”若要精确计算必须改变后续持仓/风险状态，行为中性账本不能识别，故不报伪精确值。

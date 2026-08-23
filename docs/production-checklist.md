@@ -208,3 +208,14 @@
 - [x] same-direction weight resize hysteresis 已实现并跑固定 L3；未通过 promotion gate，已回退。
 - [x] 最终晋级版本保持 Base ≥100%、Stress DD≤30%、no-HALT、gross≤2x、0 margin rejects。
 - [ ] Stress 80% 仍是研究方向，不作为放宽硬门或重复拟合同一历史的理由。
+
+## PR #15 net-alpha 研究收口门
+
+- [x] Stress PnL / turnover / capacity attribution 与现金对账闭合；
+- [x] entry/exit future labels 与 causal features 分离；
+- [x] 未发现跨 prior1/prior2/train/validation/OOS 稳定负贡献的可因果 entry/exit cohort；
+- [x] net-edge candidate 在 prior2 反向失效，未进入生产；
+- [x] 新 Alpha families 未通过 15bp 多窗口门，未做失败策略混合；
+- [x] shock-derived margin candidate 固定 Stress 仅 4.7970% 年化且 permanent HALT，拒绝；
+- [x] 研究失败没有通过改 leverage、成本、margin proxy、风险硬门、数据时点或样本窗口包装成成功；
+- [x] 最终生产经济行为保持 PR #14 基线；只保留行为中性审计/离线诊断与负证据。

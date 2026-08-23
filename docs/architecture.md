@@ -195,6 +195,8 @@ Directional 汇总 realized turnover、commission、median/p95 slippage、tracki
 
 Stress 已修复此前的结构性 margin HALT，但没有达到 80%。两个层级都不能替代真实 CTP 新数据。
 
+归档 Float 58.1372% 与当前 PR #14 冻结权重不是同一 lineage；当前权重的 Float 15bp 为 109.3145%。架构文档不把不同 lineage 的收益差异错误归因给 integer lots、margin 或 risk gate。
+
 历史逐日 Broker margin 不可得，因此 Base/Stress 仍是显式 12%/15% margin proxy × 1.25 buffer，不声称是柜台历史真值。
 
 详细证据：[`directional-production-mechanics-evidence.md`](directional-production-mechanics-evidence.md)。
@@ -209,3 +211,9 @@ Shadow 市场侧来自真实 CTP catalog/tick/trading day/metadata，账户侧�
 ## 14. Execution-efficiency promotion 结果
 
 最终生产只保留通过固定 L3 的机制：turnover attribution、completed-activity roll hysteresis、`+1 lot` 同方向增仓抑制和 completed-return shock margin contraction。Product replacement、meta hysteresis、same-direction weight hysteresis 均实际实现并验证过，但因为明显损伤 Base/Stress 而回退。最终 full_recent 为 Base **109.0636% / 15.8529% DD**，Stress **28.9559% / 28.1152% DD**，两者 no-HALT；Stress 80% 仍未达到。
+
+## 15. Net-alpha research 后的最终边界
+
+PR #15 没有新增第二 Alpha/账户/风险状态机。`directional_attribution.py` 只读取 production-mechanics 已经决定并执行的事件，`directional_entry_diagnostics.py` 只用于离线研究；live runtime 不导入 future-label 诊断模块。未通过门禁的 net-edge、Alpha-family、33.04% soft-margin 候选均不属于生产架构。
+
+因此生产数据流仍是 `completed history -> frozen 96-template policy -> completed-return governor -> completed-activity contract -> integer/margin-aware lots -> reductions first -> Broker hard gates -> fills/positions truth`。新增审计不会改变 target、order、fill、risk 或 account state。

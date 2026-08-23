@@ -47,6 +47,8 @@
 
 该研究路径存在明确 selection bias；此前已观察的 Final OOS 也不是 pristine holdout。Production L3 同样使用已经反复研究过的历史，因此不能把任何历史年化当成未来真实账户收益保证。
 
+还必须区分 lineage：上述 **58.1372%** 是较早的归档 Float 权重路径；PR #14 当前冻结权重在同一 roll-safe next-open 口径下的 Float 15bp 年化为 **109.3145%**（0bp 毛收益年化 **236.4127%**）。因此不能把归档 58.1372% 与当前 Production 28.9559% 做逐项可加的 mechanics 分解，更不能对已经包含 15bp 的 58.1372% 再扣一次交易成本。
+
 详细证据：
 
 - [`docs/return-target-100-evidence.md`](docs/return-target-100-evidence.md)
@@ -215,3 +217,16 @@ Final  Python 3.10/3.13 主 CI + repository review
 - 更早已拒绝：Base/Stress 50/50 meta score（Base 约 94.59%）和只保留慢 rebalance templates（Base 约 69.78%）。
 
 最终 Stress 从 `20.4057%` 提升到 **28.9559%**，但仍没有达到 80%。高频 entry/exit 中包含真实 Alpha，不能把 turnover 本身当作错误并无限压低；继续在同一两年历史上追到 80% 会把研究目标变成 selection fitting。
+
+## Net-alpha efficiency 研究收口（PR #15）
+
+PR #14 之后没有继续在同一两年窗口追求打印 80%。本轮先加入**行为中性的生产事件/PnL/容量审计**，再用该证据检查 entry/exit、net-edge、新 Alpha family 与 margin capacity：
+
+- Stress gross signal PnL `700,245.00`，其中 long `460,515.00`、short `239,730.00`；
+- Stress turnover `256,918,290.00`，15bp 成本 `385,377.435`，约消耗 gross signal PnL 的 **55.03%**；
+- entry+exit 占 Stress turnover **73.92%**，但 causal cohort 在 prior1/prior2/train/validation/OOS 上没有稳定负贡献，不能作为 churn 机械删除；
+- 单一、预声明的 completed-history net-edge gate 在 prior2 发生明显反向分离，未进入生产；
+- slow/confirmed trend、cross-sectional momentum、breakout confirmation、point-in-time carry/carry+trend、strength-ranked trend 均未跨窗口通过 15bp 门；
+- shock-derived 33.04% calm soft-margin research candidate 在固定 Stress screen 仅 **4.7970% 年化**且 permanent HALT，明确拒绝；35%/25%/5%/30% 等硬门完全未变。
+
+因此 PR #15 **不改变 Alpha、风险权限、leverage、成本或 margin 假设**。最终 Production Before/After 经济指标保持完全一致：Base 109.0636%，Stress 28.9559%。进入主线的是审计能力与可复现负证据，而不是一个为了历史收益而新增的生产规则。完整过程证据见 [`docs/directional-net-alpha-efficiency-evidence.md`](docs/directional-net-alpha-efficiency-evidence.md)；最终报告见 [`docs/directional-net-alpha-efficiency-final-report.md`](docs/directional-net-alpha-efficiency-final-report.md)。

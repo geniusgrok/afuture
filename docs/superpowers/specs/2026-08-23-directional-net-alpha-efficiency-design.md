@@ -72,3 +72,7 @@ Only independently passing families may be combined. Weighting uses equal-risk/c
 ## Stop rule
 
 Stop when economically justified directions have been evaluated and further improvement would require extra parameter freedom or same-history selection fitting. Prefer a lower but stable Stress return over a fragile 80% print.
+
+## Final disposition
+
+Implementation/research completed with no promoted economic-behavior change. Behavior-neutral attribution and offline entry/exit diagnostics are retained. The completed-history net-edge candidate failed prior2; all pre-declared new Alpha families failed cross-window 15bp evidence; the shock-derived margin candidate produced 4.7970% Stress annualized and permanent HALT. The stop rule therefore preserves PR #14 production economics and forbids additional same-history threshold/search iterations.

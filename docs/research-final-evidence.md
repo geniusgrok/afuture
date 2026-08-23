@@ -9,7 +9,7 @@
 1. corrected M/OI、经济 pair、BU/FU、intraday、结构套利等市场中性路线没有接近 100% 年化；
 2. 50 品种 directional 在明确允许历史选择偏差、gross≤2x 的 specific-contract / next-open float-notional 口径达到 **107.4623% 年化 / 27.4097% 最大回撤**；
 3. 当前 production-mechanics Base 在相同两年区间达到 **109.0636% 年化 / 15.8529% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
-4. 当前 production-mechanics Stress 在 15bp + 15% margin proxy 下达到 **28.9559% 年化 / 28.1152% 最大回撤 / actual gross peak 1.668769x / 472 active days / no permanent halt**；
+4. 当前 production-mechanics Stress 在 15bp + 15% margin proxy 下达到 **28.9559% 年化 / 28.1152% 最大回撤 / actual gross peak 1.668769x / 474 active days / no permanent halt**；
 5. Stress 已从旧版 `0.9249% + margin HALT` 修复为完整运行，但仍没有达到 80%；
 6. 两年历史和所谓 OOS 都已经被研究流程观察，不是 pristine holdout，所有高收益数字都不是未来收益保证。
 
@@ -163,3 +163,13 @@ Stress turnover attribution（notional）：entry/exit `189,920,240`、resize `5
 
 因此 28.9559% 仍不是 80%。本轮证据反而证明高换手中有相当部分是有效 Alpha 迁移，不能无限压低 turnover；在同一已反复观察历史上继续调整门槛直到得到 80% 会增加 selection bias，而不是提高实盘可信度。
 
+## 12. PR #15 Net-alpha efficiency 最终研究结论
+
+本轮没有生产收益“After”提升。原因不是停止过早，而是所有预声明、具有经济依据的新增方向均已有负证据：
+
+1. entry/exit 诊断没有稳定的 causal low-quality cohort；
+2. net-edge estimator 在 prior2 发生 -1.7128pp 的 qualified-vs-rejected 5-session separation；
+3. slow trend、confirmed trend、cross-sectional momentum、breakout confirmation、carry、carry+trend、strength-ranked trend 均在 prior/OOS/15bp 下不稳定；
+4. shock-derived margin candidate 固定 Stress 只有 4.7970% 年化并 permanent HALT。
+
+按停止规则，不再增加参数自由度。PR #15 最终保留的生产变更仅是 behavior-neutral attribution；经济行为与 PR #14 完全等价，Base/Stress 仍为 109.0636% / 28.9559%。详细表格、产品贡献、entry/exit cohort、负实验和 lineage bridge 见 [`directional-net-alpha-efficiency-evidence.md`](directional-net-alpha-efficiency-evidence.md)。
