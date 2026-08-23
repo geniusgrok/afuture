@@ -1,10 +1,10 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from afuture.directional import fit_target_lots_to_margin_budget
-from afuture.directional_acceptance import (
-    DirectionalProductionAcceptance,
-    ProductionMechanicsConfig,
-)
+from afuture.directional_acceptance import ProductionMechanicsConfig
+from afuture.directional_robustness import MarginAwareDirectionalProductionAcceptance
 from afuture.models import AccountSnapshot, ContractSpec, Tick
 
 
@@ -65,7 +65,7 @@ def test_margin_budget_rejects_invalid_budget():
 
 
 def test_acceptance_target_lots_are_margin_feasible_before_opening_gate():
-    sim = DirectionalProductionAcceptance(
+    sim = MarginAwareDirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=100000.0,
             margin_rate_proxy=0.15,
@@ -111,7 +111,7 @@ def test_live_target_builder_uses_side_specific_margin_and_same_hard_budget():
     tick = Tick(
         symbol="A2609",
         exchange="DCE",
-        timestamp=__import__("datetime").datetime(2026, 8, 25, tzinfo=__import__("datetime").timezone.utc),
+        timestamp=datetime(2026, 8, 25, tzinfo=timezone.utc),
         bid_price=999.0,
         ask_price=1001.0,
         last_price=1000.0,
