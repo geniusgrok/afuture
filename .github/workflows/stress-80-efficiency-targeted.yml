@@ -38,7 +38,7 @@ jobs:
       - run: python -m compileall -q afuture
 
   fixed-production-evidence:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
