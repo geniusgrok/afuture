@@ -1,0 +1,30 @@
+name: directional-review-targeted
+
+on:
+  push:
+    branches:
+      - codex/afuture-microstructure-cost-alpha-20260824
+
+permissions:
+  contents: read
+
+concurrency:
+  group: directional-review-targeted-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: >-
+          python -m pytest -q
+          tests/test_directional_microstructure.py
+          tests/test_sim_event_causality.py
+      - run: python -m compileall -q afuture
