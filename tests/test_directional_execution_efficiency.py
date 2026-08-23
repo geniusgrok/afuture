@@ -68,17 +68,22 @@ def test_rebalance_turnover_attribution_classifies_and_sums_executed_deltas():
     assert sum(buckets.values()) == 1600.0
 
 
-def test_policy_weight_history_audit_is_behavior_neutral():
+def test_policy_weight_history_audit_preserves_legacy_reference_for_efficiency_comparison():
     open_prices, close = _history()
     policy = ExecutionAlignedAggressivePolicy(products=tuple(close.columns))
-    baseline = policy.weight_history(open_prices, close)
-    audited, audit = audit_policy_weight_history(policy, open_prices, close)
-    pd.testing.assert_frame_equal(audited, baseline)
-    assert list(audit.index) == list(baseline.index)
+    candidate = policy.weight_history(open_prices, close)
+    legacy, audit = audit_policy_weight_history(policy, open_prices, close)
+
+    assert float(candidate.abs().sum(axis=1).max()) <= 2.0 + 1e-12
+    assert float(legacy.abs().sum(axis=1).max()) <= 2.0 + 1e-12
+    assert list(audit.index) == list(legacy.index)
     assert {"signal_turnover", "meta_switch", "selected_templates"} <= set(audit.columns)
     assert (audit["signal_turnover"] >= 0.0).all()
     assert audit["meta_switch"].isin([False, True]).all()
     assert audit["selected_templates"].map(lambda value: isinstance(value, tuple)).all()
+    candidate_turnover = float(candidate.diff().abs().sum(axis=1).sum())
+    legacy_turnover = float(legacy.diff().abs().sum(axis=1).sum())
+    assert candidate_turnover <= legacy_turnover + 1e-12
 
 
 def test_production_daily_turnover_buckets_sum_to_total_without_changing_equity():
