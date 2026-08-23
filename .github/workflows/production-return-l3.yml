@@ -1,10 +1,22 @@
 name: production-return-l3
 
 on:
-  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - afuture/directional.py
+      - afuture/directional_acceptance.py
+      - afuture/directional_engine.py
+      - afuture/directional_risk.py
+      - afuture/execution_aligned_policy.py
+      - afuture/execution_aligned_runtime.py
+      - config/afuture.directional-live.example.toml
+      - tools/evaluate_directional_production_mechanics.py
+      - .github/workflows/production-return-l3.yml
 
 concurrency:
-  group: production-return-l3-${{ github.ref }}
+  group: production-return-l3-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -13,6 +25,7 @@ permissions:
 
 jobs:
   frozen-production-evidence:
+    if: github.head_ref == 'codex/afuture-production-return-100-20260823'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,6 +102,7 @@ jobs:
           assert report['mechanics']['max_contract_volume'] == 35
           assert base['annualized_return'] >= 1.0, base
           assert base['max_drawdown'] >= -0.30, base
+          assert base['max_realized_gross_notional_ratio'] <= 2.0 + 1e-10, base
           assert base['halted'] is False, base
           assert base['daily_circuit_days'] > 0, base
           PY
