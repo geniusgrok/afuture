@@ -1,9 +1,9 @@
 name: apply-staged-directional-edit
 
 on:
-  push:
+  pull_request:
     branches:
-      - codex/afuture-stress-80-efficiency-20260823
+      - main
     paths:
       - .github/scripts/staged_directional_edit.py
 
