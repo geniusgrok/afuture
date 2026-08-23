@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: directional-microstructure-dev-${{ github.ref }}
@@ -56,6 +57,16 @@ jobs:
           if [[ "$compile_code" -ne 0 && "$code" -eq 0 ]]; then code=$compile_code; fi
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
+      - name: Reuse fixed Production L3 input artifact
+        if: contains(github.event.head_commit.message, '[research]') && steps.tests.outputs.exit_code == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtime
+          gh api /repos/${GITHUB_REPOSITORY}/actions/artifacts/9473260618/zip > /tmp/fixed-l3-input.zip
+          unzip -o /tmp/fixed-l3-input.zip -d runtime >/dev/null
+          test -s runtime/broad_daily_universe.csv
+          test -s runtime/return_target_specific_contracts.csv
       - name: Optional bounded research
         id: research
         if: contains(github.event.head_commit.message, '[research]') && steps.tests.outputs.exit_code == '0'
