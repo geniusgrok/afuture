@@ -74,7 +74,7 @@ jobs:
         run: |
           set +e
           python -m pip install akshare
-          python tools/research_directional_microstructure.py 2>&1 | tee /tmp/research.log
+          python tools/research_directional_p0_fixed.py 2>&1 | tee /tmp/research.log
           code=${PIPESTATUS[0]}
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
