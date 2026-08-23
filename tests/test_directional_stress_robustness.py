@@ -2,7 +2,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from afuture.directional import fit_target_lots_to_margin_budget
+from afuture.directional import (
+    fit_target_lots_to_margin_budget,
+    margin_sizing_share,
+)
 from afuture.directional_acceptance import ProductionMechanicsConfig
 from afuture.directional_robustness import MarginAwareDirectionalProductionAcceptance
 from afuture.models import AccountSnapshot, ContractSpec, Tick
@@ -26,6 +29,16 @@ def test_margin_budget_fits_stress_target_without_relaxing_hard_cap():
     assert fitted == {"A2609": 18}
     assert _margin(fitted, per_lot) <= 35000.0
     assert abs(fitted["A2609"]) <= abs(requested["A2609"])
+
+
+def test_margin_sizing_share_reserves_existing_daily_loss_capacity():
+    # The 35% hard halt is unchanged. Sizing leaves the existing 5% daily-loss
+    # allowance as equity headroom so normal mark-to-market does not target the halt.
+    assert margin_sizing_share(
+        max_margin_ratio=0.35,
+        min_available_ratio=0.25,
+        max_daily_loss_ratio=0.05,
+    ) == pytest.approx(0.3325)
 
 
 def test_margin_budget_preserves_sign_and_allocates_integer_residual_deterministically():
@@ -64,7 +77,7 @@ def test_margin_budget_rejects_invalid_budget():
         )
 
 
-def test_acceptance_target_lots_are_margin_feasible_before_opening_gate():
+def test_acceptance_target_lots_leave_daily_loss_margin_headroom_before_hard_gate():
     sim = MarginAwareDirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=100000.0,
@@ -73,6 +86,7 @@ def test_acceptance_target_lots_are_margin_feasible_before_opening_gate():
             max_margin_ratio=0.35,
             min_available_ratio=0.25,
             max_contract_volume=100,
+            max_daily_loss_ratio=0.05,
         )
     )
 
@@ -83,7 +97,7 @@ def test_acceptance_target_lots_are_margin_feasible_before_opening_gate():
         selected_symbols={"A": "A2609"},
     )
 
-    assert target == {"A2609": 18}
+    assert target == {"A2609": 17}
     allowed, reason, estimated = sim.check_opening_batch(
         equity=100000.0,
         current_margin=0.0,
@@ -93,10 +107,11 @@ def test_acceptance_target_lots_are_margin_feasible_before_opening_gate():
     )
     assert allowed
     assert reason == ""
-    assert estimated == 33750.0
+    assert estimated == 31875.0
+    assert estimated / 100000.0 < 0.35
 
 
-def test_live_target_builder_uses_side_specific_margin_and_same_hard_budget():
+def test_live_target_builder_uses_side_specific_margin_and_daily_loss_headroom():
     from afuture.directional import build_margin_aware_target_lots
 
     account = AccountSnapshot(
@@ -130,26 +145,27 @@ def test_live_target_builder_uses_side_specific_margin_and_same_hard_budget():
         margin_rate_short=0.20,
     )
 
+    common = dict(
+        max_contract_volume=100,
+        max_margin_ratio=0.35,
+        min_available_ratio=0.25,
+        max_daily_loss_ratio=0.05,
+        margin_estimate_buffer=1.25,
+    )
     long_target = build_margin_aware_target_lots(
         account,
         {"A": 2.0},
         {"A": tick},
         {"A2609": spec},
-        max_contract_volume=100,
-        max_margin_ratio=0.35,
-        min_available_ratio=0.25,
-        margin_estimate_buffer=1.25,
+        **common,
     )
     short_target = build_margin_aware_target_lots(
         account,
         {"A": -2.0},
         {"A": tick},
         {"A2609": spec},
-        max_contract_volume=100,
-        max_margin_ratio=0.35,
-        min_available_ratio=0.25,
-        margin_estimate_buffer=1.25,
+        **common,
     )
 
-    assert long_target == {"A2609": 18}
-    assert short_target == {"A2609": -14}
+    assert long_target == {"A2609": 17}
+    assert short_target == {"A2609": -13}
