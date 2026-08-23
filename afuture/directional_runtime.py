@@ -20,6 +20,7 @@ from .directional import (
     build_rebalance_plan,
     build_target_lots,
 )
+from .directional_execution import depth_aware_opening_price
 from .models import (
     ContractInfo,
     ContractPosition,
@@ -489,7 +490,13 @@ class DirectionalPortfolioManager:
                     side=side,
                     offset=Offset.OPEN,
                     volume=volume,
-                    price=self._aggressive_price(tick, spec, side),
+                    price=depth_aware_opening_price(
+                        tick,
+                        spec,
+                        side,
+                        requested_volume=volume,
+                        aggressive_ticks=self.aggressive_ticks,
+                    ),
                     order_type=OrderType.FAK,
                     reference=f"directional:{item.product.upper()}",
                 )

@@ -356,3 +356,24 @@ def test_manager_flatten_closes_both_sides_when_same_contract_is_hedged():
     assert all(order.offset is not Offset.OPEN for order in broker.orders)
     assert all(order.order_type is OrderType.FAK for order in broker.orders)
     assert all(order.reference == "directional:flatten" for order in broker.orders)
+
+
+def test_directional_opening_uses_best_quote_when_depth_covers_order_but_reduction_stays_aggressive():
+    broker = _Broker(depth=1000.0)
+    manager = _manager(broker)
+    manager.bootstrap(NOW)
+    for tick in broker.ticks.values():
+        manager.observe(tick)
+
+    reduction = manager.maybe_rebalance(NOW)
+    assert reduction.action == "reduce"
+    assert broker.orders[0].side.value == "SELL"
+    assert broker.orders[0].price == 98.0
+
+    broker.positions = []
+    broker.orders.clear()
+    opening = manager.maybe_rebalance(NOW)
+    assert opening.action == "open"
+    assert broker.orders[0].side.value == "BUY"
+    assert broker.orders[0].price == 101.0
+    assert broker.orders[0].order_type is OrderType.FAK

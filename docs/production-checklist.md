@@ -130,8 +130,8 @@
 ## I. Doctor / 测试柜台
 
 - [ ] `afuture doctor` 登录、account、complete position、catalog、metadata 全部通过。
-- [ ] 单方向 FAK 开仓。
-- [ ] FAK 未成交、partial、reject。
+- [ ] 单方向 FAK 开仓；对手一档深度覆盖整笔手数时 opening 使用 best opposite，否则回退 legacy aggressive tick。
+- [ ] FAK 未成交、partial、reject；depth-aware opening 不得改变 reduction aggressive 价格、订单数量或 hard-risk authority。
 - [ ] 平仓与平今/平昨。
 - [ ] 多产品 order-rate。
 - [ ] 换月 reduction 完成前不新增风险。

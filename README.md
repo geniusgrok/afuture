@@ -114,6 +114,8 @@ adaptive margin-aware soft sizing（平静基线 30%，completed shock 只可继
         ↓
 reductions → Broker 确认 → openings
         ↓
+opening pricing：对手一档深度覆盖整笔手数时用 best opposite；否则保留原 aggressive tick
+        ↓
 RiskManager hard gates → FAK → Broker
         ↓
 每个 tick 检查 realized gross；>2x 只减仓
@@ -127,7 +129,7 @@ RiskManager hard gates → FAK → Broker
 - `directional_fill`：expected/fill price、multiplier、slippage、commission；
 - `directional_cycle`：realized turnover、tracking error、完成延迟、partial/rejected count。
 
-quality 只做观测，不拥有账户或策略权限。
+quality 只做观测，不拥有账户或策略权限。Directional reduction FAK 始终保留原 aggressive price；depth-aware 只作用于正常 opening，不改变手数、订单数、FAK 类型或 hard-risk 权限。
 
 ## Calendar Spread / Auto
 
