@@ -1,0 +1,34 @@
+name: net-alpha-source-export
+
+on:
+  push:
+    branches:
+      - codex/afuture-net-alpha-efficiency-20260823
+    paths:
+      - '.github/workflows/net-alpha-source-export.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: net-alpha-source-${{ github.sha }}
+          include-hidden-files: true
+          path: |
+            afuture
+            tests
+            tools
+            config
+            docs
+            examples
+            .github/workflows
+            README.md
+            AGENTS.md
+            pyproject.toml
+            requirements.txt
+          retention-days: 3
