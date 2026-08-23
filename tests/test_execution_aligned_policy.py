@@ -50,7 +50,7 @@ def test_execution_aligned_policy_freezes_product_order():
     assert list(ordered.columns) == ["A", "CU", "M", "RB"]
 
 
-def test_execution_aligned_policy_uses_frozen_meta_shape():
+def test_execution_aligned_policy_uses_frozen_meta_shape_without_turnover_pool_filter():
     policy = ExecutionAlignedAggressivePolicy(products=("A", "M"))
     assert policy.meta_lookback == 11
     assert policy.meta_rebalance == 3
@@ -58,7 +58,36 @@ def test_execution_aligned_policy_uses_frozen_meta_shape():
     assert META_ANNUALIZED_WEIGHT == 0.25
     assert META_SHARPE_WEIGHT == 1.0
     assert len(policy.template_ids) == 96
-    assert policy.meta_score_source == "continuous_intraday_proxy"
+    assert policy.meta_score_source == "continuous_intraday_base_rank_stress_survival"
+
+
+def test_robust_meta_score_requires_stress_survival_but_preserves_base_ranking():
+    from afuture.execution_aligned_policy import _robust_trailing_scores
+
+    index = pd.date_range("2026-01-01", periods=12, freq="B")
+    base = pd.DataFrame(
+        {
+            "strong_base": [0.004] * 12,
+            "strong_stress": [0.003] * 12,
+            "fails_stress": [0.002] * 12,
+        },
+        index=index,
+    )
+    stress = pd.DataFrame(
+        {
+            "strong_base": [0.0001] * 12,
+            "strong_stress": [0.003] * 12,
+            "fails_stress": [-0.001] * 12,
+        },
+        index=index,
+    )
+
+    scores = _robust_trailing_scores(base, stress, lookback=11)
+    final = scores[-1]
+    assert np.isfinite(final[0])
+    assert np.isfinite(final[1])
+    assert final[0] > final[1]
+    assert np.isnan(final[2])
 
 
 def test_execution_proxy_changes_meta_evidence_without_future_leakage():

@@ -9,8 +9,9 @@
 1. corrected M/OI、经济 pair、BU/FU、intraday、结构套利等市场中性路线没有接近 100% 年化；
 2. 50 品种 directional 在明确允许历史选择偏差、gross≤2x 的 specific-contract / next-open float-notional 口径达到 **107.4623% 年化 / 27.4097% 最大回撤**；
 3. 当前 production-mechanics Base 在相同两年区间达到 **108.8461% 年化 / 17.8010% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
-4. Stress production-mechanics 只有 **0.9249% 年化**并因 margin hard gate HALT，因此“Base 通过”不能改写成“生产鲁棒性已证明”；
-5. 两年历史和所谓 OOS 都已经被研究流程观察，不是 pristine holdout，所有高收益数字都不是未来收益保证。
+4. 当前 production-mechanics Stress 在 15bp + 15% margin proxy 下达到 **20.4057% 年化 / 27.9925% 最大回撤 / actual gross peak 1.684784x / 472 active days / no permanent halt**；
+5. Stress 已从旧版 `0.9249% + margin HALT` 修复为完整运行，但仍没有达到 80%；
+6. 两年历史和所谓 OOS 都已经被研究流程观察，不是 pristine holdout，所有高收益数字都不是未来收益保证。
 
 最新正式证据：
 
@@ -50,23 +51,14 @@ BU/FU specific-contract 信号证明并非单纯 continuous roll 假象，但收
 - meta lookback=11；
 - meta rebalance=3；
 - meta count=3；
-- score=`0.25 × annualized + 1.0 × Sharpe`；
-- completed continuous intraday proxy causal ranking；
+- Base score=`0.25 × annualized + 1.0 × Sharpe`；
+- completed continuous intraday Base/Stress cost evidence causal；
+- 15bp Stress 只做生存门，通过后按 Base score 排名；
 - point-in-time concrete-contract selection；
 - 20 天黑窗；
 - target gross≤2x。
 
 ## 5. Float-notional L4
-
-固定原始数据：
-
-```text
-products                  = 50
-candidate contract calls  = 3000
-usable concrete contracts = 2540
-specific daily rows       ≈ 495086
-missing next returns      = 0 on final products
-```
 
 `2024-08-21 ~ 2026-08-20` 原官方 artifact：
 
@@ -81,7 +73,7 @@ Final OOS 已被观察，因此 `pristine_final_oos=false`。
 
 ## 6. Production-mechanics 收口
 
-本轮没有通过增加 Alpha/template/leverage 解决 research/live gap，而是修正生产机械：
+没有通过增加 leverage 或放宽硬门解决 research/live gap。当前生产机械包括：
 
 - D 日 completed activity 决定 D+1 concrete contract；
 - required signal day = completed activity day；
@@ -89,55 +81,67 @@ Final OOS 已被观察，因此 `pristine_final_oos=false`。
 - reductions 优先；
 - Broker 是唯一 order/fill/position truth；
 - integer lots / multiplier / max contract volume 35；
-- 5% daily-loss 改为同交易日 circuit，后续交易日满足完整安全条件才恢复；
+- **margin-aware target sizing**：当前 35% margin / 25% available / 5% daily-loss 配置下，正常 target margin share 为 30%；
+- live 使用 Broker side-specific margin metadata；历史使用显式 12%/15% proxy；
+- margin-fitted openings 仍由原 `RiskManager` 35%/25% hard gates 最终否决；
+- 5% daily-loss 是同交易日 circuit，后续交易日满足完整安全条件才恢复；
 - total DD / margin / available cash 等保持 hard/manual halt；
 - completed-return governor：最近完成日收益≤-2% 或两日样本波动≥3% → 下一目标 25%，否则 100%；
-- normal target 不预先 haircut；actual marked gross>2x 时运行时只减仓；
-- 同一合约多空毛仓 flatten 按毛仓分别平，避免 net=0 漏风险；
+- actual marked gross>2x 时运行时只减仓；
+- 同一合约多空毛仓 flatten 按毛仓分别平；
 - directional rebalance/fill/cycle execution quality 保持观测闭环。
-
-最终生产 signal policy 仍只有 `ExecutionAlignedAggressivePolicy`。
 
 ## 7. 最终 Production L3
 
-固定 run `32617588179`：
+固定 run `32624688557`，artifact id `9489421243`：
 
 | 指标 | Base | Stress |
 |---|---:|---:|
-| 年化 | **108.8461%** | **0.9249%** |
-| 累计 | **311.4052%** | **1.7840%** |
-| 最大回撤 | **17.8010%** | **5.8553%** |
-| Sharpe | **2.0812** | 0.2246 |
-| active days | **478 / 484** | **14 / 484** |
-| daily circuit days | 4 | 0 |
-| defensive days | 78 | 2 |
-| margin reject days | 0 | 6 |
-| actual gross peak | **1.998253x** | 1.856519x |
-| halted | **false** | **true** |
+| 年化 | **108.8461%** | **20.4057%** |
+| 累计 | **311.4052%** | **42.8545%** |
+| 最大回撤 | **17.8010%** | **27.9925%** |
+| Sharpe | **2.0812** | **0.7466** |
+| active days | **478 / 484** | **472 / 484** |
+| daily circuit days | 4 | 4 |
+| defensive days | 78 | 70 |
+| margin reject days | 0 | **0** |
+| actual gross peak | **1.998253x** | **1.684784x** |
+| halted | **false** | **false** |
 
-Base 直接通过四个核心历史门：annualized≥100%、DD≤30%、actual gross≤2x、no permanent halt。
+Base 直接通过 annualized≥100%、DD≤30%、actual gross≤2x、no permanent halt。
 
-Stress 的早期 margin halt 说明成本/保证金鲁棒性仍弱。Base 的 prior1/prior2 独立窗口也分别约 -28.94% / -28.80%，并触及 30% 总回撤门，说明 regime dependence 仍明显。
+Stress 的重要变化不是“收益达到 80%”，而是它不再因 2x target 与 35% margin gate 的结构冲突很早退出；现在是一个完整运行的 15bp/高 margin 压力账户实验。
 
-## 8. 为什么现在停止历史优化
+## 8. 本轮负证据
 
-Base acceptance 已满足后继续围绕同一历史扩展参数空间，增加的是过拟合而不是新信息。当前明确停止：
+为了验证成本鲁棒性，而不是盲目保留每个想法，本轮测试并拒绝了：
 
-- 扩大 template pool；
-- 提高 gross >2x；
-- 放宽 5% daily loss / 30% DD；
-- 放宽 margin/cash gate；
-- 围绕同一两年继续扫 governor / cap / meta。
+- Base/Stress score 50/50：Base 年化约降至 **94.59%**；
+- 只保留 rebalance `>=5` 的 57 templates：Base 年化约降至 **69.78%**。
 
-下一步的决策变量应来自真实账户，而不是历史目标函数。
+这两者没有进入最终生产候选。最终保留全部 96 templates，只要求 Stress evidence 存活，排序仍由 Base score 决定。
 
-## 9. 当前最高信息价值证据
+## 9. 为什么现在停止历史优化
+
+最终候选已经完成：
+
+- Base ≥100%；
+- Base DD <30%；
+- Base/Stress 不永久 HALT；
+- Stress margin reject = 0；
+- gross ≤2x；
+- 35% margin / 25% available / 5% daily loss / 30% DD 均未放宽。
+
+Stress 年化仍只有 20.4057%。继续围绕同一已观察历史扩展 template、meta、governor 或 margin 参数直到得到 80%，增加的是过拟合而不是新信息，因此停止。
+
+## 10. 当前最高信息价值证据
 
 1. 新发生、此前未参与选择的未来数据；
 2. 多日 CTP Shadow；
 3. realized turnover/slippage/commission/tracking；
-4. 真实 Broker margin / gross guard / daily circuit；
-5. 测试柜台订单生命周期；
-6. 极小真实仓位。
+4. Broker 实际 margin 与 soft target headroom；
+5. gross guard / daily circuit；
+6. 测试柜台订单生命周期；
+7. 极小真实仓位。
 
-未来如需调整生产风险参数，应基于这些新证据。107.4623% 和 108.8461% 都只是已观察历史结果，Stress 0.9249% + halt 也必须同时纳入判断。
+未来如需调整生产风险参数，应基于这些新证据。107.4623%、108.8461% 和 20.4057% 都只是已观察历史结果，不是未来年度收益承诺。

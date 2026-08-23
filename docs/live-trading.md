@@ -4,13 +4,13 @@
 
 `afuture` 支持两种账户互斥模式：Calendar Spread / Auto 与 Execution-Aligned Directional。两者共用 Broker、`RiskManager`、Kill Switch、`REDUCE_ONLY`、StateStore、启动对账和审计链。
 
-Directional 的历史证据必须分层：
+Directional 历史证据必须分层：
 
-- float-notional L4：selection-biased Base 年化 **107.4623%**；
-- 当前 production-mechanics L3：Base 年化 **108.8461%**、最大回撤 **17.8010%**、actual gross 峰值 **1.998253x**、未永久 HALT；
-- Stress：年化仅 **0.9249%**，因 margin hard gate HALT。
+- Float-notional L4：selection-biased Base 年化 **107.4623%**，Stress 15bp 年化 **58.1372%**；
+- 当前 production-mechanics L3 Base：**108.8461% 年化 / 17.8010% DD / 1.998253x actual gross / no permanent halt**；
+- 当前 production-mechanics L3 Stress：**20.4057% 年化 / 27.9925% DD / 1.684784x actual gross / no permanent halt**。
 
-所以代码级 Base 历史门已经达到 100%，但**真实资金仍未因此自动获批**。历史已被反复观察，Stress 也明显失败；真正的下一道门是 Shadow / 测试柜台 / 极小资金 / 新发生未来数据。
+Stress 已从上一版 `0.9249% + margin HALT` 修复为 472/484 个活跃交易日、0 margin reject、无永久 HALT，但没有达到 80%。历史结果不能作为真实资金收益承诺。
 
 ## 2. 推荐上线顺序
 
@@ -18,14 +18,14 @@ Directional 的历史证据必须分层：
 固定历史 L3/L4
 → 多交易日 CTP Shadow
 → CTP doctor
-→ 测试柜台 FAK/partial/reject/reconnect/gross guard
+→ 测试柜台 FAK/partial/reject/reconnect/margin sizing/gross guard
 → 极小真实仓位
 → execution-quality / 结算单核对
 → 新发生未来数据
 → 再决定是否扩大风险
 ```
 
-不再围绕同一两年历史继续追更高 Base 数字。
+不再围绕同一两年历史继续追更高收益数字。
 
 ## 3. 凭证
 
@@ -53,6 +53,7 @@ AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 
 - 冻结 50 品种 / 96 templates；
 - meta lookback 11 / rebalance 3 / active 3；
+- meta：5bp Base 与 15bp Stress evidence 都存活后按 Base score 排名；
 - gross target 上限 2.0x；
 - directional 单合约上限 35 手；
 - 20 天 expiry filter；
@@ -63,9 +64,28 @@ AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 - total drawdown 30%；
 - fresh quote / depth / limit / order-rate 硬门。
 
-2.0x 是 signal target hard cap，同时还有独立的 actual-gross hard guard；不是承诺账户会持续保持 2.0x 风险。
+## 5. Margin-aware target sizing
 
-## 5. Previous-day activity snapshot
+Signal gross 仍可到 2.0x，但目标手数在开仓前先使用 Broker live `ContractSpec` 做 margin feasibility sizing：
+
+```text
+hard_share = min(max_margin_ratio, 1 - min_available_ratio)
+soft_target_share = max(0, hard_share - max_daily_loss_ratio)
+```
+
+当前配置得到 `35% - 5% = 30% equity` 的正常 target margin budget。
+
+这不是把 hard gate 改成 30%。语义是：
+
+1. 正常 target 不主动贴着 35% hard margin boundary；
+2. 多头使用 `margin_rate_long`，空头使用 `margin_rate_short`；
+3. 结合当前 mid、multiplier、`margin_estimate_buffer=1.25` 计算逐手 margin；
+4. integer fitter 只向下缩手数，缺少可信 margin evidence 时 fail-closed；
+5. 生成 openings 后，原 `RiskManager.check_open_orders()` 仍重新检查 35% max margin 和 25% min available，并拥有最终否决权。
+
+Shadow/test 必须对比 modeled target margin 与 Broker 实际冻结保证金；真实逐品种/逐日 margin 与历史 12%/15% proxy 不同是预期情况。
+
+## 6. Previous-day activity snapshot
 
 生产不在开盘后用当前交易日累计 OI/volume 重新挑主力。
 
@@ -78,11 +98,11 @@ D 日最终 volume/OI
 → D+1 选约只读 completed snapshot
 ```
 
-D+1 当前 Tick 仍用于 fresh quote、bid/ask、depth、limit、价格和下单，但不能改变 D 已冻结主力。
+D+1 当前 Tick 仍用于 fresh quote、bid/ask、depth、limit、价格、margin sizing 和下单，但不能改变 D 已冻结主力。
 
 新部署无 completed snapshot 时不新增风险；重启 snapshot 若落后于已确认完整 OHLC day，也 fail-closed。
 
-## 6. Signal-day freshness
+## 7. Signal-day freshness 与 meta
 
 ```text
 required_signal_day = completed activity day
@@ -91,12 +111,9 @@ continuous OHLC latest day >= required_signal_day
 
 `signal_max_age_hours` 只做第二层长期停更/未来 timestamp 保护。
 
-- provider 临时失败但缓存已覆盖 required day：允许缓存；
-- required day 缺失且账户为空：拒绝新增；
-- required day 缺失且已有 risk：`risk_off → REDUCE_ONLY → flatten`；
-- completed activity 明显落后：fail-closed。
+Meta 只使用已完成 continuous open→close evidence：模板必须同时在 5bp Base 和 15bp Stress 成本端点存活，然后按 Base score 排名。Stress 是 robustness filter，不是用已观察历史做 50/50 收益最大化。
 
-## 7. Completed-return governor
+## 8. Completed-return governor
 
 Directional engine 只保存**已完成交易日账户收益**：
 
@@ -108,11 +125,9 @@ else
 → 100%
 ```
 
-当前交易日 PnL 不参与当前目标。Governor 只能降风险，不能放大冻结 signal。
+当前交易日 PnL 不参与当前目标。Governor 只能降风险。
 
-## 8. Realized-gross hard guard
-
-正式实现不对所有正常目标预先乘固定 headroom：
+## 9. Realized-gross hard guard
 
 1. signal target 必须 `<=2.0x`；
 2. manager 读取 Broker 真实仓位、实时 quote、contract multiplier 和 account equity；
@@ -121,9 +136,9 @@ else
 5. active reduction order 未结算时不重复发送；
 6. 无法安全计算/执行且仍有风险时进入 fail-closed `REDUCE_ONLY`。
 
-Shadow/test 必须专门验证 gross guard 的触发频率、成交延迟、冲击和 guard 后实际 gross。
+Margin sizing 与 gross guard 不能互相替代：一个约束保证金需求，一个约束实际名义风险。
 
-## 9. 合约不可用与 reduction-first
+## 10. 合约不可用与 reduction-first
 
 某个新目标产品没有 eligible contract/fresh quote 时不整体阻塞组合减仓：
 
@@ -135,7 +150,7 @@ Shadow/test 必须专门验证 gross guard 的触发频率、成交延迟、冲�
 
 同一合约如果同时存在多空毛仓，flatten 按 long/short 毛仓分别生成平仓单，不能因为净仓为 0 判断“已经 flat”。
 
-## 10. Shadow
+## 11. Shadow
 
 ```bash
 afuture shadow --config config/afuture.directional-live.example.toml --duration-seconds 3600
@@ -143,9 +158,11 @@ afuture shadow --config config/afuture.directional-live.example.toml --duration-
 
 Directional Shadow 使用真实 CTP catalog/tick/trading day/metadata 和正式 signal/activity/risk 逻辑；账户/订单/成交/持仓由本地 SimBroker 维护，不调用真实 CTP `send_order()`。
 
-### Shadow 必须重点回答
+必须重点记录：
 
-- target gross vs actual gross；
+- signal gross / margin-fitted target / actual gross；
+- modeled per-lot margin vs Broker metadata；
+- margin sizing 缩手事件及剩余 headroom；
 - gross guard 触发及 reduction 后 actual gross；
 - target lots vs actual lots；
 - margin ratio / available ratio；
@@ -153,14 +170,10 @@ Directional Shadow 使用真实 CTP catalog/tick/trading day/metadata 和正式 
 - completed-return governor scale；
 - daily circuit 与次日恢复；
 - planned vs realized turnover；
-- median/p95 slippage；
-- commission；
-- partial/reject；
+- median/p95 slippage、commission、partial/reject；
 - 主力切换是否与 previous-day activity 一致。
 
-Stress 历史在 margin proxy 下很早 HALT，因此真实 margin 是 Shadow/test 阶段的最高优先级变量之一。
-
-## 11. Doctor
+## 12. Doctor
 
 ```bash
 afuture doctor --config config/afuture.directional-live.example.toml
@@ -168,7 +181,7 @@ afuture doctor --config config/afuture.directional-live.example.toml
 
 Doctor 只检查登录、account/position snapshot、catalog、multiplier、price tick、margin、commission metadata，不包含真实报单入口。
 
-## 12. Daily circuit 与 hard halt
+## 13. Daily circuit 与 hard halt
 
 5% daily-loss 是同 trading-day circuit：
 
@@ -183,81 +196,29 @@ RUNNING
 
 恢复必须满足 Broker ready、无 active order、无残余 directional risk、metadata verified、账户 hard gates 通过、startup reconciliation 通过。
 
-以下仍是 hard/manual halt：
+以下仍是 hard/manual halt：total drawdown、margin ratio、available cash、nonpositive equity、metadata/reconciliation/infrastructure failure。
 
-- total drawdown；
-- margin ratio；
-- available cash；
-- nonpositive equity；
-- metadata / reconciliation / infrastructure failure。
+## 14. 启动对账与 execution quality
 
-不能把这些错误当作 daily circuit 自动清除。
+Directional 不持久化第二份策略仓位。重启必须以 Broker 完整 account/positions 为真相并与 StateStore 对账；任何 mismatch 都 fail-closed。
 
-## 13. 启动对账
+`ExecutionQualityRecorder` 的 directional 证据包括：
 
-Directional 不持久化第二份策略仓位。重启：
-
-1. Broker ready；
-2. fresh account / complete positions；
-3. 处理 active orders；
-4. `RuntimeState.positions` 与 Broker 完整持仓逐合约比较；
-5. metadata/account gates；
-6. 完全一致才恢复。
-
-任何 mismatch 都 fail-closed。
-
-## 14. Execution quality
-
-下单时 manager 只注册 expected metadata；真实 callback 到达后：
-
-- 基础 TradingEngine 先更新统一 position truth；
-- quality 再记录 realized fill/slippage/commission；
-- cycle 汇总 realized turnover、tracking error、latency、partial/reject。
+- rebalance：signal/activity day、target、planned turnover；
+- fill：Broker callback 的 fill/slippage/commission；
+- cycle：realized turnover、tracking error、latency、partial/reject。
 
 持续检查 `quality-report.directional`。
 
 ## 15. Production L3 的边界
 
-最终 Base 历史 L3：108.8461% / 17.8010% DD / 1.998253x actual gross / no permanent halt。
+最终固定历史 L3：
 
-仍缺多年历史真实：
+```text
+Base   108.8461% annualized / 17.8010% DD / no permanent halt
+Stress  20.4057% annualized / 27.9925% DD / no permanent halt
+```
 
-- L1 bid/ask/depth/queue；
-- partial/reject；
-- CTP/交易所流控；
-- 逐日 Broker margin schedule；
-- 真实结算手续费；
-- reduction 后下一 cycle opening 的分钟/秒价格；
-- gross guard 的真实成交时延与市场冲击。
+Stress 已证明 15bp + 15% margin proxy 下不再因结构性 margin sizing 问题早停，但 20.4057% 不是 80%，也不是未来收益下限。
 
-因此 **108.8461% 不是未来真实收益预测**；Stress 的 0.9249% + margin halt 也说明执行与保证金鲁棒性仍未证明。
-
-## 16. 风险参数调整原则
-
-不要因为历史 Base 已超过 100% 就扩大 leverage，也不要因为 Stress 失败就直接放宽 margin/cash/drawdown。任何阈值调整必须来自：
-
-- 实际账户风险承受能力；
-- 多日 Shadow；
-- 测试柜台真实 margin/fee/fill；
-- 极小资金 realized drawdown；
-- 新发生未见数据。
-
-目标是提高**可兑现净收益/风险比**，不是继续拟合同一历史。
-
-## 17. 测试柜台必须验证
-
-- FAK 开/平；
-- partial / reject；
-- 平今/平昨；
-- 夜盘跨 trading day activity freeze；
-- 断线重连；
-- metadata/query/order rate；
-- 多合约 reduction-first；
-- realized gross guard；
-- daily circuit 次日恢复；
-- signal/activity risk-off → REDUCE_ONLY；
-- hedged gross-position flatten；
-- restart reconcile；
-- 实际手续费和 margin。
-
-这些通过后再进入极小真实仓位。
+仍缺多年历史真实 L1 bid/ask/depth/queue、partial/reject、CTP 流控、逐日 Broker margin schedule、真实结算手续费和 market impact。因此下一步应取得真实 Shadow/test/small-capital/new-data 证据，而不是继续拟合同一历史。

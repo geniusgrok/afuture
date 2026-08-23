@@ -115,6 +115,96 @@ class RebalancePlan:
     openings: dict[str, int] = field(default_factory=dict)
 
 
+def fit_target_lots_to_margin_budget(
+    target_lots: Mapping[str, int],
+    per_lot_margin: Mapping[str, float],
+    *,
+    margin_budget: float,
+) -> dict[str, int]:
+    """Fit a signed integer target to a hard margin budget without increasing risk.
+
+    Scaling is proportional across requested contracts, then any remaining budget is
+    allocated one lot at a time by largest fractional remainder with symbol ordering as
+    the deterministic tie-break. Missing/invalid margin evidence fails closed instead
+    of allowing an opening batch to rely on a guessed margin rate.
+    """
+    budget = float(margin_budget)
+    if budget < 0:
+        raise ValueError("margin_budget cannot be negative")
+
+    requested: dict[str, int] = {}
+    margins: dict[str, float] = {}
+    total_margin = 0.0
+    for symbol in sorted(target_lots):
+        volume = int(target_lots[symbol])
+        if volume == 0:
+            continue
+        unit_margin = float(per_lot_margin.get(symbol, 0.0))
+        if unit_margin <= 0:
+            raise ValueError(f"missing positive per-lot margin: {symbol}")
+        requested[symbol] = volume
+        margins[symbol] = unit_margin
+        total_margin += abs(volume) * unit_margin
+
+    if not requested or budget == 0:
+        return {}
+    if total_margin <= budget + 1e-10:
+        return dict(requested)
+
+    scale = budget / total_margin
+    magnitudes: dict[str, int] = {}
+    candidates: list[tuple[float, str]] = []
+    used_margin = 0.0
+    for symbol in sorted(requested):
+        magnitude = abs(requested[symbol])
+        ideal = magnitude * scale
+        fitted = min(magnitude, floor(ideal))
+        magnitudes[symbol] = fitted
+        used_margin += fitted * margins[symbol]
+        if fitted < magnitude:
+            candidates.append((ideal - fitted, symbol))
+
+    for _, symbol in sorted(candidates, key=lambda item: (-item[0], item[1])):
+        if used_margin + margins[symbol] > budget + 1e-10:
+            continue
+        if magnitudes[symbol] >= abs(requested[symbol]):
+            continue
+        magnitudes[symbol] += 1
+        used_margin += margins[symbol]
+
+    return {
+        symbol: magnitude if requested[symbol] > 0 else -magnitude
+        for symbol, magnitude in magnitudes.items()
+        if magnitude > 0
+    }
+
+
+def margin_sizing_share(
+    *,
+    max_margin_ratio: float,
+    min_available_ratio: float,
+    max_daily_loss_ratio: float,
+) -> float:
+    """Return a soft sizing envelope below the unchanged hard account margin gate.
+
+    A target placed exactly on the hard margin boundary can become a hard HALT after a
+    normal mark-to-market equity move. Reserve the configured daily-loss budget as an
+    absolute equity share between normal target sizing and the unchanged hard margin/cash
+    gates. This only reduces normal target construction; it never relaxes a hard gate.
+    """
+    margin_ratio = float(max_margin_ratio)
+    available_ratio = float(min_available_ratio)
+    daily_loss_ratio = float(max_daily_loss_ratio)
+    if not 0 < margin_ratio < 1:
+        raise ValueError("max_margin_ratio must be in (0, 1)")
+    if not 0 <= available_ratio < 1:
+        raise ValueError("min_available_ratio must be in [0, 1)")
+    if not 0 < daily_loss_ratio < 1:
+        raise ValueError("max_daily_loss_ratio must be in (0, 1)")
+    hard_share = min(margin_ratio, 1.0 - available_ratio)
+    return max(0.0, hard_share - daily_loss_ratio)
+
+
 def build_target_lots(
     account: AccountSnapshot,
     product_weights: Mapping[str, float],
@@ -148,6 +238,68 @@ def build_target_lots(
         if lots > 0:
             targets[tick.symbol] = lots if weight > 0 else -lots
     return targets
+
+
+def build_margin_aware_target_lots(
+    account: AccountSnapshot,
+    product_weights: Mapping[str, float],
+    product_ticks: Mapping[str, Tick],
+    specs: Mapping[str, ContractSpec],
+    *,
+    max_contract_volume: int,
+    max_margin_ratio: float,
+    min_available_ratio: float,
+    max_daily_loss_ratio: float,
+    margin_estimate_buffer: float,
+) -> dict[str, int]:
+    """Build the requested target then fit it inside a soft account margin envelope.
+
+    The sizing envelope reserves the configured daily-loss capacity; the existing
+    ``RiskManager.check_open_orders`` remains the final fail-closed authority against the
+    unchanged hard margin and cash-reserve gates using a fresh Broker snapshot.
+    """
+    requested = build_target_lots(
+        account,
+        product_weights,
+        product_ticks,
+        specs,
+        max_contract_volume=max_contract_volume,
+    )
+    if not requested:
+        return {}
+    if account.equity <= 0:
+        return {}
+    if float(margin_estimate_buffer) < 1:
+        raise ValueError("margin_estimate_buffer must be at least 1")
+
+    ticks_by_symbol = {tick.symbol: tick for tick in product_ticks.values()}
+    per_lot_margin: dict[str, float] = {}
+    for symbol, volume in requested.items():
+        tick = ticks_by_symbol.get(symbol)
+        spec = specs.get(symbol)
+        if tick is None or spec is None:
+            raise ValueError(f"missing target margin evidence: {symbol}")
+        rate = spec.margin_rate_long if volume > 0 else spec.margin_rate_short
+        unit_margin = (
+            float(tick.mid_price)
+            * float(spec.multiplier)
+            * float(rate)
+            * float(margin_estimate_buffer)
+        )
+        if unit_margin <= 0:
+            raise ValueError(f"missing positive per-lot margin: {symbol}")
+        per_lot_margin[symbol] = unit_margin
+
+    sizing_share = margin_sizing_share(
+        max_margin_ratio=max_margin_ratio,
+        min_available_ratio=min_available_ratio,
+        max_daily_loss_ratio=max_daily_loss_ratio,
+    )
+    return fit_target_lots_to_margin_budget(
+        requested,
+        per_lot_margin,
+        margin_budget=float(account.equity) * sizing_share,
+    )
 
 
 def build_realized_gross_reductions(

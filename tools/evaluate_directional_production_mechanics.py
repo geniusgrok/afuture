@@ -3,8 +3,9 @@
 The historical float-notional result is a signal/execution study. This evaluator keeps
 its frozen weights but adds integer lots, contract multipliers, previous-completed-day
 activity selection, contract roll semantics, account hard gates, the recoverable daily
-loss circuit, causal defensive scaling, and an explicit margin proxy. It never searches
-Alpha or parameters and does not claim historical broker margin schedules are known.
+loss circuit, causal defensive scaling, margin-aware target sizing and an explicit margin
+proxy. It never searches Alpha or parameters and does not claim historical broker margin
+schedules are known.
 
 Each published reporting window is an independent account experiment: the frozen signal
 path is unchanged, while account equity, positions, margin state and high-watermark reset
@@ -31,6 +32,7 @@ from afuture.directional_acceptance import (
     ProductionMechanicsConfig,
     ProductionSimulationResult,
 )
+from afuture.directional_robustness import MarginAwareDirectionalProductionAcceptance
 
 BASE_COST_BPS = 5.0
 STRESS_COST_BPS = 15.0
@@ -214,13 +216,13 @@ def evaluate_with_weights(
     *,
     float_report: dict | None = None,
 ) -> dict:
-    base_sim = DirectionalProductionAcceptance(
+    base_sim = MarginAwareDirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=INITIAL_CAPITAL,
             margin_rate_proxy=BASE_MARGIN_PROXY,
         )
     )
-    stress_sim = DirectionalProductionAcceptance(
+    stress_sim = MarginAwareDirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=INITIAL_CAPITAL,
             margin_rate_proxy=STRESS_MARGIN_PROXY,
@@ -282,6 +284,9 @@ def evaluate_with_weights(
             "reduction_before_open": True,
             "target_gross_leverage_cap": 2.0,
             "max_contract_volume": int(base_sim.config.max_contract_volume),
+            "margin_aware_target_sizing": True,
+            "margin_target_never_increases_requested_lots": True,
+            "opening_hard_gate_remains_authoritative": True,
             "daily_loss_same_day_circuit": True,
             "daily_loss_next_trading_day_safe_recovery": True,
             "hard_account_risk_permanent_halt": True,

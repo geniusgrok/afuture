@@ -4,7 +4,10 @@ This is the only production directional signal policy. The template pool was sel
 the already-observed 2024-08-21..2026-08-20 specific-contract next-open history. Daily
 live rotation remains causal: template signals use the previous close and the meta
 allocator ranks templates only from completed continuous-contract open->close returns.
-Product ordering is frozen alphabetically. Gross target notional is capped at 2x.
+Meta candidates must remain positive after both Base and Stress transaction-cost
+endpoints, but surviving candidates retain the Base score ordering so cost robustness
+does not replace the primary Alpha objective. Product ordering is frozen alphabetically.
+Gross target notional is capped at 2x.
 """
 from __future__ import annotations
 
@@ -17,12 +20,13 @@ import pandas as pd
 MAX_GROSS_LEVERAGE = 2.0
 MAX_ABS_DAILY_RETURN = 0.20
 BASE_COST_BPS = 5.0
+STRESS_COST_BPS = 15.0
 META_LOOKBACK = 11
 META_REBALANCE = 3
 META_COUNT = 3
 META_ANNUALIZED_WEIGHT = 0.25
 META_SHARPE_WEIGHT = 1.0
-META_SCORE_SOURCE = "continuous_intraday_proxy"
+META_SCORE_SOURCE = "continuous_intraday_base_rank_stress_survival"
 
 
 @dataclass(frozen=True)
@@ -45,11 +49,7 @@ def _parse_template_id(raw: str) -> _Template:
         raise ValueError(f"frozen template exceeds gross cap: {raw}")
     return _Template(
         family,
-        int(slow),
-        int(fast),
-        int(max_products),
-        int(rebalance),
-        value,
+        int(slow), int(fast), int(max_products), int(rebalance), value,
     )
 
 
@@ -137,6 +137,25 @@ def _trailing_scores(frame: pd.DataFrame, lookback: int = META_LOOKBACK) -> np.n
         row[annualized <= 0.0] = np.nan
         score[index] = row
     return score
+
+
+def _robust_trailing_scores(
+    base_frame: pd.DataFrame,
+    stress_frame: pd.DataFrame,
+    *,
+    lookback: int = META_LOOKBACK,
+) -> np.ndarray:
+    """Rank Base Alpha only among templates that survive the Stress cost endpoint."""
+    if not base_frame.index.equals(stress_frame.index):
+        raise ValueError("robust meta endpoint indexes must match")
+    if list(base_frame.columns) != list(stress_frame.columns):
+        raise ValueError("robust meta endpoint columns must match")
+    base = _trailing_scores(base_frame, lookback)
+    stress = _trailing_scores(stress_frame, lookback)
+    valid = np.isfinite(base) & np.isfinite(stress)
+    result = np.full_like(base, np.nan, dtype=float)
+    result[valid] = base[valid]
+    return result
 
 
 _EXECUTION_TEMPLATE_IDS = (
@@ -301,18 +320,36 @@ class ExecutionAlignedAggressivePolicy:
         returns = close.pct_change(fill_method=None)
         returns = returns.mask(returns.abs() > MAX_ABS_DAILY_RETURN)
 
-        streams: dict[str, pd.Series] = {}
+        base_streams: dict[str, pd.Series] = {}
+        stress_streams: dict[str, pd.Series] = {}
         paths: dict[str, pd.DataFrame] = {}
         for template_id, template in zip(self.template_ids, _EXECUTION_TEMPLATES):
             weights = _template_weight_path(returns, template)
             paths[template_id] = weights
-            streams[template_id] = _intraday_proxy_stream(
-                open_prices, close, weights
+            base_streams[template_id] = _intraday_proxy_stream(
+                open_prices,
+                close,
+                weights,
+                cost_bps=BASE_COST_BPS,
+            )
+            stress_streams[template_id] = _intraday_proxy_stream(
+                open_prices,
+                close,
+                weights,
+                cost_bps=STRESS_COST_BPS,
             )
 
-        stream_frame = pd.DataFrame(streams).sort_index().fillna(0.0)
-        scores = _trailing_scores(stream_frame, self.meta_lookback)
-        names = list(stream_frame.columns)
+        base_frame = pd.DataFrame(base_streams).sort_index().fillna(0.0)
+        stress_frame = pd.DataFrame(stress_streams).reindex(
+            index=base_frame.index,
+            columns=base_frame.columns,
+        ).fillna(0.0)
+        scores = _robust_trailing_scores(
+            base_frame,
+            stress_frame,
+            lookback=self.meta_lookback,
+        )
+        names = list(base_frame.columns)
         final = pd.DataFrame(0.0, index=close.index, columns=close.columns)
         selected: list[int] = []
         for position, timestamp in enumerate(close.index):

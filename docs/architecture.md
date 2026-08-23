@@ -28,7 +28,7 @@ Auto 只负责候选和开仓资格；已有仓位失去候选资格后继续 ma
 ```text
 连续 OHLC
 → ExecutionAlignedAggressivePolicy
-   96-template / causal meta
+   96-template / Base-rank + Stress-survival causal meta
 → 冻结产品权重，target gross <=2x
 → completed-return governor（只可缩风险）
 
@@ -38,10 +38,11 @@ CTP Tick.trading_day
 → DirectionalActivityStore
 → D+1 concrete contract selection
 
-Broker positions + D+1 fresh quotes
+Broker positions + D+1 fresh quotes + live ContractSpec
 → integer target lots，单合约 <=35
+→ margin-aware target sizing
 → reduction-first rebalance
-→ RiskManager
+→ RiskManager hard gates
 → FAK
 → Broker
 → 每 tick realized-gross guard（actual gross >2x 只减仓）
@@ -55,11 +56,12 @@ Broker positions + D+1 fresh quotes
 - meta lookback = **11**；
 - meta rebalance = **3**；
 - active templates = **3**；
-- meta score = `0.25 × annualized + 1.0 × Sharpe`，只使用已完成 continuous `open→close` evidence；
+- Base meta score = `0.25 × annualized + 1.0 × Sharpe`；
+- cost robustness = 5bp Base 与 15bp Stress trailing evidence 均为正后，仍按 Base score 排名；Stress 是生存门，不做 50/50 收益优化；
 - gross target ≤2.0x；
 - max contract volume = 35。
 
-`execution_aligned_policy.py` 是唯一正式 signal/meta policy；`directional.py` 保留配置、合约/手数/rebalance/gross-reduction 原语。
+`execution_aligned_policy.py` 是唯一正式 signal/meta policy；`directional.py` 保留配置、合约/手数、margin fitting、rebalance 和 gross-reduction 原语；`directional_robustness.py` 只把同一 margin-aware target 语义接到历史 production acceptance，不创建第二套实盘状态机。
 
 ## 4. 因果时间边界
 
@@ -75,7 +77,7 @@ Directional 同时冻结：
 
 D+1 尚未完成的 volume/OI 不能改变 D 已冻结选约。持久化 activity snapshot 比已确认完成的 signal day 更旧时 fail-closed。
 
-completed-return governor 也遵守同一因果边界：当前 session PnL 不参与当前目标，只保存交易日结束后的账户日收益供下一目标使用。
+Meta 的 Base/Stress cost evidence 和 completed-return governor 也遵守已完成历史边界：当前 session PnL 不参与当前目标。
 
 ## 5. Signal freshness
 
@@ -92,7 +94,20 @@ latest OHLC day >= required_signal_day
 - activity snapshot stale：fail-closed；
 - 新启动无 completed snapshot：禁止新增风险。
 
-## 6. Reduction-first 与毛仓 flatten
+## 6. Margin-aware target sizing
+
+目标手数先按 signal gross 与 equity 生成，再按预计保证金只向下缩放：
+
+```text
+hard_share = min(max_margin_ratio, 1 - min_available_ratio)
+soft_target_share = max(0, hard_share - max_daily_loss_ratio)
+```
+
+当前 35% margin / 25% available / 5% daily-loss 配置得到 **30% equity** 的正常 target margin budget。
+
+Live 使用 Broker side-specific `margin_rate_long/short`、当前 mid、multiplier 和 buffer；缺少可信 margin evidence 时 fail-closed。这个 soft target envelope 不改变 35%/25% hard gates，所有 openings 后续仍由 `RiskManager.check_open_orders()` 重新判定。
+
+## 7. Reduction-first 与毛仓 flatten
 
 ```text
 Broker 当前持仓
@@ -107,7 +122,7 @@ Broker 当前持仓
 
 异常情况下同一合约可能同时有多仓和空仓。安全 flatten 必须按 `long_total` / `short_total` 毛仓分别平仓，不能因 `net_volume=0` 误判为 flat。
 
-## 7. 两层风险收缩
+## 8. 风险收缩层级
 
 ### Completed-return governor
 
@@ -121,13 +136,17 @@ else
 
 它永远不能增加原冻结目标。
 
+### Margin-aware target envelope
+
+正常 target margin 当前控制在约 30% equity，为 35% hard margin gate 留出 5 个百分点的 mark-to-market 余量。它不是账户 halt 条件。
+
 ### Realized gross guard
 
-不对正常目标预先乘固定 headroom。目标本身仍必须 `<=2x`；实际 Broker/mark gross 超过 `2x` 时，manager 只生成 reduction-only FAK。无法安全分类/计算/执行时 fail-closed。
+不对正常 gross 目标预先乘固定 leverage haircut。目标本身仍必须 `<=2x`；实际 Broker/mark gross 超过 `2x` 时，manager 只生成 reduction-only FAK。无法安全分类/计算/执行时 fail-closed。
 
-因此 target leverage 与 actual marked leverage 是两个不同层级：前者由 signal gate 约束，后者由运行时 hard guard 约束。
+Margin、signal target gross 与 actual marked gross 是三个不同维度，不能互相替代。
 
-## 8. Risk state 与 daily circuit
+## 9. Risk state 与 daily circuit
 
 统一状态机不变。Directional 的 5% daily-loss 是同交易日 circuit：
 
@@ -135,7 +154,7 @@ else
 RUNNING
 → daily-loss breach
 → REDUCE_ONLY / flatten
-→ 当日保持 HALTED/circuit marker
+→ 当日保持 circuit marker
 → 后续 CTP trading day 完成安全检查
 → RUNNING
 ```
@@ -144,7 +163,7 @@ RUNNING
 
 总回撤、margin、available cash、非正 equity、metadata/对账/基础设施异常仍是 hard/manual halt，不能走 daily-circuit 自动恢复。
 
-## 9. Broker/StateStore 真相与重启
+## 10. Broker/StateStore 真相与重启
 
 Directional trade callback 先由基础 TradingEngine 更新统一 expected positions；quality callback 只观察。
 
@@ -157,7 +176,7 @@ RuntimeState.positions
 
 逐合约今昨、多空完全一致才 reconciled；任何 mismatch fail-closed。
 
-## 10. Execution quality
+## 11. Execution quality
 
 同一 `ExecutionQualityRecorder` 记录：
 
@@ -166,19 +185,19 @@ RuntimeState.positions
 
 Directional 汇总 realized turnover、commission、median/p95 slippage、tracking error、completion latency、partial/rejected count。真实 fill 只来自 Broker `Trade` callback。
 
-## 11. 经济证据分层
+## 12. 经济证据分层
 
-1. **Float-notional specific-contract L4**：Base 5bp 年化 107.4623%、最大回撤 27.4097%，selection-biased；
-2. **Production-mechanics L3**：当前生产机械 Base 5bp 年化 **108.8461%**、最大回撤 **17.8010%**、actual gross peak **1.998253x**、未永久 HALT；Stress 年化 **0.9249%** 且因 margin hard gate HALT。
+1. **Float-notional specific-contract L4**：Base 5bp 年化 107.4623%、Stress 15bp 年化 58.1372%，selection-biased；
+2. **Production-mechanics L3**：Base 5bp 年化 **108.8461%**、最大回撤 **17.8010%**、actual gross peak **1.998253x**、未永久 HALT；Stress 15bp 年化 **20.4057%**、最大回撤 **27.9925%**、actual gross peak **1.684784x**、472/484 active days、0 margin rejects、未永久 HALT。
 
-Base production acceptance 已通过，但 Stress 失败和历史选择偏差仍然存在。两个层级都不能替代真实 CTP 新数据。
+Stress 已修复此前的结构性 margin HALT，但没有达到 80%。两个层级都不能替代真实 CTP 新数据。
 
 历史逐日 Broker margin 不可得，因此 Base/Stress 仍是显式 12%/15% margin proxy × 1.25 buffer，不声称是柜台历史真值。
 
 详细证据：[`directional-production-mechanics-evidence.md`](directional-production-mechanics-evidence.md)。
 
-## 12. Shadow 与后续边界
+## 13. Shadow 与后续边界
 
-Shadow 市场侧来自真实 CTP catalog/tick/trading day/metadata，账户侧来自本地 SimBroker。必须重点观察：actual gross、gross-guard reductions、margin、daily circuit、realized cost、tracking、partial/reject 和恢复行为。
+Shadow 市场侧来自真实 CTP catalog/tick/trading day/metadata，账户侧来自本地 SimBroker。必须重点观察：raw target vs margin-fitted target、Broker actual margin、actual gross、gross-guard reductions、daily circuit、realized cost、tracking、partial/reject 和恢复行为。
 
 当前不需要数据库、消息队列、Web 服务、微服务或第二账户状态机。后续新增价值应来自**未来新数据和真实执行证据**，而不是继续扩大同一历史上的参数空间。

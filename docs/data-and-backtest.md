@@ -12,9 +12,9 @@ Directional 分离三类证据：
 
 1. **continuous OHLC**：产品 signal 和已完成 intraday meta evidence；
 2. **concrete-contract daily OHLC/OI/volume**：验证真实换月、next-open 收益和 production-mechanics；
-3. **CTP L1 / account / fill**：未来 Shadow/实盘执行证据。
+3. **CTP L1 / account / fill / live ContractSpec**：未来 Shadow/实盘执行和真实 margin 证据。
 
-公开历史没有多年完整 bid/ask/depth/queue/partial/reject，因此日线研究和 production proxy 都不能替代真实执行。
+公开历史没有多年完整 bid/ask/depth/queue/partial/reject，也没有逐日 Broker margin schedule，因此日线研究和 production proxy 都不能替代真实执行。
 
 ## 2. 因果规则
 
@@ -26,6 +26,7 @@ Directional 分离三类证据：
 - t→t+1 收益来自 t 日已选择的**同一具体合约**；
 - D+1 具体合约选择使用 D 的最终 OI/volume，不使用 D+1 尚未完成 activity；
 - completed activity snapshot 不能落后于已确认完成的 signal trading day；
+- meta 的 Base/Stress cost evidence 均只读取已完成历史；
 - completed-return governor 只读取已完成账户交易日收益；
 - Final OOS 被任何选择过程观察过后必须标记 non-pristine。
 
@@ -42,12 +43,7 @@ old weights × (t close → t+1 open)
 
 生产 `DirectionalActivityTracker` 按 `Tick.trading_day` 聚合合约最后可见 volume/OI；只有 trading day 从 D 推进时，才冻结 D 为 `DirectionalActivitySnapshot`。
 
-下一交易日：
-
-- selector 读取 completed snapshot；
-- listing/expiry 按计划交易日过滤；
-- OI → volume → expiry → symbol 排序；
-- 当前 tick 只负责 fresh quote、spread、depth、limit、价格和下单。
+下一交易日 selector 读取 completed snapshot；listing/expiry 按计划交易日过滤；OI → volume → expiry → symbol 排序。当前 tick 只负责 fresh quote、depth、limit、价格、margin sizing 和下单。
 
 第一次启动没有 completed snapshot 时不新增 directional 风险；snapshot 落后于已确认完整 OHLC day 时 fail-closed。
 
@@ -55,47 +51,17 @@ old weights × (t close → t+1 open)
 
 `required_signal_day = completed_activity_snapshot.trading_day`。OHLC 最新日期必须覆盖 required day；`signal_max_age_hours` 只做第二层长时间停更门。
 
-这避免周末小时容忍掩盖普通交易日漏 bar，也防止重启后的陈旧 activity snapshot 被继续使用。
-
-## 5. 历史研究结论
-
-### corrected M/OI calendar
-
-```text
-prior-forward             4 trades, -1.958R
-final OOS                  2 trades, +0.296R
-recent two years           5 trades, +1.028R
-neighbor stability         0 / 16
-2% risk proxy annualized   ≈ 1.07%
-```
-
-旧同品种 M/OI 研究仍未通过高收益门。
-
-### Broad directional research
-
-约 50 个成熟商品期货连续合约用于 family/候选发现。连续合约 close-to-close / roll 语义不能直接作为可执行 production 收益。
-
-## 6. Float-notional specific-contract L4
-
-固定原始数据：
-
-```text
-products                  = 50
-candidate contract calls  = 3000
-usable concrete contracts = 2540
-specific daily rows       ≈ 495086
-missing next returns      = 0 on final products
-```
+## 5. Float-notional specific-contract L4
 
 冻结策略：
 
+- 50 products；
 - 96-template pool；
 - breakout / tsmom / momentum / moving-average / reversal / acceleration；
 - meta lookback=**11**；
 - meta rebalance=**3**；
 - active templates=3；
-- meta score=`0.25 × annualized + 1.0 × Sharpe`；
-- Base 5bp；Stress 15bp；Extreme 30bp；
+- Base score=`0.25 × annualized + 1.0 × Sharpe`；
 - target gross ≤2x。
 
 原官方 float artifact `2024-08-21 ~ 2026-08-20`：
@@ -107,87 +73,100 @@ missing next returns      = 0 on final products
 | 最大回撤 | **27.4097%** | **32.9554%** |
 | Sharpe | **1.6874** | **1.1525** |
 
-此前 Final OOS 已被选择流程观察，所以：
+此前 Final OOS 已被选择流程观察，因此 `selection_bias_acknowledged=true`、`pristine_final_oos=false`。
 
-```text
-selection_bias_acknowledged = true
-pristine_final_oos          = false
-```
+## 6. 当前 production meta
 
-## 7. 当前 Production-mechanics L3
+当前 `ExecutionAlignedAggressivePolicy` 没有扩大模板池，也没有只保留慢 rebalance 模板。
 
-Production L3 使用当前正式 signal/meta，而不是另建研究路径，并加入：
+每个模板分别生成已完成 continuous open→close 的：
+
+- Base 5bp stream；
+- Stress 15bp stream。
+
+Trailing Base 和 Stress evidence 都必须为正；通过该 Stress 生存门后按 Base score 排名。这一设计用于淘汰连 15bp 成本都无法存活的模板，但避免 5bp/15bp 50/50 score 直接替代 Base Alpha 目标。
+
+本轮固定历史曾验证并拒绝：
+
+- 5bp/15bp score 50/50：Production Base 年化降到约 94.59%；
+- 强制只允许 template rebalance `>=5`：Base 年化降到约 69.78%。
+
+最终版本恢复全部 96 templates，Base 经济结果恢复到 108.8461%。
+
+## 7. Production-mechanics L3
+
+Production L3 使用当前正式 signal/meta，并加入：
 
 1. previous-completed-day activity 选 next-day concrete contract；
-2. prior lots 的 previous-close → current-open PnL；
+2. prior lots previous-close → current-open PnL；
 3. reduction-first；
 4. frozen multiplier；
 5. integer lot floor；
 6. `max_contract_volume=35`；
-7. margin / available cash；
-8. 5% daily-loss circuit；
-9. 30% high-watermark total DD hard halt；
-10. completed-return governor：-2% completed daily loss 或 3% two-day sample vol → 25%，否则 100%；
-11. target gross `<=2x`；
-12. actual realized gross `>2x` 后 reduction-only hard guard；
-13. gross guard reduction cost 计入账户；
-14. 每个报告窗口独立从 `500000` / flat 开始。
+7. margin-aware target sizing；
+8. margin / available hard gates；
+9. 5% daily-loss circuit；
+10. 30% high-watermark total DD hard halt；
+11. completed-return governor：-2% completed daily loss 或 3% two-day sample vol → 25%；
+12. signal target gross `<=2x`；
+13. actual realized gross `>2x` 后 reduction-only hard guard；
+14. gross guard reduction cost 计入账户；
+15. 每个报告窗口独立从 `500000` / flat 开始。
+
+### Margin proxy 与 soft target
 
 历史 Broker 每日真实 margin schedule 不存在，因此：
 
 ```text
 Base margin proxy   = 12% × 1.25 buffer
 Stress margin proxy = 15% × 1.25 buffer
-max margin ratio    = 35%
-min available       = 25%
+max margin ratio    = 35% hard gate
+min available       = 25% hard gate
 daily loss          = 5%
+soft target margin  = min(35%, 75%) - 5% = 30% equity
 total drawdown      = 30%
 ```
+
+Soft target 30% 只用于正常 target lot fitting；账户 hard margin 仍为 35%。Live 不使用统一 12%/15% proxy，而使用 Broker side-specific margin metadata。
 
 ### 最近两年最终结果
 
 | 指标 | Base | Stress |
 |---|---:|---:|
-| 年化 | **108.8461%** | **0.9249%** |
-| 累计 | **311.4052%** | **1.7840%** |
-| 最大回撤 | **17.8010%** | **5.8553%** |
-| Sharpe | **2.0812** | 0.2246 |
-| 活跃交易日 | **478 / 484** | **14 / 484** |
-| 最终权益 | **2,057,025.78** | 508,919.91 |
-| daily circuit days | 4 | 0 |
-| defensive days | 78 | 2 |
-| margin reject days | 0 | 6 |
-| actual gross peak | **1.998253x** | 1.856519x |
-| halted | **false** | **true** |
+| 年化 | **108.8461%** | **20.4057%** |
+| 累计 | **311.4052%** | **42.8545%** |
+| 最大回撤 | **17.8010%** | **27.9925%** |
+| Sharpe | **2.0812** | **0.7466** |
+| 活跃交易日 | **478 / 484** | **472 / 484** |
+| 最终权益 | **2,057,025.78** | **714,272.26** |
+| daily circuit days | 4 | 4 |
+| defensive days | 78 | 70 |
+| margin reject days | 0 | **0** |
+| actual gross peak | **1.998253x** | **1.684784x** |
+| halted | **false** | **false** |
 
-Base 的固定 L3 同时通过：年化 `>=100%`、最大回撤 `<=30%`、actual gross `<=2x`、不永久 HALT。
+最终证据：run `32624688557`，artifact id `9489421243`，SHA-256 `6a9abb9eb15a542eda2683200bbf5f001613dccd9546bde11f85dc4f0aa6add7`。
 
-Stress 没通过：更高成本/保证金代理下很早被 margin hard gate 终止。较小的 Stress 最大回撤主要来自早停机，不能解释为“更稳”。
-
-最终证据：run `32617588179`，artifact id `9487448673`。
-
-详细证据见 [`directional-production-mechanics-evidence.md`](directional-production-mechanics-evidence.md)。
+上一 production Stress 为 0.9249% / 14 active days / margin HALT；因此当前 20.4057% 的主要意义是**Stress 已成为完整运行的账户实验**，而不是早停后的摊薄年化。但它仍没有达到 80%。
 
 ## 8. 结果不能怎样解释
 
-Float Base 107.4623% 与 Production Base 108.8461% 都来自已经反复观察的历史。Production 的较高历史收益不能解释为“真实机械天然提高 Alpha”；它来自 integer lots、daily circuit、governor、gross guard 和账户路径共同作用，并且这些机械本身也是在同一历史上收口的。
+Float Base 107.4623%、Production Base 108.8461%、Production Stress 20.4057% 都来自已观察历史。
 
-同样，Stress 0.9249% + halt 不能被隐藏。当前最准确结论是：**Base historical production acceptance passes；Stress robustness does not。**
+不能据此声称：
+
+- 实盘未来 Base 必然年化 >100%；
+- Stress 20.4057% 是未来收益下限；
+- 当前 margin proxy 等于历史真实 Broker margin；
+- 继续在相同历史上调参到 Stress 80% 会提高真实泛化能力。
+
+当前准确结论是：**Base historical production acceptance passes；Stress mechanical survivability now passes；Stress 80% return target does not。**
 
 ## 9. Proxy 仍非精确 CTP 历史重放
 
-仍缺：
+仍缺历史完整 bid/ask/depth、queue position、partial fill/reject、真实订单流控、逐日 Broker margin、实际结算手续费和真实 market impact。
 
-- 历史完整 bid/ask/depth；
-- queue position；
-- partial fill / reject；
-- 真实订单流控；
-- 逐日真实 Broker margin；
-- 实际结算手续费；
-- reduction 成交后下一 cycle opening 的精确分钟/秒价格；
-- gross guard 的真实延迟与冲击成本。
-
-日线 proxy 只能用同日 open/close 近似阶段执行，所以真正的可兑现 Alpha 最终仍需 directional quality + Shadow + 测试柜台 + 小资金回答。
+日线 proxy 只能近似阶段执行，所以真正的可兑现 Alpha 最终仍需 directional quality + Shadow + 测试柜台 + 小资金回答。
 
 ## 10. 验证层级
 
@@ -199,12 +178,4 @@ L4  specific-contract roll-safe research evidence
 Final Python 3.10/3.13 CI + review
 ```
 
-达到固定 Base acceptance 后停止在同一历史上扩大搜索。后续最有信息价值的是：
-
-1. 新发生、此前未参与选择的交易日；
-2. 多交易日 CTP Shadow；
-3. planned vs realized turnover/slippage/commission/tracking；
-4. 实际 margin / gross guard / daily circuit；
-5. 测试柜台 FAK/partial/reject/reconnect；
-6. 极小真实仓位；
-7. 若可获得，可靠历史 L1。
+最终 L3 稳定后停止在同一历史上扩大搜索。后续最有信息价值的是：新发生交易日、多日 CTP Shadow、planned vs realized turnover/slippage/commission、实际 Broker margin、测试柜台 FAK/partial/reject/reconnect 和极小真实仓位。

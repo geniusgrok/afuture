@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .directional import build_rebalance_plan, build_target_lots
+from .directional import build_margin_aware_target_lots, build_rebalance_plan
 from .directional_activity import (
     DirectionalActivityStore,
     DirectionalActivityTracker,
@@ -380,8 +380,9 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             product: self._ticks[selected[product].symbol]
             for product in available_products
         }
-        target_lots = build_target_lots(
-            self.broker.get_account(),
+        account = self.broker.get_account()
+        target_lots = build_margin_aware_target_lots(
+            account,
             {product: target_weights[product] for product in available_products},
             product_ticks,
             specs,
@@ -389,6 +390,10 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
                 self.config.max_contract_volume,
                 self.risk_manager.config.max_contract_volume,
             ),
+            max_margin_ratio=self.risk_manager.config.max_margin_ratio,
+            min_available_ratio=self.risk_manager.config.min_available_ratio,
+            max_daily_loss_ratio=self.risk_manager.config.max_daily_loss_ratio,
+            margin_estimate_buffer=self.risk_manager.config.margin_estimate_buffer,
         )
 
         symbol_product = {item.symbol: item.product.upper() for item in self._catalog}
