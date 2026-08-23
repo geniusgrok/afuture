@@ -1,3 +1,4 @@
+import afuture.execution_aligned_policy as execution_policy
 from afuture.directional_risk import (
     DirectionalRiskGovernor,
     DirectionalRiskScaledPolicy,
@@ -58,3 +59,11 @@ def test_runtime_state_persists_completed_directional_return_history_and_daily_c
     assert restored.directional_daily_circuit_day == "20260825"
     assert restored.last_account_equity == 96900.0
     assert restored.last_account_trading_day == "20260825"
+
+
+def test_production_meta_allocator_uses_selected_high_return_shape():
+    assert execution_policy.META_LOOKBACK == 11
+    assert execution_policy.META_REBALANCE == 3
+    assert execution_policy.META_COUNT == 3
+    assert execution_policy.META_ANNUALIZED_WEIGHT == 0.25
+    assert execution_policy.META_SHARPE_WEIGHT == 1.0
