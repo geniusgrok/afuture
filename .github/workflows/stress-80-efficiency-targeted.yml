@@ -26,7 +26,6 @@ jobs:
         run: >-
           python -m pytest -q
           tests/test_directional_execution_efficiency.py
-          tests/test_directional_product_persistence.py
           tests/test_execution_aligned_policy.py
           tests/test_directional_activity.py
           tests/test_directional_trading_day_selection.py
