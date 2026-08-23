@@ -27,9 +27,11 @@ class _Manager:
         self.observe_calls = []
         self.rebalance_calls = 0
         self.flatten_calls = 0
+        self.gross_guard_calls = 0
         self.risk = False
         self.closed = False
         self.next_result = DirectionalActionResult("hold")
+        self.next_gross_guard_result = DirectionalActionResult("hold")
         self.quality_expectations = {}
         self.quality_orders = []
         self.quality_fills = []
@@ -44,6 +46,10 @@ class _Manager:
     def maybe_rebalance(self, now):
         self.rebalance_calls += 1
         return self.next_result
+
+    def enforce_realized_gross_limit(self, now):
+        self.gross_guard_calls += 1
+        return self.next_gross_guard_result
 
     def flatten(self, now):
         self.flatten_calls += 1
@@ -149,18 +155,47 @@ def _engine(tmp_path, manager=None, risk=None):
     return broker, manager, engine
 
 
-def test_directional_engine_forwards_ticks_and_runs_manager(tmp_path):
+def test_directional_engine_forwards_ticks_enforces_gross_and_runs_manager(tmp_path):
     broker, manager, engine = _engine(tmp_path)
     assert manager.bootstrap_calls == 1
 
     tick = _tick()
     engine.on_tick(tick)
     assert manager.observe_calls == [tick]
+    assert manager.gross_guard_calls == 1
 
     engine.run_once()
     assert manager.rebalance_calls == 1
     engine.stop()
     assert manager.closed is True
+
+
+def test_directional_gross_guard_reduction_keeps_engine_running(tmp_path):
+    _, manager, engine = _engine(tmp_path)
+    manager.risk = True
+    manager.next_gross_guard_result = DirectionalActionResult(
+        "reduce", order_ids=("gross-guard-1",)
+    )
+
+    engine.on_tick(_tick())
+
+    assert manager.gross_guard_calls == 1
+    assert engine.state.runtime_mode == RuntimeMode.RUNNING.value
+    assert engine.halted is False
+
+
+def test_directional_gross_guard_reject_enters_fail_closed_reduce_only(tmp_path):
+    _, manager, engine = _engine(tmp_path)
+    manager.risk = True
+    manager.next_gross_guard_result = DirectionalActionResult(
+        "reject", "realized gross guard could not reduce"
+    )
+
+    engine.on_tick(_tick())
+
+    assert manager.gross_guard_calls == 1
+    assert engine.state.runtime_mode == RuntimeMode.REDUCE_ONLY.value
+    assert engine.halted is False
 
 
 def test_directional_signal_risk_off_enters_reduce_only_only_when_risk_exists(tmp_path):
