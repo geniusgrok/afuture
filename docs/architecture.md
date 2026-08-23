@@ -43,6 +43,7 @@ Broker positions + D+1 fresh quotes + live ContractSpec
 → adaptive margin-aware target sizing
 → 同方向 +1 lot 增仓 no-trade（仅当 incumbent 仍满足 soft margin / 2x gross）
 → reduction-first rebalance
+→ opening depth-aware price（整笔对手一档深度足够时用 best opposite；否则 legacy aggressive）
 → RiskManager hard gates
 → FAK
 → Broker
@@ -62,7 +63,7 @@ Broker positions + D+1 fresh quotes + live ContractSpec
 - gross target ≤2.0x；
 - max contract volume = 35。
 
-`execution_aligned_policy.py` 是唯一正式 signal/meta policy；`directional.py` 保留配置、合约/手数、margin fitting、rebalance 和 gross-reduction 原语；`directional_robustness.py` 只把同一 margin-aware target 语义接到历史 production acceptance，不创建第二套实盘状态机。
+`execution_aligned_policy.py` 是唯一正式 signal/meta policy；`directional.py` 保留配置、合约/手数、margin fitting、rebalance 和 gross-reduction 原语；`directional_execution.py` 只负责不扩张风险的 opening price 选择；`directional_robustness.py` 只把同一 margin-aware target 语义接到历史 production acceptance，不创建第二套实盘状态机。Reduction 始终沿用原 aggressive FAK。
 
 ## 4. 因果时间边界
 

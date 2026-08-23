@@ -152,6 +152,7 @@ Margin sizing 与 gross guard 不能互相替代：一个约束保证金需求�
 3. target=0、反转、超额风险等 reductions 先执行；
 4. 缺失新目标只禁止对应产品新增/换月；
 5. reductions 经 Broker 确认后的下一 cycle 才允许 openings。
+6. 正常 opening 只有在当前对手一档显示深度覆盖整笔 requested volume 时，FAK limit 使用 best opposite quote；否则保持原 aggressive tick。该规则不用于 reduction。
 
 同一合约如果同时存在多空毛仓，flatten 按 long/short 毛仓分别生成平仓单，不能因为净仓为 0 判断“已经 flat”。
 

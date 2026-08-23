@@ -173,3 +173,10 @@ Stress turnover attribution（notional）：entry/exit `189,920,240`、resize `5
 4. shock-derived margin candidate 固定 Stress 只有 4.7970% 年化并 permanent HALT。
 
 按停止规则，不再增加参数自由度。PR #15 最终保留的生产变更仅是 behavior-neutral attribution；经济行为与 PR #14 完全等价，Base/Stress 仍为 109.0636% / 28.9559%。详细表格、产品贡献、entry/exit cohort、负实验和 lineage bridge 见 [`directional-net-alpha-efficiency-evidence.md`](directional-net-alpha-efficiency-evidence.md)。
+
+
+## 13. PR #16 P0-P2 收口
+
+在不建设 5–10 年分钟/OI/curve 大仓库的约束下，P0–P2 其余方向已逐项评估：integer risk-capital projection、template consensus capacity、regime scalar、daily price×OI×volume、5 组预声明 relative-value、8-root bounded universe expansion 均未通过独立稳健门，因此全部不进入生产。P0 integer projection 虽把 Stress turnover 从 256,918,290 降至 240,725,360，但固定 Production Stress 年化降至 17.9238%，直接拒绝。bounded universe 中只有 SI 的 full_recent continuous proxy 有正增量，但 prior2/OOS 反向且 DD >50%，不晋级。
+
+最终只保留 P2 execution engineering：正常 opening FAK 在对手一档深度覆盖整笔手数时使用 best opposite quote，否则回退 legacy aggressive tick；reduction FAK 完全不变。固定 15bp historical Stress 不为该 live execution 优化虚增收益，PR #15 的 109.0636% Base / 28.9559% Stress 继续作为经济基线。完整证据见 [`directional-p0-p2-evidence.md`](directional-p0-p2-evidence.md)。
