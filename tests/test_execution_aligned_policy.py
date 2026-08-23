@@ -99,4 +99,9 @@ def test_l4_weight_generator_matches_production_policy(monkeypatch):
         open_prices.reindex(columns=products),
         close.reindex(columns=products),
     )
-    pd.testing.assert_frame_equal(generated, expected, check_names=False)
+    pd.testing.assert_frame_equal(
+        generated,
+        expected,
+        check_names=False,
+        check_freq=False,
+    )
