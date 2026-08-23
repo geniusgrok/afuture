@@ -12,11 +12,12 @@ PRODUCTION_GROSS_HEADROOM_SCALE = 0.95
 
 @dataclass(frozen=True)
 class DirectionalRiskGovernor:
-    """Scale gross risk from completed account returns only.
+    """Return the complete non-increasing production gross scale.
 
-    The governor can only reduce the frozen policy's target gross. It never increases
-    leverage and intentionally uses a two-completed-day sample so current-session PnL
-    cannot leak into the next target decision.
+    Normal production targets reserve five percent gross headroom so mark-to-market
+    movement does not immediately push a 2x signal target beyond the 2x hard ceiling.
+    Defensive scaling is applied on top of that reserve and uses completed account
+    returns only, so current-session PnL cannot leak into the next target decision.
     """
 
     lookback_days: int = 2
@@ -41,18 +42,18 @@ class DirectionalRiskGovernor:
             if isfinite(float(value))
         ]
         if values and values[-1] <= -self.loss_trigger:
-            return self.defensive_scale
+            return PRODUCTION_GROSS_HEADROOM_SCALE * self.defensive_scale
         sample = values[-self.lookback_days :]
         if (
             len(sample) >= self.lookback_days
             and stdev(sample) >= self.volatility_trigger
         ):
-            return self.defensive_scale
-        return 1.0
+            return PRODUCTION_GROSS_HEADROOM_SCALE * self.defensive_scale
+        return PRODUCTION_GROSS_HEADROOM_SCALE
 
 
 class DirectionalRiskScaledPolicy:
-    """Decorate a frozen directional policy with non-increasing production gross scales."""
+    """Decorate a frozen directional policy with the production gross scale."""
 
     def __init__(
         self,
@@ -67,10 +68,7 @@ class DirectionalRiskScaledPolicy:
 
     def target_weights(self, *args, **kwargs) -> dict[str, float]:
         weights = self.policy.target_weights(*args, **kwargs)
-        scale = (
-            PRODUCTION_GROSS_HEADROOM_SCALE
-            * self.governor.scale(self.completed_returns_provider())
-        )
+        scale = self.governor.scale(self.completed_returns_provider())
         return {
             str(product): float(weight) * scale
             for product, weight in weights.items()
