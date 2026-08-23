@@ -1,0 +1,51 @@
+name: apply-product-persistence
+
+on:
+  push:
+    branches:
+      - codex/afuture-stress-80-efficiency-20260823
+    paths:
+      - .github/scripts/apply_product_policy_persistence.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/afuture-stress-80-efficiency-20260823
+          fetch-depth: 0
+      - name: Apply asserted edit
+        run: python .github/scripts/apply_product_policy_persistence.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Verify product-persistence candidate
+        run: >-
+          python -m pytest -q
+          tests/test_directional_execution_efficiency.py
+          tests/test_directional_product_persistence.py
+          tests/test_execution_aligned_policy.py
+          tests/test_directional_activity.py
+          tests/test_directional_trading_day_selection.py
+          tests/test_directional_stress_robustness.py
+          tests/test_execution_aligned_runtime.py
+          tests/test_directional_acceptance.py
+          tests/test_directional_acceptance_simulation.py
+          tests/test_directional_review_regressions.py
+      - run: python -m compileall -q afuture
+      - name: Commit only after GREEN
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/scripts/apply_product_policy_persistence.py
+          git add afuture/execution_aligned_policy.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat: persist low-value product replacements"
+          git push origin HEAD:codex/afuture-stress-80-efficiency-20260823
