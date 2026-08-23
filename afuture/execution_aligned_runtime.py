@@ -392,6 +392,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             ),
             max_margin_ratio=self.risk_manager.config.max_margin_ratio,
             min_available_ratio=self.risk_manager.config.min_available_ratio,
+            max_daily_loss_ratio=self.risk_manager.config.max_daily_loss_ratio,
             margin_estimate_buffer=self.risk_manager.config.margin_estimate_buffer,
         )
 
