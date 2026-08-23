@@ -13,26 +13,25 @@
 
 ### Production-mechanics proxy（当前生产语义）
 
-固定区间 `2024-08-21 ~ 2026-08-20`，使用 specific-contract 日线、integer lots、上一完整交易日 activity 选约、当前账户硬门和 5bp Base 成本。最终冻结 L3：
+固定区间 `2024-08-21 ~ 2026-08-20`，使用 specific-contract 日线、integer lots、上一完整交易日 activity 选约、当前账户硬门、causal completed-return governor、margin-aware target sizing 和 realized-gross hard guard。最终固定 L3：
 
 | 指标 | Base 5bp / 12% margin proxy | Stress 15bp / 15% margin proxy |
 |---|---:|---:|
-| 年化收益 | **108.8461%** | **0.9249%** |
-| 累计收益 | **311.4052%** | **1.7840%** |
-| 最大回撤 | **17.8010%** | **5.8553%** |
-| Sharpe | **2.0812** | 0.2246 |
-| 活跃交易日 | **478 / 484** | **14 / 484** |
-| 最终权益（初始 500,000） | **2,057,025.78** | 508,919.91 |
-| daily circuit days | 4 | 0 |
-| margin reject days | 0 | 6 |
-| realized gross 峰值 | **1.998253x** | 1.856519x |
-| 最终状态 | **未 HALT** | **HALT** |
+| 年化收益 | **108.8461%** | **20.4057%** |
+| 累计收益 | **311.4052%** | **42.8545%** |
+| 最大回撤 | **17.8010%** | **27.9925%** |
+| Sharpe | **2.0812** | **0.7466** |
+| 活跃交易日 | **478 / 484** | **472 / 484** |
+| 最终权益（初始 500,000） | **2,057,025.78** | **714,272.26** |
+| daily circuit days | 4 | 4 |
+| defensive risk days | 78 | 70 |
+| margin reject days | 0 | **0** |
+| realized gross 峰值 | **1.998253x** | **1.684784x** |
+| 最终状态 | **未 HALT** | **未 HALT** |
 
-Base 同时通过本轮四个硬门：年化收益 `>=100%`、最大回撤 `<=30%`、实际 realized gross `<=2.0x`、全区间不永久 HALT。
+上一版本的 Stress 只有 `0.9249%` 年化、14/484 个活跃日并因 margin hard gate 永久 HALT。当前版本通过 margin-aware target sizing 消除了这个结构性失败：Stress 在完整区间持续运行，但在更高成本和更高保证金假设下年化仍只有 **20.4057%**，远未达到 80%。因此准确结论是：**Base 固定历史生产机械门通过，Stress 生存性显著改善，但 80% Stress 收益目标未被证明。**
 
-但 **Stress 没有通过**：15bp + 15% margin proxy 下很早触发保证金硬门并 HALT。因此不能把 Base 的 108.8461% 描述为“已经证明稳健”或“真实账户可保证获得”。
-
-最终 L3 证据：workflow run `32617588179`，artifact `production-return-l3-d112697f6da929a702f9b88869a41aed47b29e52`，artifact id `9487448673`，SHA-256 `a56a65593fd83d9addf6b542b67eaf986c11f8a1d8fc48902ae348df14606173`。
+最终 L3 证据：workflow run `32624688557`，PR merge ref `7664851987a59c2d87d1084376ffbd9649863b2c`，artifact `stress-robustness-l3-7664851987a59c2d87d1084376ffbd9649863b2c`，artifact id `9489421243`，SHA-256 `6a9abb9eb15a542eda2683200bbf5f001613dccd9546bde11f85dc4f0aa6add7`。固定输入 artifact id 仍为 `9473260618`。
 
 ### Float-notional specific-contract L4（研究层）
 
@@ -46,7 +45,7 @@ Base 同时通过本轮四个硬门：年化收益 `>=100%`、最大回撤 `<=30
 | Sharpe | **1.6874** | **1.1525** |
 | gross target 上限 | **2.0x** | **2.0x** |
 
-该研究路径存在明确 selection bias；此前已观察的 Final OOS 也不是 pristine holdout。当前 108.8461% production-mechanics Base 同样来自已经反复研究过的历史区间，不能作为独立泛化证明。
+该研究路径存在明确 selection bias；此前已观察的 Final OOS 也不是 pristine holdout。Production L3 同样使用已经反复研究过的历史，因此不能把任何历史年化当成未来真实账户收益保证。
 
 详细证据：
 
@@ -55,20 +54,37 @@ Base 同时通过本轮四个硬门：年化收益 `>=100%`、最大回撤 `<=30
 
 ## Directional 冻结生产语义
 
-当前正式候选不通过预先给所有目标打折来“留 headroom”。正常目标保持原始 gross（策略自身 `<=2.0x`），风险只允许向下收紧：
-
 - Universe：冻结 50 个成熟中国商品期货品种；
 - template pool：冻结 96；
 - meta lookback：**11**；
 - meta rebalance：**3**；
 - active templates：**3**；
-- meta score：`0.25 × annualized + 1.0 × Sharpe`，且只使用已完成历史；
-- directional 单合约上限：**35 手**；
-- gross target 上限：**2.0x**；
-- completed-return governor：两日样本波动 `>=3%`，或最近一个已完成账户日收益 `<=-2%`，下一目标缩至 **25%**；否则保持 **100%**；
-- governor 只读取已完成交易日账户收益，当前交易日 PnL 不参与本次目标；
-- realized-gross guard：Broker/行情真值显示实际 marked gross `>2.0x` 时，只生成 reduction-only FAK；不能安全计算或执行时 fail-closed；
-- 目标等于 2.0x 时**不预先 haircut**，实际超限后才由硬 guard 收缩。
+- meta 基础分数：`0.25 × annualized + 1.0 × Sharpe`；
+- meta cost robustness：模板必须在已完成历史的 **5bp Base 与 15bp Stress** 两个成本端点都保持正 trailing evidence；通过 Stress 生存门后仍按 **Base score** 排名，不做 50/50 收益优化，也不删除高频模板；
+- 产品 signal：只使用前一完整交易日及此前历史；
+- gross target：`<=2.0x`；
+- directional 单合约上限：35 手。
+
+### Margin-aware target sizing
+
+Signal 可以输出不超过 2.0x 的目标，但执行层不会把正常目标故意放在账户 hard margin 边界上。
+
+生产环境使用 Broker `ContractSpec` 的多/空保证金率、当前行情、合约乘数和 `margin_estimate_buffer` 估算每手 margin；历史 acceptance 使用明确标注的 12%/15% proxy。Soft sizing budget 为：
+
+```text
+hard margin share = min(max_margin_ratio, 1 - min_available_ratio)
+soft target share = max(0, hard margin share - max_daily_loss_ratio)
+```
+
+当前 35% margin / 25% available / 5% daily-loss 配置下，正常目标 margin budget 为 **30% equity**。这不是新的 hard gate，也不改变 35% margin 上限；它只是保留 5 个百分点的 mark-to-market headroom。最终开仓仍必须再次通过现有 `RiskManager.check_open_orders()`，35%/25% hard gates 始终具有最终否决权。
+
+### 其他风险语义
+
+- completed-return governor：最近已完成账户日收益 `<=-2%`，或最近两日样本波动 `>=3%`，下一目标缩至 **25%**；否则保持 **100%**；当前 session PnL 不参与本次目标；
+- `max_daily_loss_ratio=5%`：同交易日 circuit breaker；触发后 flatten，当日不再新增风险，后续 CTP trading day 在 Broker/订单/仓位/metadata/账户风险/启动对账全部通过后可恢复；
+- `max_total_drawdown_ratio=30%`、`max_margin_ratio=35%`、`min_available_ratio=25%`、非正权益、metadata/对账异常仍是 hard/manual halt；
+- realized-gross guard：Broker/行情真值显示实际 marked gross `>2.0x` 时，只生成 reduction-only FAK；无法安全计算或执行时 fail-closed；
+- 同一合约同时存在多仓和空仓时，flatten 按毛仓分别平仓，不能因 `net_volume=0` 把真实风险误判为 flat。
 
 ### 数据与执行流
 
@@ -76,53 +92,26 @@ Base 同时通过本轮四个硬门：年化收益 `>=100%`、最大回撤 `<=30
 Sina/AKShare 连续 OHLC（signal/meta）
         ↓
 ExecutionAlignedAggressivePolicy
-冻结 96-template / causal meta
+96-template / Base-rank + Stress-survival causal meta
         ↓
 截至完整交易日 D 的产品权重
         ↓
 completed-return governor（仅可降风险）
-
-CTP Tick.trading_day
         ↓
-DirectionalActivityTracker
-冻结 D 日具体合约最终 OI/volume
+CTP completed activity 选 D+1 concrete contracts
         ↓
-D+1 concrete contract selection
+fresh quote / depth / limit / live metadata
         ↓
-fresh quote / depth / limit / metadata
+integer target lots
         ↓
-integer target lots，单合约 <=35，target gross <=2x
+margin-aware soft sizing（当前 30% equity target margin budget）
         ↓
-reductions → Broker 确认 → 后续 cycle openings
+reductions → Broker 确认 → openings
         ↓
-RiskManager → FAK → Broker
+RiskManager hard gates → FAK → Broker
         ↓
 每个 tick 检查 realized gross；>2x 只减仓
 ```
-
-关键边界：
-
-- D+1 尚未完成的 activity 不能改变 D 日冻结选约；
-- signal 必须覆盖 completed activity day，缓存只能在已覆盖 required day 时兜底；
-- stale/missing required evidence 且已有风险时 fail-closed；
-- 新目标不可用不能阻塞确定性 reduction；
-- Broker trade callback 是成交真相，策略不自行假定成交；
-- 同一合约出现多空毛仓时，flatten 按毛持仓分别平多/平空，不能因净仓为 0 误判为无风险。
-
-## 风险与恢复
-
-生产硬门没有为追求历史收益而放宽：
-
-- `max_daily_loss_ratio = 5%`；
-- `max_total_drawdown_ratio = 30%`；
-- `max_margin_ratio = 35%`；
-- `min_available_ratio = 25%`；
-- gross target / realized gross 上限 = `2.0x`；
-- directional 单合约上限 = `35`。
-
-日亏损 5% 是**同交易日 circuit breaker**：触发后 flatten 并禁止当日重新承担风险；只有进入后续 CTP trading day，且 Broker ready、无活动订单、仓位已平、metadata、账户风险和启动对账全部通过时，才恢复 RUNNING。
-
-总回撤、保证金、可用资金、非正权益、metadata/对账/基础设施错误仍是 hard/manual halt，不因 daily circuit 自动恢复。
 
 ## Directional execution quality
 
@@ -188,13 +177,13 @@ AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 
 ## 真实资金门
 
-Base production-mechanics 已在固定历史证据上超过 100%，但这**不是**真实账户收益承诺，也没有消除 selection bias、Stress 失败和历史微观结构缺失。真实资金仍必须依次完成：
+Base production-mechanics 已在固定历史证据上超过 100%，Stress 已从早期 margin HALT 修复为完整运行，但 **20.4057% Stress 年化不是 80%，更不是未来真实收益承诺**。真实资金仍必须依次完成：
 
 1. 多交易日 CTP Shadow；
 2. previous-day activity snapshot 与实际主力切换抽查；
 3. modeled vs realized turnover/slippage/commission；
-4. 实际 margin/risk-off 与 proxy 差异；
-5. 测试柜台 FAK、partial、reject、断线、平今/平昨、换月和 gross guard；
+4. 实际 Broker margin 与 proxy/soft target 的差异；
+5. 测试柜台 FAK、partial、reject、断线、平今/平昨、换月、margin sizing 和 gross guard；
 6. 极小真实仓位；
 7. 新发生、此前未参与任何选择或调参的未来数据。
 
