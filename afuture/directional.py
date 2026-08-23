@@ -115,6 +115,70 @@ class RebalancePlan:
     openings: dict[str, int] = field(default_factory=dict)
 
 
+def fit_target_lots_to_margin_budget(
+    target_lots: Mapping[str, int],
+    per_lot_margin: Mapping[str, float],
+    *,
+    margin_budget: float,
+) -> dict[str, int]:
+    """Fit a signed integer target to a hard margin budget without increasing risk.
+
+    Scaling is proportional across requested contracts, then any remaining budget is
+    allocated one lot at a time by largest fractional remainder with symbol ordering as
+    the deterministic tie-break. Missing/invalid margin evidence fails closed instead
+    of allowing an opening batch to rely on a guessed margin rate.
+    """
+    budget = float(margin_budget)
+    if budget < 0:
+        raise ValueError("margin_budget cannot be negative")
+
+    requested: dict[str, int] = {}
+    margins: dict[str, float] = {}
+    total_margin = 0.0
+    for symbol in sorted(target_lots):
+        volume = int(target_lots[symbol])
+        if volume == 0:
+            continue
+        unit_margin = float(per_lot_margin.get(symbol, 0.0))
+        if unit_margin <= 0:
+            raise ValueError(f"missing positive per-lot margin: {symbol}")
+        requested[symbol] = volume
+        margins[symbol] = unit_margin
+        total_margin += abs(volume) * unit_margin
+
+    if not requested or budget == 0:
+        return {}
+    if total_margin <= budget + 1e-10:
+        return dict(requested)
+
+    scale = budget / total_margin
+    magnitudes: dict[str, int] = {}
+    candidates: list[tuple[float, str]] = []
+    used_margin = 0.0
+    for symbol in sorted(requested):
+        magnitude = abs(requested[symbol])
+        ideal = magnitude * scale
+        fitted = min(magnitude, floor(ideal))
+        magnitudes[symbol] = fitted
+        used_margin += fitted * margins[symbol]
+        if fitted < magnitude:
+            candidates.append((ideal - fitted, symbol))
+
+    for _, symbol in sorted(candidates, key=lambda item: (-item[0], item[1])):
+        if used_margin + margins[symbol] > budget + 1e-10:
+            continue
+        if magnitudes[symbol] >= abs(requested[symbol]):
+            continue
+        magnitudes[symbol] += 1
+        used_margin += margins[symbol]
+
+    return {
+        symbol: magnitude if requested[symbol] > 0 else -magnitude
+        for symbol, magnitude in magnitudes.items()
+        if magnitude > 0
+    }
+
+
 def build_target_lots(
     account: AccountSnapshot,
     product_weights: Mapping[str, float],
