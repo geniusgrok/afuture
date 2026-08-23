@@ -38,12 +38,12 @@ def build_runtime_engine(
 
     if config.directional.enabled:
         from .directional_engine import DirectionalTradingEngine
-        from .execution_aligned_runtime import (
-            ExecutionAlignedDirectionalPortfolioManager,
+        from .opportunity_aligned_runtime import (
+            OpportunityAlignedDirectionalPortfolioManager,
         )
 
         activity_path = Path(state_store.path).with_name("directional_activity.json")
-        manager = ExecutionAlignedDirectionalPortfolioManager(
+        manager = OpportunityAlignedDirectionalPortfolioManager(
             config.directional,
             broker,
             risk_manager,
