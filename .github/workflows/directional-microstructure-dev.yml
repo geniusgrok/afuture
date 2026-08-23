@@ -47,7 +47,8 @@ jobs:
           for optional in \
             tests/test_directional_microstructure.py \
             tests/test_directional_timing.py \
-            tests/test_execution_cost_meta.py; do
+            tests/test_execution_cost_meta.py \
+            tests/test_directional_lineage.py; do
             if [[ -f "$optional" ]]; then files+=("$optional"); fi
           done
           python -m pytest -q "${files[@]}" 2>&1 | tee /tmp/targeted.log
