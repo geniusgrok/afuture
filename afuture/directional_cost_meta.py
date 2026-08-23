@@ -231,3 +231,96 @@ def cost_aware_weight_history(
         raise AssertionError("cost-aware META candidate exceeded 2x gross")
     audit = pd.DataFrame(audit_rows)
     return final, audit
+
+
+def cost_aware_no_trade_weights(
+    target_weights: pd.DataFrame,
+    completed_returns: pd.DataFrame,
+    *,
+    lookback: int = 20,
+    horizon_days: int = META_REBALANCE,
+    cost_bps: float = STRESS_COST_BPS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Research proxy for the lot-level no-trade region using completed product returns.
+
+    The rule can only suppress a new opening or a same-sign absolute increase. Any
+    reduction, exit, or reversal preserves the requested target. Expected edge uses only
+    rows strictly before the decision timestamp, so future/current returns cannot enter.
+    """
+    target = target_weights.copy().astype(float).sort_index().fillna(0.0)
+    target.columns = [str(column).upper() for column in target.columns]
+    returns = completed_returns.copy().astype(float).sort_index()
+    returns.columns = [str(column).upper() for column in returns.columns]
+    returns = returns.reindex(index=target.index, columns=target.columns)
+    lookback = max(1, int(lookback))
+    horizon = max(1, int(horizon_days))
+    cost_rate = max(0.0, float(cost_bps)) / 10000.0
+
+    final = pd.DataFrame(0.0, index=target.index, columns=target.columns)
+    incumbent = pd.Series(0.0, index=target.columns, dtype=float)
+    audit_rows: list[dict] = []
+
+    for position, timestamp in enumerate(target.index):
+        requested = target.iloc[position].copy()
+        selected = requested.copy()
+        start = max(0, position - lookback)
+        history = returns.iloc[start:position]
+        expected = history.mean(axis=0, skipna=True) if not history.empty else pd.Series(
+            np.nan, index=target.columns, dtype=float
+        )
+
+        for product in target.columns:
+            current = float(incumbent[product])
+            wanted = float(requested[product])
+            if abs(wanted - current) <= 1e-15:
+                continue
+            # Exits, absolute reductions, and reversals always bypass the no-trade region.
+            if abs(wanted) <= 1e-15:
+                continue
+            if abs(current) > 1e-15:
+                if (current > 0) != (wanted > 0):
+                    continue
+                if abs(wanted) <= abs(current) + 1e-15:
+                    continue
+
+            delta = max(0.0, abs(wanted) - abs(current))
+            raw_expected = float(expected.get(product, np.nan))
+            directional_edge = (
+                (1.0 if wanted > 0 else -1.0) * raw_expected
+                if np.isfinite(raw_expected)
+                else float("nan")
+            )
+            expected_benefit = (
+                delta * directional_edge * horizon
+                if np.isfinite(directional_edge)
+                else float("nan")
+            )
+            transition_cost = delta * cost_rate
+            suppress = (
+                not np.isfinite(expected_benefit)
+                or expected_benefit <= transition_cost + 1e-15
+            )
+            if suppress:
+                selected[product] = current
+            audit_rows.append(
+                {
+                    "timestamp": pd.Timestamp(timestamp),
+                    "product": product,
+                    "incumbent_weight": current,
+                    "requested_weight": wanted,
+                    "selected_weight": float(selected[product]),
+                    "expected_daily_return": raw_expected,
+                    "expected_benefit": float(expected_benefit),
+                    "expected_transition_cost": float(transition_cost),
+                    "suppressed": bool(suppress),
+                }
+            )
+
+        gross_requested = float(requested.abs().sum())
+        gross_selected = float(selected.abs().sum())
+        if gross_selected > gross_requested + 1e-10:
+            raise AssertionError("no-trade proxy increased requested gross")
+        final.loc[timestamp] = selected
+        incumbent = selected
+
+    return final, pd.DataFrame(audit_rows)
