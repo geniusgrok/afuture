@@ -217,15 +217,37 @@ class DirectionalPortfolioManager:
             )
         self._finalize_quality_cycle_if_settled(now)
         positions = self.broker.get_positions()
-        plan = build_rebalance_plan(positions, {})
-        if not plan.reductions:
+        long_reductions = {
+            position.symbol: -int(position.long_total)
+            for position in positions
+            if position.long_total > 0
+        }
+        short_reductions = {
+            position.symbol: int(position.short_total)
+            for position in positions
+            if position.short_total > 0
+        }
+        if not long_reductions and not short_reductions:
             return DirectionalActionResult("hold", "directional portfolio is flat")
-        return self._submit_reductions(
-            positions,
-            plan.reductions,
-            now,
-            reference="directional:flatten",
-        )
+
+        order_ids: list[str] = []
+        for reductions in (long_reductions, short_reductions):
+            if not reductions:
+                continue
+            result = self._submit_reductions(
+                positions,
+                reductions,
+                now,
+                reference="directional:flatten",
+            )
+            order_ids.extend(result.order_ids)
+            if result.action != "reduce":
+                return DirectionalActionResult(
+                    result.action,
+                    result.reason,
+                    tuple(order_ids),
+                )
+        return DirectionalActionResult("reduce", order_ids=tuple(order_ids))
 
     def enforce_realized_gross_limit(self, now: datetime) -> DirectionalActionResult:
         """Reduce broker-truth positions only after marked gross exceeds the hard cap."""
