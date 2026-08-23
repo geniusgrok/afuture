@@ -1,6 +1,10 @@
 import numpy as np
 import pandas as pd
 
+from afuture.directional_acceptance import (
+    DirectionalProductionAcceptance,
+    ProductionMechanicsConfig,
+)
 from afuture.directional_efficiency import (
     attribute_rebalance_deltas,
     audit_policy_weight_history,
@@ -74,3 +78,42 @@ def test_policy_weight_history_audit_is_behavior_neutral():
     assert (audit["signal_turnover"] >= 0.0).all()
     assert audit["meta_switch"].isin([False, True]).all()
     assert audit["selected_templates"].map(lambda value: isinstance(value, tuple)).all()
+
+
+def test_production_daily_turnover_buckets_sum_to_total_without_changing_equity():
+    raw = pd.DataFrame(
+        [
+            {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":99,"close":99,"volume":5000,"hold":30000},
+            {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":110,"volume":5000,"hold":30000},
+            {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":111,"close":112,"volume":5000,"hold":30000},
+        ]
+    )
+    weights = pd.DataFrame(
+        {"A":[1.0,0.0]},
+        index=pd.to_datetime(["2026-08-21","2026-08-24"]),
+    )
+    sim = DirectionalProductionAcceptance(
+        ProductionMechanicsConfig(
+            initial_capital=100000,
+            max_contract_volume=100,
+            max_daily_loss_ratio=.5,
+            max_total_drawdown_ratio=.8,
+            max_margin_ratio=.9,
+            min_available_ratio=0,
+        )
+    )
+
+    result = sim.simulate(raw, weights, cost_bps=5)
+    expected_columns = {
+        "turnover_roll",
+        "turnover_resize",
+        "turnover_reversal",
+        "turnover_entry_exit",
+        "turnover_daily_circuit",
+        "turnover_gross_guard",
+    }
+    assert expected_columns <= set(result.daily.columns)
+    for _, row in result.daily.iterrows():
+        attributed = sum(float(row[column]) for column in expected_columns)
+        assert attributed == float(row["turnover_notional"])
+    assert abs(result.final_equity - 110894.5) < 1e-9
