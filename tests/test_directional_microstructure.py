@@ -111,3 +111,41 @@ def test_default_simulator_keeps_full_displayed_depth_and_no_dynamic_impact():
         assert order.average_price == 100
     finally:
         broker.stop()
+
+
+def test_execution_stress_summary_attributes_fill_spread_impact_latency_and_unfilled_quantity():
+    broker = SimBroker(
+        500_000,
+        {"RBX": _spec()},
+        conservative=True,
+        latency_ticks=1,
+        depth_haircut=0.75,
+        size_impact_ticks=1,
+    )
+    broker.start()
+    try:
+        broker.publish_tick(_tick(ask_volume=8))
+        broker.send_order(
+            OrderRequest(
+                "RBX",
+                "SHFE",
+                OrderSide.BUY,
+                Offset.OPEN,
+                10,
+                105,
+                OrderType.FAK,
+                "directional:test",
+            )
+        )
+        broker.publish_tick(_tick(ask_volume=8))
+        summary = broker.get_execution_stress_summary()
+        assert summary["requested_volume"] == 10
+        assert summary["filled_volume"] == 6
+        assert summary["unfilled_volume"] == 4
+        assert summary["fill_ratio"] == 0.6
+        assert summary["turnover_notional"] == 6060.0
+        assert summary["spread_cost"] == 30.0
+        assert summary["slippage_impact_cost"] == 60.0
+        assert summary["volume_weighted_latency_ticks"] == 1.0
+    finally:
+        broker.stop()
