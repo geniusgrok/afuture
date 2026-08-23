@@ -58,7 +58,36 @@ def test_execution_aligned_policy_uses_frozen_meta_shape():
     assert META_ANNUALIZED_WEIGHT == 0.25
     assert META_SHARPE_WEIGHT == 1.0
     assert len(policy.template_ids) == 96
-    assert policy.meta_score_source == "continuous_intraday_proxy"
+    assert policy.meta_score_source == "continuous_intraday_base_stress_robust"
+
+
+def test_robust_meta_score_requires_both_cost_endpoints_and_favors_survival():
+    from afuture.execution_aligned_policy import _robust_trailing_scores
+
+    index = pd.date_range("2026-01-01", periods=12, freq="B")
+    base = pd.DataFrame(
+        {
+            "fragile": [0.004] * 12,
+            "robust": [0.003] * 12,
+            "fails_stress": [0.002] * 12,
+        },
+        index=index,
+    )
+    stress = pd.DataFrame(
+        {
+            "fragile": [0.0001] * 12,
+            "robust": [0.003] * 12,
+            "fails_stress": [-0.001] * 12,
+        },
+        index=index,
+    )
+
+    scores = _robust_trailing_scores(base, stress, lookback=11)
+    final = scores[-1]
+    assert np.isfinite(final[0])
+    assert np.isfinite(final[1])
+    assert final[1] > final[0]
+    assert np.isnan(final[2])
 
 
 def test_execution_proxy_changes_meta_evidence_without_future_leakage():
