@@ -9,17 +9,17 @@ from afuture.state import RuntimeState, StateStore
 def test_directional_risk_governor_uses_only_completed_returns_and_scales_defensively():
     governor = DirectionalRiskGovernor()
 
-    assert governor.scale([]) == 1.0
-    assert governor.scale([-0.0199, 0.01]) == 1.0
-    assert governor.scale([-0.02]) == 0.25
-    assert governor.scale([-0.04, 0.01]) == 0.25
+    assert governor.scale([]) == 0.95
+    assert governor.scale([-0.0199, 0.01]) == 0.95
+    assert governor.scale([-0.02]) == 0.2375
+    assert governor.scale([-0.04, 0.01]) == 0.2375
 
 
-def test_directional_risk_governor_keeps_scale_inside_one_and_never_increases_gross():
+def test_directional_risk_governor_keeps_scale_inside_headroom_and_never_increases_gross():
     governor = DirectionalRiskGovernor()
     for returns in ([], [0.10], [0.10, -0.10], [-0.50, 0.50]):
         scale = governor.scale(returns)
-        assert 0.0 < scale <= 1.0
+        assert 0.0 < scale <= 0.95
 
 
 def test_scaled_policy_reserves_five_percent_gross_headroom_and_only_reduces_targets():
