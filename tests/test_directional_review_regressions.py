@@ -183,6 +183,7 @@ def test_proxy_open_equity_updates_high_watermark_before_intraday_drawdown():
     sim = DirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=100000,
+            max_contract_volume=100,
             max_daily_loss_ratio=.90,
             max_total_drawdown_ratio=.30,
             max_margin_ratio=.90,
@@ -211,6 +212,7 @@ def test_proxy_existing_margin_breach_reduces_before_normal_rebalance():
     sim = DirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=100000,
+            max_contract_volume=100,
             max_daily_loss_ratio=.90,
             max_total_drawdown_ratio=.90,
             max_margin_ratio=.35,

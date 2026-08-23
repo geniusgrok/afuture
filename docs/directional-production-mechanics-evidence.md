@@ -1,159 +1,206 @@
 # Directional Production-Mechanics 最终证据
 
-日期：2026-08-22
+日期：2026-08-23
 
 ## 1. 结论
 
-冻结的 Execution-Aligned Directional Portfolio 存在两套必须同时保留、不能混用的历史结论：
+冻结的 Execution-Aligned Directional Portfolio 目前有两层必须区分的历史证据：
 
-1. **Float-notional specific-contract L4**：在明确存在历史选择偏差的口径下，`2024-08-21 ~ 2026-08-20` Base 5bp 年化 **107.4623%**；
-2. **Production-mechanics proxy**：把同一冻结权重放入当前账户机械和风险门后，同区间 Base 5bp 年化约 **6.7861%**，并于 **2024-09-19** 触发 `daily loss limit reached` 后 flatten / halt。
+1. **Float-notional specific-contract L4**：`2024-08-21 ~ 2026-08-20` Base 5bp 年化 **107.4623%**，但存在明确 selection bias；
+2. **当前 production-mechanics L3**：同区间 Base 5bp 年化 **108.8461%**、最大回撤 **17.8010%**、realized gross 峰值 **1.998253x**，全区间**未永久 HALT**。
 
-因此，**100% 年化历史目标没有在当前 production-account 语义下得到等价证明**。107.4623% 仍是正确的研究结果，但不能再被描述成“当前生产代码按当前风控运行可复现的历史收益”。
+因此，本轮“production-mechanics Base 年化 >=100%，最大回撤 <=30%，实际 gross <=2x，且不永久 HALT”的固定历史验收已通过。
 
-本轮没有为了恢复 100% 数字而放宽 `max_daily_loss_ratio=5%`、`max_total_drawdown_ratio=30%`、`max_margin_ratio=35%`、`min_available_ratio=25%` 或 2.0x gross 上限。
+但该结论不能外推成真实账户收益保证：15bp + 15% margin proxy 的 Stress 仅年化 **0.9249%**，并因保证金硬门 HALT；此外用于设计和验证的两年历史已经被反复观察，不是 pristine holdout。
 
-## 2. 证据来源与可重复性
+本轮没有放宽：
 
-本次 production-mechanics 复核没有重新搜索模板、参数或品种，也没有重新抓取历史数据。
+- `max_daily_loss_ratio=5%`；
+- `max_total_drawdown_ratio=30%`；
+- `max_margin_ratio=35%`；
+- `min_available_ratio=25%`；
+- gross target / realized gross hard ceiling `2.0x`。
 
-使用固定证据：
+## 2. 固定证据与可重复性
 
-- 原 specific-contract 原始数据 artifact：`return-target-specific-evidence`，artifact id `9473260618`；
-- 最终冻结 96-template 权重 artifact：`execution-aligned-return-target-evidence`，artifact id `9474502870`；
-- 原始 concrete-contract 数据约 495,086 行、50 品种；
-- 冻结 `execution_aligned_weights.csv` 最大 target gross = 2.0x；
-- 当前 `DirectionalProductionAcceptance` 生产机械语义；
+没有重新抓取历史数据。最终 L3 使用：
+
+- specific-contract 原始数据 artifact id：`9473260618`；
+- `broad_daily_universe.csv`：同一固定 artifact 中的连续日线信号证据；
+- 冻结 50 品种、96-template 的当前 `ExecutionAlignedAggressivePolicy`；
+- 区间：`2024-08-21 ~ 2026-08-20`；
+- 当前生产机械：integer lots、上一完整交易日 activity 选约、合约乘数、账户门、daily circuit、causal governor、realized gross guard；
 - 参数搜索：`false`；
-- margin 历史真值：`false`。
+- 历史 Broker margin 真值：`false`。
 
-Float L4 与固定 artifact 精确复核得到：
+最终验收：
 
-| 指标 | Base 5bp | Stress 15bp |
-|---|---:|---:|
-| 年化收益 | 107.4623% | 58.1372% |
-| 累计收益 | 306.1855% | 141.1415% |
-| 最大回撤 | 27.4097% | 32.9554% |
-| Sharpe | 1.6874 | 1.1525 |
+```text
+workflow run = 32617588179
+PR head      = 4522abe69e66f6bfc5329ee54a66b6d0c4ee59e4
+PR merge SHA = d112697f6da929a702f9b88869a41aed47b29e52
+artifact id  = 9487448673
+artifact     = production-return-l3-d112697f6da929a702f9b88869a41aed47b29e52
+SHA-256      = a56a65593fd83d9addf6b542b67eaf986c11f8a1d8fc48902ae348df14606173
+```
 
-这证明 production proxy 使用的是同一冻结策略证据，而不是另一套重新拟合的权重。
+Artifact 包含：
 
-## 3. Production-mechanics 假设
+- `current_production_weights.csv`；
+- `directional_production_mechanics_report.json`；
+- `directional_production_base_daily.csv`；
+- `directional_production_stress_daily.csv`。
 
-每个报告窗口是独立账户实验：
+## 3. 最终生产机械
+
+### 冻结 signal/meta
+
+- Universe：50 品种；
+- template pool：96；
+- `META_LOOKBACK=11`；
+- `META_REBALANCE=3`；
+- `META_COUNT=3`；
+- score：`0.25 × annualized + 1.0 × Sharpe`；
+- signal/meta 只使用已完成历史；
+- gross target `<=2.0x`。
+
+### 手数与账户门
 
 - 初始资金：500,000；
-- 窗口开始：flat；
-- signal weights：来自同一完整冻结历史，不按窗口重新拟合；
-- previous-day activity 选择下一交易日 concrete contract；
-- frozen product multiplier；
 - integer lot floor；
-- `max_contract_volume=100`；
-- reduction-first；
-- Base cost 5bp one-way；
-- Stress cost 15bp one-way；
-- Base margin proxy 12% × `margin_estimate_buffer=1.25`；
-- Stress margin proxy 15% × `margin_estimate_buffer=1.25`；
+- directional 单合约上限：35 手；
+- Base cost：5bp one-way；
+- Stress cost：15bp one-way；
+- Base margin proxy：12% × `1.25` buffer；
+- Stress margin proxy：15% × `1.25` buffer；
 - `max_margin_ratio=35%`；
 - `min_available_ratio=25%`；
 - `max_daily_loss_ratio=5%`；
-- `max_total_drawdown_ratio=30%`；
-- 风险门触发后 flatten 并停止该独立账户路径自动重新开仓。
+- `max_total_drawdown_ratio=30%`。
 
-注意：历史逐日真实期货公司保证金率不可得，因此 margin 是显式 proxy，不是伪造的历史柜台真值。
+### Daily circuit
 
-## 4. 最近两年 Production-mechanics 结果
+5% 日亏损不是永久关闭整个历史：
+
+- 当日触发后 flatten；
+- 当日禁止重新新增风险；
+- 只有后续 CTP trading day 且 Broker ready、无活动订单、已平风险、metadata、账户风险和启动对账全部通过才恢复 RUNNING；
+- total drawdown、margin、available cash、非正 equity 仍是 hard/manual halt。
+
+### Causal governor
+
+未来目标只由**已完成账户日收益**决定：
+
+- 最近一个 completed daily return `<= -2%` → `0.25x`；
+- 或最近两日样本波动 `>=3%` → `0.25x`；
+- 否则 `1.0x`；
+- governor 永远不能放大原始冻结策略目标。
+
+### Realized gross hard guard
+
+最终实现**不预先把所有目标乘 0.95**。原因是固定 headroom 会通过 integer-lot/复利路径显著破坏收益，且不是实际硬门的直接定义。
+
+正式语义是：
+
+- signal target 自身必须 `<=2.0x`；
+- Broker/行情真值计算的实际 marked gross 在运行中 `>2.0x` 时，只产生 reduction-only FAK；
+- reduction 无法安全计算或执行时 fail-closed；
+- exactly-at-limit 的目标不预先 haircut；
+- acceptance proxy 同样对 close mark 后的 actual gross 做 reduction-only guard，并计入 reduction cost。
+
+## 4. 最近两年最终结果
 
 区间：`2024-08-21 ~ 2026-08-20`，484 个报告交易日。
 
 | 指标 | Base 5bp / 12% margin proxy | Stress 15bp / 15% margin proxy |
 |---|---:|---:|
-| 年化收益 | **6.7861%** | **3.4290%** |
-| 累计收益 | **13.4401%** | **6.6897%** |
-| 最大回撤 | **5.5680%** | **5.3020%** |
-| Sharpe | 0.8334 | 0.5507 |
-| 活跃交易日 | **20 / 484** | **17 / 484** |
-| 最终权益 | **567,200.36** | **533,448.53** |
-| margin reject days | 0 | **14** |
-| 首个 divergence | `daily loss limit reached` | `combined margin ratio would exceed limit` |
-| 最终致命风险门 | `daily loss limit reached` | `margin ratio limit reached` |
-| 致命风险门日期 | **2024-09-19** | **2024-09-19** |
+| 年化收益 | **108.8461%** | **0.9249%** |
+| 累计收益 | **311.4052%** | **1.7840%** |
+| 最大回撤 | **17.8010%** | **5.8553%** |
+| 年化波动 | 38.8943% | 4.5535% |
+| Sharpe | **2.0812** | 0.2246 |
+| 活跃交易日 | **478 / 484** | **14 / 484** |
+| 最终权益 | **2,057,025.78** | 508,919.91 |
+| daily circuit days | 4 | 0 |
+| defensive risk days | 78 | 2 |
+| margin reject days | 0 | 6 |
+| realized gross 峰值 | **1.998253x** | 1.856519x |
+| first divergence | `daily loss limit reached` | `combined margin ratio would exceed limit` |
+| 最终 HALT | **false** | **true** |
 
-Base 在 2024-09-19 约 -5.30% 的当日账户路径后触发 5% 日亏损门，随后 flatten / halt。Stress 更早出现 margin opening reject，并最终在同日触发 margin ratio 风险门后退出。
+### Base 验收
 
-### 不能误读最大回撤
+固定 L3 直接断言并通过：
 
-Production proxy 的 5% 左右最大回撤**不是**证明策略在真实账户下天然比 27% float L4 更稳。主要原因是账户在 2024-09-19 已被风险门停止，后续大部分历史行情不再承担风险。
+```text
+annualized_return >= 1.00
+max_drawdown >= -0.30
+max_realized_gross_notional_ratio <= 2.00
+halted == false
+daily_circuit_days > 0
+```
 
-因此应同时看：
+这证明 108.8461% 不是靠绕过 daily-loss gate 得到：Base 实际发生了 4 个 daily circuit，之后按因果恢复；同时 78 日进入 completed-return defensive scaling。
 
-- 年化收益；
-- active days；
-- first divergence；
-- halt date；
-- margin reject days；
-- 最大回撤。
+### Stress 的含义
 
-单看较小回撤会得出错误结论。
+Stress 很差，但不能被隐藏：其主要失败来自更高成本和更高 margin proxy 下的保证金硬门。它不是“108.8461% 的低收益版本”，而是一个很早被硬风险门终止的独立账户实验。
 
-## 5. Float L4 → Production proxy 差距
+所以当前结论只能是：**Base 历史 production-mechanics 目标通过；Stress robustness 未通过。**
 
-| 指标 | Base | Stress |
+## 5. 独立窗口
+
+这些窗口都独立从 500,000 / flat 开始，不能拼接成一条账户曲线。
+
+Base：
+
+| 窗口 | 年化收益 | 最大回撤 | 最终 HALT |
+|---|---:|---:|---|
+| train | 27.0579% | 15.9454% | false |
+| validation | 225.7700% | 13.2886% | false |
+| selection_full | 57.0719% | 17.8010% | false |
+| OOS（已被观察） | 55.9159% | 13.4475% | false |
+| prior1 | -28.9394% | 30.0493% | true |
+| prior2 | -28.7962% | 30.0915% | true |
+
+“当前 OOS”已经参与过此前研究判断，不能重新命名成 pristine OOS。prior1/prior2 的失败也说明策略具有明显 regime dependence，108.8461% 不是均匀稳定地产生。
+
+## 6. 与 float-notional L4 的关系
+
+原研究层 fixed evidence：
+
+| 指标 | Float Base 5bp | Production Base 5bp |
 |---|---:|---:|
-| Float 年化 | 107.4623% | 58.1372% |
-| Production proxy 年化 | 6.7861% | 3.4290% |
-| 年化差值 | **-100.6762 pct-pts** | **-54.7082 pct-pts** |
-| Float 累计 | 306.1855% | 141.1415% |
-| Production proxy 累计 | 13.4401% | 6.6897% |
-| Float 最大回撤 | 27.4097% | 32.9554% |
-| Production proxy 最大回撤 | 5.5680% | 5.3020% |
+| 年化收益 | 107.4623% | **108.8461%** |
+| 累计收益 | 306.1855% | **311.4052%** |
+| 最大回撤 | 27.4097% | **17.8010%** |
+| gross | target <=2.0x | actual peak **1.998253x** |
 
-核心差距不是某一个手续费数字，而是：**当前生产账户风险门会在研究路径早期主动停止风险暴露**。这说明“研究 target weights 的完整历史收益”与“当前生产账户状态机允许实际承担的风险路径”并不等价。
-
-## 6. 其它窗口摘要
-
-Base proxy 年化：
-
-- prior1：约 -3.19%；
-- prior2：约 -20.30%；
-- train：约 14.03%；
-- validation：约 34.94%；
-- selection_full：约 9.20%；
-- OOS：约 2.64%。
-
-Stress proxy 年化：
-
-- prior1：约 -7.34%；
-- prior2：约 -2.79%；
-- train：约 6.98%；
-- validation：约 -6.34%；
-- selection_full：约 4.62%；
-- OOS：约 -1.21%。
-
-各窗口独立从 500,000 / flat 开始，因此这些数字用于比较窗口内账户机械影响，不是把多个窗口串成一条连续真实账户曲线。
+这不是“production 必然优于 float”的一般结论。路径差异来自 integer lots、daily circuit、completed-return governor、actual gross guard、成本与账户状态机的组合，且最终机械本身是在同一历史上经过研究收口得到的。
 
 ## 7. 仍然不是精确实盘重放
 
-Production proxy 比 float-notional L4 更接近账户语义，但仍缺：
+Production proxy 仍缺多年历史完整：
 
-- 多年历史 L1 bid/ask/depth；
+- L1 bid/ask/depth；
 - queue position；
 - partial fill / reject；
-- 真实 CTP/交易所流控；
+- CTP/交易所流控；
 - 历史逐日 Broker margin schedule；
 - 实际结算手续费；
-- reduction 成交确认后的真实下一时刻 opening 价格。
+- reduction FAK 成交后下一 cycle opening 的真实分钟/秒级价格；
+- 实际盘中 gross guard 的成交时延与冲击成本。
 
-日线 proxy 在同一交易日只能用日线 open/close 表达执行阶段，不能精确模拟“reduction FAK 成交后下一 runtime cycle 再 opening”的分钟/秒级时点。因此该结果仍不能替代 CTP Shadow、测试柜台和极小真实资金。
+因此该结果不能替代 CTP Shadow、测试柜台和极小真实资金。
 
 ## 8. 对生产决策的含义
 
-当前正确状态是：
+当前应该冻结的判断是：
 
-- 冻结 Alpha 的 selection-biased float L4 **达到** 100% 历史目标；
-- 当前 production-mechanics proxy **没有达到** 100%；
-- 主要阻断来自现有账户风险门，而不是因为需要再增加 Alpha/template/leverage；
-- 不应为了回测数字静默放宽风险门；
-- 下一阶段最有信息价值的是 Shadow/test/small-capital 的 realized turnover、slippage、commission、margin 和 risk-off 行为。
+- 不再为“历史 100%”继续扩大 Alpha/template/参数搜索；
+- Base production-mechanics 已达到目标；
+- Stress robustness 仍明显不足；
+- 风控硬门没有为收益目标放宽；
+- 下一阶段最有信息价值的是新的、未参与历史选择的真实执行证据：Shadow/test/small-capital 的 realized turnover、slippage、commission、margin、daily circuit、gross guard 和恢复行为。
 
-如果未来要重新讨论生产风险阈值或目标 gross，应以真实账户风险承受能力和新的未见执行证据为依据，而不是以“必须把历史回测恢复到 100%”为依据。
+任何未来风险阈值变化都应基于新增真实账户证据，而不是继续追逐同一两年历史的更高数字。

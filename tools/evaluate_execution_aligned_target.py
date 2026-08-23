@@ -21,6 +21,7 @@ from afuture.execution_aligned_policy import (
     META_LOOKBACK,
     META_REBALANCE,
     META_SCORE_SOURCE,
+    ExecutionAlignedAggressivePolicy,
     _EXECUTION_TEMPLATE_IDS,
 )
 
@@ -131,34 +132,40 @@ def _meta_weight_path(
 def generate_execution_signal_weights(
     continuous_raw: pd.DataFrame,
 ) -> pd.DataFrame:
-    signal_returns, _ = aggressive.build_panel(continuous_raw)
-    signal_returns.columns = [str(column).upper() for column in signal_returns.columns]
+    """Generate the exact causal weight path used by the production policy.
+
+    The L4 evaluator previously rebuilt the meta allocator through a research helper,
+    which could drift from production scoring constants. Keep data normalization here,
+    but delegate all signal/template/meta behavior to the production policy itself.
+    """
+    frame = continuous_raw.copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame["product"] = frame["product"].astype(str).str.upper()
+    for column in ("open", "close"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["date", "product", "open", "close"])
+    frame = frame[(frame["open"] > 0) & (frame["close"] > 0)]
+    frame.drop_duplicates(["date", "product"], keep="last", inplace=True)
+
     ordered_products = _product_order(REQUIRED_PRODUCTS)
-    missing = sorted(set(ordered_products) - set(signal_returns.columns))
+    available = set(frame["product"].unique())
+    missing = sorted(set(ordered_products) - available)
     if missing:
         raise ValueError(f"continuous signal feed missing products: {missing}")
-    signal_returns = signal_returns[ordered_products]
-    _gap, intraday = build_continuous_execution_proxy(
-        continuous_raw, products=tuple(ordered_products)
-    )
-    intraday = intraday.reindex(
-        index=signal_returns.index, columns=signal_returns.columns
-    )
 
-    lookup = _template_lookup()
-    score_streams: dict[str, pd.Series] = {}
-    weight_paths: dict[str, pd.DataFrame] = {}
-    for template_id in _EXECUTION_TEMPLATE_IDS:
-        weights = specific._template_weight_path(
-            signal_returns, lookup[template_id]
-        )
-        weight_paths[template_id] = weights
-        score_streams[template_id] = specific.apply_product_weights(
-            intraday,
-            weights,
-            cost_bps=BASE_COST_BPS,
-        )
-    return _meta_weight_path(score_streams, weight_paths)
+    open_prices = (
+        frame.pivot(index="date", columns="product", values="open")
+        .sort_index()
+        .reindex(columns=ordered_products)
+    )
+    close = (
+        frame.pivot(index="date", columns="product", values="close")
+        .sort_index()
+        .reindex(index=open_prices.index, columns=open_prices.columns)
+    )
+    return ExecutionAlignedAggressivePolicy(
+        products=tuple(ordered_products)
+    ).weight_history(open_prices, close)
 
 
 def _window_metrics(series: pd.Series) -> dict[str, dict]:

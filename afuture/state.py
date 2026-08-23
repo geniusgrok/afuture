@@ -29,6 +29,10 @@ class RuntimeState:
     metadata_verified: bool = False
     last_order_id: str = ""
     last_trade_id: str = ""
+    recent_daily_returns: list[float] = field(default_factory=list)
+    directional_daily_circuit_day: str = ""
+    last_account_equity: float = 0.0
+    last_account_trading_day: str = ""
 
 
 class StateStore:

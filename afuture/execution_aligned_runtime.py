@@ -451,12 +451,19 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         return DirectionalActionResult("hold", "directional portfolio is at target")
 
     def flatten(self, now: datetime) -> DirectionalActionResult:
+        positions = self.broker.get_positions()
+        if any(
+            position.long_total > 0 and position.short_total > 0
+            for position in positions
+        ):
+            # Hedged gross exposure cannot be represented by the net-lot quality schema.
+            # Delegate the abnormal safety path to the base gross-position flattener.
+            return super().flatten(now)
         if self.broker.get_active_orders():
             return DirectionalActionResult(
                 "wait", "active orders must settle before flatten"
             )
         self._finalize_quality_cycle_if_settled(now)
-        positions = self.broker.get_positions()
         plan = build_rebalance_plan(positions, {})
         if not plan.reductions:
             return DirectionalActionResult("hold", "directional portfolio is flat")

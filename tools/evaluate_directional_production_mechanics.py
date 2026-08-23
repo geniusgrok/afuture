@@ -1,15 +1,15 @@
 """Production-mechanics proxy for the frozen execution-aligned directional policy.
 
-The historical 107.46% result is a float-notional signal/execution study. This evaluator
-keeps the exact frozen weights but adds integer lots, contract multipliers, previous-day
-activity selection, contract roll semantics, account drawdown/daily-loss behavior and an
-explicit margin proxy. It never searches parameters and does not claim historical broker
-margin schedules are known.
+The historical float-notional result is a signal/execution study. This evaluator keeps
+its frozen weights but adds integer lots, contract multipliers, previous-completed-day
+activity selection, contract roll semantics, account hard gates, the recoverable daily
+loss circuit, causal defensive scaling, and an explicit margin proxy. It never searches
+Alpha or parameters and does not claim historical broker margin schedules are known.
 
 Each published reporting window is an independent account experiment: the frozen signal
 path is unchanged, while account equity, positions, margin state and high-watermark reset
-to the configured initial capital/flat state at that window's first day. This prevents a
-Kill Switch in an earlier regime from contaminating a later standalone window.
+to the configured initial capital/flat state at that window's first day. Static contract
+indexes are prepared once and safely reused across those independent account runs.
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
 
 from afuture.directional_acceptance import (
     DirectionalProductionAcceptance,
+    PreparedDirectionalContracts,
     ProductionMechanicsConfig,
     ProductionSimulationResult,
 )
@@ -88,26 +89,37 @@ def _metrics(values: pd.Series) -> dict:
 
 
 def _result_stats(result: ProductionSimulationResult) -> dict:
+    daily = result.daily
     returns = (
-        result.daily["daily_return"].astype(float)
-        if not result.daily.empty
+        daily["daily_return"].astype(float)
+        if not daily.empty
         else pd.Series(dtype=float)
     )
     stats = _metrics(returns)
     margin_reject_days = (
-        int((result.daily["margin_reject"].astype(str) != "").sum())
-        if not result.daily.empty
+        int((daily["margin_reject"].astype(str) != "").sum())
+        if not daily.empty
+        else 0
+    )
+    daily_circuit_days = (
+        int(daily["daily_circuit"].astype(bool).sum())
+        if not daily.empty and "daily_circuit" in daily
+        else 0
+    )
+    defensive_days = (
+        int((daily["risk_scale"].astype(float) < 1.0 - 1e-12).sum())
+        if not daily.empty and "risk_scale" in daily
         else 0
     )
     halted = (
-        bool(result.daily["halted"].astype(bool).any())
-        if not result.daily.empty
+        bool(daily["halted"].astype(bool).any())
+        if not daily.empty
         else False
     )
     max_gross_ratio = 0.0
-    if not result.daily.empty:
-        equity = result.daily["equity"].replace(0.0, pd.NA)
-        ratio = result.daily["gross_notional"].div(equity)
+    if not daily.empty:
+        equity = daily["equity"].replace(0.0, pd.NA)
+        ratio = daily["gross_notional"].div(equity)
         ratio = ratio.replace([float("inf"), -float("inf")], pd.NA).dropna()
         max_gross_ratio = float(ratio.max()) if not ratio.empty else 0.0
     return {
@@ -115,6 +127,8 @@ def _result_stats(result: ProductionSimulationResult) -> dict:
         "final_equity": float(result.final_equity),
         "first_divergence": str(result.first_divergence),
         "halted": halted,
+        "daily_circuit_days": daily_circuit_days,
+        "defensive_risk_days": defensive_days,
         "margin_reject_days": margin_reject_days,
         "max_realized_gross_notional_ratio": max_gross_ratio,
     }
@@ -125,6 +139,7 @@ def _simulation_report(
     specific_raw: pd.DataFrame,
     weights: pd.DataFrame,
     *,
+    prepared: PreparedDirectionalContracts,
     cost_bps: float,
     margin_rate_proxy: float,
 ) -> tuple[dict, pd.DataFrame]:
@@ -138,6 +153,7 @@ def _simulation_report(
             specific_raw,
             window_weights,
             cost_bps=cost_bps,
+            prepared=prepared,
         )
         windows[name] = _result_stats(result)
         daily_by_window[name] = result.daily.copy()
@@ -155,23 +171,33 @@ def _simulation_report(
             "final_equity": INITIAL_CAPITAL,
             "first_divergence": "",
             "halted": False,
+            "daily_circuit_days": 0,
+            "defensive_risk_days": 0,
             "margin_reject_days": 0,
             "max_realized_gross_notional_ratio": 0.0,
         },
     )
     principal_daily = daily_by_window.get(principal_name, pd.DataFrame())
+    config = simulator.config
     return (
         {
             "cost_bps": float(cost_bps),
             "margin_rate_proxy": float(margin_rate_proxy),
-            "margin_estimate_buffer": 1.25,
+            "margin_estimate_buffer": float(config.margin_estimate_buffer),
             "initial_capital": INITIAL_CAPITAL,
+            "max_contract_volume": int(config.max_contract_volume),
+            "max_daily_loss_ratio": float(config.max_daily_loss_ratio),
+            "max_total_drawdown_ratio": float(config.max_total_drawdown_ratio),
+            "max_margin_ratio": float(config.max_margin_ratio),
+            "min_available_ratio": float(config.min_available_ratio),
             "state_reset_per_window": True,
             "window_account_semantics": "independent_initial_capital_flat_start",
             "principal_window": principal_name,
             "final_equity": float(principal["final_equity"]),
             "first_divergence": str(principal["first_divergence"]),
             "halted": bool(principal["halted"]),
+            "daily_circuit_days": int(principal["daily_circuit_days"]),
+            "defensive_risk_days": int(principal["defensive_risk_days"]),
             "margin_reject_days": int(principal["margin_reject_days"]),
             "max_realized_gross_notional_ratio": float(
                 principal["max_realized_gross_notional_ratio"]
@@ -200,10 +226,14 @@ def evaluate_with_weights(
             margin_rate_proxy=STRESS_MARGIN_PROXY,
         )
     )
+    # Contract data preparation is invariant to account capital, margin proxy and
+    # reporting window. Reuse it while every simulation still resets account state.
+    prepared = base_sim.prepare_contracts(specific_raw)
     base, base_daily = _simulation_report(
         base_sim,
         specific_raw,
         weights,
+        prepared=prepared,
         cost_bps=BASE_COST_BPS,
         margin_rate_proxy=BASE_MARGIN_PROXY,
     )
@@ -211,6 +241,7 @@ def evaluate_with_weights(
         stress_sim,
         specific_raw,
         weights,
+        prepared=prepared,
         cost_bps=STRESS_COST_BPS,
         margin_rate_proxy=STRESS_MARGIN_PROXY,
     )
@@ -249,11 +280,26 @@ def evaluate_with_weights(
             "frozen_contract_multipliers": True,
             "previous_completed_activity": True,
             "reduction_before_open": True,
-            "daily_loss_gate": True,
+            "target_gross_leverage_cap": 2.0,
+            "max_contract_volume": int(base_sim.config.max_contract_volume),
+            "daily_loss_same_day_circuit": True,
+            "daily_loss_next_trading_day_safe_recovery": True,
+            "hard_account_risk_permanent_halt": True,
+            "hard_account_risk_precedes_daily_circuit": True,
             "high_watermark_drawdown_gate": True,
             "current_margin_gate": True,
             "available_cash_gate": True,
-            "permanent_halt_after_risk_breach": True,
+            "causal_completed_return_risk_governor": {
+                "lookback_days": int(base_sim.risk_governor.lookback_days),
+                "sample_volatility_trigger": float(
+                    base_sim.risk_governor.volatility_trigger
+                ),
+                "completed_daily_loss_trigger": float(
+                    base_sim.risk_governor.loss_trigger
+                ),
+                "defensive_scale": float(base_sim.risk_governor.defensive_scale),
+            },
+            "prepared_contract_indexes_reused_across_windows": True,
             "state_reset_per_window": True,
         },
         "base": base,
@@ -264,6 +310,7 @@ def evaluate_with_weights(
             "margin uses an explicit proxy rather than historical broker schedules",
             "daily bars cannot identify the exact intraday instant at which an account risk gate would fire",
             "each published window resets account state to initial capital and flat positions; first-day prior holdings are not inherited",
+            "production-mechanics historical return is not a forecast or guarantee of future live return",
         ],
         "_base_daily": base_daily,
         "_stress_daily": stress_daily,

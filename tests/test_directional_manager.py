@@ -105,6 +105,7 @@ class _Broker:
         }
         self.positions = [ContractPosition("A2609", "DCE", long_today=2)]
         self.orders = []
+        self.active_orders = []
         self.subscriptions = []
         self.ticks = {
             "A2609": _tick("A2609", 10000, depth=depth),
@@ -141,7 +142,7 @@ class _Broker:
         return list(self.positions)
 
     def get_active_orders(self):
-        return []
+        return list(self.active_orders)
 
     def send_order(self, request):
         self.orders.append(request)
@@ -233,6 +234,52 @@ def test_manager_subscribes_universe_and_reduces_before_opening_new_main_contrac
     assert broker.orders[0].volume == 5
 
 
+def test_manager_realized_gross_guard_only_reduces_after_actual_two_x_breach():
+    broker = _Broker()
+    broker.positions = [ContractPosition("A2609", "DCE", long_today=250)]
+    manager = _manager(broker)
+    manager.bootstrap(NOW)
+    manager.observe(broker.ticks["A2609"])
+
+    result = manager.enforce_realized_gross_limit(NOW)
+
+    assert result.action == "reduce"
+    assert len(broker.orders) == 1
+    order = broker.orders[0]
+    assert order.symbol == "A2609"
+    assert order.volume == 50
+    assert order.offset is not Offset.OPEN
+    assert order.order_type is OrderType.FAK
+    assert order.reference == "directional:gross-guard"
+
+
+def test_manager_realized_gross_guard_does_not_preemptively_haircut_two_x():
+    broker = _Broker()
+    broker.positions = [ContractPosition("A2609", "DCE", long_today=200)]
+    manager = _manager(broker)
+    manager.bootstrap(NOW)
+    manager.observe(broker.ticks["A2609"])
+
+    result = manager.enforce_realized_gross_limit(NOW)
+
+    assert result.action == "hold"
+    assert broker.orders == []
+
+
+def test_manager_realized_gross_guard_waits_for_active_orders_instead_of_duplicating_reductions():
+    broker = _Broker()
+    broker.positions = [ContractPosition("A2609", "DCE", long_today=250)]
+    broker.active_orders = [object()]
+    manager = _manager(broker)
+    manager.bootstrap(NOW)
+    manager.observe(broker.ticks["A2609"])
+
+    result = manager.enforce_realized_gross_limit(NOW)
+
+    assert result.action == "wait"
+    assert broker.orders == []
+
+
 def test_missing_new_target_cannot_block_unrelated_reduction():
     broker = _Broker()
     manager = _execution_manager(broker, products=("A", "M"), weights={"M": 1.0})
@@ -289,3 +336,23 @@ def test_manager_flatten_only_emits_reducing_fak_orders():
     assert broker.orders
     assert all(order.offset is not Offset.OPEN for order in broker.orders)
     assert all(order.order_type is OrderType.FAK for order in broker.orders)
+
+
+def test_manager_flatten_closes_both_sides_when_same_contract_is_hedged():
+    broker = _Broker()
+    broker.positions = [
+        ContractPosition("A2609", "DCE", long_today=3, short_today=3)
+    ]
+    manager = _manager(broker)
+    manager.bootstrap(NOW)
+    manager.observe(broker.ticks["A2609"])
+
+    result = manager.flatten(NOW)
+
+    assert result.action == "reduce"
+    assert len(broker.orders) == 2
+    assert {order.side.value for order in broker.orders} == {"BUY", "SELL"}
+    assert {order.volume for order in broker.orders} == {3}
+    assert all(order.offset is not Offset.OPEN for order in broker.orders)
+    assert all(order.order_type is OrderType.FAK for order in broker.orders)
+    assert all(order.reference == "directional:flatten" for order in broker.orders)

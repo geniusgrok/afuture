@@ -17,9 +17,11 @@ import pandas as pd
 MAX_GROSS_LEVERAGE = 2.0
 MAX_ABS_DAILY_RETURN = 0.20
 BASE_COST_BPS = 5.0
-META_LOOKBACK = 10
-META_REBALANCE = 5
+META_LOOKBACK = 11
+META_REBALANCE = 3
 META_COUNT = 3
+META_ANNUALIZED_WEIGHT = 0.25
+META_SHARPE_WEIGHT = 1.0
 META_SCORE_SOURCE = "continuous_intraday_proxy"
 
 
@@ -119,7 +121,7 @@ def _template_weight_path(
     return pd.DataFrame(audit, index=returns.index, columns=returns.columns)
 
 
-def _trailing_scores(frame: pd.DataFrame, lookback: int = 10) -> np.ndarray:
+def _trailing_scores(frame: pd.DataFrame, lookback: int = META_LOOKBACK) -> np.ndarray:
     values = frame.fillna(0.0).to_numpy(float)
     score = np.full_like(values, np.nan, dtype=float)
     for index in range(lookback, len(frame)):
@@ -131,7 +133,7 @@ def _trailing_scores(frame: pd.DataFrame, lookback: int = 10) -> np.ndarray:
         sharpe = np.zeros(history.shape[1], dtype=float)
         valid = std > 1e-12
         sharpe[valid] = mean[valid] / std[valid] * np.sqrt(252.0)
-        row = 4.0 * annualized + 0.5 * sharpe
+        row = META_ANNUALIZED_WEIGHT * annualized + META_SHARPE_WEIGHT * sharpe
         row[annualized <= 0.0] = np.nan
         score[index] = row
     return score

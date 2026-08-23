@@ -1,21 +1,21 @@
 # 100% 年化收益目标：最终历史证据
 
-日期：2026-08-22
+日期：2026-08-23
 
 ## 1. 最终结论
 
-`afuture` 的冻结 Execution-Aligned Directional Portfolio 有两个不同层级的历史结论：
+`afuture` 的冻结 Execution-Aligned Directional Portfolio 目前有两个不同层级的历史结果：
 
-- **研究层**：selection-biased specific-contract / next-open float-notional L4 最近两年 Base 年化 **107.4623%**，达到“已观察历史 100%”目标；
-- **生产机械层**：相同冻结权重经过当前 integer lots、margin/cash、daily-loss/high-watermark 等生产账户门后，最近两年 Base 年化约 **6.7861%**，并在 **2024-09-19** 触发日亏损门停机。
+- **研究层 Float L4**：selection-biased specific-contract / next-open float-notional 最近两年 Base 年化 **107.4623%**；
+- **生产机械层 L3**：当前 integer lots、账户硬门、daily circuit、completed-return governor 和 realized-gross hard guard 下，最近两年 Base 年化 **108.8461%**、最大回撤 **17.8010%**、实际 gross 峰值 **1.998253x**，全区间未永久 HALT。
 
-所以最终正确表述是：
+所以当前准确表述是：
 
-> **100% 已在选择偏差明确的研究口径达成，但没有在当前 production-equivalent 账户语义下达成。**
+> **固定历史 Base production-mechanics 已达到 100% 年化验收门，但这不是未来收益保证，也不是独立泛化证明。**
 
-该结论不是未来收益保证，也不能用来要求生产风控为了回测数字而自动放宽。
+Stress 仍未通过：15bp 成本 + 15% margin proxy 下年化只有 **0.9249%**，并因保证金硬门 HALT。该失败必须与 Base 结果一起保留。
 
-## 2. 官方 float-notional L4
+## 2. 原 Float L4
 
 固定区间：`2024-08-21 ~ 2026-08-20`。
 
@@ -27,169 +27,157 @@
 | Sharpe | **1.6874** | **1.1525** |
 | gross target 上限 | **2.0x** | **2.0x** |
 
-Extreme 30bp：最近两年年化约 **5.09%**，最大回撤约 **43.51%**。
+Extreme 30bp 的历史结果仍明显更差。此前标记为 Final OOS 的 `2026-02-21 ~ 2026-08-20` 也已经被研究流程观察，因此 `pristine_final_oos=false`。
 
-### Final OOS
-
-`2026-02-21 ~ 2026-08-20` 已被此前选择过程观察：
-
-- Base 年化约 **-10.73%**；
-- Base 最大回撤约 **27.41%**；
-- Stress 年化约 **-31.42%**；
-- `pristine_final_oos=false`。
-
-因此策略存在显著 selection bias / regime dependence。
-
-## 3. 冻结策略
+## 3. 当前冻结策略
 
 - Universe：50 个成熟中国商品期货品种；
-- 产品顺序：代码字母序；
 - template pool：固定 96；
 - family：breakout、time-series momentum、momentum、moving average、reversal、acceleration；
-- meta lookback：10；
-- meta rebalance：5；
-- active templates：3；
+- meta lookback：**11**；
+- meta rebalance：**3**；
+- active templates：**3**；
+- meta score：`0.25 × annualized + 1.0 × Sharpe`；
 - meta evidence：已完成 continuous `open→close` intraday proxy；
 - 产品 signal：只使用前一完整交易日及此前历史；
-- gross target：≤2.0x。
+- gross target：`<=2.0x`；
+- directional 单合约上限：35 手。
 
-`ExecutionAlignedAggressivePolicy` 是唯一生产 directional signal policy。旧 32-template 中间 policy 已从生产维护面删除。
+`ExecutionAlignedAggressivePolicy` 是唯一正式 directional signal policy。
 
-## 4. 数据真实性
+## 4. Production risk semantics
 
-原始 concrete-contract 数据：
+### Causal completed-return governor
 
-```text
-products                  = 50
-candidate contract calls  = 3000
-usable concrete contracts = 2540
-specific daily rows       ≈ 495086
-missing next returns      = 0 on final products
-```
-
-规则：historical listing 可见性、point-in-time OI/volume、20 天交割黑窗、同一具体合约 t→t+1、continuous roll jump 不计入 Alpha。
-
-## 5. 官方 GitHub float-L4 证据
-
-- workflow run：`32567558268`；
-- tested head：`351b89e73b79b4eee960980ff9a806d89b9d01cd`；
-- artifact：`execution-aligned-return-target-evidence`；
-- artifact id：`9474502870`；
-- SHA-256：`2ab4d6a9547a21659eef2db27b4bbd3278b65557c044468d39c41c584bfea62b`；
-- `specific_contracts=true`；
-- `roll_safe=true`；
-- `max_gross_leverage<=2.0`。
-
-原始 specific-contract 数据 artifact id：`9473260618`。
-
-## 6. Research/live 因果对齐
-
-历史 L4 的选约语义等价于 D 日最终 activity 决定 D+1 具体合约。生产现在同样：
+只使用已完成账户日收益，不读当前 session PnL：
 
 ```text
-CTP trading day D 最终 OI/volume
-→ DirectionalActivitySnapshot
-→ D+1 concrete contract
+最近 completed daily return <= -2%
+OR 最近两日 sample volatility >= 3%
+    => next target scale = 25%
+else
+    => next target scale = 100%
 ```
 
-D+1 尚未完成的累计 activity 不再重新选主力。
+Governor 只允许减少风险，不能把原 signal 放大到 1.0x 以上。
 
-Signal 绑定 `required_signal_day = completed activity day`：
+### Daily-loss circuit
 
-- 普通交易日漏 bar 不会被 96h 容忍掩盖；
-- provider 临时失败只有在缓存已覆盖 required day 时才能继续；
-- activity snapshot 比已经确认完成的 signal day 更旧时 fail-closed；
-- stale/missing required signal + existing risk → `REDUCE_ONLY`。
+`max_daily_loss_ratio=5%` 保持不变。触发后：
 
-## 7. Production-mechanics：固定 artifact 独立复核
+- 当日 flatten；
+- 当日不再新增风险；
+- 后续 CTP trading day 只有在 Broker ready、无 active order、已平仓、metadata、账户风险和启动对账均通过时才恢复 RUNNING。
 
-Production proxy 没有重新搜索模板/参数，也没有重新抓数据。使用：
+`max_total_drawdown_ratio=30%`、`max_margin_ratio=35%`、`min_available_ratio=25%`、非正权益、metadata/对账异常仍是 hard/manual halt。
 
-- artifact `9473260618` 的固定 concrete-contract 原始数据；
-- artifact `9474502870` 的最终 `execution_aligned_weights.csv`；
-- 当前 `DirectionalProductionAcceptance` 账户机械语义。
+### Realized-gross hard guard
 
-统一参数：
+不再用固定 0.95 headroom 对所有正常目标预先 haircut。生产执行保持 signal target `<=2.0x`，然后用 Broker/行情真值持续检查实际 marked gross：
+
+- actual gross `<=2.0x`：不干预；
+- actual gross `>2.0x`：只提交 reduction-only FAK；
+- 无法安全计算或执行：fail-closed；
+- 目标 exactly 2.0x 不预先削减。
+
+同一合约出现同时多仓和空仓时，flatten 按毛仓分别平仓，不能因 `net_volume=0` 把真实风险误判为 flat。
+
+## 5. 最终 Production L3
+
+### 可重复证据
 
 ```text
-initial capital          = 500000
-Base cost                = 5bp one-way
-Stress cost              = 15bp one-way
-Base margin proxy        = 12%
-Stress margin proxy      = 15%
-margin buffer            = 1.25
-max margin ratio         = 35%
-min available ratio      = 25%
-daily loss limit         = 5%
-total drawdown limit     = 30%
-max contract volume      = 100
-parameter_search         = false
-margin_is_historical_truth = false
+workflow run = 32617588179
+PR head      = 4522abe69e66f6bfc5329ee54a66b6d0c4ee59e4
+PR merge SHA = d112697f6da929a702f9b88869a41aed47b29e52
+artifact id  = 9487448673
+artifact     = production-return-l3-d112697f6da929a702f9b88869a41aed47b29e52
+SHA-256      = a56a65593fd83d9addf6b542b67eaf986c11f8a1d8fc48902ae348df14606173
 ```
 
-每个报告窗口独立以 500,000 / flat 开始；signal weights 始终来自同一冻结历史，不按窗口重新拟合。
+固定原始 specific-contract 数据 artifact id：`9473260618`。
 
-### 最近两年结果
+### 统一参数
+
+```text
+initial capital             = 500000
+Base cost                   = 5bp one-way
+Stress cost                 = 15bp one-way
+Base margin proxy           = 12%
+Stress margin proxy         = 15%
+margin buffer               = 1.25
+max margin ratio            = 35%
+min available ratio         = 25%
+daily loss limit            = 5%
+total drawdown limit        = 30%
+max contract volume         = 35
+target gross cap            = 2.0x
+realized gross hard ceiling = 2.0x
+parameter_search            = false
+margin_is_historical_truth  = false
+```
+
+每个报告窗口独立以 500,000 / flat 开始；signal/meta 始终来自同一冻结历史，不按窗口重新拟合。
+
+### full_recent 结果
 
 | 指标 | Base | Stress |
 |---|---:|---:|
-| 年化收益 | **6.7861%** | **3.4290%** |
-| 累计收益 | **13.4401%** | **6.6897%** |
-| 最大回撤 | **5.5680%** | **5.3020%** |
-| Sharpe | 0.8334 | 0.5507 |
-| 活跃交易日 | **20 / 484** | **17 / 484** |
-| 最终权益 | **567,200.36** | **533,448.53** |
-| margin reject days | 0 | **14** |
+| 年化收益 | **108.8461%** | **0.9249%** |
+| 累计收益 | **311.4052%** | **1.7840%** |
+| 最大回撤 | **17.8010%** | **5.8553%** |
+| 年化波动 | 38.8943% | 4.5535% |
+| Sharpe | **2.0812** | 0.2246 |
+| 活跃交易日 | **478 / 484** | **14 / 484** |
+| 最终权益 | **2,057,025.78** | 508,919.91 |
+| daily circuit days | 4 | 0 |
+| defensive risk days | 78 | 2 |
+| margin reject days | 0 | 6 |
+| actual gross 峰值 | **1.998253x** | 1.856519x |
 | first divergence | `daily loss limit reached` | `combined margin ratio would exceed limit` |
-| fatal gate | `daily loss limit reached` | `margin ratio limit reached` |
-| halt date | **2024-09-19** | **2024-09-19** |
+| halted | **false** | **true** |
 
-Base 在 2024-09-19 的当日账户路径触发 5% daily-loss gate 后 flatten / halt。Stress 存在更早的 margin opening reject，并最终在 2024-09-19 因 margin ratio gate 退出。
+L3 的 Base gate 直接检查并通过：
 
-### Production gap
+```text
+annualized_return >= 100%
+max_drawdown <= 30%
+max_realized_gross_notional_ratio <= 2.0x
+halted == false
+daily_circuit_days > 0
+```
 
-| 指标 | Base | Stress |
-|---|---:|---:|
-| Float 年化 | 107.4623% | 58.1372% |
-| Proxy 年化 | 6.7861% | 3.4290% |
-| 年化差值 | **-100.6762 pct-pts** | **-54.7082 pct-pts** |
-| Float 累计 | 306.1855% | 141.1415% |
-| Proxy 累计 | 13.4401% | 6.6897% |
+Base 的 4 次 daily circuit 说明策略不是通过删除日亏损门来恢复收益；78 个 defensive days 说明 completed-return governor 也确实发生了风险缩放。
 
-Proxy 的 5% 左右最大回撤不能被解释成“生产等价后风险显著改善”，主要因为账户非常早就被风险门停止，后续行情不再承担风险。
+## 6. 泛化与 regime 风险
 
-完整说明见 [`directional-production-mechanics-evidence.md`](directional-production-mechanics-evidence.md)。
+Base 的分窗口结果并不均匀：
 
-## 8. 为什么没有放宽风险门
+- train 年化约 **27.06%**；
+- validation 年化约 **225.77%**；
+- selection_full 年化约 **57.07%**；
+- 已观察 OOS 年化约 **55.92%**；
+- prior1 年化约 **-28.94%**，并触及 30% 总回撤硬门；
+- prior2 年化约 **-28.80%**，并触及 30% 总回撤硬门。
 
-这轮目标是证明生产真实性，而不是继续拟合历史。当前结果说明真正的第一 divergence 是账户风险权限，不应通过以下方式掩盖：
+这表明策略仍有明显 regime dependence。整个 `2024-08-21 ~ 2026-08-20` 也已经被用于多轮分析和生产机械收口，因此 108.8461% 不能当成未见样本的预期年化。
+
+## 7. 为什么没有继续追更高历史数字
+
+达到 Base acceptance 后继续在同一历史上搜索，会增加过拟合风险而不是增加真实信息。当前不再：
 
 - 提高 leverage >2x；
-- 静默把 daily-loss 5% 调大；
-- 静默把 total DD 30% 调大；
-- 为避免 margin reject 放宽 35% margin / 25% cash reserve；
-- 再扩大 template pool 追同一历史。
+- 放宽 5% daily-loss；
+- 放宽 30% total DD；
+- 放宽 35% margin / 25% cash reserve；
+- 扩大 template pool；
+- 围绕同一两年历史继续扫 governor/cap 参数。
 
-任何未来风险阈值变化都应基于实际账户承受能力、Shadow/test/small-capital 新证据独立决策。
+Stress 失败也说明下一步的主要信息缺口已经不是“怎么把 Base 回测再抬高”，而是真实执行和保证金约束。
 
-## 9. 生产执行边界
+## 8. 仍不能由历史证明的内容
 
-Directional 生产还具备：
-
-- account-exclusive；
-- previous-day activity sidecar；
-- required signal trading-day gate + valid-cache fallback；
-- stale activity fail-closed；
-- missing new target 不阻塞其它 reduction；
-- risk_off + existing risk → `REDUCE_ONLY`；
-- reductions 结算后下一 cycle 才允许 openings；
-- Broker 是 order/fill/position 唯一真相；
-- restart position mismatch fail-closed；
-- directional rebalance/fill/cycle execution-quality evidence。
-
-## 10. 仍不能由历史证明的内容
-
-没有多年历史完整：
+缺少多年历史完整：
 
 - bid/ask/depth；
 - queue position；
@@ -197,6 +185,9 @@ Directional 生产还具备：
 - CTP/交易所流控；
 - 逐日真实 Broker margin；
 - 真实结算手续费；
-- reduction 成交确认后下一 cycle opening 的真实时间价格。
+- reduction 完成后下一 cycle opening 的真实时间价格；
+- gross guard 的真实成交时延和市场冲击。
 
-因此真实资金仍必须经过多日 Shadow、测试柜台和极小真实仓位。107.4623% 不能直接当成可兑现实盘收益，而 6.7861% proxy 也不能当成未来真实收益预测。
+因此真实资金仍必须经过多日 Shadow、测试柜台、极小真实仓位，以及最重要的——**新发生、此前没有参与任何选择和调参的未来数据**。
+
+完整 production-mechanics 说明见 [`directional-production-mechanics-evidence.md`](directional-production-mechanics-evidence.md)。

@@ -24,7 +24,7 @@ max_gross_leverage = 2.0
 min_days_to_expiry = 20
 min_volume = 1000
 min_open_interest = 5000
-max_contract_volume = 100
+max_contract_volume = 35
 # Broad cross-midnight window permits each product's first fresh tradable session.
 # Openings still require fresh quotes, sufficient depth and all RiskManager gates.
 rebalance_window = "20:55-09:10"
@@ -38,7 +38,7 @@ max_margin_ratio = 0.35
 max_daily_loss_ratio = 0.05
 max_total_drawdown_ratio = 0.30
 max_open_pairs = 1
-max_contract_volume = 100
+max_contract_volume = 35
 max_quote_age_seconds = 10
 max_leg_skew_seconds = 2.0
 expiry_blackout_days = 5

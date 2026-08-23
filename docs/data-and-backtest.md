@@ -10,11 +10,11 @@
 
 Directional 分离三类证据：
 
-1. **continuous OHLC**：只产生产品 signal 和已完成 intraday meta score；
-2. **concrete-contract daily OHLC/OI/volume**：验证真实换月和 next-open 收益，并驱动 production-mechanics proxy；
+1. **continuous OHLC**：产品 signal 和已完成 intraday meta evidence；
+2. **concrete-contract daily OHLC/OI/volume**：验证真实换月、next-open 收益和 production-mechanics；
 3. **CTP L1 / account / fill**：未来 Shadow/实盘执行证据。
 
-公开历史没有多年完整 bid/ask/depth/queue/partial/reject，因此日线 L4 和 production-mechanics proxy 都不能替代真实执行。
+公开历史没有多年完整 bid/ask/depth/queue/partial/reject，因此日线研究和 production proxy 都不能替代真实执行。
 
 ## 2. 因果规则
 
@@ -24,11 +24,12 @@ Directional 分离三类证据：
 - continuous roll jump 不计入可交易 Alpha；
 - historical universe 只能包含当时已挂牌合约；
 - t→t+1 收益来自 t 日已选择的**同一具体合约**；
-- D+1 的具体合约选择使用 D 的最终 OI/volume，不使用 D+1 尚未完成 activity；
-- completed activity snapshot 不能落后于已经确认完成的 signal trading day；
+- D+1 具体合约选择使用 D 的最终 OI/volume，不使用 D+1 尚未完成 activity；
+- completed activity snapshot 不能落后于已确认完成的 signal trading day；
+- completed-return governor 只读取已完成账户交易日收益；
 - Final OOS 被任何选择过程观察过后必须标记 non-pristine。
 
-Float-notional L4 执行分解：
+Float L4 执行分解：
 
 ```text
 截至 t 收盘历史 → t+1 target weights
@@ -39,25 +40,22 @@ old weights × (t close → t+1 open)
 
 ## 3. Previous-day activity evidence
 
-生产 `DirectionalActivityTracker` 按 `Tick.trading_day` 聚合合约最后可见 volume/OI；只有观察到 trading day 从 D 推进到下一日时，才把 D 冻结为 `DirectionalActivitySnapshot` 并原子写入 JSON sidecar。
+生产 `DirectionalActivityTracker` 按 `Tick.trading_day` 聚合合约最后可见 volume/OI；只有 trading day 从 D 推进时，才冻结 D 为 `DirectionalActivitySnapshot`。
 
 下一交易日：
 
 - selector 读取 completed snapshot；
 - listing/expiry 按计划交易日过滤；
 - OI → volume → expiry → symbol 排序；
-- 当前 tick 只负责 fresh quote、spread、depth、limit、价格和实际下单。
+- 当前 tick 只负责 fresh quote、spread、depth、limit、价格和下单。
 
-第一次启动没有 completed snapshot 时不新增 directional 风险。若持久化 snapshot 已陈旧而 OHLC 已证明存在更新的完整交易日，也 fail-closed，不能用陈旧 activity 开新风险。
+第一次启动没有 completed snapshot 时不新增 directional 风险；snapshot 落后于已确认完整 OHLC day 时 fail-closed。
 
 ## 4. Signal trading-day gate
 
-`required_signal_day = completed_activity_snapshot.trading_day`。OHLC 最新日期必须覆盖 required day；`signal_max_age_hours` 是第二层长时间停更门。
+`required_signal_day = completed_activity_snapshot.trading_day`。OHLC 最新日期必须覆盖 required day；`signal_max_age_hours` 只做第二层长时间停更门。
 
-这解决两个问题：
-
-- 96 小时周末容忍不会掩盖普通工作日漏 bar；
-- 重启后陈旧 activity snapshot 不能掩盖更新的完整 signal day。
+这避免周末小时容忍掩盖普通交易日漏 bar，也防止重启后的陈旧 activity snapshot 被继续使用。
 
 ## 5. 历史研究结论
 
@@ -73,11 +71,11 @@ neighbor stability         0 / 16
 
 旧同品种 M/OI 研究仍未通过高收益门。
 
-### Broad directional L3
+### Broad directional research
 
-约 50 个成熟商品期货连续合约用于 family/候选发现。连续合约 L3 只能用于研究，因为 close-to-close 和 roll 语义会高估可执行收益。
+约 50 个成熟商品期货连续合约用于 family/候选发现。连续合约 close-to-close / roll 语义不能直接作为可执行 production 收益。
 
-## 6. Final float-notional specific-contract L4
+## 6. Float-notional specific-contract L4
 
 固定原始数据：
 
@@ -89,18 +87,18 @@ specific daily rows       ≈ 495086
 missing next returns      = 0 on final products
 ```
 
-冻结参数：
+冻结策略：
 
 - 96-template pool；
 - breakout / tsmom / momentum / moving-average / reversal / acceleration；
-- meta lookback=10；
-- meta rebalance=5；
+- meta lookback=**11**；
+- meta rebalance=**3**；
 - active templates=3；
-- meta score source=`continuous_intraday_proxy`；
+- meta score=`0.25 × annualized + 1.0 × Sharpe`；
 - Base 5bp；Stress 15bp；Extreme 30bp；
-- gross target ≤2x。
+- target gross ≤2x。
 
-官方 artifact `2024-08-21 ~ 2026-08-20`：
+原官方 float artifact `2024-08-21 ~ 2026-08-20`：
 
 | 指标 | Base 5bp | Stress 15bp |
 |---|---:|---:|
@@ -109,35 +107,33 @@ missing next returns      = 0 on final products
 | 最大回撤 | **27.4097%** | **32.9554%** |
 | Sharpe | **1.6874** | **1.1525** |
 
-Extreme 30bp：最近两年年化约 **5.09%**、最大回撤约 **43.51%**。
-
-Final OOS `2026-02-21 ~ 2026-08-20` 已被观察：Base 年化约 `-10.73%`、Base 最大回撤约 `27.41%`、Stress 年化约 `-31.42%`。因此：
+此前 Final OOS 已被选择流程观察，所以：
 
 ```text
 selection_bias_acknowledged = true
 pristine_final_oos          = false
 ```
 
-107.4623% 只能称为允许历史选择偏差后的已观察研究结果。
+## 7. 当前 Production-mechanics L3
 
-## 7. Production-mechanics proxy：实际结果
+Production L3 使用当前正式 signal/meta，而不是另建研究路径，并加入：
 
-Proxy 使用完全相同的冻结产品权重，不搜索参数，并加入：
-
-1. previous-day activity 选 next-day concrete contract；
+1. previous-completed-day activity 选 next-day concrete contract；
 2. prior lots 的 previous-close → current-open PnL；
-3. open 时 reduction-first；
-4. frozen product multiplier；
+3. reduction-first；
+4. frozen multiplier；
 5. integer lot floor；
-6. `max_contract_volume=100`；
+6. `max_contract_volume=35`；
 7. margin / available cash；
-8. open→close PnL；
-9. day-start loss 与 high-watermark drawdown；
-10. risk breach 后 flatten / halt，不自动重新开仓。
+8. 5% daily-loss circuit；
+9. 30% high-watermark total DD hard halt；
+10. completed-return governor：-2% completed daily loss 或 3% two-day sample vol → 25%，否则 100%；
+11. target gross `<=2x`；
+12. actual realized gross `>2x` 后 reduction-only hard guard；
+13. gross guard reduction cost 计入账户；
+14. 每个报告窗口独立从 `500000` / flat 开始。
 
-每个统计窗口独立从 `500000` / flat 开始；signal weights 仍来自同一完整冻结历史，不按窗口重新拟合。
-
-历史逐日期货公司真实 margin schedule 不存在，因此：
+历史 Broker 每日真实 margin schedule 不存在，因此：
 
 ```text
 Base margin proxy   = 12% × 1.25 buffer
@@ -148,38 +144,35 @@ daily loss          = 5%
 total drawdown      = 30%
 ```
 
-### 最近两年结果
+### 最近两年最终结果
 
 | 指标 | Base | Stress |
 |---|---:|---:|
-| 年化 | **6.7861%** | **3.4290%** |
-| 累计 | **13.4401%** | **6.6897%** |
-| 最大回撤 | **5.5680%** | **5.3020%** |
-| 活跃交易日 | **20 / 484** | **17 / 484** |
-| 最终权益 | **567,200.36** | **533,448.53** |
-| margin reject days | 0 | **14** |
-| fatal gate | `daily loss limit reached` | `margin ratio limit reached` |
-| halt date | **2024-09-19** | **2024-09-19** |
+| 年化 | **108.8461%** | **0.9249%** |
+| 累计 | **311.4052%** | **1.7840%** |
+| 最大回撤 | **17.8010%** | **5.8553%** |
+| Sharpe | **2.0812** | 0.2246 |
+| 活跃交易日 | **478 / 484** | **14 / 484** |
+| 最终权益 | **2,057,025.78** | 508,919.91 |
+| daily circuit days | 4 | 0 |
+| defensive days | 78 | 2 |
+| margin reject days | 0 | 6 |
+| actual gross peak | **1.998253x** | 1.856519x |
+| halted | **false** | **true** |
 
-Base 的生产代理在 2024-09-19 触发 5% 日亏损门后停止；Stress 更早有 opening margin reject，最终同日在 margin ratio gate 下退出。
+Base 的固定 L3 同时通过：年化 `>=100%`、最大回撤 `<=30%`、actual gross `<=2x`、不永久 HALT。
 
-因此当前生产账户语义**没有复现 100% 年化**。较小的 proxy 最大回撤主要来自很早停机，不能解释为“同一策略在生产环境天然更低回撤”。
+Stress 没通过：更高成本/保证金代理下很早被 margin hard gate 终止。较小的 Stress 最大回撤主要来自早停机，不能解释为“更稳”。
+
+最终证据：run `32617588179`，artifact id `9487448673`。
 
 详细证据见 [`directional-production-mechanics-evidence.md`](directional-production-mechanics-evidence.md)。
 
-## 8. Production gap
+## 8. 结果不能怎样解释
 
-最近两年：
+Float Base 107.4623% 与 Production Base 108.8461% 都来自已经反复观察的历史。Production 的较高历史收益不能解释为“真实机械天然提高 Alpha”；它来自 integer lots、daily circuit、governor、gross guard 和账户路径共同作用，并且这些机械本身也是在同一历史上收口的。
 
-| 指标 | Base | Stress |
-|---|---:|---:|
-| Float 年化 | 107.4623% | 58.1372% |
-| Proxy 年化 | 6.7861% | 3.4290% |
-| 年化差值 | -100.6762 pct-pts | -54.7082 pct-pts |
-| Float 累计 | 306.1855% | 141.1415% |
-| Proxy 累计 | 13.4401% | 6.6897% |
-
-主要差距来自账户状态机允许承担的风险路径，而不仅是手续费或整数手数。
+同样，Stress 0.9249% + halt 不能被隐藏。当前最准确结论是：**Base historical production acceptance passes；Stress robustness does not。**
 
 ## 9. Proxy 仍非精确 CTP 历史重放
 
@@ -191,28 +184,27 @@ Base 的生产代理在 2024-09-19 触发 5% 日亏损门后停止；Stress 更�
 - 真实订单流控；
 - 逐日真实 Broker margin；
 - 实际结算手续费；
-- reduction 成交后下一 runtime cycle opening 的精确分钟/秒价格。
+- reduction 成交后下一 cycle opening 的精确分钟/秒价格；
+- gross guard 的真实延迟与冲击成本。
 
-日线 proxy 只能用同一交易日 open/close 近似阶段执行，所以真正的“Alpha 被执行吞掉多少”最终仍需 directional quality + Shadow + 测试柜台 + 小资金回答。
+日线 proxy 只能用同日 open/close 近似阶段执行，所以真正的可兑现 Alpha 最终仍需 directional quality + Shadow + 测试柜台 + 小资金回答。
 
 ## 10. 验证层级
 
 ```text
 L1  activity/signal/lot/risk/quality 因果单测
 L2  manager/engine/restart smoke
-L3  broad research / production-mechanics proxy
-L4  final specific-contract roll-safe evidence
+L3  frozen production-mechanics economic gate
+L4  specific-contract roll-safe research evidence
 Final Python 3.10/3.13 CI + review
 ```
 
-昂贵 L4 不在诊断性小修后重复。当前 production proxy 已证明最重要的 research/live 差距；下一步不应靠扩大已观察历史参数空间掩盖该差距。
-
-## 11. 后续最有价值的新信息
+达到固定 Base acceptance 后停止在同一历史上扩大搜索。后续最有信息价值的是：
 
 1. 新发生、此前未参与选择的交易日；
 2. 多交易日 CTP Shadow；
-3. `planned vs realized turnover/slippage/commission/tracking`；
-4. 实际 margin/risk-off 行为；
+3. planned vs realized turnover/slippage/commission/tracking；
+4. 实际 margin / gross guard / daily circuit；
 5. 测试柜台 FAK/partial/reject/reconnect；
 6. 极小真实仓位；
 7. 若可获得，可靠历史 L1。

@@ -140,3 +140,71 @@ def test_contract_for_day_uses_previous_completed_activity_not_current_day_activ
     )
     selected = sim.select_contracts_for_day(raw, pd.Timestamp("2026-08-21"))
     assert selected == {"A": "A2609"}
+
+
+def test_simulation_normalizes_contract_table_only_once(monkeypatch):
+    sim = _acceptance(
+        max_contract_volume=100,
+        max_daily_loss_ratio=0.50,
+        max_total_drawdown_ratio=0.80,
+        max_margin_ratio=0.90,
+        min_available_ratio=0.0,
+    )
+    raw = pd.DataFrame(
+        [
+            {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
+            {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":101,"volume":5000,"hold":30000},
+            {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":101,"close":102,"volume":5000,"hold":30000},
+        ]
+    )
+    weights = pd.DataFrame(
+        {"A": [1.0, 1.0]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-24"]),
+    )
+    calls = 0
+    original = sim._normalize_contracts
+
+    def counted(frame):
+        nonlocal calls
+        calls += 1
+        return original(frame)
+
+    monkeypatch.setattr(sim, "_normalize_contracts", counted)
+    sim.simulate(raw, weights, cost_bps=0)
+    assert calls == 1
+
+
+def test_prepared_contract_context_can_be_reused_without_renormalizing(monkeypatch):
+    sim = _acceptance(
+        max_contract_volume=100,
+        max_daily_loss_ratio=0.50,
+        max_total_drawdown_ratio=0.80,
+        max_margin_ratio=0.90,
+        min_available_ratio=0.0,
+    )
+    raw = pd.DataFrame(
+        [
+            {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
+            {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":101,"volume":5000,"hold":30000},
+            {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":101,"close":102,"volume":5000,"hold":30000},
+        ]
+    )
+    weights = pd.DataFrame(
+        {"A": [1.0, 1.0]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-24"]),
+    )
+    calls = 0
+    original = sim._normalize_contracts
+
+    def counted(frame):
+        nonlocal calls
+        calls += 1
+        return original(frame)
+
+    monkeypatch.setattr(sim, "_normalize_contracts", counted)
+    prepared = sim.prepare_contracts(raw)
+    first = sim.simulate(raw, weights, cost_bps=0, prepared=prepared)
+    second = sim.simulate(raw, weights, cost_bps=0, prepared=prepared)
+    assert calls == 1
+    pd.testing.assert_frame_equal(first.daily, second.daily)
+    assert first.final_equity == second.final_equity
