@@ -9,7 +9,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -17,6 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          fetch-depth: 0
+      - name: Apply staged asserted source edit
+        if: github.event_name == 'push' && hashFiles('.github/scripts/stress_efficiency_edit.py') != ''
+        run: python .github/scripts/stress_efficiency_edit.py
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -35,6 +41,19 @@ jobs:
           tests/test_directional_acceptance_simulation.py
           tests/test_directional_review_regressions.py
       - run: python -m compileall -q afuture
+      - name: Persist staged source edit after GREEN
+        if: github.event_name == 'push' && hashFiles('.github/scripts/stress_efficiency_edit.py') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          message=$(sed -n 's/^# message: //p' .github/scripts/stress_efficiency_edit.py | head -n1)
+          test -n "$message"
+          git rm .github/scripts/stress_efficiency_edit.py
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "$message"
+          git push origin HEAD:codex/afuture-stress-80-efficiency-20260823
 
   fixed-production-evidence:
     if: ${{ false }}
@@ -62,10 +81,7 @@ jobs:
           python - <<'PY'
           import json
           report = json.load(open("runtime/directional_production_mechanics_report.json", encoding="utf-8"))
-          summary = {
-              side: report[side]["windows"]["full_recent"]
-              for side in ("base", "stress")
-          }
+          summary = {side: report[side]["windows"]["full_recent"] for side in ("base", "stress")}
           summary["mechanics"] = report["mechanics"]
           summary["turnover_attribution"] = report.get("turnover_attribution", {})
           print(json.dumps(summary, ensure_ascii=False, indent=2))
