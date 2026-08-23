@@ -105,10 +105,11 @@ def stabilize_same_direction_weights(
     horizon: int,
     cost_bps: float,
 ) -> dict[str, float]:
-    """Keep same-direction magnitude when the incremental edge cannot pay a round trip.
+    """Suppress only low-value same-direction risk increases.
 
-    New entries, exits and sign reversals pass through unchanged. This is an execution
-    persistence gate, not a source of new directional signals.
+    Any exit, sign reversal, same-direction reduction, or new entry passes through
+    unchanged. The persistence gate may therefore reduce turnover only by declining a
+    proposed increase; it can never keep more risk than the frozen candidate requested.
     """
     if horizon <= 0 or cost_bps < 0:
         raise ValueError("product horizon must be positive and cost non-negative")
@@ -117,6 +118,8 @@ def stabilize_same_direction_weights(
         old = float(previous.get(product, 0.0))
         new = float(candidate.get(product, 0.0))
         if old == 0.0 or new == 0.0 or (old > 0) != (new > 0) or old == new:
+            continue
+        if abs(new) <= abs(old):
             continue
         delta = new - old
         mean_return = float(trailing_mean_returns.get(product, 0.0))
