@@ -103,3 +103,58 @@ def test_cost_aware_meta_is_causal_and_can_reject_a_non_positive_net_switch():
         transition_cost_bps=15.0,
     )
     pd.testing.assert_series_equal(costed.iloc[-1], changed.iloc[-1])
+
+
+def test_weight_no_trade_proxy_suppresses_only_low_edge_openings_and_increases():
+    candidate_module = _candidate_module()
+    index = pd.date_range("2026-01-01", periods=25, freq="B")
+    target = pd.DataFrame(0.0, index=index, columns=["A", "M"])
+    target.loc[index[20]:, "A"] = 1.0
+    target.loc[index[20]:, "M"] = -1.0
+    returns = pd.DataFrame(
+        {"A": [0.0001] * 25, "M": [-0.002] * 25},
+        index=index,
+    )
+    filtered, audit = candidate_module.cost_aware_no_trade_weights(
+        target,
+        returns,
+        lookback=20,
+        horizon_days=3,
+        cost_bps=15.0,
+    )
+    assert filtered.loc[index[20], "A"] == 0.0
+    assert filtered.loc[index[20], "M"] == -1.0
+    assert int((audit["suppressed"] == True).sum()) >= 1  # noqa: E712
+
+
+def test_weight_no_trade_proxy_is_causal_and_never_blocks_reduction_or_reversal():
+    candidate_module = _candidate_module()
+    index = pd.date_range("2026-01-01", periods=25, freq="B")
+    target = pd.DataFrame(0.0, index=index, columns=["A"])
+    target.loc[index[5]:index[20], "A"] = 1.0
+    target.loc[index[21], "A"] = 0.5
+    target.loc[index[22]:, "A"] = -1.0
+    returns = pd.DataFrame({"A": [0.002] * 25}, index=index)
+    baseline, _ = candidate_module.cost_aware_no_trade_weights(
+        target,
+        returns,
+        lookback=5,
+        horizon_days=3,
+        cost_bps=15.0,
+    )
+    assert baseline.loc[index[21], "A"] == 0.5
+    assert baseline.loc[index[22], "A"] == -1.0
+
+    changed_returns = returns.copy()
+    changed_returns.loc[index[22]:, "A"] = -0.2
+    changed, _ = candidate_module.cost_aware_no_trade_weights(
+        target,
+        changed_returns,
+        lookback=5,
+        horizon_days=3,
+        cost_bps=15.0,
+    )
+    pd.testing.assert_series_equal(
+        baseline.loc[:index[22], "A"],
+        changed.loc[:index[22], "A"],
+    )
