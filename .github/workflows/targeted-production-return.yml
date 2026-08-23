@@ -24,6 +24,7 @@ jobs:
           python -m pytest -q
           tests/test_directional_risk_governor.py
           tests/test_directional_daily_recovery.py
+          tests/test_execution_aligned_policy.py
           tests/test_directional_activity.py
           tests/test_execution_aligned_runtime.py
           tests/test_directional_manager.py
