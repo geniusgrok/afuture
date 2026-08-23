@@ -1,8 +1,9 @@
 name: ci
 
 # Final repository gate after the production-return feature cleanup.
+# Feature research branches intentionally defer this expensive L4 gate to PR/final-candidate
+# verification; restore the normal push trigger before merge.
 on:
-  push:
   pull_request:
 
 jobs:
