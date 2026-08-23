@@ -70,6 +70,8 @@ class SimBroker(Broker):
         self._tick_seq = 0
         self._eligible_seq: dict[str, int] = {}
         self._depth: dict[str, list[int]] = {}
+        self._order_arrival: dict[str, tuple[float, float, int]] = {}
+        self._first_fill_seq: dict[str, int] = {}
 
     def start(self) -> None:
         self._started = True
@@ -152,6 +154,13 @@ class SimBroker(Broker):
             status=OrderStatus.NOT_TRADED,
         )
         self._orders[order_id] = order
+        arrival = self._ticks.get(request.symbol)
+        if arrival is not None:
+            self._order_arrival[order_id] = (
+                float(arrival.bid_price),
+                float(arrival.ask_price),
+                self._tick_seq,
+            )
         self._events.append(BrokerEvent("order", order))
         self._eligible_seq[order_id] = self._tick_seq + self.latency_ticks
 
@@ -180,6 +189,58 @@ class SimBroker(Broker):
 
     def get_positions(self) -> list[ContractPosition]:
         return self.position_book.all()
+
+    def get_execution_stress_summary(self) -> dict[str, float | int]:
+        """Summarize observed matching friction without influencing broker behavior."""
+        requested = sum(int(order.request.volume) for order in self._orders.values())
+        filled = sum(int(order.traded) for order in self._orders.values())
+        unfilled = max(0, requested - filled)
+        turnover = 0.0
+        spread_cost = 0.0
+        slippage_impact_cost = 0.0
+        commission_cost = 0.0
+        latency_volume = 0.0
+        latency_weight = 0
+        for trade in self._trades:
+            spec = self.specs[trade.symbol]
+            notional_scale = float(trade.volume) * float(spec.multiplier)
+            turnover += abs(float(trade.price)) * notional_scale
+            commission_cost += float(trade.commission)
+            order = self._orders.get(trade.order_id)
+            arrival = self._order_arrival.get(trade.order_id)
+            if order is None or arrival is None:
+                continue
+            bid, ask, submit_seq = arrival
+            mid = (bid + ask) / 2.0
+            if order.request.side is OrderSide.BUY:
+                best = ask
+                spread_cost += max(0.0, best - mid) * notional_scale
+                slippage_impact_cost += (float(trade.price) - best) * notional_scale
+            else:
+                best = bid
+                spread_cost += max(0.0, mid - best) * notional_scale
+                slippage_impact_cost += (best - float(trade.price)) * notional_scale
+            fill_seq = self._first_fill_seq.get(trade.order_id, submit_seq)
+            latency_volume += max(0, fill_seq - submit_seq) * int(trade.volume)
+            latency_weight += int(trade.volume)
+        return {
+            "order_count": len(self._orders),
+            "trade_count": len(self._trades),
+            "requested_volume": requested,
+            "filled_volume": filled,
+            "unfilled_volume": unfilled,
+            "fill_ratio": float(filled / requested) if requested else 0.0,
+            "turnover_notional": float(turnover),
+            "spread_cost": float(spread_cost),
+            "slippage_impact_cost": float(slippage_impact_cost),
+            "commission_cost": float(commission_cost),
+            "total_execution_cost": float(
+                spread_cost + slippage_impact_cost + commission_cost
+            ),
+            "volume_weighted_latency_ticks": float(latency_volume / latency_weight)
+            if latency_weight
+            else 0.0,
+        }
 
     def get_account(self) -> AccountSnapshot:
         unrealized = 0.0
@@ -307,6 +368,7 @@ class SimBroker(Broker):
             if order.traded == order.request.volume
             else OrderStatus.PART_TRADED
         )
+        self._first_fill_seq.setdefault(order.order_id, self._tick_seq)
 
         tick = self._ticks[order.request.symbol]
         trade = Trade(
