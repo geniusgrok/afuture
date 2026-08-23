@@ -8,6 +8,7 @@ import pandas as pd
 from afuture.execution_aligned_policy import (
     ExecutionAlignedAggressivePolicy,
     META_ANNUALIZED_WEIGHT,
+    META_MIN_TEMPLATE_REBALANCE,
     META_SHARPE_WEIGHT,
     _clean_prices,
 )
@@ -57,8 +58,14 @@ def test_execution_aligned_policy_uses_frozen_meta_shape():
     assert policy.meta_count == 3
     assert META_ANNUALIZED_WEIGHT == 0.25
     assert META_SHARPE_WEIGHT == 1.0
+    assert META_MIN_TEMPLATE_REBALANCE == 5
     assert len(policy.template_ids) == 96
-    assert policy.meta_score_source == "continuous_intraday_base_stress_robust"
+    assert len(policy.meta_eligible_template_ids) == 57
+    assert all(
+        int(item.split("_r", 1)[1].split("_g", 1)[0]) >= 5
+        for item in policy.meta_eligible_template_ids
+    )
+    assert policy.meta_score_source == "continuous_intraday_base_stress_low_turnover"
 
 
 def test_robust_meta_score_requires_both_cost_endpoints_and_favors_survival():
