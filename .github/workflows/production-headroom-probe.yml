@@ -1,12 +1,14 @@
 name: production-headroom-probe
 
 on:
-  push:
+  pull_request:
     branches:
-      - codex/afuture-production-return-100-20260823
+      - main
+    paths:
+      - .github/workflows/production-headroom-probe.yml
 
 concurrency:
-  group: production-headroom-probe-${{ github.ref }}
+  group: production-headroom-probe-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -15,6 +17,7 @@ permissions:
 
 jobs:
   probe:
+    if: github.head_ref == 'codex/afuture-production-return-100-20260823'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
