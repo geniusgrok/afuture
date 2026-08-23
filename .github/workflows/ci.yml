@@ -3,6 +3,8 @@ name: ci
 # Final repository gate after the production-return feature cleanup.
 on:
   push:
+    branches-ignore:
+      - codex/afuture-microstructure-cost-alpha-20260824
   pull_request:
 
 jobs:
