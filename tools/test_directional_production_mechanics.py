@@ -13,10 +13,10 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 raw = pd.DataFrame([
-    {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":99,"close":99,"volume":5000,"hold":30000},
-    {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":101,"volume":5000,"hold":30000},
+    {"date":"2026-08-19","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":99,"close":99,"volume":5000,"hold":30000},
+    {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":101,"volume":5000,"hold":30000},
 ])
-weights = pd.DataFrame({"A":[0.5]}, index=pd.to_datetime(["2026-08-21"]))
+weights = pd.DataFrame({"A":[0.5]}, index=pd.to_datetime(["2026-08-20"]))
 report = module.evaluate_with_weights(raw, weights)
 assert report["selection_frozen"] is True
 assert report["parameter_search"] is False
@@ -41,6 +41,10 @@ assert report["base"]["cost_bps"] == 5.0
 assert report["stress"]["cost_bps"] == 15.0
 assert report["margin_is_historical_truth"] is False
 assert report["base"]["final_equity"] > 0
+assert report["production_attribution"]["stress"]["alpha"]["gross_signal_pnl"] != 0.0
+assert report["production_attribution"]["stress"]["transaction_cost"]["total_cost"] > 0.0
+assert "entry" in report["production_attribution"]["stress"]["transaction_cost"]["by_action"]
+assert report["production_attribution"]["stress"]["capacity"]["peak_raw_target_gross_ratio"] <= 2.0
 
 # Each published window is an independent account experiment. Circuit behavior itself
 # is covered by the acceptance unit tests; this smoke test only proves that an earlier

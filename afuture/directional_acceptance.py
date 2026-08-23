@@ -14,6 +14,11 @@ from typing import Mapping
 import pandas as pd
 
 from .directional import RebalancePlan
+from .directional_attribution import (
+    AUDIT_EVENT_COLUMNS,
+    classify_rebalance_action,
+    exposure_side,
+)
 from .directional_efficiency import attribute_rebalance_deltas
 from .directional_risk import DirectionalRiskGovernor
 
@@ -69,8 +74,26 @@ class ProductionMechanicsConfig:
 
 
 @dataclass(frozen=True)
+class TargetLotStages:
+    """Audit-only target construction stages; ``final_lots`` remains authoritative."""
+
+    raw_integer_lots: dict[str, int]
+    margin_fitted_lots: dict[str, int]
+    final_lots: dict[str, int]
+    desired_notional: float
+    raw_integer_notional: float
+    margin_fitted_notional: float
+    final_notional: float
+    integer_rounding_loss_notional: float
+    max_volume_clipping_notional: float
+    unavailable_contract_notional: float
+    soft_margin_share: float | None = None
+
+
+@dataclass(frozen=True)
 class ProductionSimulationResult:
     daily: pd.DataFrame
+    events: pd.DataFrame
     final_equity: float
     first_divergence: str = ""
 
@@ -101,6 +124,60 @@ class DirectionalProductionAcceptance:
             raise ValueError(f"unknown frozen product multiplier: {symbol}")
         return prefix
 
+    def target_lot_stages(
+        self,
+        *,
+        equity: float,
+        product_weights: Mapping[str, float],
+        product_open_prices: Mapping[str, float],
+        selected_symbols: Mapping[str, str],
+        current_lots: Mapping[str, int] | None = None,
+        completed_returns: tuple[float, ...] = (),
+    ) -> TargetLotStages:
+        """Expose integer construction losses without changing target-lot behavior."""
+        if equity <= 0:
+            return TargetLotStages({}, {}, {}, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        result: dict[str, int] = {}
+        desired_notional = 0.0
+        integer_rounding_loss = 0.0
+        max_volume_clipping = 0.0
+        unavailable_contract = 0.0
+        for raw_product, raw_weight in sorted(product_weights.items()):
+            product = str(raw_product).upper()
+            weight = float(raw_weight)
+            if abs(weight) <= 1e-15:
+                continue
+            desired = float(equity) * abs(weight)
+            desired_notional += desired
+            symbol = selected_symbols.get(product)
+            price = float(product_open_prices.get(product, 0.0))
+            multiplier = PRODUCT_MULTIPLIERS.get(product)
+            if symbol is None or multiplier is None or price <= 0:
+                unavailable_contract += desired
+                continue
+            lot_notional = price * float(multiplier)
+            unconstrained_lots = floor(desired / lot_notional)
+            integer_rounding_loss += desired - unconstrained_lots * lot_notional
+            clipped_lots = min(self.config.max_contract_volume, unconstrained_lots)
+            if unconstrained_lots > clipped_lots:
+                max_volume_clipping += (unconstrained_lots - clipped_lots) * lot_notional
+            if clipped_lots > 0:
+                result[str(symbol)] = clipped_lots if weight > 0 else -clipped_lots
+        integer_notional = desired_notional - integer_rounding_loss - max_volume_clipping - unavailable_contract
+        integer_notional = max(0.0, float(integer_notional))
+        return TargetLotStages(
+            raw_integer_lots=dict(result),
+            margin_fitted_lots=dict(result),
+            final_lots=dict(result),
+            desired_notional=float(desired_notional),
+            raw_integer_notional=integer_notional,
+            margin_fitted_notional=integer_notional,
+            final_notional=integer_notional,
+            integer_rounding_loss_notional=float(integer_rounding_loss),
+            max_volume_clipping_notional=float(max_volume_clipping),
+            unavailable_contract_notional=float(unavailable_contract),
+        )
+
     def target_lots(
         self,
         *,
@@ -111,26 +188,14 @@ class DirectionalProductionAcceptance:
         current_lots: Mapping[str, int] | None = None,
         completed_returns: tuple[float, ...] = (),
     ) -> dict[str, int]:
-        if equity <= 0:
-            return {}
-        result: dict[str, int] = {}
-        for raw_product, raw_weight in sorted(product_weights.items()):
-            product = str(raw_product).upper()
-            weight = float(raw_weight)
-            if abs(weight) <= 1e-15:
-                continue
-            symbol = selected_symbols.get(product)
-            price = float(product_open_prices.get(product, 0.0))
-            multiplier = PRODUCT_MULTIPLIERS.get(product)
-            if symbol is None or multiplier is None or price <= 0:
-                continue
-            lots = min(
-                self.config.max_contract_volume,
-                floor(equity * abs(weight) / (price * multiplier)),
-            )
-            if lots > 0:
-                result[str(symbol)] = lots if weight > 0 else -lots
-        return result
+        return self.target_lot_stages(
+            equity=equity,
+            product_weights=product_weights,
+            product_open_prices=product_open_prices,
+            selected_symbols=selected_symbols,
+            current_lots=current_lots,
+            completed_returns=completed_returns,
+        ).final_lots
 
     @staticmethod
     def rebalance_plan(
@@ -384,6 +449,94 @@ class DirectionalProductionAcceptance:
             )
         )
 
+    def _trade_audit_rows(
+        self,
+        *,
+        day: pd.Timestamp,
+        starting_lots: Mapping[str, int],
+        deltas: Mapping[str, int],
+        prices: Mapping[str, float],
+        cost_rate: float,
+        original_lots: Mapping[str, int] | None = None,
+        target_lots: Mapping[str, int] | None = None,
+        action_override: str | None = None,
+    ) -> list[dict]:
+        """Describe executed deltas after the simulator has already decided them."""
+        symbols = set(starting_lots) | set(deltas)
+        if original_lots is not None:
+            symbols.update(original_lots)
+        if target_lots is not None:
+            symbols.update(target_lots)
+        products = {symbol: self._product(symbol) for symbol in symbols}
+        rows: list[dict] = []
+        for symbol in sorted(deltas):
+            delta = int(deltas[symbol])
+            if not delta:
+                continue
+            before = int(starting_lots.get(symbol, 0))
+            after = before + delta
+            price = float(prices.get(symbol, 0.0))
+            if price <= 0:
+                raise ValueError(f"missing positive audit execution price: {symbol}")
+            product = products[symbol]
+            if action_override is not None:
+                action = str(action_override)
+            else:
+                if original_lots is None or target_lots is None:
+                    raise ValueError("normal trade audit requires original and target lots")
+                action = classify_rebalance_action(
+                    symbol=symbol,
+                    original_lots=original_lots,
+                    target_lots=target_lots,
+                    symbol_products=products,
+                )
+            turnover = abs(delta) * price * PRODUCT_MULTIPLIERS[product]
+            exposure = after if after else before
+            rows.append(
+                {
+                    "date": day,
+                    "kind": "trade",
+                    "action": action,
+                    "product": product,
+                    "symbol": symbol,
+                    "side": exposure_side(exposure),
+                    "lots_before": before,
+                    "lots_after": after,
+                    "delta_lots": delta,
+                    "price": price,
+                    "turnover_notional": float(turnover),
+                    "transaction_cost": float(turnover * cost_rate),
+                    "gross_pnl": 0.0,
+                }
+            )
+        return rows
+
+    def _pnl_audit_row(
+        self,
+        *,
+        day: pd.Timestamp,
+        action: str,
+        symbol: str,
+        volume: int,
+        price: float,
+        gross_pnl: float,
+    ) -> dict:
+        return {
+            "date": day,
+            "kind": "pnl",
+            "action": str(action),
+            "product": self._product(symbol),
+            "symbol": str(symbol),
+            "side": exposure_side(int(volume)),
+            "lots_before": int(volume),
+            "lots_after": int(volume),
+            "delta_lots": 0,
+            "price": float(price),
+            "turnover_notional": 0.0,
+            "transaction_cost": 0.0,
+            "gross_pnl": float(gross_pnl),
+        }
+
     def realized_gross_reductions(
         self,
         *,
@@ -480,6 +633,7 @@ class DirectionalProductionAcceptance:
         halted = False
         first_divergence = ""
         output_rows: list[dict] = []
+        event_rows: list[dict] = []
         cost_rate = float(cost_bps) / 10000.0
 
         for day, weight_row in weight_frame.iterrows():
@@ -502,6 +656,16 @@ class DirectionalProductionAcceptance:
             daily_circuit = False
             gross_guard = False
             risk_scale = self.risk_governor.scale(completed_returns)
+            raw_target_gross_ratio = float(weight_row.abs().sum())
+            governor_target_gross_ratio = raw_target_gross_ratio * float(risk_scale)
+            raw_integer_target_gross_notional = 0.0
+            margin_fitted_target_gross_notional = 0.0
+            final_target_gross_notional = 0.0
+            integer_rounding_loss_notional = 0.0
+            max_volume_clipping_notional = 0.0
+            unavailable_contract_notional = 0.0
+            margin_capacity_loss_notional = 0.0
+            lot_stabilization_loss_notional = 0.0
 
             if halted:
                 output_rows.append(
@@ -517,6 +681,16 @@ class DirectionalProductionAcceptance:
                         "turnover_daily_circuit": 0.0,
                         "turnover_hard_halt": 0.0,
                         "turnover_gross_guard": 0.0,
+                        "raw_target_gross_ratio": raw_target_gross_ratio,
+                        "governor_target_gross_ratio": governor_target_gross_ratio,
+                        "raw_integer_target_gross_notional": 0.0,
+                        "margin_fitted_target_gross_notional": 0.0,
+                        "final_target_gross_notional": 0.0,
+                        "integer_rounding_loss_notional": 0.0,
+                        "max_volume_clipping_notional": 0.0,
+                        "unavailable_contract_notional": 0.0,
+                        "margin_capacity_loss_notional": 0.0,
+                        "lot_stabilization_loss_notional": 0.0,
                         "gross_notional": 0.0,
                         "margin": 0.0,
                         "risk_reason": first_divergence,
@@ -543,9 +717,20 @@ class DirectionalProductionAcceptance:
                 close_price = float(row["close"])
                 open_prices[symbol] = open_price
                 close_prices[symbol] = close_price
-                equity += (
+                gap_pnl = (
                     open_price - float(previous_close[symbol])
                 ) * int(volume) * PRODUCT_MULTIPLIERS[self._product(symbol)]
+                equity += gap_pnl
+                event_rows.append(
+                    self._pnl_audit_row(
+                        day=day,
+                        action="gap",
+                        symbol=symbol,
+                        volume=int(volume),
+                        price=open_price,
+                        gross_pnl=gap_pnl,
+                    )
+                )
             if missing_existing:
                 halted = True
                 output_rows.append(
@@ -561,6 +746,16 @@ class DirectionalProductionAcceptance:
                         "turnover_daily_circuit": 0.0,
                         "turnover_hard_halt": 0.0,
                         "turnover_gross_guard": 0.0,
+                        "raw_target_gross_ratio": raw_target_gross_ratio,
+                        "governor_target_gross_ratio": governor_target_gross_ratio,
+                        "raw_integer_target_gross_notional": 0.0,
+                        "margin_fitted_target_gross_notional": 0.0,
+                        "final_target_gross_notional": 0.0,
+                        "integer_rounding_loss_notional": 0.0,
+                        "max_volume_clipping_notional": 0.0,
+                        "unavailable_contract_notional": 0.0,
+                        "margin_capacity_loss_notional": 0.0,
+                        "lot_stabilization_loss_notional": 0.0,
                         "gross_notional": 0.0,
                         "margin": 0.0,
                         "risk_reason": risk_reason,
@@ -587,6 +782,21 @@ class DirectionalProductionAcceptance:
                 first_divergence = first_divergence or risk_reason
                 if lots:
                     closing = {symbol: -volume for symbol, volume in lots.items()}
+                    risk_action = (
+                        "daily_circuit"
+                        if risk_reason == "daily loss limit reached"
+                        else "hard_halt"
+                    )
+                    event_rows.extend(
+                        self._trade_audit_rows(
+                            day=day,
+                            starting_lots=dict(lots),
+                            deltas=closing,
+                            prices=open_prices,
+                            cost_rate=cost_rate,
+                            action_override=risk_action,
+                        )
+                    )
                     close_turnover = self._turnover(closing, open_prices)
                     turnover_notional += close_turnover
                     if risk_reason == "daily loss limit reached":
@@ -631,13 +841,29 @@ class DirectionalProductionAcceptance:
                     str(product).upper(): float(value) * risk_scale
                     for product, value in weight_row.items()
                 }
-                target = self.target_lots(
+                target_stages = self.target_lot_stages(
                     equity=equity,
                     product_weights=product_weights,
                     product_open_prices=product_open,
                     selected_symbols=selected_symbols,
                     current_lots=lots,
                     completed_returns=tuple(completed_returns),
+                )
+                target = dict(target_stages.final_lots)
+                raw_integer_target_gross_notional = target_stages.raw_integer_notional
+                margin_fitted_target_gross_notional = target_stages.margin_fitted_notional
+                integer_rounding_loss_notional = target_stages.integer_rounding_loss_notional
+                max_volume_clipping_notional = target_stages.max_volume_clipping_notional
+                unavailable_contract_notional = target_stages.unavailable_contract_notional
+                margin_capacity_loss_notional = max(
+                    0.0,
+                    raw_integer_target_gross_notional
+                    - margin_fitted_target_gross_notional,
+                )
+                lot_stabilization_loss_notional = max(
+                    0.0,
+                    margin_fitted_target_gross_notional
+                    - target_stages.final_notional,
                 )
                 required_products = {
                     product
@@ -648,6 +874,9 @@ class DirectionalProductionAcceptance:
                 for symbol, volume in lots.items():
                     if self._product(symbol) in unavailable_products:
                         target[symbol] = int(volume)
+                final_target_gross_notional = (
+                    self._gross_notional(target, open_prices) if target else 0.0
+                )
 
                 normal_original_lots = dict(lots)
                 normal_target_lots = dict(target)
@@ -662,6 +891,17 @@ class DirectionalProductionAcceptance:
                     turnover_notional += reduction_turnover
                     for symbol, delta in phase.reductions.items():
                         normal_deltas[symbol] = normal_deltas.get(symbol, 0) + int(delta)
+                    event_rows.extend(
+                        self._trade_audit_rows(
+                            day=day,
+                            starting_lots=dict(lots),
+                            deltas=phase.reductions,
+                            prices=open_prices,
+                            cost_rate=cost_rate,
+                            original_lots=normal_original_lots,
+                            target_lots=normal_target_lots,
+                        )
+                    )
                     equity -= reduction_turnover * cost_rate
                     self._apply_deltas(lots, phase.reductions)
 
@@ -685,6 +925,17 @@ class DirectionalProductionAcceptance:
                         turnover_notional += opening_turnover
                         for symbol, delta in phase.openings.items():
                             normal_deltas[symbol] = normal_deltas.get(symbol, 0) + int(delta)
+                        event_rows.extend(
+                            self._trade_audit_rows(
+                                day=day,
+                                starting_lots=dict(lots),
+                                deltas=phase.openings,
+                                prices=open_prices,
+                                cost_rate=cost_rate,
+                                original_lots=normal_original_lots,
+                                target_lots=normal_target_lots,
+                            )
+                        )
                         equity -= opening_turnover * cost_rate
                         self._apply_deltas(lots, phase.openings)
                     else:
@@ -706,9 +957,20 @@ class DirectionalProductionAcceptance:
                 for symbol, volume in lots.items():
                     if symbol not in open_prices or symbol not in close_prices:
                         continue
-                    intraday_pnl += (
+                    symbol_pnl = (
                         close_prices[symbol] - open_prices[symbol]
                     ) * int(volume) * PRODUCT_MULTIPLIERS[self._product(symbol)]
+                    intraday_pnl += symbol_pnl
+                    event_rows.append(
+                        self._pnl_audit_row(
+                            day=day,
+                            action="intraday",
+                            symbol=symbol,
+                            volume=int(volume),
+                            price=close_prices[symbol],
+                            gross_pnl=symbol_pnl,
+                        )
+                    )
                 equity += intraday_pnl
                 high_watermark = max(high_watermark, equity)
                 close_margin = self._margin(lots, close_prices) if lots else 0.0
@@ -722,6 +984,21 @@ class DirectionalProductionAcceptance:
                     first_divergence = first_divergence or risk_reason
                     if lots:
                         closing = {symbol: -volume for symbol, volume in lots.items()}
+                        risk_action = (
+                            "daily_circuit"
+                            if risk_reason == "daily loss limit reached"
+                            else "hard_halt"
+                        )
+                        event_rows.extend(
+                            self._trade_audit_rows(
+                                day=day,
+                                starting_lots=dict(lots),
+                                deltas=closing,
+                                prices=close_prices,
+                                cost_rate=cost_rate,
+                                action_override=risk_action,
+                            )
+                        )
                         close_turnover = self._turnover(closing, close_prices)
                         turnover_notional += close_turnover
                         if risk_reason == "daily loss limit reached":
@@ -748,6 +1025,16 @@ class DirectionalProductionAcceptance:
                         )
                         turnover_notional += guard_turnover
                         turnover_gross_guard += guard_turnover
+                        event_rows.extend(
+                            self._trade_audit_rows(
+                                day=day,
+                                starting_lots=dict(lots),
+                                deltas=guard_reductions,
+                                prices=close_prices,
+                                cost_rate=cost_rate,
+                                action_override="gross_guard",
+                            )
+                        )
                         equity -= guard_turnover * cost_rate
                         self._apply_deltas(lots, guard_reductions)
 
@@ -767,6 +1054,21 @@ class DirectionalProductionAcceptance:
                                 closing = {
                                     symbol: -volume for symbol, volume in lots.items()
                                 }
+                                risk_action = (
+                                    "daily_circuit"
+                                    if risk_reason == "daily loss limit reached"
+                                    else "hard_halt"
+                                )
+                                event_rows.extend(
+                                    self._trade_audit_rows(
+                                        day=day,
+                                        starting_lots=dict(lots),
+                                        deltas=closing,
+                                        prices=close_prices,
+                                        cost_rate=cost_rate,
+                                        action_override=risk_action,
+                                    )
+                                )
                                 close_turnover = self._turnover(
                                     closing, close_prices
                                 )
@@ -806,6 +1108,16 @@ class DirectionalProductionAcceptance:
                     "turnover_daily_circuit": turnover_daily_circuit,
                     "turnover_hard_halt": turnover_hard_halt,
                     "turnover_gross_guard": turnover_gross_guard,
+                    "raw_target_gross_ratio": raw_target_gross_ratio,
+                    "governor_target_gross_ratio": governor_target_gross_ratio,
+                    "raw_integer_target_gross_notional": raw_integer_target_gross_notional,
+                    "margin_fitted_target_gross_notional": margin_fitted_target_gross_notional,
+                    "final_target_gross_notional": final_target_gross_notional,
+                    "integer_rounding_loss_notional": integer_rounding_loss_notional,
+                    "max_volume_clipping_notional": max_volume_clipping_notional,
+                    "unavailable_contract_notional": unavailable_contract_notional,
+                    "margin_capacity_loss_notional": margin_capacity_loss_notional,
+                    "lot_stabilization_loss_notional": lot_stabilization_loss_notional,
                     "gross_notional": gross_notional,
                     "margin": margin,
                     "risk_reason": risk_reason,
@@ -825,6 +1137,15 @@ class DirectionalProductionAcceptance:
                     "turnover_roll", "turnover_resize", "turnover_reversal",
                     "turnover_entry_exit", "turnover_daily_circuit",
                     "turnover_hard_halt", "turnover_gross_guard",
+                    "raw_target_gross_ratio", "governor_target_gross_ratio",
+                    "raw_integer_target_gross_notional",
+                    "margin_fitted_target_gross_notional",
+                    "final_target_gross_notional",
+                    "integer_rounding_loss_notional",
+                    "max_volume_clipping_notional",
+                    "unavailable_contract_notional",
+                    "margin_capacity_loss_notional",
+                    "lot_stabilization_loss_notional",
                     "gross_notional", "margin", "risk_reason",
                     "margin_reject", "daily_circuit", "gross_guard",
                     "risk_scale", "halted",
@@ -832,8 +1153,10 @@ class DirectionalProductionAcceptance:
             )
         else:
             daily.set_index("date", inplace=True)
+        events = pd.DataFrame(event_rows, columns=AUDIT_EVENT_COLUMNS)
         return ProductionSimulationResult(
             daily=daily,
+            events=events,
             final_equity=float(equity),
             first_divergence=first_divergence,
         )

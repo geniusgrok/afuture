@@ -32,6 +32,7 @@ from afuture.directional_acceptance import (
     ProductionMechanicsConfig,
     ProductionSimulationResult,
 )
+from afuture.directional_attribution import summarize_production_attribution
 from afuture.directional_robustness import MarginAwareDirectionalProductionAcceptance
 
 BASE_COST_BPS = 5.0
@@ -144,9 +145,10 @@ def _simulation_report(
     prepared: PreparedDirectionalContracts,
     cost_bps: float,
     margin_rate_proxy: float,
-) -> tuple[dict, pd.DataFrame]:
+) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
     windows: dict[str, dict] = {}
     daily_by_window: dict[str, pd.DataFrame] = {}
+    events_by_window: dict[str, pd.DataFrame] = {}
     for name, (start, end) in WINDOWS.items():
         window_weights = weights.loc[
             pd.Timestamp(start) : pd.Timestamp(end)
@@ -159,6 +161,7 @@ def _simulation_report(
         )
         windows[name] = _result_stats(result)
         daily_by_window[name] = result.daily.copy()
+        events_by_window[name] = result.events.copy()
 
     if "full_recent" in windows:
         principal_name = "full_recent"
@@ -180,6 +183,7 @@ def _simulation_report(
         },
     )
     principal_daily = daily_by_window.get(principal_name, pd.DataFrame())
+    principal_events = events_by_window.get(principal_name, pd.DataFrame())
     config = simulator.config
     return (
         {
@@ -207,6 +211,7 @@ def _simulation_report(
             "windows": windows,
         },
         principal_daily,
+        principal_events,
     )
 
 
@@ -231,7 +236,7 @@ def evaluate_with_weights(
     # Contract data preparation is invariant to account capital, margin proxy and
     # reporting window. Reuse it while every simulation still resets account state.
     prepared = base_sim.prepare_contracts(specific_raw)
-    base, base_daily = _simulation_report(
+    base, base_daily, base_events = _simulation_report(
         base_sim,
         specific_raw,
         weights,
@@ -239,7 +244,7 @@ def evaluate_with_weights(
         cost_bps=BASE_COST_BPS,
         margin_rate_proxy=BASE_MARGIN_PROXY,
     )
-    stress, stress_daily = _simulation_report(
+    stress, stress_daily, stress_events = _simulation_report(
         stress_sim,
         specific_raw,
         weights,
@@ -259,6 +264,18 @@ def evaluate_with_weights(
         values["attributed_total"] = float(sum(values[column] for column in turnover_columns))
         return values
     turnover_attribution = {"base": summarize_turnover(base_daily), "stress": summarize_turnover(stress_daily)}
+    production_attribution = {
+        "base": summarize_production_attribution(
+            daily=base_daily,
+            events=base_events,
+            initial_capital=INITIAL_CAPITAL,
+        ),
+        "stress": summarize_production_attribution(
+            daily=stress_daily,
+            events=stress_events,
+            initial_capital=INITIAL_CAPITAL,
+        ),
+    }
 
     production_gap: dict[str, dict] = {}
     if float_report is not None:
@@ -290,6 +307,7 @@ def evaluate_with_weights(
         "margin_is_historical_truth": False,
         "state_reset_per_window": True,
         "turnover_attribution": turnover_attribution,
+        "production_attribution": production_attribution,
         "mechanics": {
             "integer_lots": True,
             "frozen_contract_multipliers": True,
@@ -332,6 +350,8 @@ def evaluate_with_weights(
         ],
         "_base_daily": base_daily,
         "_stress_daily": stress_daily,
+        "_base_events": base_events,
+        "_stress_events": stress_events,
     }
 
 
@@ -377,6 +397,12 @@ def main() -> None:
     )
     report["_stress_daily"].to_csv(
         runtime / "directional_production_stress_daily.csv"
+    )
+    report["_base_events"].to_csv(
+        runtime / "directional_production_base_events.csv", index=False
+    )
+    report["_stress_events"].to_csv(
+        runtime / "directional_production_stress_events.csv", index=False
     )
     output = runtime / "directional_production_mechanics_report.json"
     output.write_text(
