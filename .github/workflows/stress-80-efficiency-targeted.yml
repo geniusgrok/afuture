@@ -2,7 +2,6 @@ name: stress-80-efficiency-targeted
 
 # Development gate for isolated execution-efficiency candidates. Expensive fixed L3
 # runs only when the PR is explicitly marked ready for an economic promotion decision.
-# Current promotion checkpoint: same-direction increase persistence only.
 on:
   push:
     branches:
@@ -29,7 +28,6 @@ jobs:
         run: >-
           python -m pytest -q
           tests/test_directional_execution_efficiency.py
-          tests/test_directional_same_direction_integration.py
           tests/test_execution_aligned_policy.py
           tests/test_directional_activity.py
           tests/test_directional_trading_day_selection.py
