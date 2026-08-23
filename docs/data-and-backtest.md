@@ -196,3 +196,15 @@ PR #15 的新增研究首先固定 production 事件账本，再做离线标签�
 固定 Stress 账本给出 `700,245.00` gross PnL、`256,918,290.00` turnover、`385,377.435` 的 15bp 成本和 4.2164-session 平均持有期。当前历史的主要问题不是“交易次数太多”这么简单：entry/exit 占 73.92% turnover，但没有发现跨 prior/OOS 稳定为负的可因果 cohort。预声明 net-edge gate 和七个不同 family 均未通过独立窗口门，故没有继续调 lookback/rebalance/fraction。
 
 更宽 margin research candidate 也只做一次预声明 screen：由 35% hard margin、5% adverse-move reserve 和 15bp full-reversal cost 推导 calm soft share 33.04%，固定 Stress 结果却只有 4.7970% 年化并 permanent HALT，因此拒绝。生产仍使用 PR #14 的约 30% calm soft envelope。
+
+## 13. Microstructure / cost / curve research 证据边界
+
+本阶段继续沿用固定 input artifact `9473260618`，没有建设多年分钟/OI仓库。5m/OI 探测只返回每根约 1,023 条近期记录，无法覆盖 2022-08-22～2026-08-20 的 prior/train/validation/OOS，因此 opening-range 与 session-level Price×OI×Volume 不做短样本拟合。
+
+Cost-aware no-trade 单一预声明候选把 signal-layer turnover 从 608.4x 降到 440.8444x；15bp full_recent 从 109.3145% 提到 113.4880%、Sharpe 1.5268→1.5829，但 5bp Base full_recent 从 187.2603% 降到 168.5521%，Base OOS 从 167.4162% 降到 145.1620%，因此在 Production L3 前拒绝。
+
+同品种 curve family 只固定研究 `RB/M/CU/TA`、completed 60-observation z-score、next-day execution；15bp full_recent **-11.5956%**、Sharpe **-5.5001**，prior/train/validation/OOS 也未通过。Basis 因缺 point-in-time spot history 不合成。没有失败 family 被组合救结果，也没有触发 2.25x/40%/20% 风险放宽研究。
+
+历史缺完整 L1/depth 仍意味着 realistic execution Stress 不能伪造两年年化。`SimBroker` 的 realistic L1 模式用于有真实 point-in-time L1/tick replay 时的 spread/depth/partial/latency/impact/unfilled stress；固定 15bp 继续承担当前两年可比较经济门。
+
+详细数字与最终拒绝清单见 [`directional-microstructure-cost-alpha-evidence.md`](directional-microstructure-cost-alpha-evidence.md)。
