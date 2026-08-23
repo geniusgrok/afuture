@@ -17,7 +17,11 @@ import re
 import numpy as np
 import pandas as pd
 
-from .directional_efficiency import should_switch_meta, stabilize_same_direction_weights
+from .directional_efficiency import (
+    should_switch_meta,
+    stabilize_product_replacements,
+    stabilize_same_direction_weights,
+)
 
 MAX_GROSS_LEVERAGE = 2.0
 MAX_ABS_DAILY_RETURN = 0.20
@@ -359,6 +363,17 @@ class ExecutionAlignedAggressivePolicy:
                     selected = candidate
 
             raw = aggregate(selected, timestamp)
+            if raw and previous_weights and position > 0:
+                trailing = intraday.iloc[
+                    max(0, position - self.meta_lookback) : position
+                ].mean(axis=0).to_dict()
+                raw = stabilize_product_replacements(
+                    previous_weights,
+                    raw,
+                    trailing_mean_returns=trailing,
+                    horizon=self.meta_rebalance,
+                    cost_bps=STRESS_COST_BPS,
+                )
             if raw:
                 final.loc[timestamp] = pd.Series(raw).reindex(final.columns).fillna(0.0)
             previous_weights = {str(product): float(value) for product, value in final.loc[timestamp].items() if abs(float(value)) > 1e-15}
