@@ -1,20 +1,6 @@
-source_sha=8385dead82cc2c593bce0119debb2989707ce719
-test_exit=2
+source_sha=ec344e1b28e39b58330d76a2617bcfbb63e1f6af
+test_exit=0
 research_exit=not-run
 --- targeted tail ---
-
-==================================== ERRORS ====================================
-_______ ERROR collecting tests/test_directional_execution_efficiency.py ________
-ImportError while importing test module '/home/runner/work/afuture/afuture/tests/test_directional_execution_efficiency.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-/opt/hostedtoolcache/Python/3.13.15/x64/lib/python3.13/importlib/__init__.py:88: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tests/test_directional_execution_efficiency.py:9: in <module>
-    from afuture.directional_efficiency import (
-E   ImportError: cannot import name 'cost_aware_no_trade_target' from 'afuture.directional_efficiency' (/home/runner/work/afuture/afuture/afuture/directional_efficiency.py)
-=========================== short test summary info ============================
-ERROR tests/test_directional_execution_efficiency.py
-!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
-1 error in 0.80s
+.......................................................                  [100%]
+55 passed in 7.25s
