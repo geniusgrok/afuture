@@ -188,9 +188,9 @@ def margin_sizing_share(
     """Return a soft sizing envelope below the unchanged hard account margin gate.
 
     A target placed exactly on the hard margin boundary can become a hard HALT after a
-    normal mark-to-market equity move. Reserve the already-configured daily-loss capacity
-    as sizing headroom. This does not change the 35%/cash hard gates: it only prevents
-    normal target construction from deliberately sitting on them.
+    normal mark-to-market equity move. Reserve the configured daily-loss budget as an
+    absolute equity share between normal target sizing and the unchanged hard margin/cash
+    gates. This only reduces normal target construction; it never relaxes a hard gate.
     """
     margin_ratio = float(max_margin_ratio)
     available_ratio = float(min_available_ratio)
@@ -202,7 +202,7 @@ def margin_sizing_share(
     if not 0 < daily_loss_ratio < 1:
         raise ValueError("max_daily_loss_ratio must be in (0, 1)")
     hard_share = min(margin_ratio, 1.0 - available_ratio)
-    return max(0.0, hard_share * (1.0 - daily_loss_ratio))
+    return max(0.0, hard_share - daily_loss_ratio)
 
 
 def build_target_lots(
