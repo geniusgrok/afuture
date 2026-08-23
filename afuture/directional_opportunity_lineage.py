@@ -36,8 +36,8 @@ def build_opportunity_weight_lineage(
             "opportunity lineage reconstruction diverged from production policy"
         ) from exc
 
-    raw_long = raw_weights.stack(dropna=False).rename("raw_aggregate_weight")
-    adjusted_long = adjusted.stack(dropna=False).rename("adjusted_aggregate_weight")
+    raw_long = raw_weights.stack().rename("raw_aggregate_weight")
+    adjusted_long = adjusted.stack().rename("adjusted_aggregate_weight")
     scale = pd.concat([raw_long, adjusted_long], axis=1)
     denominator = scale["raw_aggregate_weight"].abs() > 1e-15
     scale["opportunity_scale"] = 1.0
