@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from itertools import count
+from math import ceil
 
 from .base import Broker
 from ..fees import calculate_commission
@@ -37,16 +38,22 @@ class SimBroker(Broker):
         conservative: bool = False,
         latency_ticks: int = 0,
         market_impact_ticks: int = 0,
+        depth_haircut: float = 1.0,
+        size_impact_ticks: int = 0,
         contract_catalog: list[ContractInfo] | None = None,
     ) -> None:
         if initial_capital <= 0:
             raise ValueError("initial_capital must be positive")
+        if not 0.0 < float(depth_haircut) <= 1.0:
+            raise ValueError("depth_haircut must be in (0, 1]")
         self.initial_capital = initial_capital
         self.specs = specs
         self.slippage_ticks = max(0, slippage_ticks)
         self.conservative = conservative
         self.latency_ticks = max(0, latency_ticks)
         self.market_impact_ticks = max(0, market_impact_ticks)
+        self.depth_haircut = float(depth_haircut)
+        self.size_impact_ticks = max(0, int(size_impact_ticks))
         self._contract_catalog = list(contract_catalog or [])
         self.position_book = PositionBook()
         self._orders: dict[str, Order] = {}
@@ -63,6 +70,8 @@ class SimBroker(Broker):
         self._tick_seq = 0
         self._eligible_seq: dict[str, int] = {}
         self._depth: dict[str, list[int]] = {}
+        self._order_arrival: dict[str, tuple[float, float, int]] = {}
+        self._first_fill_seq: dict[str, int] = {}
 
     def start(self) -> None:
         self._started = True
@@ -105,6 +114,12 @@ class SimBroker(Broker):
             visible.append(item)
         return visible
 
+    def _displayed_depth(self, volume: float) -> int:
+        raw = max(0, int(volume))
+        if not self.conservative:
+            return raw
+        return max(0, int(raw * self.depth_haircut))
+
     def publish_tick(self, tick: Tick) -> None:
         tick.validate()
         self._tick_seq += 1
@@ -113,9 +128,10 @@ class SimBroker(Broker):
         self._trading_day = tick.trading_day
         self._ticks[tick.symbol] = tick
         # 每个新 Tick 只有一份一档深度；同一 Tick 内的多个订单共享并消耗这份深度。
+        # 保守模式可对显示深度做固定 haircut，用于模拟排队优先级和不可获得的队列份额。
         self._depth[tick.symbol] = [
-            int(tick.bid_volume),
-            int(tick.ask_volume),
+            self._displayed_depth(tick.bid_volume),
+            self._displayed_depth(tick.ask_volume),
         ]
         # 当前行情可能使上一轮延迟 FAK/FOK 首次具备成交资格。先产生这些成交/撤单
         # 回报，再把同一行情交给策略生成新决策，避免 broker 内部仓位已经变化而
@@ -138,6 +154,13 @@ class SimBroker(Broker):
             status=OrderStatus.NOT_TRADED,
         )
         self._orders[order_id] = order
+        arrival = self._ticks.get(request.symbol)
+        if arrival is not None:
+            self._order_arrival[order_id] = (
+                float(arrival.bid_price),
+                float(arrival.ask_price),
+                self._tick_seq,
+            )
         self._events.append(BrokerEvent("order", order))
         self._eligible_seq[order_id] = self._tick_seq + self.latency_ticks
 
@@ -166,6 +189,58 @@ class SimBroker(Broker):
 
     def get_positions(self) -> list[ContractPosition]:
         return self.position_book.all()
+
+    def get_execution_stress_summary(self) -> dict[str, float | int]:
+        """Summarize observed matching friction without influencing broker behavior."""
+        requested = sum(int(order.request.volume) for order in self._orders.values())
+        filled = sum(int(order.traded) for order in self._orders.values())
+        unfilled = max(0, requested - filled)
+        turnover = 0.0
+        spread_cost = 0.0
+        slippage_impact_cost = 0.0
+        commission_cost = 0.0
+        latency_volume = 0.0
+        latency_weight = 0
+        for trade in self._trades:
+            spec = self.specs[trade.symbol]
+            notional_scale = float(trade.volume) * float(spec.multiplier)
+            turnover += abs(float(trade.price)) * notional_scale
+            commission_cost += float(trade.commission)
+            order = self._orders.get(trade.order_id)
+            arrival = self._order_arrival.get(trade.order_id)
+            if order is None or arrival is None:
+                continue
+            bid, ask, submit_seq = arrival
+            mid = (bid + ask) / 2.0
+            if order.request.side is OrderSide.BUY:
+                best = ask
+                spread_cost += max(0.0, best - mid) * notional_scale
+                slippage_impact_cost += (float(trade.price) - best) * notional_scale
+            else:
+                best = bid
+                spread_cost += max(0.0, mid - best) * notional_scale
+                slippage_impact_cost += (best - float(trade.price)) * notional_scale
+            fill_seq = self._first_fill_seq.get(trade.order_id, submit_seq)
+            latency_volume += max(0, fill_seq - submit_seq) * int(trade.volume)
+            latency_weight += int(trade.volume)
+        return {
+            "order_count": len(self._orders),
+            "trade_count": len(self._trades),
+            "requested_volume": requested,
+            "filled_volume": filled,
+            "unfilled_volume": unfilled,
+            "fill_ratio": float(filled / requested) if requested else 0.0,
+            "turnover_notional": float(turnover),
+            "spread_cost": float(spread_cost),
+            "slippage_impact_cost": float(slippage_impact_cost),
+            "commission_cost": float(commission_cost),
+            "total_execution_cost": float(
+                spread_cost + slippage_impact_cost + commission_cost
+            ),
+            "volume_weighted_latency_ticks": float(latency_volume / latency_weight)
+            if latency_weight
+            else 0.0,
+        }
 
     def get_account(self) -> AccountSnapshot:
         unrealized = 0.0
@@ -230,7 +305,10 @@ class SimBroker(Broker):
         request = order.request
         depth = self._depth.setdefault(
             request.symbol,
-            [int(tick.bid_volume), int(tick.ask_volume)],
+            [
+                self._displayed_depth(tick.bid_volume),
+                self._displayed_depth(tick.ask_volume),
+            ],
         )
         if request.side is OrderSide.BUY:
             marketable = request.price >= tick.ask_price
@@ -253,13 +331,24 @@ class SimBroker(Broker):
         fill_volume = min(remaining, available)
         spec = self.specs[request.symbol]
         impact_ticks = self.market_impact_ticks if self.conservative else 0
+        if self.conservative and self.size_impact_ticks > 0:
+            # L1 cannot reveal deeper-book prices. Penalize orders that ask for more than
+            # the queue-adjusted opposite depth by one declared tick per additional full
+            # depth multiple. This changes price only; FAK fill quantity remains limited
+            # by the actually available L1 queue above.
+            extra_multiples = max(0, int(ceil(remaining / available)) - 1)
+            impact_ticks += extra_multiples * self.size_impact_ticks
         fill_price = raw_price + sign * (
             self.slippage_ticks + impact_ticks
         ) * spec.price_tick
-        if request.side is OrderSide.BUY and tick.limit_up > 0:
-            fill_price = min(fill_price, tick.limit_up)
-        if request.side is OrderSide.SELL and tick.limit_down > 0:
-            fill_price = max(fill_price, tick.limit_down)
+        if request.side is OrderSide.BUY:
+            fill_price = min(fill_price, float(request.price))
+            if tick.limit_up > 0:
+                fill_price = min(fill_price, tick.limit_up)
+        else:
+            fill_price = max(fill_price, float(request.price))
+            if tick.limit_down > 0:
+                fill_price = max(fill_price, tick.limit_down)
 
         depth[depth_index] -= fill_volume
         self._fill(order, fill_volume, fill_price)
@@ -283,6 +372,7 @@ class SimBroker(Broker):
             if order.traded == order.request.volume
             else OrderStatus.PART_TRADED
         )
+        self._first_fill_seq.setdefault(order.order_id, self._tick_seq)
 
         tick = self._ticks[order.request.symbol]
         trade = Trade(

@@ -218,3 +218,14 @@ Shadow 市场侧来自真实 CTP catalog/tick/trading day/metadata，账户侧�
 PR #15 没有新增第二 Alpha/账户/风险状态机。`directional_attribution.py` 只读取 production-mechanics 已经决定并执行的事件，`directional_entry_diagnostics.py` 只用于离线研究；live runtime 不导入 future-label 诊断模块。未通过门禁的 net-edge、Alpha-family、33.04% soft-margin 候选均不属于生产架构。
 
 因此生产数据流仍是 `completed history -> frozen 96-template policy -> completed-return governor -> completed-activity contract -> integer/margin-aware lots -> reductions first -> Broker hard gates -> fills/positions truth`。新增审计不会改变 target、order、fill、risk 或 account state。
+
+## 16. Microstructure / lineage research 后的最终边界
+
+本阶段没有把分钟 timing、cost-aware Meta、cost-aware no-trade 或新 curve Alpha 接入 Production。分钟/OI 数据只有约 1,023 条近期 5m 记录，无法满足 prior/train/validation/OOS；no-trade 虽降低 15bp 换手成本，但明显损伤 5bp Base/OOS；同品种 curve family 在 15bp 下跨窗口为负。因此 gross/margin/available/max-lots 也没有放宽。
+
+保留两项行为中性能力：
+
+1. `SimBroker` 的 opt-in realistic L1 Stress，可模拟 depth haircut、partial FAK、latency、size/depth impact、unfilled quantity，并输出 spread/slippage-impact/fill-ratio/latency/cost 归因；默认参数保持原撮合语义。
+2. `directional_lineage.py` + `tools/evaluate_directional_lineage.py` 精确重建 selected template → template-product contribution → aggregate target，并与 Production trade ledger 连接到 realized product position、turnover、cost。多模板共同形成一个整数产品头寸时，turnover/cost 只保留 product-level 真值，不做不可证明的 template 成本分摊。
+
+完整研究与拒绝证据见 [`directional-microstructure-cost-alpha-evidence.md`](directional-microstructure-cost-alpha-evidence.md)。
