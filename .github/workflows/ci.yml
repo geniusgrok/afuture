@@ -1,5 +1,6 @@
 name: ci
 
+# Final repository gate after the production-return feature cleanup.
 on:
   push:
   pull_request:
