@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from itertools import count
+from math import ceil
 
 from .base import Broker
 from ..fees import calculate_commission
@@ -37,16 +38,22 @@ class SimBroker(Broker):
         conservative: bool = False,
         latency_ticks: int = 0,
         market_impact_ticks: int = 0,
+        depth_haircut: float = 1.0,
+        size_impact_ticks: int = 0,
         contract_catalog: list[ContractInfo] | None = None,
     ) -> None:
         if initial_capital <= 0:
             raise ValueError("initial_capital must be positive")
+        if not 0.0 < float(depth_haircut) <= 1.0:
+            raise ValueError("depth_haircut must be in (0, 1]")
         self.initial_capital = initial_capital
         self.specs = specs
         self.slippage_ticks = max(0, slippage_ticks)
         self.conservative = conservative
         self.latency_ticks = max(0, latency_ticks)
         self.market_impact_ticks = max(0, market_impact_ticks)
+        self.depth_haircut = float(depth_haircut)
+        self.size_impact_ticks = max(0, int(size_impact_ticks))
         self._contract_catalog = list(contract_catalog or [])
         self.position_book = PositionBook()
         self._orders: dict[str, Order] = {}
@@ -105,6 +112,12 @@ class SimBroker(Broker):
             visible.append(item)
         return visible
 
+    def _displayed_depth(self, volume: float) -> int:
+        raw = max(0, int(volume))
+        if not self.conservative:
+            return raw
+        return max(0, int(raw * self.depth_haircut))
+
     def publish_tick(self, tick: Tick) -> None:
         tick.validate()
         self._tick_seq += 1
@@ -113,9 +126,10 @@ class SimBroker(Broker):
         self._trading_day = tick.trading_day
         self._ticks[tick.symbol] = tick
         # 每个新 Tick 只有一份一档深度；同一 Tick 内的多个订单共享并消耗这份深度。
+        # 保守模式可对显示深度做固定 haircut，用于模拟排队优先级和不可获得的队列份额。
         self._depth[tick.symbol] = [
-            int(tick.bid_volume),
-            int(tick.ask_volume),
+            self._displayed_depth(tick.bid_volume),
+            self._displayed_depth(tick.ask_volume),
         ]
         # 当前行情可能使上一轮延迟 FAK/FOK 首次具备成交资格。先产生这些成交/撤单
         # 回报，再把同一行情交给策略生成新决策，避免 broker 内部仓位已经变化而
@@ -230,7 +244,10 @@ class SimBroker(Broker):
         request = order.request
         depth = self._depth.setdefault(
             request.symbol,
-            [int(tick.bid_volume), int(tick.ask_volume)],
+            [
+                self._displayed_depth(tick.bid_volume),
+                self._displayed_depth(tick.ask_volume),
+            ],
         )
         if request.side is OrderSide.BUY:
             marketable = request.price >= tick.ask_price
@@ -253,6 +270,13 @@ class SimBroker(Broker):
         fill_volume = min(remaining, available)
         spec = self.specs[request.symbol]
         impact_ticks = self.market_impact_ticks if self.conservative else 0
+        if self.conservative and self.size_impact_ticks > 0:
+            # L1 cannot reveal deeper-book prices. Penalize orders that ask for more than
+            # the queue-adjusted opposite depth by one declared tick per additional full
+            # depth multiple. This changes price only; FAK fill quantity remains limited
+            # by the actually available L1 queue above.
+            extra_multiples = max(0, int(ceil(remaining / available)) - 1)
+            impact_ticks += extra_multiples * self.size_impact_ticks
         fill_price = raw_price + sign * (
             self.slippage_ticks + impact_ticks
         ) * spec.price_tick
