@@ -341,10 +341,14 @@ class SimBroker(Broker):
         fill_price = raw_price + sign * (
             self.slippage_ticks + impact_ticks
         ) * spec.price_tick
-        if request.side is OrderSide.BUY and tick.limit_up > 0:
-            fill_price = min(fill_price, tick.limit_up)
-        if request.side is OrderSide.SELL and tick.limit_down > 0:
-            fill_price = max(fill_price, tick.limit_down)
+        if request.side is OrderSide.BUY:
+            fill_price = min(fill_price, float(request.price))
+            if tick.limit_up > 0:
+                fill_price = min(fill_price, tick.limit_up)
+        else:
+            fill_price = max(fill_price, float(request.price))
+            if tick.limit_down > 0:
+                fill_price = max(fill_price, tick.limit_down)
 
         depth[depth_index] -= fill_volume
         self._fill(order, fill_volume, fill_price)
