@@ -1,54 +1,6 @@
-source_sha=598bd009a0610524f3eeb9898e99413245bc612d
-test_exit=1
+source_sha=a50ac133cb9ea79a2b7bee8d658ef1a55843c719
+test_exit=0
 research_exit=not-run
 --- targeted tail ---
-.......................................................FF                [100%]
-=================================== FAILURES ===================================
-__ test_weight_no_trade_proxy_suppresses_only_low_edge_openings_and_increases __
-
-    def test_weight_no_trade_proxy_suppresses_only_low_edge_openings_and_increases():
-        candidate_module = _candidate_module()
-        index = pd.date_range("2026-01-01", periods=25, freq="B")
-        target = pd.DataFrame(0.0, index=index, columns=["A", "M"])
-        target.loc[index[20]:, "A"] = 1.0
-        target.loc[index[20]:, "M"] = -1.0
-        returns = pd.DataFrame(
-            {"A": [0.0001] * 25, "M": [-0.002] * 25},
-            index=index,
-        )
->       filtered, audit = candidate_module.cost_aware_no_trade_weights(
-                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            target,
-            returns,
-            lookback=20,
-            horizon_days=3,
-            cost_bps=15.0,
-        )
-E       AttributeError: module 'afuture.directional_cost_meta' has no attribute 'cost_aware_no_trade_weights'
-
-tests/test_execution_cost_meta.py:118: AttributeError
-_ test_weight_no_trade_proxy_is_causal_and_never_blocks_reduction_or_reversal __
-
-    def test_weight_no_trade_proxy_is_causal_and_never_blocks_reduction_or_reversal():
-        candidate_module = _candidate_module()
-        index = pd.date_range("2026-01-01", periods=25, freq="B")
-        target = pd.DataFrame(0.0, index=index, columns=["A"])
-        target.loc[index[5]:index[20], "A"] = 1.0
-        target.loc[index[21], "A"] = 0.5
-        target.loc[index[22]:, "A"] = -1.0
-        returns = pd.DataFrame({"A": [0.002] * 25}, index=index)
->       baseline, _ = candidate_module.cost_aware_no_trade_weights(
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            target,
-            returns,
-            lookback=5,
-            horizon_days=3,
-            cost_bps=15.0,
-        )
-E       AttributeError: module 'afuture.directional_cost_meta' has no attribute 'cost_aware_no_trade_weights'
-
-tests/test_execution_cost_meta.py:138: AttributeError
-=========================== short test summary info ============================
-FAILED tests/test_execution_cost_meta.py::test_weight_no_trade_proxy_suppresses_only_low_edge_openings_and_increases - AttributeError: module 'afuture.directional_cost_meta' has no attribute 'cost_aware_no_trade_weights'
-FAILED tests/test_execution_cost_meta.py::test_weight_no_trade_proxy_is_causal_and_never_blocks_reduction_or_reversal - AttributeError: module 'afuture.directional_cost_meta' has no attribute 'cost_aware_no_trade_weights'
-2 failed, 55 passed in 10.16s
+.........................................................                [100%]
+57 passed in 10.54s
