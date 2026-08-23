@@ -214,6 +214,70 @@ def build_target_lots(
     return targets
 
 
+def build_margin_aware_target_lots(
+    account: AccountSnapshot,
+    product_weights: Mapping[str, float],
+    product_ticks: Mapping[str, Tick],
+    specs: Mapping[str, ContractSpec],
+    *,
+    max_contract_volume: int,
+    max_margin_ratio: float,
+    min_available_ratio: float,
+    margin_estimate_buffer: float,
+) -> dict[str, int]:
+    """Build the requested target then fit it to the same account margin envelope.
+
+    This is a pre-sizing guard only. ``RiskManager.check_open_orders`` remains the final
+    fail-closed authority using the fresh Broker account snapshot immediately before an
+    opening batch is submitted.
+    """
+    requested = build_target_lots(
+        account,
+        product_weights,
+        product_ticks,
+        specs,
+        max_contract_volume=max_contract_volume,
+    )
+    if not requested:
+        return {}
+    if account.equity <= 0:
+        return {}
+    if not 0 < float(max_margin_ratio) < 1:
+        raise ValueError("max_margin_ratio must be in (0, 1)")
+    if not 0 <= float(min_available_ratio) < 1:
+        raise ValueError("min_available_ratio must be in [0, 1)")
+    if float(margin_estimate_buffer) < 1:
+        raise ValueError("margin_estimate_buffer must be at least 1")
+
+    ticks_by_symbol = {tick.symbol: tick for tick in product_ticks.values()}
+    per_lot_margin: dict[str, float] = {}
+    for symbol, volume in requested.items():
+        tick = ticks_by_symbol.get(symbol)
+        spec = specs.get(symbol)
+        if tick is None or spec is None:
+            raise ValueError(f"missing target margin evidence: {symbol}")
+        rate = spec.margin_rate_long if volume > 0 else spec.margin_rate_short
+        unit_margin = (
+            float(tick.mid_price)
+            * float(spec.multiplier)
+            * float(rate)
+            * float(margin_estimate_buffer)
+        )
+        if unit_margin <= 0:
+            raise ValueError(f"missing positive per-lot margin: {symbol}")
+        per_lot_margin[symbol] = unit_margin
+
+    hard_margin_share = min(
+        float(max_margin_ratio),
+        1.0 - float(min_available_ratio),
+    )
+    return fit_target_lots_to_margin_budget(
+        requested,
+        per_lot_margin,
+        margin_budget=float(account.equity) * max(0.0, hard_margin_share),
+    )
+
+
 def build_realized_gross_reductions(
     current_lots: Mapping[str, int],
     lot_notionals: Mapping[str, float],
