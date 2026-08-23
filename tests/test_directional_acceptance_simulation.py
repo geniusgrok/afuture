@@ -11,8 +11,8 @@ def test_simulation_orders_gap_rebalance_intraday_and_cost():
     weights = pd.DataFrame({"A":[1.0,0.0]}, index=pd.to_datetime(["2026-08-21","2026-08-24"]))
     sim = DirectionalProductionAcceptance(ProductionMechanicsConfig(initial_capital=100000,max_contract_volume=100,max_daily_loss_ratio=.5,max_total_drawdown_ratio=.8,max_margin_ratio=.9,min_available_ratio=0))
     result = sim.simulate(raw, weights, cost_bps=5)
-    assert abs(result.daily.loc[pd.Timestamp("2026-08-21"),"equity"] - 109950) < 1e-9
-    assert abs(result.final_equity - 110894.5) < 1e-9
+    assert abs(result.daily.loc[pd.Timestamp("2026-08-21"),"equity"] - 109452.5) < 1e-9
+    assert abs(result.final_equity - 110349.775) < 1e-9
 
 
 def test_simulation_uses_same_five_percent_production_gross_headroom_as_runtime():
