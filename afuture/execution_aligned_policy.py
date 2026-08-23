@@ -359,15 +359,6 @@ class ExecutionAlignedAggressivePolicy:
                     selected = candidate
 
             raw = aggregate(selected, timestamp)
-            if position > 0 and raw:
-                trailing = intraday.iloc[max(0, position - self.meta_lookback) : position].mean(axis=0).to_dict()
-                raw = stabilize_same_direction_weights(
-                    previous_weights,
-                    raw,
-                    trailing_mean_returns=trailing,
-                    horizon=self.meta_rebalance,
-                    cost_bps=STRESS_COST_BPS,
-                )
             if raw:
                 final.loc[timestamp] = pd.Series(raw).reindex(final.columns).fillna(0.0)
             previous_weights = {str(product): float(value) for product, value in final.loc[timestamp].items() if abs(float(value)) > 1e-15}
