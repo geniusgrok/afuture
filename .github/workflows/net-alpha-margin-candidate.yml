@@ -1,0 +1,105 @@
+name: net-alpha-margin-candidate
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  stress-screen:
+    if: github.head_ref == 'codex/afuture-net-alpha-efficiency-20260823'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -e '.[dev]'
+      - name: Download frozen L3 input and PR14 weight-lineage artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtime/frozen-input runtime/pr14-output
+          gh api repos/${{ github.repository }}/actions/artifacts/9473260618/zip > /tmp/frozen-input.zip
+          unzip -q -o /tmp/frozen-input.zip -d runtime/frozen-input
+          gh api repos/${{ github.repository }}/actions/artifacts/9491959916/zip > /tmp/pr14-output.zip
+          unzip -q -o /tmp/pr14-output.zip -d runtime/pr14-output
+          find runtime/frozen-input -name return_target_specific_contracts.csv -print -quit | xargs -I{} cp '{}' runtime/return_target_specific_contracts.csv
+          find runtime/pr14-output -name execution_aligned_weights.csv -print -quit | xargs -I{} cp '{}' runtime/execution_aligned_weights.csv
+      - name: Run shock-derived Stress principal-window screen
+        run: |
+          python - <<'PY'
+          import json
+          import numpy as np
+          import pandas as pd
+          import afuture.directional_robustness as robustness
+          from afuture.directional_acceptance import ProductionMechanicsConfig
+          from afuture.directional_capacity_research import shock_derived_margin_sizing_share
+
+          def candidate_share(*, max_margin_ratio, min_available_ratio, max_daily_loss_ratio, completed_returns=(), volatility_trigger=0.03):
+              return shock_derived_margin_sizing_share(
+                  max_margin_ratio=max_margin_ratio,
+                  min_available_ratio=min_available_ratio,
+                  max_daily_loss_ratio=max_daily_loss_ratio,
+                  max_gross_ratio=2.0,
+                  stress_cost_bps=15.0,
+                  completed_returns=completed_returns,
+              )
+
+          robustness.adaptive_margin_sizing_share = candidate_share
+          raw = pd.read_csv('runtime/return_target_specific_contracts.csv')
+          long = pd.read_csv('runtime/execution_aligned_weights.csv')
+          long['level_0'] = pd.to_datetime(long['level_0'])
+          weights = long.pivot(index='level_0', columns='level_1', values='weight').sort_index().fillna(0.0)
+          weights = weights.loc['2024-08-21':'2026-08-20'].copy()
+
+          sim = robustness.MarginAwareDirectionalProductionAcceptance(
+              ProductionMechanicsConfig(initial_capital=500000.0, margin_rate_proxy=0.15)
+          )
+          prepared = sim.prepare_contracts(raw)
+          result = sim.simulate(raw, weights, cost_bps=15.0, prepared=prepared)
+          daily = result.daily
+          returns = daily['daily_return'].astype(float)
+          equity = (1.0 + returns).cumprod()
+          total = float(equity.iloc[-1] - 1.0)
+          annualized = float((1.0 + total) ** (252.0 / len(returns)) - 1.0) if total > -1.0 else -1.0
+          std = float(returns.std(ddof=1))
+          report = {
+              'annualized_return': annualized,
+              'total_return': total,
+              'max_drawdown': float((equity / equity.cummax() - 1.0).min()),
+              'sharpe': float(returns.mean() / std * np.sqrt(252.0)) if std > 1e-12 else 0.0,
+              'active_days': int((returns.abs() > 1e-15).sum()),
+              'days': int(len(returns)),
+              'max_realized_gross': float((daily['gross_notional'] / daily['equity'].replace(0.0, np.nan)).max()),
+              'margin_reject_days': int((daily['margin_reject'].astype(str) != '').sum()),
+              'halted': bool(daily['halted'].astype(bool).any()),
+              'final_equity': float(result.final_equity),
+              'first_divergence': str(result.first_divergence),
+              'average_soft_margin_share': float(daily['soft_margin_share'].astype(float).mean()),
+              'min_soft_margin_share': float(daily['soft_margin_share'].astype(float).min()),
+              'max_soft_margin_share': float(daily['soft_margin_share'].astype(float).max()),
+              'baseline_stress_annualized_return': 0.289559,
+              'promotion_screen': bool(
+                  annualized > 0.289559 + 0.05
+                  and float((equity / equity.cummax() - 1.0).min()) >= -0.30
+                  and not bool(daily['halted'].astype(bool).any())
+                  and int((daily['margin_reject'].astype(str) != '').sum()) == 0
+                  and float((daily['gross_notional'] / daily['equity'].replace(0.0, np.nan)).max()) <= 2.0 + 1e-10
+              ),
+          }
+          with open('runtime/shock_derived_margin_stress_screen.json', 'w', encoding='utf-8') as handle:
+              json.dump(report, handle, ensure_ascii=False, indent=2, sort_keys=True)
+          print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shock-derived-margin-stress-${{ github.event.pull_request.head.sha }}
+          path: runtime/shock_derived_margin_stress_screen.json
+          retention-days: 7
