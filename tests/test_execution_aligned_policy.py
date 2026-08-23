@@ -8,7 +8,6 @@ import pandas as pd
 from afuture.execution_aligned_policy import (
     ExecutionAlignedAggressivePolicy,
     META_ANNUALIZED_WEIGHT,
-    META_MIN_TEMPLATE_REBALANCE,
     META_SHARPE_WEIGHT,
     _clean_prices,
 )
@@ -51,39 +50,33 @@ def test_execution_aligned_policy_freezes_product_order():
     assert list(ordered.columns) == ["A", "CU", "M", "RB"]
 
 
-def test_execution_aligned_policy_uses_frozen_meta_shape():
+def test_execution_aligned_policy_uses_frozen_meta_shape_without_turnover_pool_filter():
     policy = ExecutionAlignedAggressivePolicy(products=("A", "M"))
     assert policy.meta_lookback == 11
     assert policy.meta_rebalance == 3
     assert policy.meta_count == 3
     assert META_ANNUALIZED_WEIGHT == 0.25
     assert META_SHARPE_WEIGHT == 1.0
-    assert META_MIN_TEMPLATE_REBALANCE == 5
     assert len(policy.template_ids) == 96
-    assert len(policy.meta_eligible_template_ids) == 57
-    assert all(
-        int(item.split("_r", 1)[1].split("_g", 1)[0]) >= 5
-        for item in policy.meta_eligible_template_ids
-    )
-    assert policy.meta_score_source == "continuous_intraday_base_stress_low_turnover"
+    assert policy.meta_score_source == "continuous_intraday_base_rank_stress_survival"
 
 
-def test_robust_meta_score_requires_both_cost_endpoints_and_favors_survival():
+def test_robust_meta_score_requires_stress_survival_but_preserves_base_ranking():
     from afuture.execution_aligned_policy import _robust_trailing_scores
 
     index = pd.date_range("2026-01-01", periods=12, freq="B")
     base = pd.DataFrame(
         {
-            "fragile": [0.004] * 12,
-            "robust": [0.003] * 12,
+            "strong_base": [0.004] * 12,
+            "strong_stress": [0.003] * 12,
             "fails_stress": [0.002] * 12,
         },
         index=index,
     )
     stress = pd.DataFrame(
         {
-            "fragile": [0.0001] * 12,
-            "robust": [0.003] * 12,
+            "strong_base": [0.0001] * 12,
+            "strong_stress": [0.003] * 12,
             "fails_stress": [-0.001] * 12,
         },
         index=index,
@@ -93,7 +86,7 @@ def test_robust_meta_score_requires_both_cost_endpoints_and_favors_survival():
     final = scores[-1]
     assert np.isfinite(final[0])
     assert np.isfinite(final[1])
-    assert final[1] > final[0]
+    assert final[0] > final[1]
     assert np.isnan(final[2])
 
 
