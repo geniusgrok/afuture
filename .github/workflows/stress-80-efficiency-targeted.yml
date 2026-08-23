@@ -1,0 +1,83 @@
+name: stress-80-efficiency-targeted
+
+on:
+  push:
+    branches:
+      - codex/afuture-stress-80-efficiency-20260823
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Targeted directional execution-efficiency tests
+        run: >-
+          python -m pytest -q
+          tests/test_directional_execution_efficiency.py
+          tests/test_execution_aligned_policy.py
+          tests/test_directional_activity.py
+          tests/test_directional_trading_day_selection.py
+          tests/test_directional_stress_robustness.py
+          tests/test_execution_aligned_runtime.py
+          tests/test_directional_acceptance.py
+          tests/test_directional_acceptance_simulation.py
+          tests/test_directional_review_regressions.py
+      - run: python -m compileall -q afuture
+
+  fixed-production-evidence:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" akshare
+      - name: Restore frozen directional inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p runtime
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/9473260618/zip" > /tmp/fixed-directional-inputs.zip
+          unzip -o /tmp/fixed-directional-inputs.zip -d runtime
+          test -s runtime/return_target_specific_contracts.csv
+          test -s runtime/broad_daily_universe.csv
+      - name: Run fixed production mechanics
+        run: python tools/evaluate_directional_production_mechanics.py > runtime/stress_80_l3.log
+      - name: Print candidate evidence
+        run: |
+          python - <<'PY'
+          import json
+          report = json.load(open("runtime/directional_production_mechanics_report.json", encoding="utf-8"))
+          summary = {
+              side: report[side]["windows"]["full_recent"]
+              for side in ("base", "stress")
+          }
+          summary["mechanics"] = report["mechanics"]
+          summary["turnover_attribution"] = report.get("turnover_attribution", {})
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stress-80-l3-${{ github.sha }}
+          path: |
+            runtime/directional_production_mechanics_report.json
+            runtime/directional_production_base_daily.csv
+            runtime/directional_production_stress_daily.csv
+            runtime/execution_aligned_weights.csv
+            runtime/execution_aligned_target_report.json
+            runtime/stress_80_l3.log
