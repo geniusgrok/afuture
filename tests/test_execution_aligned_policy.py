@@ -1,3 +1,6 @@
+from pathlib import Path
+import sys
+
 import numpy as np
 import pandas as pd
 
@@ -69,7 +72,9 @@ def test_execution_proxy_changes_meta_evidence_without_future_leakage():
 
 
 def test_l4_weight_generator_matches_production_policy(monkeypatch):
-    from tools import evaluate_execution_aligned_target as l4
+    tools_dir = Path(__file__).resolve().parents[1] / "tools"
+    monkeypatch.syspath_prepend(str(tools_dir))
+    import evaluate_execution_aligned_target as l4
 
     open_prices, close = _history()
     rows = []
