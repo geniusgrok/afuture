@@ -179,6 +179,32 @@ def fit_target_lots_to_margin_budget(
     }
 
 
+def margin_sizing_share(
+    *,
+    max_margin_ratio: float,
+    min_available_ratio: float,
+    max_daily_loss_ratio: float,
+) -> float:
+    """Return a soft sizing envelope below the unchanged hard account margin gate.
+
+    A target placed exactly on the hard margin boundary can become a hard HALT after a
+    normal mark-to-market equity move. Reserve the already-configured daily-loss capacity
+    as sizing headroom. This does not change the 35%/cash hard gates: it only prevents
+    normal target construction from deliberately sitting on them.
+    """
+    margin_ratio = float(max_margin_ratio)
+    available_ratio = float(min_available_ratio)
+    daily_loss_ratio = float(max_daily_loss_ratio)
+    if not 0 < margin_ratio < 1:
+        raise ValueError("max_margin_ratio must be in (0, 1)")
+    if not 0 <= available_ratio < 1:
+        raise ValueError("min_available_ratio must be in [0, 1)")
+    if not 0 < daily_loss_ratio < 1:
+        raise ValueError("max_daily_loss_ratio must be in (0, 1)")
+    hard_share = min(margin_ratio, 1.0 - available_ratio)
+    return max(0.0, hard_share * (1.0 - daily_loss_ratio))
+
+
 def build_target_lots(
     account: AccountSnapshot,
     product_weights: Mapping[str, float],
@@ -223,13 +249,14 @@ def build_margin_aware_target_lots(
     max_contract_volume: int,
     max_margin_ratio: float,
     min_available_ratio: float,
+    max_daily_loss_ratio: float,
     margin_estimate_buffer: float,
 ) -> dict[str, int]:
-    """Build the requested target then fit it to the same account margin envelope.
+    """Build the requested target then fit it inside a soft account margin envelope.
 
-    This is a pre-sizing guard only. ``RiskManager.check_open_orders`` remains the final
-    fail-closed authority using the fresh Broker account snapshot immediately before an
-    opening batch is submitted.
+    The sizing envelope reserves the configured daily-loss capacity; the existing
+    ``RiskManager.check_open_orders`` remains the final fail-closed authority against the
+    unchanged hard margin and cash-reserve gates using a fresh Broker snapshot.
     """
     requested = build_target_lots(
         account,
@@ -242,10 +269,6 @@ def build_margin_aware_target_lots(
         return {}
     if account.equity <= 0:
         return {}
-    if not 0 < float(max_margin_ratio) < 1:
-        raise ValueError("max_margin_ratio must be in (0, 1)")
-    if not 0 <= float(min_available_ratio) < 1:
-        raise ValueError("min_available_ratio must be in [0, 1)")
     if float(margin_estimate_buffer) < 1:
         raise ValueError("margin_estimate_buffer must be at least 1")
 
@@ -267,14 +290,15 @@ def build_margin_aware_target_lots(
             raise ValueError(f"missing positive per-lot margin: {symbol}")
         per_lot_margin[symbol] = unit_margin
 
-    hard_margin_share = min(
-        float(max_margin_ratio),
-        1.0 - float(min_available_ratio),
+    sizing_share = margin_sizing_share(
+        max_margin_ratio=max_margin_ratio,
+        min_available_ratio=min_available_ratio,
+        max_daily_loss_ratio=max_daily_loss_ratio,
     )
     return fit_target_lots_to_margin_budget(
         requested,
         per_lot_margin,
-        margin_budget=float(account.equity) * max(0.0, hard_margin_share),
+        margin_budget=float(account.equity) * sizing_share,
     )
 
 
