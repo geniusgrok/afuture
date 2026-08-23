@@ -4,33 +4,34 @@ on:
   push:
     branches:
       - codex/afuture-microstructure-cost-alpha-20260824
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: directional-microstructure-dev-${{ github.event.pull_request.head.ref || github.ref }}
+  group: directional-microstructure-dev-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   targeted:
-    if: github.event_name != 'pull_request' || github.head_ref == 'codex/afuture-microstructure-cost-alpha-20260824'
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[dev-result]')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: codex/afuture-microstructure-cost-alpha-20260824
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
-      - name: Affected directional and simulator tests
+      - name: Run affected directional and simulator tests
+        id: tests
         shell: bash
         run: |
+          set +e
           files=(
             tests/test_sim_event_causality.py
             tests/test_directional_execution.py
@@ -47,25 +48,55 @@ jobs:
             tests/test_execution_cost_meta.py; do
             if [[ -f "$optional" ]]; then files+=("$optional"); fi
           done
-          python -m pytest -q "${files[@]}"
-      - run: python -m compileall -q afuture
-
-  research:
-    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[research]')
-    runs-on: ubuntu-latest
-    timeout-minutes: 55
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]" akshare
-      - name: Bounded microstructure research
-        run: python tools/research_directional_microstructure.py
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: directional-microstructure-research
-          path: runtime/microstructure_*
-          retention-days: 7
+          python -m pytest -q "${files[@]}" 2>&1 | tee /tmp/targeted.log
+          code=${PIPESTATUS[0]}
+          python -m compileall -q afuture
+          compile_code=$?
+          if [[ "$compile_code" -ne 0 && "$code" -eq 0 ]]; then code=$compile_code; fi
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Optional bounded research
+        id: research
+        if: contains(github.event.head_commit.message, '[research]') && steps.tests.outputs.exit_code == '0'
+        shell: bash
+        run: |
+          set +e
+          python -m pip install akshare
+          python tools/research_directional_microstructure.py 2>&1 | tee /tmp/research.log
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Persist verification evidence on the feature branch
+        shell: bash
+        env:
+          TEST_EXIT: ${{ steps.tests.outputs.exit_code }}
+          RESEARCH_EXIT: ${{ steps.research.outputs.exit_code }}
+        run: |
+          mkdir -p .dev
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "test_exit=${TEST_EXIT:-not-run}"
+            echo "research_exit=${RESEARCH_EXIT:-not-run}"
+            echo "--- targeted tail ---"
+            tail -n 80 /tmp/targeted.log || true
+            if [[ -f /tmp/research.log ]]; then
+              echo "--- research tail ---"
+              tail -n 80 /tmp/research.log
+            fi
+          } > .dev/last-verification.txt
+          if [[ -f runtime/microstructure_report.json ]]; then
+            cp runtime/microstructure_report.json .dev/microstructure_report.json
+          fi
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add .dev
+          git commit -m "chore: record directional dev verification [dev-result]" || true
+          git push origin HEAD:codex/afuture-microstructure-cost-alpha-20260824
+      - name: Enforce targeted result
+        shell: bash
+        env:
+          TEST_EXIT: ${{ steps.tests.outputs.exit_code }}
+          RESEARCH_EXIT: ${{ steps.research.outputs.exit_code }}
+        run: |
+          test "${TEST_EXIT}" = "0"
+          if [[ -n "${RESEARCH_EXIT}" ]]; then test "${RESEARCH_EXIT}" = "0"; fi
