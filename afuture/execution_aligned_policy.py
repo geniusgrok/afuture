@@ -4,7 +4,9 @@ This is the only production directional signal policy. The template pool was sel
 the already-observed 2024-08-21..2026-08-20 specific-contract next-open history. Daily
 live rotation remains causal: template signals use the previous close and the meta
 allocator ranks templates only from completed continuous-contract open->close returns.
-Meta evidence must survive both Base and Stress transaction-cost endpoints. Product
+Meta evidence must survive both Base and Stress transaction-cost endpoints. To control
+production turnover without expanding the observed template search, only structurally
+slower templates with rebalance >=5 sessions are eligible for meta selection. Product
 ordering is frozen alphabetically. Gross target notional is capped at 2x.
 """
 from __future__ import annotations
@@ -22,9 +24,10 @@ STRESS_COST_BPS = 15.0
 META_LOOKBACK = 11
 META_REBALANCE = 3
 META_COUNT = 3
+META_MIN_TEMPLATE_REBALANCE = 5
 META_ANNUALIZED_WEIGHT = 0.25
 META_SHARPE_WEIGHT = 1.0
-META_SCORE_SOURCE = "continuous_intraday_base_stress_robust"
+META_SCORE_SOURCE = "continuous_intraday_base_stress_low_turnover"
 
 
 @dataclass(frozen=True)
@@ -261,6 +264,10 @@ _EXECUTION_TEMPLATE_IDS = (
 _EXECUTION_TEMPLATES = tuple(
     _parse_template_id(item) for item in _EXECUTION_TEMPLATE_IDS
 )
+_META_ELIGIBLE = np.array(
+    [template.rebalance >= META_MIN_TEMPLATE_REBALANCE for template in _EXECUTION_TEMPLATES],
+    dtype=bool,
+)
 
 
 def _clean_prices(frame: pd.DataFrame, products: tuple[str, ...]) -> pd.DataFrame:
@@ -312,6 +319,14 @@ class ExecutionAlignedAggressivePolicy:
         ):
             raise ValueError("execution-aligned meta policy is frozen")
 
+    @property
+    def meta_eligible_template_ids(self) -> tuple[str, ...]:
+        return tuple(
+            template_id
+            for template_id, eligible in zip(self.template_ids, _META_ELIGIBLE)
+            if bool(eligible)
+        )
+
     def weight_history(
         self,
         open_prices: pd.DataFrame,
@@ -358,7 +373,8 @@ class ExecutionAlignedAggressivePolicy:
             if position >= self.meta_lookback and (
                 not selected or position % self.meta_rebalance == 0
             ):
-                row = scores[position]
+                row = scores[position].copy()
+                row[~_META_ELIGIBLE] = np.nan
                 valid = np.flatnonzero(np.isfinite(row))
                 selected = (
                     [
