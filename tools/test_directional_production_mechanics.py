@@ -31,7 +31,7 @@ assert report["mechanics"]["hard_account_risk_precedes_daily_circuit"] is True
 assert report["mechanics"]["causal_completed_return_risk_governor"] == {
     "lookback_days": 2,
     "sample_volatility_trigger": 0.03,
-    "completed_daily_loss_trigger": 0.03,
+    "completed_daily_loss_trigger": 0.02,
     "defensive_scale": 0.25,
 }
 assert report["base"]["max_contract_volume"] == 35
