@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from .directional import fit_target_lots_to_margin_budget
+from .directional import fit_target_lots_to_margin_budget, margin_sizing_share
 from .directional_acceptance import (
     DirectionalProductionAcceptance,
     PRODUCT_MULTIPLIERS,
@@ -11,14 +11,7 @@ from .directional_acceptance import (
 
 
 class MarginAwareDirectionalProductionAcceptance(DirectionalProductionAcceptance):
-    """Production proxy whose integer target is feasible before opening hard gates.
-
-    The base simulator still owns all account state, costs, daily circuit, hard HALT and
-    realized-gross semantics. This subclass changes only target construction: a signal
-    may request up to the frozen 2x gross cap, while the executable integer target is
-    proportionally reduced when the explicit margin proxy cannot fit the unchanged
-    account margin/cash envelope.
-    """
+    """Production proxy whose integer target is feasible before opening hard gates."""
 
     def target_lots(
         self,
@@ -57,12 +50,13 @@ class MarginAwareDirectionalProductionAcceptance(DirectionalProductionAcceptance
                 * float(self.config.margin_estimate_buffer)
             )
 
-        hard_margin_share = min(
-            float(self.config.max_margin_ratio),
-            1.0 - float(self.config.min_available_ratio),
+        sizing_share = margin_sizing_share(
+            max_margin_ratio=self.config.max_margin_ratio,
+            min_available_ratio=self.config.min_available_ratio,
+            max_daily_loss_ratio=self.config.max_daily_loss_ratio,
         )
         return fit_target_lots_to_margin_budget(
             requested,
             per_lot_margin,
-            margin_budget=float(equity) * max(0.0, hard_margin_share),
+            margin_budget=float(equity) * sizing_share,
         )
