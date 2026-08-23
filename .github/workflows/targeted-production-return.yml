@@ -47,3 +47,101 @@ jobs:
           AFUTURE_CTP_PASSWORD: test-password
           AFUTURE_CTP_BROKER: test-broker
         run: afuture validate --config config/afuture.directional-live.example.toml
+
+  absolute-cap-probe:
+    if: github.event_name == 'pull_request' && github.head_ref == 'codex/afuture-production-return-100-20260823'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        cap: [1.90, 1.92, 1.94, 1.96, 1.98, 2.00]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e ".[dev]"
+      - name: Download frozen evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/specific
+          gh api /repos/${{ github.repository }}/actions/artifacts/9473260618/zip > /tmp/specific.zip
+          unzip -q /tmp/specific.zip -d /tmp/specific
+          test -s /tmp/specific/return_target_specific_contracts.csv
+          test -s /tmp/specific/broad_daily_universe.csv
+      - name: Probe 2 percent governor with absolute target cap
+        env:
+          ABSOLUTE_GROSS_CAP: ${{ matrix.cap }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pandas as pd
+
+          import afuture.directional_risk as directional_risk
+          from afuture.directional_acceptance import DirectionalProductionAcceptance, ProductionMechanicsConfig
+          from afuture.directional_risk import DirectionalRiskGovernor
+          from afuture.execution_aligned_policy import ExecutionAlignedAggressivePolicy
+          from afuture.execution_aligned_runtime import FROZEN_PRODUCTS
+          from tools.evaluate_directional_production_mechanics import _result_stats
+
+          cap = float(os.environ['ABSOLUTE_GROSS_CAP'])
+          specific = pd.read_csv('/tmp/specific/return_target_specific_contracts.csv')
+          continuous = pd.read_csv('/tmp/specific/broad_daily_universe.csv')
+          continuous['date'] = pd.to_datetime(continuous['date'], errors='coerce')
+          continuous['product'] = continuous['product'].astype(str).str.upper()
+          for column in ('open', 'close'):
+              continuous[column] = pd.to_numeric(continuous[column], errors='coerce')
+          continuous = continuous.dropna(subset=['date', 'product', 'open', 'close'])
+          continuous = continuous[(continuous['open'] > 0) & (continuous['close'] > 0)]
+          continuous = continuous.drop_duplicates(['date', 'product'], keep='last')
+
+          products = tuple(FROZEN_PRODUCTS)
+          open_prices = continuous.pivot(index='date', columns='product', values='open').sort_index().reindex(columns=products)
+          close = continuous.pivot(index='date', columns='product', values='close').sort_index().reindex(index=open_prices.index, columns=products)
+          weights = ExecutionAlignedAggressivePolicy(products=products).weight_history(open_prices, close)
+          weights = weights.loc['2024-08-21':'2026-08-20']
+          gross_by_day = list(weights.abs().sum(axis=1).astype(float))
+
+          class AbsoluteCapGovernor:
+              def __init__(self):
+                  self.base = DirectionalRiskGovernor(loss_trigger=0.02)
+                  self.index = 0
+
+              def scale(self, completed_returns):
+                  base_scale = self.base.scale(completed_returns)
+                  raw_gross = gross_by_day[self.index]
+                  self.index += 1
+                  if raw_gross <= 0:
+                      return base_scale
+                  return min(base_scale, cap / raw_gross)
+
+          config = ProductionMechanicsConfig(
+              max_contract_volume=35,
+              max_daily_loss_ratio=0.05,
+              max_total_drawdown_ratio=0.30,
+              max_margin_ratio=0.35,
+              min_available_ratio=0.25,
+          )
+          prepared = DirectionalProductionAcceptance(config).prepare_contracts(specific)
+          directional_risk.PRODUCTION_GROSS_HEADROOM_SCALE = 1.0
+          sim = DirectionalProductionAcceptance(config)
+          sim.risk_governor = AbsoluteCapGovernor()
+          result = sim.simulate(specific, weights, cost_bps=5.0, prepared=prepared)
+          stats = _result_stats(result)
+          row = {
+              'loss_trigger': 0.02,
+              'target_gross_cap': cap,
+              'annualized_return': stats['annualized_return'],
+              'total_return': stats['total_return'],
+              'max_drawdown': stats['max_drawdown'],
+              'sharpe': stats['sharpe'],
+              'halted': stats['halted'],
+              'daily_circuit_days': stats['daily_circuit_days'],
+              'margin_reject_days': stats['margin_reject_days'],
+              'max_realized_gross_notional_ratio': stats['max_realized_gross_notional_ratio'],
+          }
+          print('ABSOLUTE_CAP', json.dumps(row, sort_keys=True))
+          PY
