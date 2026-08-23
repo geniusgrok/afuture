@@ -1,36 +1,6 @@
-source_sha=25f0aebd01281bd51a1793d77fd2c74bd1bcf1f9
-test_exit=1
+source_sha=2536fec03dfac8c67e0daab3cf70821e42411431
+test_exit=0
 research_exit=not-run
 --- targeted tail ---
-........................................FF.                              [100%]
-=================================== FAILURES ===================================
-_ test_realistic_l1_stress_haircuts_depth_and_reports_fak_remainder_through_order_state _
-
-    def test_realistic_l1_stress_haircuts_depth_and_reports_fak_remainder_through_order_state():
->       broker = SimBroker(
-            500_000,
-            {"RBX": _spec()},
-            conservative=True,
-            depth_haircut=0.75,
-            size_impact_ticks=1,
-        )
-E       TypeError: SimBroker.__init__() got an unexpected keyword argument 'depth_haircut'
-
-tests/test_directional_microstructure.py:29: TypeError
-___________ test_realistic_l1_size_impact_respects_daily_price_limit ___________
-
-    def test_realistic_l1_size_impact_respects_daily_price_limit():
->       broker = SimBroker(
-            500_000,
-            {"RBX": _spec()},
-            conservative=True,
-            depth_haircut=0.75,
-            size_impact_ticks=2,
-        )
-E       TypeError: SimBroker.__init__() got an unexpected keyword argument 'depth_haircut'
-
-tests/test_directional_microstructure.py:63: TypeError
-=========================== short test summary info ============================
-FAILED tests/test_directional_microstructure.py::test_realistic_l1_stress_haircuts_depth_and_reports_fak_remainder_through_order_state - TypeError: SimBroker.__init__() got an unexpected keyword argument 'depth_haircut'
-FAILED tests/test_directional_microstructure.py::test_realistic_l1_size_impact_respects_daily_price_limit - TypeError: SimBroker.__init__() got an unexpected keyword argument 'depth_haircut'
-2 failed, 41 passed in 5.45s
+...........................................                              [100%]
+43 passed in 4.18s
