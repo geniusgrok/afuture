@@ -9,7 +9,15 @@ from afuture.execution_aligned_runtime import (
     ExecutionAlignedSignalHistory,
     FROZEN_PRODUCTS,
 )
-from afuture.models import AccountSnapshot
+from afuture.models import (
+    AccountSnapshot,
+    ContractInfo,
+    ContractPosition,
+    ContractSpec,
+    Offset,
+    OrderType,
+    Tick,
+)
 from afuture.risk import RiskConfig, RiskManager
 
 
@@ -65,6 +73,47 @@ class _Broker:
 
     def get_active_orders(self):
         return []
+
+
+class _FlattenBroker(_Broker):
+    def __init__(self):
+        self.positions = [
+            ContractPosition("A2609", "DCE", long_today=3, short_today=3)
+        ]
+        self.orders = []
+
+    def get_positions(self):
+        return self.positions
+
+    def get_contract_catalog(self):
+        return [
+            ContractInfo(
+                symbol="A2609",
+                exchange="DCE",
+                product="A",
+                expiry="2026-12-15",
+            )
+        ]
+
+    def subscribe(self, symbol, exchange):
+        return None
+
+    def get_live_contract_specs(self, symbols, timeout_seconds=10.0):
+        return {
+            symbol: ContractSpec(
+                symbol=symbol,
+                exchange="DCE",
+                multiplier=10.0,
+                price_tick=1.0,
+                margin_rate_long=0.1,
+                margin_rate_short=0.1,
+            )
+            for symbol in symbols
+        }
+
+    def send_order(self, request):
+        self.orders.append(request)
+        return f"order-{len(self.orders)}"
 
 
 def _manager(provider=None, policy=None):
@@ -125,3 +174,45 @@ def test_default_execution_aligned_runtime_requires_the_frozen_50_product_univer
             RiskManager(RiskConfig()),
             signal_provider=_Provider(),
         )
+
+
+def test_execution_aligned_flatten_closes_both_sides_when_same_contract_is_hedged():
+    broker = _FlattenBroker()
+    manager = ExecutionAlignedDirectionalPortfolioManager(
+        DirectionalConfig(
+            enabled=True,
+            products=("A",),
+            exchanges=("DCE",),
+            signal_max_age_hours=120.0,
+        ),
+        broker,
+        RiskManager(RiskConfig(max_contract_volume=10)),
+        signal_provider=_Provider(),
+        policy=_Policy(),
+    )
+    manager.bootstrap(NOW)
+    manager.observe(
+        Tick(
+            symbol="A2609",
+            exchange="DCE",
+            timestamp=NOW,
+            bid_price=99.0,
+            ask_price=101.0,
+            last_price=100.0,
+            bid_volume=100.0,
+            ask_volume=100.0,
+            trading_day="20260825",
+            volume=5000.0,
+            open_interest=30000.0,
+        )
+    )
+
+    result = manager.flatten(NOW)
+
+    assert result.action == "reduce"
+    assert len(broker.orders) == 2
+    assert {order.side.value for order in broker.orders} == {"BUY", "SELL"}
+    assert {order.volume for order in broker.orders} == {3}
+    assert all(order.offset is not Offset.OPEN for order in broker.orders)
+    assert all(order.order_type is OrderType.FAK for order in broker.orders)
+    assert all(order.reference == "directional:flatten" for order in broker.orders)
