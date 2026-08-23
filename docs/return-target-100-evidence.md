@@ -189,3 +189,8 @@ Stress turnover attribution（notional）：entry/exit `189,920,240`、resize `5
 
 因此 28.9559% 仍不是 80%。本轮证据反而证明高换手中有相当部分是有效 Alpha 迁移，不能无限压低 turnover；在同一已反复观察历史上继续调整门槛直到得到 80% 会增加 selection bias，而不是提高实盘可信度。
 
+## 12. PR #15 后续 net-alpha 研究：没有为目标数字放宽门禁
+
+PR #15 继续研究 28.9559% Stress 的损耗来源，但没有找到可以稳健晋级的新经济行为。Stress 账本显示 15bp 成本 `385,377.435`，占 gross signal PnL `700,245.00` 的 55.03%；entry/exit 占 73.92% turnover，但可因果 cohort 并不稳定为负。net-edge、新 family 和更宽 margin capacity 均被 prior/OOS 或固定 Stress gate 否决。
+
+因此“80%”继续作为长期研究方向，不是当前版本的验收事实。最终 main 候选保留 PR #14 的 109.0636% Base / 28.9559% Stress 生产经济行为，以及 PR #15 新增的行为中性归因证据；没有通过提高 leverage、降低成本假设、放宽风险或重复拟合同一历史来制造更高数字。

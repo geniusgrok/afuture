@@ -153,6 +153,8 @@ Soft target 30% 只用于正常 target lot fitting；账户 hard margin 仍为 3
 
 Float Base 107.4623%、Production Base 109.0636%、Production Stress 28.9559% 都来自已观察历史。
 
+其中归档 Float Stress 58.1372% 与 PR #14 当前冻结权重并非同一 weight lineage；当前 lineage 的 Float 15bp 年化是 109.3145%。所有 bridge 必须先对齐 lineage、成本口径和执行时点。
+
 不能据此声称：
 
 - 实盘未来 Base 必然年化 >100%；
@@ -186,3 +188,11 @@ Final Python 3.10/3.13 CI + review
 固定输入 `9473260618` 上，本轮最终晋级候选把 Production Stress 从 **20.4057%** 提升到 **28.9559%**，Base 从 **108.8461%** 提升到 **109.0636%**。晋级来源是执行机械而不是新模板搜索：roll hysteresis、one-lot increase no-trade、adaptive margin contraction 与 turnover attribution。
 
 三类更激进的 signal 层换手抑制被固定 L3 否决并回退：product replacement persistence（Base 约 58.41%）、cost-aware meta hysteresis（Stress -13.03% 且 HALT）、same-direction weight resize hysteresis（未通过 promotion gate）。这说明 entry/exit turnover 中包含重要 Alpha；不能按“换手越低越好”继续拟合。
+
+## 12. Net-alpha attribution 与防过拟合结论
+
+PR #15 的新增研究首先固定 production 事件账本，再做离线标签。未来 1/3/5/10-session return、MFE/MAE、false-breakout/temporary-displacement 只能用于 `label_*`，不能进入生产特征；生产可用特征只能来自当前交易发生前已经完成的数据。
+
+固定 Stress 账本给出 `700,245.00` gross PnL、`256,918,290.00` turnover、`385,377.435` 的 15bp 成本和 4.2164-session 平均持有期。当前历史的主要问题不是“交易次数太多”这么简单：entry/exit 占 73.92% turnover，但没有发现跨 prior/OOS 稳定为负的可因果 cohort。预声明 net-edge gate 和七个不同 family 均未通过独立窗口门，故没有继续调 lookback/rebalance/fraction。
+
+更宽 margin research candidate 也只做一次预声明 screen：由 35% hard margin、5% adverse-move reserve 和 15bp full-reversal cost 推导 calm soft share 33.04%，固定 Stress 结果却只有 4.7970% 年化并 permanent HALT，因此拒绝。生产仍使用 PR #14 的约 30% calm soft envelope。
