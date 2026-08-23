@@ -18,10 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
       - name: Apply staged asserted source edit
-        if: github.event_name == 'push' && hashFiles('.github/scripts/stress_efficiency_edit.py') != ''
+        if: hashFiles('.github/scripts/stress_efficiency_edit.py') != ''
         run: python .github/scripts/stress_efficiency_edit.py
       - uses: actions/setup-python@v5
         with:
@@ -42,7 +42,7 @@ jobs:
           tests/test_directional_review_regressions.py
       - run: python -m compileall -q afuture
       - name: Persist staged source edit after GREEN
-        if: github.event_name == 'push' && hashFiles('.github/scripts/stress_efficiency_edit.py') != ''
+        if: hashFiles('.github/scripts/stress_efficiency_edit.py') != ''
         shell: bash
         run: |
           set -euo pipefail
