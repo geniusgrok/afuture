@@ -1,21 +1,10 @@
 name: production-return-l3
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - afuture/directional.py
-      - afuture/directional_acceptance.py
-      - afuture/directional_engine.py
-      - afuture/directional_risk.py
-      - afuture/execution_aligned_policy.py
-      - config/afuture.directional-live.example.toml
-      - tools/evaluate_directional_production_mechanics.py
-      - .github/workflows/production-return-l3.yml
+  workflow_dispatch:
 
 concurrency:
-  group: production-return-l3-${{ github.event.pull_request.number }}
+  group: production-return-l3-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -24,7 +13,6 @@ permissions:
 
 jobs:
   frozen-production-evidence:
-    if: github.head_ref == 'codex/afuture-production-return-100-20260823'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
