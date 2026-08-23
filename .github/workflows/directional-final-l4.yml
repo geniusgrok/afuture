@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]"
+      - run: python -m pip install -e ".[dev]" akshare
       - name: Reuse frozen Production L3 inputs
         env:
           GH_TOKEN: ${{ github.token }}
