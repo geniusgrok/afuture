@@ -10,6 +10,9 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-23-directional-execution-efficiency-design.md`
 
+**Final disposition (2026-08-23):** execution completed. Promoted: attribution, roll hysteresis, one-lot increase no-trade and adaptive margin contraction. Rejected/reverted after fixed L3: meta hysteresis, product replacement persistence and same-direction weight hysteresis. Final promoted L3: Base 109.0636%, Stress 28.9559%; 80% not achieved.
+
+
 ## Global Constraints
 
 - Frozen 50-product universe and 96-template pool.

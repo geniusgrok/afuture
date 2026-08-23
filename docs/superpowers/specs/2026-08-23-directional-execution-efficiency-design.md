@@ -81,13 +81,11 @@ This adds no fitted ratio threshold and prevents leader flip-flops caused by one
 
 The 35% margin hard gate and 25% available hard gate remain authoritative. Normal target sizing uses a causal soft envelope derived from completed account-return risk evidence.
 
-Let `hard_share = min(max_margin_ratio, 1-min_available_ratio)`. Let `shock` be the completed-history adverse-move proxy bounded to `[volatility_trigger, max_daily_loss_ratio]`, using the latest absolute completed return and two-day sample volatility. The safe target share is:
+`hard_share = min(max_margin_ratio, 1-min_available_ratio)` and `conservative = hard_share - max_daily_loss_ratio`, which is 30% under the frozen configuration. `shock` is bounded to `[3%, 5%]` from the latest absolute completed return and two-day sample volatility. The promoted rule is:
 
-`hard_share * (1-max_daily_loss_ratio) / (1+shock)`
+`soft_share = min(conservative, conservative * (1 - max(0, shock - 3%)))`
 
-and is never allowed below the existing 30% conservative floor or above the hard share. Defensive governor scaling remains authoritative and naturally reduces exposure further.
-
-This formula reserves capacity for a full 5% equity loss plus a completed-evidence mark expansion; it does not modify the hard gate.
+so missing/calm evidence stays at 30%, while larger completed shocks can only contract the soft target. It never expands toward the 35% hard gate. Defensive governor scaling remains authoritative and naturally reduces exposure further.
 
 ## 6. Production parity
 
@@ -121,3 +119,8 @@ If a change raises full_recent Stress but damages Base below 100%, causes hard-g
 ## 8. Documentation consistency
 
 Update README, architecture, data/backtest, live-trading, production checklist, production-mechanics evidence and research evidence to match the final code and measured results. Remove obsolete statements that describe the previous 20.4057% candidate as current once a new candidate is promoted. Rejected experiments remain documented as rejected evidence, not production behavior.
+
+
+## Final disposition
+
+Implementation and fixed-L3 evaluation are complete. Promoted: turnover attribution, contract-roll hysteresis, one-lot same-sign increase suppression and adaptive margin contraction. Rejected after L3: cost-aware meta hysteresis, product-replacement persistence and same-direction weight hysteresis. The final promoted Production L3 is Base **109.0636% / 15.8529% DD** and Stress **28.9559% / 28.1152% DD**, no permanent HALT, with all hard gates unchanged. The 80% Stress objective remains unmet and is not a justification for further fitting of this observed window.

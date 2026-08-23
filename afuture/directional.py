@@ -191,9 +191,9 @@ def adaptive_margin_sizing_share(
 ) -> float:
     """Causal soft margin envelope below unchanged account hard gates.
 
-    Missing completed-return evidence keeps the conservative 30%-equivalent envelope.
-    With completed evidence, calm conditions can recover some capacity while the formula
-    still reserves the configured 5% equity-loss budget plus an observed shock allowance.
+    Missing or calm completed-return evidence keeps the conservative 30%-equivalent
+    envelope. Completed shocks above the volatility trigger contract that envelope
+    further; this helper never expands normal target margin toward the 35% hard gate.
     """
     margin_ratio = float(max_margin_ratio)
     available_ratio = float(min_available_ratio)

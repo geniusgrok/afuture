@@ -8,8 +8,8 @@
 
 1. corrected M/OI、经济 pair、BU/FU、intraday、结构套利等市场中性路线没有接近 100% 年化；
 2. 50 品种 directional 在明确允许历史选择偏差、gross≤2x 的 specific-contract / next-open float-notional 口径达到 **107.4623% 年化 / 27.4097% 最大回撤**；
-3. 当前 production-mechanics Base 在相同两年区间达到 **108.8461% 年化 / 17.8010% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
-4. 当前 production-mechanics Stress 在 15bp + 15% margin proxy 下达到 **20.4057% 年化 / 27.9925% 最大回撤 / actual gross peak 1.684784x / 472 active days / no permanent halt**；
+3. 当前 production-mechanics Base 在相同两年区间达到 **109.0636% 年化 / 15.8529% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
+4. 当前 production-mechanics Stress 在 15bp + 15% margin proxy 下达到 **28.9559% 年化 / 28.1152% 最大回撤 / actual gross peak 1.668769x / 472 active days / no permanent halt**；
 5. Stress 已从旧版 `0.9249% + margin HALT` 修复为完整运行，但仍没有达到 80%；
 6. 两年历史和所谓 OOS 都已经被研究流程观察，不是 pristine holdout，所有高收益数字都不是未来收益保证。
 
@@ -93,19 +93,19 @@ Final OOS 已被观察，因此 `pristine_final_oos=false`。
 
 ## 7. 最终 Production L3
 
-固定 run `32624688557`，artifact id `9489421243`：
+固定 run `32634296589`，artifact id `9491959916`：
 
 | 指标 | Base | Stress |
 |---|---:|---:|
-| 年化 | **108.8461%** | **20.4057%** |
-| 累计 | **311.4052%** | **42.8545%** |
-| 最大回撤 | **17.8010%** | **27.9925%** |
-| Sharpe | **2.0812** | **0.7466** |
-| active days | **478 / 484** | **472 / 484** |
-| daily circuit days | 4 | 4 |
-| defensive days | 78 | 70 |
+| 年化 | **109.0636%** | **28.9559%** |
+| 累计 | **312.2285%** | **62.9735%** |
+| 最大回撤 | **15.8529%** | **28.1152%** |
+| Sharpe | **2.0976** | **0.9604** |
+| active days | **478 / 484** | **474 / 484** |
+| daily circuit days | 3 | 2 |
+| defensive days | 77 | 70 |
 | margin reject days | 0 | **0** |
-| actual gross peak | **1.998253x** | **1.684784x** |
+| actual gross peak | **1.998253x** | **1.668769x** |
 | halted | **false** | **false** |
 
 Base 直接通过 annualized≥100%、DD≤30%、actual gross≤2x、no permanent halt。
@@ -132,7 +132,7 @@ Stress 的重要变化不是“收益达到 80%”，而是它不再因 2x targe
 - gross ≤2x；
 - 35% margin / 25% available / 5% daily loss / 30% DD 均未放宽。
 
-Stress 年化仍只有 20.4057%。继续围绕同一已观察历史扩展 template、meta、governor 或 margin 参数直到得到 80%，增加的是过拟合而不是新信息，因此停止。
+Stress 年化提升到 28.9559%，仍未达到 80%。本轮已经把可解释的执行效率方向逐项实现并用固定 L3 晋级/否决；继续围绕同一已观察历史扩展 template、meta、governor 或门槛直到得到 80%，增加的是过拟合而不是新信息，因此不再追加同历史参数搜索。
 
 ## 10. 当前最高信息价值证据
 
@@ -144,4 +144,22 @@ Stress 年化仍只有 20.4057%。继续围绕同一已观察历史扩展 templa
 6. 测试柜台订单生命周期；
 7. 极小真实仓位。
 
-未来如需调整生产风险参数，应基于这些新证据。107.4623%、108.8461% 和 20.4057% 都只是已观察历史结果，不是未来年度收益承诺。
+未来如需调整生产风险参数，应基于这些新证据。107.4623%、109.0636% 和 28.9559% 都只是已观察历史结果，不是未来年度收益承诺。
+
+## 11. 2026-08-23 Execution-efficiency 最终晋级
+
+相对进入本轮前的 `main` commit `b6b2cdca0f04193c10e14f8b3ad61902d6e36769`：
+
+- Base 年化：108.8461% → **109.0636%**（+0.2175 个百分点）；最大回撤 17.8010% → **15.8529%**；
+- Stress 年化：20.4057% → **28.9559%**（+8.5502 个百分点）；最大回撤 27.9925% → **28.1152%**；
+- Stress active days：472 → **474 / 484**；margin rejects 仍为 **0**；no permanent HALT；
+- hard gates 保持 2x gross / 35% margin / 25% available / 5% daily loss / 30% DD / 35 lots。
+
+最终固定证据：workflow run `32634296589`，PR head `921bd8b4820a8c1efa9c804a8ea1a1b56c2d188f`，PR merge ref `1ec387433ee5011e44bc214e4e4c83a28e72c93c`，artifact id `9491959916`，artifact `stress-80-l3-1ec387433ee5011e44bc214e4e4c83a28e72c93c`，SHA-256 `e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d`。
+
+Stress turnover attribution（notional）：entry/exit `189,920,240`、resize `51,722,155`、reversal `11,314,145`、roll `2,521,010`、daily circuit `1,440,740`，总计 `256,918,290`；所有 bucket 与总 turnover 精确闭合。
+
+最终**保留**：turnover attribution、completed-day contract-roll hysteresis、same-sign `+1 lot` increase no-trade、completed-return shock adaptive margin contraction。最终**拒绝并回退**：product replacement persistence、cost-aware meta hysteresis、same-direction weight resize hysteresis。前两者固定 L3 分别把 Base 压至约 58.41% 与 58.32%；meta hysteresis 还令 Stress 为 -13.03%、DD 超 30% 并 HALT。
+
+因此 28.9559% 仍不是 80%。本轮证据反而证明高换手中有相当部分是有效 Alpha 迁移，不能无限压低 turnover；在同一已反复观察历史上继续调整门槛直到得到 80% 会增加 selection bias，而不是提高实盘可信度。
+

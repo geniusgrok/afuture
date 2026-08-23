@@ -7,8 +7,8 @@
 当前经济证据：
 
 - Float L4 Base：**107.4623% 年化 / 27.4097% 最大回撤 / target gross≤2x**，selection-biased；
-- Production L3 Base：**108.8461% 年化 / 17.8010% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
-- Production L3 Stress：**20.4057% 年化 / 27.9925% 最大回撤 / actual gross peak 1.684784x / 0 margin rejects / no permanent halt**。
+- Production L3 Base：**109.0636% 年化 / 15.8529% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
+- Production L3 Stress：**28.9559% 年化 / 28.1152% 最大回撤 / actual gross peak 1.668769x / 0 margin rejects / no permanent halt**。
 
 因此 **Base 历史 production-mechanics ≥100% 已满足，Stress 的结构性 margin HALT 已修复，但 Stress 80% 收益目标未满足**。继续真实资金前仍必须完成本清单。
 
@@ -24,13 +24,16 @@
 - [x] Production L3 使用 margin/cash/daily-loss/high-watermark hard gates。
 - [x] Production L3 使用 causal completed-return governor：-2% daily loss / 3% two-day sample vol → 25%。
 - [x] Production L3 使用 actual realized-gross hard ceiling 2.0x。
-- [x] Production L3 使用 margin-aware target sizing，当前配置把正常 target margin 控制在约 30% equity，同时保留 35% hard margin gate。
-- [x] **Production Base 年化 ≥100%：108.8461%。**
-- [x] **Production Base 最大回撤 ≤30%：17.8010%。**
+- [x] Production L3 使用 adaptive margin-aware target sizing：无历史/平静基线约 30% equity，completed shock 高于 3% 时只继续收缩，35% hard margin gate 不变。
+- [x] Production L3 输出 turnover attribution，并验证每个 bucket 求和等于总 turnover。
+- [x] completed-activity 选约保留仍 eligible 的 incumbent；challenger 只有 OI 和 volume 同时更高才切换。
+- [x] margin-fitted 同方向 `+1 lot` 增仓可在 incumbent 仍满足 soft margin / 2x gross 时保持不动；减仓与风险动作不被抑制。
+- [x] **Production Base 年化 ≥100%：109.0636%。**
+- [x] **Production Base 最大回撤 ≤30%：15.8529%。**
 - [x] **Production Base actual gross ≤2x：1.998253x。**
 - [x] **Production Base full_recent 不永久 HALT。**
-- [x] **Production Stress full_recent 不永久 HALT：472/484 active days，0 margin rejects。**
-- [x] Stress 未达到 80% 的结果被保留：20.4057% 年化。
+- [x] **Production Stress full_recent 不永久 HALT：474/484 active days，0 margin rejects。**
+- [x] Stress 未达到 80% 的结果被保留：28.9559% 年化。
 - [ ] 新发生、此前未参与任何选择/调参的未来数据持续验证。
 - [ ] 未来显著恶化时优先降低/关闭风险，不在同一历史上无限追参。
 
@@ -39,7 +42,7 @@
 - [x] daily loss 5% 是同 trading-day circuit，而不是自动取消风险门。
 - [x] total drawdown 30% 仍是 hard/manual halt。
 - [x] max margin 35% / min available 25% 仍是 hard gate。
-- [x] margin-aware soft target share 当前为 30%，它只缩正常目标，不替代或放宽 35%/25% hard gates。
+- [x] adaptive soft target share 的平静上限为 30%，completed shock 只可进一步收缩；它不替代或放宽 35%/25% hard gates。
 - [x] target gross 与 actual gross 都有 2.0x 硬边界。
 - [x] 单合约 max volume = 35。
 - [x] actual gross 超限才 reduction-only；margin target 与 gross guard 分别约束保证金和名义风险。
@@ -64,7 +67,7 @@
 - [ ] snapshot volume/OI 等于上一完整交易日最后可见 activity。
 - [ ] 次交易日当前累计 volume/OI 不会改变已冻结主力。
 - [ ] listing/expiry/20 天过滤正确。
-- [ ] OI → volume → expiry → symbol 排序与离线重建一致。
+- [ ] incumbent eligibility + challenger OI/volume 双维 dominance 与离线重建一致；无 incumbent 时 OI → volume → expiry → symbol 排序一致。
 - [ ] 新部署无 completed snapshot 时不会新增风险。
 - [ ] 重启后能恢复最近 completed snapshot。
 - [ ] completed activity 比最新完整 signal day 陈旧时 fail-closed。
@@ -87,7 +90,7 @@
 ## F. Margin-aware sizing / reduction-first / gross guard
 
 - [ ] live target 使用 Broker side-specific margin rate、mid、multiplier、buffer 计算逐手 margin。
-- [ ] 当前 35%/25%/5% 配置下正常 target margin share 约为 30%。
+- [ ] 当前 35%/25%/5% 配置下平静 target margin share 约为 30%，completed shock 高于 3% 时能因果收缩。
 - [ ] 缺少正的 margin evidence 时 fail-closed，不用猜测 margin 开仓。
 - [ ] margin fitter 不会增加任一 requested lot。
 - [ ] margin-fitted openings 仍经过 `RiskManager.check_open_orders()` 35%/25% hard gates。
@@ -195,4 +198,13 @@
 - [ ] 实盘回撤符合风险预算。
 - [ ] 已重新评估 15bp/高 margin Stress 与真实执行差异。
 
-107.4623% Float、108.8461% Production Base、20.4057% Production Stress 都是**已观察历史结果**。Stress 已不再早期 HALT，但没有达到 80%；这些数字均不是未来年度收益承诺。
+107.4623% Float、109.0636% Production Base、28.9559% Production Stress 都是**已观察历史结果**。Stress 已不再早期 HALT，但没有达到 80%；这些数字均不是未来年度收益承诺。
+
+
+## O. 本轮执行效率实验处置
+
+- [x] product replacement persistence 已实现并跑固定 L3；因 Base 降至约 58.41% 而拒绝并回退。
+- [x] cost-aware meta hysteresis 已实现并跑固定 L3；因 Base 约 58.32%、Stress -13.03%、DD 超 30% 且 HALT 而拒绝并回退。
+- [x] same-direction weight resize hysteresis 已实现并跑固定 L3；未通过 promotion gate，已回退。
+- [x] 最终晋级版本保持 Base ≥100%、Stress DD≤30%、no-HALT、gross≤2x、0 margin rejects。
+- [ ] Stress 80% 仍是研究方向，不作为放宽硬门或重复拟合同一历史的理由。

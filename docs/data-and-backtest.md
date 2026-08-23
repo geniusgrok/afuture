@@ -43,7 +43,7 @@ old weights × (t close → t+1 open)
 
 生产 `DirectionalActivityTracker` 按 `Tick.trading_day` 聚合合约最后可见 volume/OI；只有 trading day 从 D 推进时，才冻结 D 为 `DirectionalActivitySnapshot`。
 
-下一交易日 selector 读取 completed snapshot；listing/expiry 按计划交易日过滤；OI → volume → expiry → symbol 排序。当前 tick 只负责 fresh quote、depth、limit、价格、margin sizing 和下单。
+下一交易日 selector 读取 completed snapshot；listing/expiry 按计划交易日过滤；默认排序仍为 OI → volume → expiry → symbol；若已有持仓合约仍 eligible，则只有 challenger 在 completed-day OI 与 volume 两维都严格更高时才切换。当前 tick 只负责 fresh quote、depth、limit、价格、margin sizing 和下单。
 
 第一次启动没有 completed snapshot 时不新增 directional 风险；snapshot 落后于已确认完整 OHLC day 时 fail-closed。
 
@@ -91,7 +91,7 @@ Trailing Base 和 Stress evidence 都必须为正；通过该 Stress 生存门�
 - 5bp/15bp score 50/50：Production Base 年化降到约 94.59%；
 - 强制只允许 template rebalance `>=5`：Base 年化降到约 69.78%。
 
-最终版本恢复全部 96 templates，Base 经济结果恢复到 108.8461%。
+最终版本恢复全部 96 templates，Base 经济结果恢复到 109.0636%。
 
 ## 7. Production-mechanics L3
 
@@ -133,30 +133,30 @@ Soft target 30% 只用于正常 target lot fitting；账户 hard margin 仍为 3
 
 | 指标 | Base | Stress |
 |---|---:|---:|
-| 年化 | **108.8461%** | **20.4057%** |
-| 累计 | **311.4052%** | **42.8545%** |
-| 最大回撤 | **17.8010%** | **27.9925%** |
-| Sharpe | **2.0812** | **0.7466** |
-| 活跃交易日 | **478 / 484** | **472 / 484** |
-| 最终权益 | **2,057,025.78** | **714,272.26** |
-| daily circuit days | 4 | 4 |
-| defensive days | 78 | 70 |
+| 年化 | **109.0636%** | **28.9559%** |
+| 累计 | **312.2285%** | **62.9735%** |
+| 最大回撤 | **15.8529%** | **28.1152%** |
+| Sharpe | **2.0976** | **0.9604** |
+| 活跃交易日 | **478 / 484** | **474 / 484** |
+| 最终权益 | **2,061,142.43** | **814,867.56** |
+| daily circuit days | 3 | 2 |
+| defensive days | 77 | 70 |
 | margin reject days | 0 | **0** |
-| actual gross peak | **1.998253x** | **1.684784x** |
+| actual gross peak | **1.998253x** | **1.668769x** |
 | halted | **false** | **false** |
 
-最终证据：run `32624688557`，artifact id `9489421243`，SHA-256 `6a9abb9eb15a542eda2683200bbf5f001613dccd9546bde11f85dc4f0aa6add7`。
+最终证据：run `32634296589`，artifact id `9491959916`，SHA-256 `e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d`。
 
-上一 production Stress 为 0.9249% / 14 active days / margin HALT；因此当前 20.4057% 的主要意义是**Stress 已成为完整运行的账户实验**，而不是早停后的摊薄年化。但它仍没有达到 80%。
+上一 production Stress 为 0.9249% / 14 active days / margin HALT；因此当前 28.9559% 的主要意义是**Stress 已成为完整运行的账户实验**，而不是早停后的摊薄年化。但它仍没有达到 80%。
 
 ## 8. 结果不能怎样解释
 
-Float Base 107.4623%、Production Base 108.8461%、Production Stress 20.4057% 都来自已观察历史。
+Float Base 107.4623%、Production Base 109.0636%、Production Stress 28.9559% 都来自已观察历史。
 
 不能据此声称：
 
 - 实盘未来 Base 必然年化 >100%；
-- Stress 20.4057% 是未来收益下限；
+- Stress 28.9559% 是未来收益下限；
 - 当前 margin proxy 等于历史真实 Broker margin；
 - 继续在相同历史上调参到 Stress 80% 会提高真实泛化能力。
 
@@ -179,3 +179,10 @@ Final Python 3.10/3.13 CI + review
 ```
 
 最终 L3 稳定后停止在同一历史上扩大搜索。后续最有信息价值的是：新发生交易日、多日 CTP Shadow、planned vs realized turnover/slippage/commission、实际 Broker margin、测试柜台 FAK/partial/reject/reconnect 和极小真实仓位。
+
+
+## 11. Execution-efficiency 负证据与最终晋级
+
+固定输入 `9473260618` 上，本轮最终晋级候选把 Production Stress 从 **20.4057%** 提升到 **28.9559%**，Base 从 **108.8461%** 提升到 **109.0636%**。晋级来源是执行机械而不是新模板搜索：roll hysteresis、one-lot increase no-trade、adaptive margin contraction 与 turnover attribution。
+
+三类更激进的 signal 层换手抑制被固定 L3 否决并回退：product replacement persistence（Base 约 58.41%）、cost-aware meta hysteresis（Stress -13.03% 且 HALT）、same-direction weight resize hysteresis（未通过 promotion gate）。这说明 entry/exit turnover 中包含重要 Alpha；不能按“换手越低越好”继续拟合。

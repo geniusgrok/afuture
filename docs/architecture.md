@@ -36,11 +36,12 @@ CTP Tick.trading_day
 → DirectionalActivityTracker
 → trading day 切换时冻结前一日最终 OI/volume
 → DirectionalActivityStore
-→ D+1 concrete contract selection
+→ D+1 concrete contract selection；eligible incumbent 保留，除非 challenger 同时拥有更高 OI 与 volume
 
 Broker positions + D+1 fresh quotes + live ContractSpec
 → integer target lots，单合约 <=35
-→ margin-aware target sizing
+→ adaptive margin-aware target sizing
+→ 同方向 +1 lot 增仓 no-trade（仅当 incumbent 仍满足 soft margin / 2x gross）
 → reduction-first rebalance
 → RiskManager hard gates
 → FAK
@@ -100,10 +101,12 @@ latest OHLC day >= required_signal_day
 
 ```text
 hard_share = min(max_margin_ratio, 1 - min_available_ratio)
-soft_target_share = max(0, hard_share - max_daily_loss_ratio)
+conservative = max(0, hard_share - max_daily_loss_ratio)
+shock = clamp(max(3%, abs(latest completed return), two-day sample volatility), 3%, 5%)
+soft_target_share = min(conservative, conservative * (1 - max(0, shock - 3%)))
 ```
 
-当前 35% margin / 25% available / 5% daily-loss 配置得到 **30% equity** 的正常 target margin budget。
+当前 35% margin / 25% available / 5% daily-loss 配置的平静基线为 **30% equity**；completed shock 高于 3% 时只会进一步收缩，35% hard gate 不变。
 
 Live 使用 Broker side-specific `margin_rate_long/short`、当前 mid、multiplier 和 buffer；缺少可信 margin evidence 时 fail-closed。这个 soft target envelope 不改变 35%/25% hard gates，所有 openings 后续仍由 `RiskManager.check_open_orders()` 重新判定。
 
@@ -188,7 +191,7 @@ Directional 汇总 realized turnover、commission、median/p95 slippage、tracki
 ## 12. 经济证据分层
 
 1. **Float-notional specific-contract L4**：Base 5bp 年化 107.4623%、Stress 15bp 年化 58.1372%，selection-biased；
-2. **Production-mechanics L3**：Base 5bp 年化 **108.8461%**、最大回撤 **17.8010%**、actual gross peak **1.998253x**、未永久 HALT；Stress 15bp 年化 **20.4057%**、最大回撤 **27.9925%**、actual gross peak **1.684784x**、472/484 active days、0 margin rejects、未永久 HALT。
+2. **Production-mechanics L3**：Base 5bp 年化 **109.0636%**、最大回撤 **15.8529%**、actual gross peak **1.998253x**、未永久 HALT；Stress 15bp 年化 **28.9559%**、最大回撤 **28.1152%**、actual gross peak **1.668769x**、474/484 active days、0 margin rejects、未永久 HALT。
 
 Stress 已修复此前的结构性 margin HALT，但没有达到 80%。两个层级都不能替代真实 CTP 新数据。
 
@@ -201,3 +204,8 @@ Stress 已修复此前的结构性 margin HALT，但没有达到 80%。两个层
 Shadow 市场侧来自真实 CTP catalog/tick/trading day/metadata，账户侧来自本地 SimBroker。必须重点观察：raw target vs margin-fitted target、Broker actual margin、actual gross、gross-guard reductions、daily circuit、realized cost、tracking、partial/reject 和恢复行为。
 
 当前不需要数据库、消息队列、Web 服务、微服务或第二账户状态机。后续新增价值应来自**未来新数据和真实执行证据**，而不是继续扩大同一历史上的参数空间。
+
+
+## 14. Execution-efficiency promotion 结果
+
+最终生产只保留通过固定 L3 的机制：turnover attribution、completed-activity roll hysteresis、`+1 lot` 同方向增仓抑制和 completed-return shock margin contraction。Product replacement、meta hysteresis、same-direction weight hysteresis 均实际实现并验证过，但因为明显损伤 Base/Stress 而回退。最终 full_recent 为 Base **109.0636% / 15.8529% DD**，Stress **28.9559% / 28.1152% DD**，两者 no-HALT；Stress 80% 仍未达到。

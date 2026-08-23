@@ -7,11 +7,11 @@
 `afuture` 的冻结 Execution-Aligned Directional Portfolio 当前有两个层级的历史结果：
 
 - **研究层 Float L4**：selection-biased specific-contract / next-open float-notional 最近两年 Base 年化 **107.4623%**、Stress 15bp 年化 **58.1372%**；
-- **生产机械层 L3**：当前 integer lots、账户硬门、daily circuit、completed-return governor、margin-aware sizing 和 realized-gross hard guard 下，Base 年化 **108.8461%**、Stress 年化 **20.4057%**；两者全区间均未永久 HALT。
+- **生产机械层 L3**：当前 integer lots、账户硬门、daily circuit、completed-return governor、margin-aware sizing 和 realized-gross hard guard 下，Base 年化 **109.0636%**、Stress 年化 **28.9559%**；两者全区间均未永久 HALT。
 
 准确表述是：
 
-> **固定历史 Base production-mechanics 已达到 100% 年化验收门；Stress 已修复此前的结构性 margin HALT，但年化只有 20.4057%，没有达到 80%。这些结果都不是未来收益保证或独立泛化证明。**
+> **固定历史 Base production-mechanics 已达到 100% 年化验收门；Stress 已修复此前的结构性 margin HALT，但年化只有 28.9559%，没有达到 80%。这些结果都不是未来收益保证或独立泛化证明。**
 
 ## 2. 原 Float L4
 
@@ -98,11 +98,11 @@ else
 ```text
 fixed input artifact id = 9473260618
 workflow run             = 32624688557
-PR head                  = 198cad7ee62e0e6892ddf5c725525fb46c7383e2
-PR merge ref             = 7664851987a59c2d87d1084376ffbd9649863b2c
-artifact id              = 9489421243
-artifact                 = stress-robustness-l3-7664851987a59c2d87d1084376ffbd9649863b2c
-SHA-256                  = 6a9abb9eb15a542eda2683200bbf5f001613dccd9546bde11f85dc4f0aa6add7
+PR head                  = 921bd8b4820a8c1efa9c804a8ea1a1b56c2d188f
+PR merge ref             = 1ec387433ee5011e44bc214e4e4c83a28e72c93c
+artifact id              = 9491959916
+artifact                 = stress-80-l3-1ec387433ee5011e44bc214e4e4c83a28e72c93c
+SHA-256                  = e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d
 ```
 
 ### 统一参数
@@ -130,17 +130,17 @@ margin_is_historical_truth  = false
 
 | 指标 | Base | Stress |
 |---|---:|---:|
-| 年化收益 | **108.8461%** | **20.4057%** |
-| 累计收益 | **311.4052%** | **42.8545%** |
-| 最大回撤 | **17.8010%** | **27.9925%** |
-| 年化波动 | 38.8943% | 31.2307% |
-| Sharpe | **2.0812** | **0.7466** |
-| 活跃交易日 | **478 / 484** | **472 / 484** |
-| 最终权益 | **2,057,025.78** | **714,272.26** |
-| daily circuit days | 4 | 4 |
-| defensive risk days | 78 | 70 |
+| 年化收益 | **109.0636%** | **28.9559%** |
+| 累计收益 | **312.2285%** | **62.9735%** |
+| 最大回撤 | **15.8529%** | **28.1152%** |
+| 年化波动 | 38.5851% | 31.5242% |
+| Sharpe | **2.0976** | **0.9604** |
+| 活跃交易日 | **478 / 484** | **474 / 484** |
+| 最终权益 | **2,061,142.43** | **814,867.56** |
+| daily circuit days | 3 | 2 |
+| defensive risk days | 77 | 70 |
 | margin reject days | 0 | **0** |
-| actual gross 峰值 | **1.998253x** | **1.684784x** |
+| actual gross 峰值 | **1.998253x** | **1.668769x** |
 | first divergence | `daily loss limit reached` | `daily loss limit reached` |
 | halted | **false** | **false** |
 
@@ -152,9 +152,9 @@ Base 仍通过：年化 `>=100%`、最大回撤 `<=30%`、实际 gross `<=2x`、
 
 - 5bp/15bp score 直接 50/50：Base 年化降到约 **94.59%**；
 - 进一步只允许 rebalance `>=5` 的 57 templates：Base 年化降到约 **69.78%**；
-- 最终选择恢复全部 96 templates，以 Stress 只做生存门，Base 收益恢复到 **108.8461%**。
+- 最终选择恢复全部 96 templates，以 Stress 只做生存门，Base 收益恢复到 **109.0636%**。
 
-最终 Stress 20.4057% 已经是真正运行 472/484 天的账户结果，不再是此前“很早 HALT 后把少量收益摊到两年”的 0.9249%。但它仍远低于 80%。继续在同一已经反复观察的两年历史上调 meta 权重、删模板、改 governor 或 margin headroom，主要增加过拟合风险，不足以证明未来实盘更好，因此到此停止。
+最终 Stress 28.9559% 已经是真正运行 474/484 天的账户结果，不再是此前“很早 HALT 后把少量收益摊到两年”的 0.9249%。但它仍远低于 80%。继续在同一已经反复观察的两年历史上调 meta 权重、删模板、改 governor 或 margin headroom，主要增加过拟合风险，不足以证明未来实盘更好，因此到此停止。
 
 ## 7. 泛化与真实资金限制
 
@@ -171,3 +171,21 @@ Base 仍通过：年化 `>=100%`、最大回撤 `<=30%`、实际 gross `<=2x`、
 因此真实资金仍必须经过多日 Shadow、测试柜台、极小真实仓位，以及最重要的——**新发生、此前没有参与任何选择和调参的未来数据**。
 
 完整 mechanics 说明见 [`directional-production-mechanics-evidence.md`](directional-production-mechanics-evidence.md)。
+
+## 11. 2026-08-23 Execution-efficiency 最终晋级
+
+相对进入本轮前的 `main` commit `b6b2cdca0f04193c10e14f8b3ad61902d6e36769`：
+
+- Base 年化：108.8461% → **109.0636%**（+0.2175 个百分点）；最大回撤 17.8010% → **15.8529%**；
+- Stress 年化：20.4057% → **28.9559%**（+8.5502 个百分点）；最大回撤 27.9925% → **28.1152%**；
+- Stress active days：472 → **474 / 484**；margin rejects 仍为 **0**；no permanent HALT；
+- hard gates 保持 2x gross / 35% margin / 25% available / 5% daily loss / 30% DD / 35 lots。
+
+最终固定证据：workflow run `32634296589`，PR head `921bd8b4820a8c1efa9c804a8ea1a1b56c2d188f`，PR merge ref `1ec387433ee5011e44bc214e4e4c83a28e72c93c`，artifact id `9491959916`，artifact `stress-80-l3-1ec387433ee5011e44bc214e4e4c83a28e72c93c`，SHA-256 `e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d`。
+
+Stress turnover attribution（notional）：entry/exit `189,920,240`、resize `51,722,155`、reversal `11,314,145`、roll `2,521,010`、daily circuit `1,440,740`，总计 `256,918,290`；所有 bucket 与总 turnover 精确闭合。
+
+最终**保留**：turnover attribution、completed-day contract-roll hysteresis、same-sign `+1 lot` increase no-trade、completed-return shock adaptive margin contraction。最终**拒绝并回退**：product replacement persistence、cost-aware meta hysteresis、same-direction weight resize hysteresis。前两者固定 L3 分别把 Base 压至约 58.41% 与 58.32%；meta hysteresis 还令 Stress 为 -13.03%、DD 超 30% 并 HALT。
+
+因此 28.9559% 仍不是 80%。本轮证据反而证明高换手中有相当部分是有效 Alpha 迁移，不能无限压低 turnover；在同一已反复观察历史上继续调整门槛直到得到 80% 会增加 selection bias，而不是提高实盘可信度。
+
