@@ -1,16 +1,16 @@
 # afuture 研究证据总览
 
-本文件保留 2026-08-21~2026-08-22 的主要研究结论。旧套利专项没有被删除或改写；Execution-Aligned Directional 是另一条账户互斥策略链。
+本文件保留 2026-08-21~2026-08-23 的主要研究与生产机械结论。旧套利专项没有被删除或改写；Execution-Aligned Directional 是另一条账户互斥策略链。
 
 ## 1. 全局结论
 
-研究最终形成三个必须同时成立的事实：
+当前必须同时成立的事实：
 
 1. corrected M/OI、经济 pair、BU/FU、intraday、结构套利等市场中性路线没有接近 100% 年化；
 2. 50 品种 directional 在明确允许历史选择偏差、gross≤2x 的 specific-contract / next-open float-notional 口径达到 **107.4623% 年化 / 27.4097% 最大回撤**；
-3. 相同冻结权重经过当前生产账户机械和风险门后，最近两年 production proxy Base 只有 **6.7861% 年化**，并于 **2024-09-19** 触发 5% daily-loss gate 后停机。
-
-因此“研究历史达到 100%”是事实，但“当前生产账户语义已经达到 100%”不是事实。Final OOS 已被观察且为负，也没有独立泛化证明。
+3. 当前 production-mechanics Base 在相同两年区间达到 **108.8461% 年化 / 17.8010% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
+4. Stress production-mechanics 只有 **0.9249% 年化**并因 margin hard gate HALT，因此“Base 通过”不能改写成“生产鲁棒性已证明”；
+5. 两年历史和所谓 OOS 都已经被研究流程观察，不是 pristine holdout，所有高收益数字都不是未来收益保证。
 
 最新正式证据：
 
@@ -41,9 +41,22 @@ BU/FU specific-contract 信号证明并非单纯 continuous roll 假象，但收
 
 研究 family：breakout、time-series momentum、momentum、moving average、reversal、acceleration / slow-fast。
 
-连续合约 L3 首先发现高收益候选，但初版 specific-contract next-open 明显衰减，暴露理论目标与实际执行错位。最终策略把模板筛选/meta evidence 对齐到 execution-aware 历史，并明确承认 selection bias。
+连续合约研究先发现高收益候选，随后 specific-contract next-open 暴露理论目标与实际执行错位。最终策略把模板筛选/meta evidence 对齐到 execution-aware 历史，并明确承认 selection bias。
 
-## 5. Final float-notional L4
+当前正式 signal/meta：
+
+- 50 品种；
+- 96-template pool；
+- meta lookback=11；
+- meta rebalance=3；
+- meta count=3；
+- score=`0.25 × annualized + 1.0 × Sharpe`；
+- completed continuous intraday proxy causal ranking；
+- point-in-time concrete-contract selection；
+- 20 天黑窗；
+- target gross≤2x。
+
+## 5. Float-notional L4
 
 固定原始数据：
 
@@ -55,9 +68,7 @@ specific daily rows       ≈ 495086
 missing next returns      = 0 on final products
 ```
 
-冻结策略：96-template pool、meta lookback=10、meta rebalance=5、meta count=3、completed continuous intraday proxy causal ranking、point-in-time concrete-contract selection、20 天黑窗、gross≤2x。
-
-`2024-08-21 ~ 2026-08-20` 官方 final artifact：
+`2024-08-21 ~ 2026-08-20` 原官方 artifact：
 
 | 指标 | Base 5bp | Stress 15bp |
 |---|---:|---:|
@@ -66,67 +77,67 @@ missing next returns      = 0 on final products
 | 最大回撤 | **27.4097%** | **32.9554%** |
 | Sharpe | **1.6874** | **1.1525** |
 
-Extreme 30bp：年化约 **5.09%**、最大回撤约 **43.51%**。
+Final OOS 已被观察，因此 `pristine_final_oos=false`。
 
-Final OOS `2026-02-21 ~ 2026-08-20`：Base 年化约 `-10.73%`、Base 最大回撤约 `27.41%`、Stress 年化约 `-31.42%`，因此 `pristine_final_oos=false`。
+## 6. Production-mechanics 收口
 
-## 6. 生产真实性收口
-
-后续没有继续扩大 Alpha/template/leverage，而是收口 research/live 差异：
+本轮没有通过增加 Alpha/template/leverage 解决 research/live gap，而是修正生产机械：
 
 - D 日 completed activity 决定 D+1 concrete contract；
-- required signal trading day = completed activity day；
-- provider cache 只有覆盖 required day 才能容错；
-- stale persisted activity 不能掩盖更新的完整 signal day；
-- stale/missing required signal + existing risk → `REDUCE_ONLY`；
-- missing new target 不阻塞其它 reductions；
-- Broker 仍是唯一 order/fill/position truth；
-- restart mismatch fail-closed；
-- directional rebalance/fill/cycle execution quality；
-- production-mechanics 加入 multiplier、integer lots、contract cap、margin/cash、daily-loss/high-watermark。
+- required signal day = completed activity day；
+- stale/missing evidence fail-closed；
+- reductions 优先；
+- Broker 是唯一 order/fill/position truth；
+- integer lots / multiplier / max contract volume 35；
+- 5% daily-loss 改为同交易日 circuit，后续交易日满足完整安全条件才恢复；
+- total DD / margin / available cash 等保持 hard/manual halt；
+- completed-return governor：最近完成日收益≤-2% 或两日样本波动≥3% → 下一目标 25%，否则 100%；
+- normal target 不预先 haircut；actual marked gross>2x 时运行时只减仓；
+- 同一合约多空毛仓 flatten 按毛仓分别平，避免 net=0 漏风险；
+- directional rebalance/fill/cycle execution quality 保持观测闭环。
 
-最终生产 signal policy 只有 `ExecutionAlignedAggressivePolicy`；旧 32-template 中间 policy 已移除。
+最终生产 signal policy 仍只有 `ExecutionAlignedAggressivePolicy`。
 
-## 7. Production-mechanics 结果
+## 7. 最终 Production L3
 
-固定 artifact + 当前 mechanics、无重新拟合/抓取的最近两年结果：
+固定 run `32617588179`：
 
 | 指标 | Base | Stress |
 |---|---:|---:|
-| 年化 | **6.7861%** | **3.4290%** |
-| 累计 | **13.4401%** | **6.6897%** |
-| 最大回撤 | **5.5680%** | **5.3020%** |
-| active days | **20 / 484** | **17 / 484** |
-| margin reject days | 0 | **14** |
-| fatal gate | daily loss | margin ratio |
-| halt date | **2024-09-19** | **2024-09-19** |
+| 年化 | **108.8461%** | **0.9249%** |
+| 累计 | **311.4052%** | **1.7840%** |
+| 最大回撤 | **17.8010%** | **5.8553%** |
+| Sharpe | **2.0812** | 0.2246 |
+| active days | **478 / 484** | **14 / 484** |
+| daily circuit days | 4 | 0 |
+| defensive days | 78 | 2 |
+| margin reject days | 0 | 6 |
+| actual gross peak | **1.998253x** | 1.856519x |
+| halted | **false** | **true** |
 
-Base 12% margin proxy、Stress 15%，都乘 1.25 buffer；当前生产硬门保持 daily loss 5%、total DD 30%、max margin 35%、min available 25%。
+Base 直接通过四个核心历史门：annualized≥100%、DD≤30%、actual gross≤2x、no permanent halt。
 
-这证明当前主要 production gap 来自账户风险权限会很早终止风险路径，而不是只来自整数手数或手续费。
+Stress 的早期 margin halt 说明成本/保证金鲁棒性仍弱。Base 的 prior1/prior2 独立窗口也分别约 -28.94% / -28.80%，并触及 30% 总回撤门，说明 regime dependence 仍明显。
 
-较小的 proxy 最大回撤不能解释成“策略变稳”，因为 proxy 在 2024-09-19 之后基本不再持有风险。
+## 8. 为什么现在停止历史优化
 
-## 8. 为什么不继续历史调参
+Base acceptance 已满足后继续围绕同一历史扩展参数空间，增加的是过拟合而不是新信息。当前明确停止：
 
-当前最差的做法是为了恢复 production proxy 100% 去：
-
-- 扩大模板池；
+- 扩大 template pool；
 - 提高 gross >2x；
-- 静默放宽 5% daily loss / 30% DD；
-- 静默放宽 margin/cash gate。
+- 放宽 5% daily loss / 30% DD；
+- 放宽 margin/cash gate；
+- 围绕同一两年继续扫 governor / cap / meta。
 
-这些都会把“生产真实性检查”重新变成“对同一历史追数字”。因此本轮明确停止这种方向。
+下一步的决策变量应来自真实账户，而不是历史目标函数。
 
-## 9. 当前最重要的新证据
+## 9. 当前最高信息价值证据
 
-后续高信息价值证据依次是：
-
-1. 新发生未来数据；
+1. 新发生、此前未参与选择的未来数据；
 2. 多日 CTP Shadow；
 3. realized turnover/slippage/commission/tracking；
-4. 真实 Broker margin/risk-off 行为；
-5. 测试柜台真实订单生命周期；
+4. 真实 Broker margin / gross guard / daily circuit；
+5. 测试柜台订单生命周期；
 6. 极小真实仓位。
 
-未来如需调整生产风险参数，应基于这些新证据，而不是以必须恢复 107.4623% 为目标。
+未来如需调整生产风险参数，应基于这些新证据。107.4623% 和 108.8461% 都只是已观察历史结果，Stress 0.9249% + halt 也必须同时纳入判断。
