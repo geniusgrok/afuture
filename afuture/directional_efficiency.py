@@ -97,6 +97,67 @@ def should_switch_meta(
     return expected_gain > modeled_cost + 1e-15
 
 
+def stabilize_product_replacements(
+    previous: Mapping[str, float],
+    candidate: Mapping[str, float],
+    *,
+    trailing_mean_returns: Mapping[str, float],
+    horizon: int,
+    cost_bps: float,
+) -> dict[str, float]:
+    """Keep a pure product replacement only when its completed edge pays switch cost.
+
+    This gate is intentionally narrow. It acts only when the candidate keeps the same
+    total gross, leaves every overlapping product weight unchanged, and replaces at least
+    one fully exited product with at least one new product. Any sign change, partial
+    resize, or gross reduction bypasses persistence immediately. Therefore the helper can
+    suppress low-value entry/exit churn without delaying explicit de-risking or reversal.
+    """
+    if horizon <= 0 or cost_bps < 0:
+        raise ValueError("product horizon must be positive and cost non-negative")
+    old = {
+        str(product): float(weight)
+        for product, weight in previous.items()
+        if abs(float(weight)) > 1e-15
+    }
+    new = {
+        str(product): float(weight)
+        for product, weight in candidate.items()
+        if abs(float(weight)) > 1e-15
+    }
+    if not old or not new:
+        return new
+
+    old_gross = sum(abs(weight) for weight in old.values())
+    new_gross = sum(abs(weight) for weight in new.values())
+    if new_gross + 1e-12 < old_gross:
+        return new
+
+    overlap = set(old) & set(new)
+    for product in overlap:
+        if abs(old[product] - new[product]) > 1e-12:
+            return new
+
+    exits = set(old) - set(new)
+    entries = set(new) - set(old)
+    if not exits or not entries:
+        return new
+
+    previous_edge = sum(
+        weight * float(trailing_mean_returns.get(product, 0.0))
+        for product, weight in old.items()
+    )
+    candidate_edge = sum(
+        weight * float(trailing_mean_returns.get(product, 0.0))
+        for product, weight in new.items()
+    )
+    expected_gain = (candidate_edge - previous_edge) * float(horizon)
+    modeled_cost = weight_turnover(old, new) * float(cost_bps) / 10000.0
+    if expected_gain <= modeled_cost + 1e-15:
+        return old
+    return new
+
+
 def stabilize_same_direction_weights(
     previous: Mapping[str, float],
     candidate: Mapping[str, float],
