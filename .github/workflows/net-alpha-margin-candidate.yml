@@ -69,28 +69,38 @@ jobs:
           total = float(equity.iloc[-1] - 1.0)
           annualized = float((1.0 + total) ** (252.0 / len(returns)) - 1.0) if total > -1.0 else -1.0
           std = float(returns.std(ddof=1))
+          max_drawdown = float((equity / equity.cummax() - 1.0).min())
+          max_realized_gross = float((daily['gross_notional'] / daily['equity'].replace(0.0, np.nan)).max())
+          margin_reject_days = int((daily['margin_reject'].astype(str) != '').sum())
+          halted = bool(daily['halted'].astype(bool).any())
+          calm_soft_margin_share = shock_derived_margin_sizing_share(
+              max_margin_ratio=0.35,
+              min_available_ratio=0.25,
+              max_daily_loss_ratio=0.05,
+              max_gross_ratio=2.0,
+              stress_cost_bps=15.0,
+              completed_returns=(),
+          )
           report = {
               'annualized_return': annualized,
               'total_return': total,
-              'max_drawdown': float((equity / equity.cummax() - 1.0).min()),
+              'max_drawdown': max_drawdown,
               'sharpe': float(returns.mean() / std * np.sqrt(252.0)) if std > 1e-12 else 0.0,
               'active_days': int((returns.abs() > 1e-15).sum()),
               'days': int(len(returns)),
-              'max_realized_gross': float((daily['gross_notional'] / daily['equity'].replace(0.0, np.nan)).max()),
-              'margin_reject_days': int((daily['margin_reject'].astype(str) != '').sum()),
-              'halted': bool(daily['halted'].astype(bool).any()),
+              'max_realized_gross': max_realized_gross,
+              'margin_reject_days': margin_reject_days,
+              'halted': halted,
               'final_equity': float(result.final_equity),
               'first_divergence': str(result.first_divergence),
-              'average_soft_margin_share': float(daily['soft_margin_share'].astype(float).mean()),
-              'min_soft_margin_share': float(daily['soft_margin_share'].astype(float).min()),
-              'max_soft_margin_share': float(daily['soft_margin_share'].astype(float).max()),
+              'calm_soft_margin_share': float(calm_soft_margin_share),
               'baseline_stress_annualized_return': 0.289559,
               'promotion_screen': bool(
                   annualized > 0.289559 + 0.05
-                  and float((equity / equity.cummax() - 1.0).min()) >= -0.30
-                  and not bool(daily['halted'].astype(bool).any())
-                  and int((daily['margin_reject'].astype(str) != '').sum()) == 0
-                  and float((daily['gross_notional'] / daily['equity'].replace(0.0, np.nan)).max()) <= 2.0 + 1e-10
+                  and max_drawdown >= -0.30
+                  and not halted
+                  and margin_reject_days == 0
+                  and max_realized_gross <= 2.0 + 1e-10
               ),
           }
           with open('runtime/shock_derived_margin_stress_screen.json', 'w', encoding='utf-8') as handle:
