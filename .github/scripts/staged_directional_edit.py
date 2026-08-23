@@ -1,5 +1,5 @@
 # message: docs: finalize promoted L3 evidence consistency
-# serialized trigger: final evidence-only sync; no economic behavior changes
+# observable PR trigger: evidence-only sync; no economic behavior changes
 from pathlib import Path
 
 formal_docs = [
