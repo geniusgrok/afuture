@@ -82,6 +82,8 @@ Positive values mean the exited same-side exposure would have earned positive 5-
 
 No low-degree-of-freedom, pre-trade-identifiable entry/exit cohort is consistently negative after 15bp across prior1, prior2, train, validation and OOS. Therefore Task 2 promotes **no** entry/exit hysteresis, persistence or minimum-hold production rule. This is negative evidence, not a failed task: it prevents reintroducing the same class of overfit turnover suppression that PR #14 already rejected.
 
+Task 3 may still research a generic completed-history expected-net-edge estimator, but it must fail closed on insufficient evidence and must demonstrate independent prior/walk-forward value before any production promotion.
+
 ## Task 3 — Net-edge-aware entry qualification
 
 The single pre-declared estimator was tested before any production integration:
@@ -104,3 +106,25 @@ The single pre-declared estimator was tested before any production integration:
 The estimator fails the prior2 robustness requirement: the group it would admit is materially worse than the group it would reject. Broader side/bucket and bucket-only aggregation were also probed once as structural simplifications; they still fail in prior2 and/or validation. No threshold grid, minimum-count search or bucket search was performed.
 
 **Decision:** rejected before production integration. No live/acceptance behavior changes and no fixed Production L3 run are justified for this candidate. This avoids spending L3 on a candidate already invalidated by cheaper independent evidence.
+
+## Task 4 — Independent low-turnover Alpha-family research
+
+The research execution harness was first validated against the frozen PR #14 execution-aligned weights: on the same concrete-contract, previous-completed-contract / next-open path it reproduces current-lineage Float Stress **109.3145% annualized**, so the following failures are not an execution-harness artifact.
+
+No parameter grid was run. Each family used one pre-declared, low-degree-of-freedom specification: slow/confirmed trend used 20/60/120-session completed momentum and 5-session rebalance; cross-sectional momentum used 60-session ranks / top-bottom 20% / 5-session rebalance; carry used point-in-time nearest two eligible contracts / top-bottom 20% / 5-session rebalance; carry+trend added one 60-session completed trend confirmation; breakout confirmation used 60-session entry / 20-session exit / 20-session range confirmation. A final volatility-normalized trend-strength rank used the same 20/60/120 horizons, 5-session rebalance and top 20% absolute completed trend strength. All gross targets remained <=2x.
+
+### 15bp roll-safe next-open annualized return
+
+| Family | prior1 | prior2 | train | validation | OOS | full_recent | full_recent DD | Decision |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| Slow multi-horizon trend | -6.19% | -14.58% | -24.54% | +6.05% | -6.57% | -13.38% | -28.71% | reject |
+| All-horizon confirmed trend | -8.93% | -7.13% | -22.72% | +22.00% | -8.73% | -9.80% | -30.43% | reject |
+| Cross-sectional momentum | -6.01% | -18.62% | -33.58% | +26.91% | -13.72% | -16.77% | -35.05% | reject |
+| Breakout + range/trend confirmation | -15.61% | +2.23% | -37.02% | +26.01% | +4.34% | -15.09% | -42.22% | reject |
+| Point-in-time carry | -4.29% | +2.17% | -6.82% | -11.06% | +16.26% | -2.55% | -23.75% | reject |
+| Carry + trend confirmation | -10.41% | +1.06% | -17.96% | -13.75% | +9.81% | -10.55% | -25.98% | reject |
+| Strength-ranked normalized trend | -0.45% | -20.66% | -32.48% | +45.56% | -43.20% | -21.95% | -48.22% | reject |
+
+The family results are regime-fragile rather than merely cost-sensitive: several show strong validation-only performance while losing in prior windows and OOS, the exact pattern that would invite selection fitting if parameters were now tuned around the observed two-year window. Carry is the closest to a distinct economic source but is still negative in prior1/train/validation and negative full_recent after 15bp.
+
+**Decision:** no new Alpha family is promoted. The stop rule is invoked here: further lookback/rebalance/fraction variants would add selection degrees of freedom without new economic information. Because no independent family passes, Task 5 does not blend rejected families into the production Alpha merely to improve the observed sample.
