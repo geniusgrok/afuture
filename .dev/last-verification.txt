@@ -1,6 +1,84 @@
-source_sha=0e5fb4d8c82e861fe10d667032aa37516c27eda1
-test_exit=0
+source_sha=5b63045c06f4e98b32337e636d9c3f4c2830dd9e
+test_exit=1
 research_exit=not-run
 --- targeted tail ---
-............................................                             [100%]
-44 passed in 6.39s
+tests/test_directional_timing.py:38: in _module
+    return importlib.import_module("afuture.directional_timing")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/hostedtoolcache/Python/3.13.15/x64/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1395: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'afuture.directional_timing'
+import_ = <function _gcd_import at 0x7f3ef9ee84a0>
+
+>   ???
+E   ModuleNotFoundError: No module named 'afuture.directional_timing'
+
+<frozen importlib._bootstrap>:1324: ModuleNotFoundError
+_ test_minute_overlay_does_not_chase_before_fifteen_minutes_but_has_bounded_delay _
+
+    def test_minute_overlay_does_not_chase_before_fifteen_minutes_but_has_bounded_delay():
+>       timing = _module()
+                 ^^^^^^^^^
+
+tests/test_directional_timing.py:114: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_directional_timing.py:38: in _module
+    return importlib.import_module("afuture.directional_timing")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/hostedtoolcache/Python/3.13.15/x64/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1395: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'afuture.directional_timing'
+import_ = <function _gcd_import at 0x7f3ef9ee84a0>
+
+>   ???
+E   ModuleNotFoundError: No module named 'afuture.directional_timing'
+
+<frozen importlib._bootstrap>:1324: ModuleNotFoundError
+_ test_missing_or_stale_minute_evidence_falls_back_instead_of_blocking_execution _
+
+    def test_missing_or_stale_minute_evidence_falls_back_instead_of_blocking_execution():
+>       timing = _module()
+                 ^^^^^^^^^
+
+tests/test_directional_timing.py:133: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_directional_timing.py:38: in _module
+    return importlib.import_module("afuture.directional_timing")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/hostedtoolcache/Python/3.13.15/x64/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap>:1395: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+name = 'afuture.directional_timing'
+import_ = <function _gcd_import at 0x7f3ef9ee84a0>
+
+>   ???
+E   ModuleNotFoundError: No module named 'afuture.directional_timing'
+
+<frozen importlib._bootstrap>:1324: ModuleNotFoundError
+=========================== short test summary info ============================
+FAILED tests/test_directional_timing.py::test_only_opening_or_same_sign_increase_can_be_delayed - ModuleNotFoundError: No module named 'afuture.directional_timing'
+FAILED tests/test_directional_timing.py::test_minute_overlay_builds_causal_opening_vwap_oi_volume_and_l1_features - ModuleNotFoundError: No module named 'afuture.directional_timing'
+FAILED tests/test_directional_timing.py::test_minute_overlay_waits_before_five_minutes_then_executes_non_chasing_liquid_buy - ModuleNotFoundError: No module named 'afuture.directional_timing'
+FAILED tests/test_directional_timing.py::test_minute_overlay_does_not_chase_before_fifteen_minutes_but_has_bounded_delay - ModuleNotFoundError: No module named 'afuture.directional_timing'
+FAILED tests/test_directional_timing.py::test_missing_or_stale_minute_evidence_falls_back_instead_of_blocking_execution - ModuleNotFoundError: No module named 'afuture.directional_timing'
+5 failed, 44 passed in 6.51s
