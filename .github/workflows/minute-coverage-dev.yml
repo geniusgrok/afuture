@@ -1,0 +1,81 @@
+name: minute-coverage-dev
+
+on:
+  push:
+    branches:
+      - codex/afuture-microstructure-cost-alpha-20260824
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: minute-coverage-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    if: github.event_name == 'workflow_dispatch' || (contains(github.event.head_commit.message, '[minute-probe]') && !contains(github.event.head_commit.message, '[dev-result]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/afuture-microstructure-cost-alpha-20260824
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install akshare pandas
+      - name: Probe bounded 5m/OI coverage
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import akshare as ak
+          import pandas as pd
+
+          symbols = ("RB0", "M0", "CU0", "TA0")
+          result = {}
+          for symbol in symbols:
+              try:
+                  frame = ak.futures_zh_minute_sina(symbol=symbol, period="5").copy()
+                  if frame.empty:
+                      result[symbol] = {"rows": 0, "first": None, "last": None, "has_oi": False, "columns": [], "error": "empty"}
+                      continue
+                  column = "datetime" if "datetime" in frame.columns else str(frame.columns[0])
+                  stamps = pd.to_datetime(frame[column], errors="coerce").dropna()
+                  result[symbol] = {
+                      "rows": int(len(stamps)),
+                      "first": stamps.min().isoformat() if len(stamps) else None,
+                      "last": stamps.max().isoformat() if len(stamps) else None,
+                      "has_oi": bool("hold" in frame.columns),
+                      "columns": [str(item) for item in frame.columns],
+                      "error": "",
+                  }
+              except Exception as exc:
+                  result[symbol] = {"rows": 0, "first": None, "last": None, "has_oi": False, "columns": [], "error": f"{type(exc).__name__}: {exc}"}
+          payload = {
+              "symbols": result,
+              "required_start": "2022-08-22",
+              "required_end": "2026-08-20",
+              "multi_window_coverage": all(
+                  item["first"] is not None
+                  and item["last"] is not None
+                  and item["has_oi"]
+                  and pd.Timestamp(item["first"]) <= pd.Timestamp("2022-08-22")
+                  and pd.Timestamp(item["last"]) >= pd.Timestamp("2026-08-20")
+                  for item in result.values()
+              ),
+          }
+          Path(".dev").mkdir(exist_ok=True)
+          Path(".dev/minute-coverage.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+          print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+      - name: Persist probe evidence
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add .dev/minute-coverage.json
+          git commit -m "chore: record minute coverage [dev-result]" || true
+          git push origin HEAD:codex/afuture-microstructure-cost-alpha-20260824
