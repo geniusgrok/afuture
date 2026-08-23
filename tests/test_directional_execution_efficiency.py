@@ -1,7 +1,10 @@
 import numpy as np
 import pandas as pd
 
-from afuture.directional_efficiency import attribute_rebalance_deltas
+from afuture.directional_efficiency import (
+    attribute_rebalance_deltas,
+    audit_policy_weight_history,
+)
 from afuture.execution_aligned_policy import ExecutionAlignedAggressivePolicy
 
 
@@ -63,10 +66,11 @@ def test_policy_weight_history_audit_is_behavior_neutral():
     policy = ExecutionAlignedAggressivePolicy(products=tuple(close.columns))
 
     baseline = policy.weight_history(open_prices, close)
-    audited, audit = policy.weight_history_with_audit(open_prices, close)
+    audited, audit = audit_policy_weight_history(policy, open_prices, close)
 
     pd.testing.assert_frame_equal(audited, baseline)
     assert list(audit.index) == list(baseline.index)
     assert {"signal_turnover", "meta_switch", "selected_templates"} <= set(audit.columns)
     assert (audit["signal_turnover"] >= 0.0).all()
     assert audit["meta_switch"].isin([False, True]).all()
+    assert audit["selected_templates"].map(lambda value: isinstance(value, tuple)).all()
