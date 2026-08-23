@@ -48,14 +48,9 @@ jobs:
           AFUTURE_CTP_BROKER: test-broker
         run: afuture validate --config config/afuture.directional-live.example.toml
 
-  headroom-probe:
+  absolute-cap-probe:
     if: github.event_name == 'pull_request' && github.head_ref == 'codex/afuture-production-return-100-20260823'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      max-parallel: 6
-      matrix:
-        scale: [0.95, 0.96, 0.97, 0.98, 0.99, 1.00]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -71,13 +66,10 @@ jobs:
           unzip -q /tmp/specific.zip -d /tmp/specific
           test -s /tmp/specific/return_target_specific_contracts.csv
           test -s /tmp/specific/broad_daily_universe.csv
-      - name: Probe fixed production headroom
-        env:
-          HEADROOM_SCALE: ${{ matrix.scale }}
+      - name: Probe 2 percent governor with 1.90x absolute target cap
         run: |
           python - <<'PY'
           import json
-          import os
           import pandas as pd
 
           import afuture.directional_risk as directional_risk
@@ -87,7 +79,6 @@ jobs:
           from afuture.execution_aligned_runtime import FROZEN_PRODUCTS
           from tools.evaluate_directional_production_mechanics import _result_stats
 
-          scale = float(os.environ['HEADROOM_SCALE'])
           specific = pd.read_csv('/tmp/specific/return_target_specific_contracts.csv')
           continuous = pd.read_csv('/tmp/specific/broad_daily_universe.csv')
           continuous['date'] = pd.to_datetime(continuous['date'], errors='coerce')
@@ -103,6 +94,20 @@ jobs:
           close = continuous.pivot(index='date', columns='product', values='close').sort_index().reindex(index=open_prices.index, columns=products)
           weights = ExecutionAlignedAggressivePolicy(products=products).weight_history(open_prices, close)
           weights = weights.loc['2024-08-21':'2026-08-20']
+          gross_by_day = list(weights.abs().sum(axis=1).astype(float))
+
+          class AbsoluteCapGovernor:
+              def __init__(self):
+                  self.base = DirectionalRiskGovernor(loss_trigger=0.02)
+                  self.index = 0
+
+              def scale(self, completed_returns):
+                  base_scale = self.base.scale(completed_returns)
+                  raw_gross = gross_by_day[self.index]
+                  self.index += 1
+                  if raw_gross <= 0:
+                      return base_scale
+                  return min(base_scale, 1.90 / raw_gross)
 
           config = ProductionMechanicsConfig(
               max_contract_volume=35,
@@ -112,13 +117,14 @@ jobs:
               min_available_ratio=0.25,
           )
           prepared = DirectionalProductionAcceptance(config).prepare_contracts(specific)
-          directional_risk.PRODUCTION_GROSS_HEADROOM_SCALE = scale
+          directional_risk.PRODUCTION_GROSS_HEADROOM_SCALE = 1.0
           sim = DirectionalProductionAcceptance(config)
-          sim.risk_governor = DirectionalRiskGovernor()
+          sim.risk_governor = AbsoluteCapGovernor()
           result = sim.simulate(specific, weights, cost_bps=5.0, prepared=prepared)
           stats = _result_stats(result)
           row = {
-              'headroom_scale': scale,
+              'loss_trigger': 0.02,
+              'target_gross_cap': 1.90,
               'annualized_return': stats['annualized_return'],
               'total_return': stats['total_return'],
               'max_drawdown': stats['max_drawdown'],
@@ -128,5 +134,5 @@ jobs:
               'margin_reject_days': stats['margin_reject_days'],
               'max_realized_gross_notional_ratio': stats['max_realized_gross_notional_ratio'],
           }
-          print('HEADROOM', json.dumps(row, sort_keys=True))
+          print('ABSOLUTE_CAP', json.dumps(row, sort_keys=True))
           PY
