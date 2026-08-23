@@ -18,7 +18,7 @@ class DirectionalRiskGovernor:
 
     lookback_days: int = 2
     volatility_trigger: float = 0.03
-    loss_trigger: float = 0.03
+    loss_trigger: float = 0.02
     defensive_scale: float = 0.25
 
     def __post_init__(self) -> None:
