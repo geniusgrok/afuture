@@ -1,4 +1,5 @@
 # message: docs: finalize promoted L3 evidence consistency
+# serialized trigger: final evidence-only sync; no economic behavior changes
 from pathlib import Path
 
 formal_docs = [
@@ -33,9 +34,6 @@ for name in formal_docs:
     body = body.replace(OLD_SHA, FINAL_SHA)
     path.write_text(body, encoding="utf-8")
 
-# The formal mechanics document still carried PR #13's fixed 30% formula. Replace it
-# with the exact promoted implementation: 30% is the calm/no-history ceiling and
-# completed shocks above 3% can only contract it.
 path = Path("docs/directional-production-mechanics-evidence.md")
 body = path.read_text(encoding="utf-8")
 old = '''Soft target share：
@@ -71,7 +69,6 @@ if body.count(old) != 1:
     raise SystemExit(f"production mechanics adaptive-margin block count={body.count(old)}")
 path.write_text(body.replace(old, new, 1), encoding="utf-8")
 
-# Align remaining prose that still describes 30% as invariant rather than the calm cap.
 prose_replacements = {
     "docs/research-final-evidence.md": (
         "**margin-aware target sizing**：当前 35% margin / 25% available / 5% daily-loss 配置下，正常 target margin share 为 30%；",
@@ -89,7 +86,6 @@ for name, (old, new) in prose_replacements.items():
         raise SystemExit(f"{name}: expected one adaptive-margin prose match, got {body.count(old)}")
     path.write_text(body.replace(old, new, 1), encoding="utf-8")
 
-# Final consistency assertions across all formal docs.
 for name in formal_docs:
     body = Path(name).read_text(encoding="utf-8")
     if "109.0636%" not in body or "28.9559%" not in body:
