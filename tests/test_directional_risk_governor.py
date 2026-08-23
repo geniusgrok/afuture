@@ -9,20 +9,20 @@ from afuture.state import RuntimeState, StateStore
 def test_directional_risk_governor_uses_only_completed_returns_and_scales_defensively():
     governor = DirectionalRiskGovernor()
 
-    assert governor.scale([]) == 0.95
-    assert governor.scale([-0.0299]) == 0.95
-    assert governor.scale([-0.03]) == 0.2375
-    assert governor.scale([-0.04, 0.01]) == 0.2375
+    assert governor.scale([]) == 1.0
+    assert governor.scale([-0.0199]) == 1.0
+    assert governor.scale([-0.02]) == 0.25
+    assert governor.scale([-0.04, 0.01]) == 0.25
 
 
-def test_directional_risk_governor_keeps_scale_inside_headroom_and_never_increases_gross():
+def test_directional_risk_governor_never_increases_gross():
     governor = DirectionalRiskGovernor()
     for returns in ([], [0.10], [0.10, -0.10], [-0.50, 0.50]):
         scale = governor.scale(returns)
-        assert 0.0 < scale <= 0.95
+        assert 0.0 < scale <= 1.0
 
 
-def test_scaled_policy_reserves_five_percent_gross_headroom_and_only_reduces_targets():
+def test_scaled_policy_only_reduces_targets_when_completed_returns_trigger_defense():
     class _Policy:
         def target_weights(self, *args, **kwargs):
             return {"A": 1.2, "CU": -0.8}
@@ -33,14 +33,14 @@ def test_scaled_policy_reserves_five_percent_gross_headroom_and_only_reduces_tar
         completed_returns_provider=lambda: tuple(completed),
     )
     assert policy.target_weights(object(), object()) == {
-        "A": 0.285,
-        "CU": -0.19,
+        "A": 0.3,
+        "CU": -0.2,
     }
 
     completed[:] = [0.01, 0.01]
     assert policy.target_weights(object(), object()) == {
-        "A": 1.14,
-        "CU": -0.76,
+        "A": 1.2,
+        "CU": -0.8,
     }
 
 
