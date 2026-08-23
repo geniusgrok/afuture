@@ -2,15 +2,15 @@
 
 这是**真实资金门**，不是代码完成清单。历史回测、production-mechanics proxy 和 GitHub CI 都不能代替真实 L1、测试柜台和未来未见数据。
 
-当前代码级状态：previous-day activity、trading-day signal gate、stale activity fail-closed、reduction-first、daily circuit、completed-return governor、realized-gross hard guard、gross-position flatten、restart reconciliation、directional execution-quality 和 production-mechanics acceptance 均已实现。
+当前代码级状态：previous-day activity、trading-day signal gate、stale activity fail-closed、reduction-first、margin-aware target sizing、daily circuit、completed-return governor、realized-gross hard guard、gross-position flatten、restart reconciliation、directional execution-quality 和 production-mechanics acceptance 均已实现。
 
 当前经济证据：
 
 - Float L4 Base：**107.4623% 年化 / 27.4097% 最大回撤 / target gross≤2x**，selection-biased；
 - Production L3 Base：**108.8461% 年化 / 17.8010% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
-- Production L3 Stress：**0.9249% 年化**，6 个 margin reject days，最终因 margin hard gate HALT。
+- Production L3 Stress：**20.4057% 年化 / 27.9925% 最大回撤 / actual gross peak 1.684784x / 0 margin rejects / no permanent halt**。
 
-因此**Base 历史 production-mechanics ≥100% 已满足**，但 Stress robustness 和真实资金门仍未满足。
+因此 **Base 历史 production-mechanics ≥100% 已满足，Stress 的结构性 margin HALT 已修复，但 Stress 80% 收益目标未满足**。继续真实资金前仍必须完成本清单。
 
 ## A. 历史与账户机械证据
 
@@ -19,17 +19,18 @@
 - [x] 20 天交割黑窗。
 - [x] signal target gross ≤2x。
 - [x] Float Base 5bp 年化 107.4623%。
-- [x] Float Base 最大回撤 27.4097%。
 - [x] `pristine_final_oos=false` 与历史选择偏差明确记录。
 - [x] Production L3 使用 frozen multipliers / integer lots / max contract volume 35。
 - [x] Production L3 使用 margin/cash/daily-loss/high-watermark hard gates。
 - [x] Production L3 使用 causal completed-return governor：-2% daily loss / 3% two-day sample vol → 25%。
-- [x] Production L3 使用 actual realized-gross hard ceiling 2.0x，不预先 haircut 正常目标。
+- [x] Production L3 使用 actual realized-gross hard ceiling 2.0x。
+- [x] Production L3 使用 margin-aware target sizing，当前配置把正常 target margin 控制在约 30% equity，同时保留 35% hard margin gate。
 - [x] **Production Base 年化 ≥100%：108.8461%。**
 - [x] **Production Base 最大回撤 ≤30%：17.8010%。**
 - [x] **Production Base actual gross ≤2x：1.998253x。**
 - [x] **Production Base full_recent 不永久 HALT。**
-- [x] Stress 失败被保留：0.9249% 年化并因 margin gate HALT。
+- [x] **Production Stress full_recent 不永久 HALT：472/484 active days，0 margin rejects。**
+- [x] Stress 未达到 80% 的结果被保留：20.4057% 年化。
 - [ ] 新发生、此前未参与任何选择/调参的未来数据持续验证。
 - [ ] 未来显著恶化时优先降低/关闭风险，不在同一历史上无限追参。
 
@@ -38,9 +39,10 @@
 - [x] daily loss 5% 是同 trading-day circuit，而不是自动取消风险门。
 - [x] total drawdown 30% 仍是 hard/manual halt。
 - [x] max margin 35% / min available 25% 仍是 hard gate。
+- [x] margin-aware soft target share 当前为 30%，它只缩正常目标，不替代或放宽 35%/25% hard gates。
 - [x] target gross 与 actual gross 都有 2.0x 硬边界。
 - [x] 单合约 max volume = 35。
-- [x] normal target 不固定乘 0.95；actual gross 超限才 reduction-only。
+- [x] actual gross 超限才 reduction-only；margin target 与 gross guard 分别约束保证金和名义风险。
 - [x] 没有为恢复历史数字放宽 daily-loss / DD / margin / cash / leverage。
 - [ ] 任何未来风险阈值调整先有 Shadow/test/small-capital 新证据。
 
@@ -67,7 +69,7 @@
 - [ ] 重启后能恢复最近 completed snapshot。
 - [ ] completed activity 比最新完整 signal day 陈旧时 fail-closed。
 
-## E. Signal / governor
+## E. Signal / meta / governor
 
 - [ ] 50 品种 continuous OHLC 在 Shadow 中连续多日成功。
 - [ ] 最新 OHLC 覆盖 `completed_activity_snapshot.trading_day`。
@@ -76,12 +78,19 @@
 - [ ] provider 临时失败但缓存已覆盖 required day 时可继续。
 - [ ] required signal 缺失且账户为空时不新增风险。
 - [ ] required signal/activity 缺失且有风险时进入 `REDUCE_ONLY`。
+- [ ] meta 仍使用冻结 96 templates / lookback 11 / rebalance 3 / active 3。
+- [ ] meta 的 15bp evidence 只做生存门；存活模板按 Base score 排名，不在实盘期间动态重拟合历史参数。
 - [ ] completed daily returns 只在 trading day 完成后入 state。
 - [ ] 当前 session PnL 不会前视进入 governor。
 - [ ] -2% loss / 3% two-day volatility 的 25% defensive scaling 在 Shadow 可解释。
 
-## F. Reduction-first / gross guard / flatten
+## F. Margin-aware sizing / reduction-first / gross guard
 
+- [ ] live target 使用 Broker side-specific margin rate、mid、multiplier、buffer 计算逐手 margin。
+- [ ] 当前 35%/25%/5% 配置下正常 target margin share 约为 30%。
+- [ ] 缺少正的 margin evidence 时 fail-closed，不用猜测 margin 开仓。
+- [ ] margin fitter 不会增加任一 requested lot。
+- [ ] margin-fitted openings 仍经过 `RiskManager.check_open_orders()` 35%/25% hard gates。
 - [ ] target=0、反转、超额风险能先 reduction。
 - [ ] 某个新目标无 eligible contract 时不会阻塞其它产品减仓。
 - [ ] 不可用产品已有仓位不加仓、不换月。
@@ -106,13 +115,14 @@
 - [ ] `afuture shadow --config config/afuture.directional-live.example.toml` 连续运行多个真实交易日。
 - [ ] Shadow 真实读取 CTP catalog/tick/trading day/metadata。
 - [ ] Shadow 不调用真实 CTP `send_order()`。
-- [ ] 每日 signal day / activity day / selected contract / target lots 可解释。
+- [ ] 每日 signal day / activity day / selected contract / raw target / margin-fitted target 可解释。
+- [ ] modeled per-lot margin 与 Broker metadata 差异可解释。
 - [ ] target gross vs actual gross 差异可解释。
 - [ ] gross guard 触发/完成/剩余 gross 可解释。
 - [ ] depth 足以覆盖计划手数。
 - [ ] margin / available / daily-loss / DD 状态可解释。
 - [ ] planned vs realized turnover/slippage/commission/tracking 有稳定记录。
-- [ ] Stress 历史 margin failure 在真实 metadata/账户下得到重点复核。
+- [ ] 历史 proxy 与真实 margin schedule 的差异得到重点复核。
 
 ## I. Doctor / 测试柜台
 
@@ -122,6 +132,7 @@
 - [ ] 平仓与平今/平昨。
 - [ ] 多产品 order-rate。
 - [ ] 换月 reduction 完成前不新增风险。
+- [ ] side-specific margin-aware sizing 与柜台冻结保证金一致或差异可解释。
 - [ ] realized gross guard 真正通过 CTP 产生减仓并回到限额内。
 - [ ] hedged gross-position flatten 正确。
 - [ ] daily circuit 次交易日恢复正确。
@@ -142,10 +153,11 @@
 
 ## K. Account sizing
 
-- [ ] 用真实 equity、multiplier、当前价格复核 integer target lots。
+- [ ] 用真实 equity、multiplier、当前价格和 side-specific margin 复核 integer target lots。
 - [ ] 小资金不会因整数手数长期把组合压成极少数产品。
 - [ ] 35 手 cap 不产生不可接受 tracking error。
 - [ ] 实际 margin 缩量后的 gross 可解释。
+- [ ] 30% soft target margin 与真实账户波动之间仍有足够 headroom。
 - [ ] 账户规模不足时降低风险/复杂度，不放宽硬门。
 - [ ] 不通过 leverage >2x 追历史收益。
 
@@ -166,7 +178,7 @@
 - [ ] 测试规模即使完全损失也不影响整体资金安全。
 - [ ] 连续多个交易日无 order/state/position 事故。
 - [ ] 主力切换与换月正确。
-- [ ] gross guard / daily circuit / hard halt 都按预期执行。
+- [ ] margin sizing / gross guard / daily circuit / hard halt 都按预期执行。
 - [ ] 实际成本与 Base/Stress 差异可解释。
 - [ ] 实际回撤符合账户风险预算。
 
@@ -181,6 +193,6 @@
 - [ ] execution quality 可接受。
 - [ ] integer/multiplier/margin 后组合没有严重漂移。
 - [ ] 实盘回撤符合风险预算。
-- [ ] 已重新评估 Stress margin failure 与真实执行差异。
+- [ ] 已重新评估 15bp/高 margin Stress 与真实执行差异。
 
-107.4623% Float 与 108.8461% Production Base 都是**已观察历史结果**；Stress 0.9249% + halt 也是真实证据。三者都不是未来年度收益承诺。
+107.4623% Float、108.8461% Production Base、20.4057% Production Stress 都是**已观察历史结果**。Stress 已不再早期 HALT，但没有达到 80%；这些数字均不是未来年度收益承诺。
