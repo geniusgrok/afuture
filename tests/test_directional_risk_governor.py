@@ -1,5 +1,5 @@
+import afuture.directional as directional
 import afuture.execution_aligned_policy as execution_policy
-from afuture.directional import DirectionalConfig, scale_weights_to_margin_budget
 from afuture.directional_risk import (
     DirectionalRiskGovernor,
     DirectionalRiskScaledPolicy,
@@ -46,9 +46,11 @@ def test_scaled_policy_only_reduces_existing_target_weights():
 
 
 def test_margin_budget_only_scales_down_when_buffered_target_margin_exceeds_thirty_percent():
-    assert DirectionalConfig().target_margin_ratio == 0.30
+    assert hasattr(directional, "scale_weights_to_margin_budget")
+    assert directional.DirectionalConfig().target_margin_ratio == 0.30
+    scale = directional.scale_weights_to_margin_budget
 
-    base = scale_weights_to_margin_budget(
+    base = scale(
         {"A": 1.0, "CU": -1.0},
         {"A": 0.12, "CU": 0.12},
         margin_estimate_buffer=1.25,
@@ -56,7 +58,7 @@ def test_margin_budget_only_scales_down_when_buffered_target_margin_exceeds_thir
     )
     assert base == {"A": 1.0, "CU": -1.0}
 
-    stress = scale_weights_to_margin_budget(
+    stress = scale(
         {"A": 1.0, "CU": -1.0},
         {"A": 0.15, "CU": 0.15},
         margin_estimate_buffer=1.25,
@@ -66,8 +68,9 @@ def test_margin_budget_only_scales_down_when_buffered_target_margin_exceeds_thir
 
 
 def test_margin_budget_fails_closed_when_a_nonzero_target_has_no_margin_rate():
+    assert hasattr(directional, "scale_weights_to_margin_budget")
     try:
-        scale_weights_to_margin_budget(
+        directional.scale_weights_to_margin_budget(
             {"A": 1.0, "CU": -1.0},
             {"A": 0.12},
             margin_estimate_buffer=1.25,
