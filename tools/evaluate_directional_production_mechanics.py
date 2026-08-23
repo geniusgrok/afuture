@@ -248,6 +248,18 @@ def evaluate_with_weights(
         margin_rate_proxy=STRESS_MARGIN_PROXY,
     )
 
+    turnover_columns = [
+        "turnover_roll", "turnover_resize", "turnover_reversal",
+        "turnover_entry_exit", "turnover_daily_circuit",
+        "turnover_hard_halt", "turnover_gross_guard",
+    ]
+    def summarize_turnover(frame: pd.DataFrame) -> dict[str, float]:
+        values = {column: float(frame[column].sum()) if column in frame else 0.0 for column in turnover_columns}
+        values["total"] = float(frame["turnover_notional"].sum()) if "turnover_notional" in frame else 0.0
+        values["attributed_total"] = float(sum(values[column] for column in turnover_columns))
+        return values
+    turnover_attribution = {"base": summarize_turnover(base_daily), "stress": summarize_turnover(stress_daily)}
+
     production_gap: dict[str, dict] = {}
     if float_report is not None:
         for label, production in (("base", base), ("stress", stress)):
@@ -277,6 +289,7 @@ def evaluate_with_weights(
         "parameter_search": False,
         "margin_is_historical_truth": False,
         "state_reset_per_window": True,
+        "turnover_attribution": turnover_attribution,
         "mechanics": {
             "integer_lots": True,
             "frozen_contract_multipliers": True,

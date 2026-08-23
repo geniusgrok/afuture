@@ -17,21 +17,21 @@
 
 | 指标 | Base 5bp / 12% margin proxy | Stress 15bp / 15% margin proxy |
 |---|---:|---:|
-| 年化收益 | **108.8461%** | **20.4057%** |
-| 累计收益 | **311.4052%** | **42.8545%** |
-| 最大回撤 | **17.8010%** | **27.9925%** |
-| Sharpe | **2.0812** | **0.7466** |
-| 活跃交易日 | **478 / 484** | **472 / 484** |
-| 最终权益（初始 500,000） | **2,057,025.78** | **714,272.26** |
-| daily circuit days | 4 | 4 |
-| defensive risk days | 78 | 70 |
+| 年化收益 | **109.0636%** | **28.9559%** |
+| 累计收益 | **312.2285%** | **62.9735%** |
+| 最大回撤 | **15.8529%** | **28.1152%** |
+| Sharpe | **2.0976** | **0.9604** |
+| 活跃交易日 | **478 / 484** | **474 / 484** |
+| 最终权益（初始 500,000） | **2,061,142.43** | **814,867.56** |
+| daily circuit days | 3 | 2 |
+| defensive risk days | 77 | 70 |
 | margin reject days | 0 | **0** |
-| realized gross 峰值 | **1.998253x** | **1.684784x** |
+| realized gross 峰值 | **1.998253x** | **1.668769x** |
 | 最终状态 | **未 HALT** | **未 HALT** |
 
-上一版本的 Stress 只有 `0.9249%` 年化、14/484 个活跃日并因 margin hard gate 永久 HALT。当前版本通过 margin-aware target sizing 消除了这个结构性失败：Stress 在完整区间持续运行，但在更高成本和更高保证金假设下年化仍只有 **20.4057%**，远未达到 80%。因此准确结论是：**Base 固定历史生产机械门通过，Stress 生存性显著改善，但 80% Stress 收益目标未被证明。**
+更早的 Stress 只有 `0.9249%` 年化、14/484 个活跃日并因 margin hard gate 永久 HALT；PR #13 已先修复到 `20.4057%` / 472 active days。本轮 execution-efficiency 收口进一步把最终 Stress 提升到 **28.9559%** / 474 active days，同时 Base 从 PR #13 的 108.8461% 提升到 **109.0636%**。当前版本通过 margin-aware target sizing 消除了这个结构性失败：Stress 在完整区间持续运行，但在更高成本和更高保证金假设下年化仍只有 **28.9559%**，远未达到 80%。因此准确结论是：**Base 固定历史生产机械门通过，Stress 生存性显著改善，但 80% Stress 收益目标未被证明。**
 
-最终 L3 证据：workflow run `32624688557`，PR merge ref `7664851987a59c2d87d1084376ffbd9649863b2c`，artifact `stress-robustness-l3-7664851987a59c2d87d1084376ffbd9649863b2c`，artifact id `9489421243`，SHA-256 `6a9abb9eb15a542eda2683200bbf5f001613dccd9546bde11f85dc4f0aa6add7`。固定输入 artifact id 仍为 `9473260618`。
+最终 L3 证据：workflow run `32634296589`，PR merge ref `1ec387433ee5011e44bc214e4e4c83a28e72c93c`，artifact `stress-80-l3-1ec387433ee5011e44bc214e4e4c83a28e72c93c`，artifact id `9491959916`，SHA-256 `e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d`。固定输入 artifact id 仍为 `9473260618`。
 
 ### Float-notional specific-contract L4（研究层）
 
@@ -72,11 +72,13 @@ Signal 可以输出不超过 2.0x 的目标，但执行层不会把正常目标�
 生产环境使用 Broker `ContractSpec` 的多/空保证金率、当前行情、合约乘数和 `margin_estimate_buffer` 估算每手 margin；历史 acceptance 使用明确标注的 12%/15% proxy。Soft sizing budget 为：
 
 ```text
-hard margin share = min(max_margin_ratio, 1 - min_available_ratio)
-soft target share = max(0, hard margin share - max_daily_loss_ratio)
+hard_share = min(max_margin_ratio, 1 - min_available_ratio)
+conservative = max(0, hard_share - max_daily_loss_ratio)
+shock = clamp(max(3%, abs(latest completed return), two-day sample volatility), 3%, 5%)
+soft_share = min(conservative, conservative * (1 - max(0, shock - 3%)))
 ```
 
-当前 35% margin / 25% available / 5% daily-loss 配置下，正常目标 margin budget 为 **30% equity**。这不是新的 hard gate，也不改变 35% margin 上限；它只是保留 5 个百分点的 mark-to-market headroom。最终开仓仍必须再次通过现有 `RiskManager.check_open_orders()`，35%/25% hard gates 始终具有最终否决权。
+当前 35% margin / 25% available / 5% daily-loss 配置下，无历史或平静 completed-return evidence 的正常目标 margin budget 为 **30% equity**；已完成收益绝对值或两日样本波动高于 3% 时只会进一步收缩，永远不会把 soft target 扩张到 35% hard gate。这不是新的 hard gate，也不改变 35% margin 上限；它只是保留 5 个百分点的 mark-to-market headroom。最终开仓仍必须再次通过现有 `RiskManager.check_open_orders()`，35%/25% hard gates 始终具有最终否决权。
 
 ### 其他风险语义
 
@@ -98,13 +100,15 @@ ExecutionAlignedAggressivePolicy
         ↓
 completed-return governor（仅可降风险）
         ↓
-CTP completed activity 选 D+1 concrete contracts
+CTP completed activity 选 D+1 concrete contracts（eligible incumbent 默认保留；challenger 必须同时在 OI 和 volume 上更高才换月）
         ↓
 fresh quote / depth / limit / live metadata
         ↓
 integer target lots
         ↓
-margin-aware soft sizing（当前 30% equity target margin budget）
+adaptive margin-aware soft sizing（平静基线 30%，completed shock 只可继续收缩）
+        ↓
+同方向 +1 lot 低价值增仓可保持 incumbent；任何减仓/反转/风险动作不受抑制
         ↓
 reductions → Broker 确认 → openings
         ↓
@@ -177,7 +181,7 @@ AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 
 ## 真实资金门
 
-Base production-mechanics 已在固定历史证据上超过 100%，Stress 已从早期 margin HALT 修复为完整运行，但 **20.4057% Stress 年化不是 80%，更不是未来真实收益承诺**。真实资金仍必须依次完成：
+Base production-mechanics 已在固定历史证据上超过 100%，Stress 已从早期 margin HALT 修复为完整运行，但 **28.9559% Stress 年化不是 80%，更不是未来真实收益承诺**。真实资金仍必须依次完成：
 
 1. 多交易日 CTP Shadow；
 2. previous-day activity snapshot 与实际主力切换抽查；
@@ -200,3 +204,14 @@ Final  Python 3.10/3.13 主 CI + repository review
 ```
 
 昂贵经济证据只在策略公式、生产机械、合约选择、执行时点、成本或数据方法发生实质变化时重跑；文档和无行为清理不重复经济回放。
+
+
+## Execution-efficiency 最终处置（2026-08-23）
+
+本轮不是把所有“降换手”想法都塞进生产。固定 L3 逐项决定晋级：
+
+- **保留**：turnover attribution；eligible-incumbent contract-roll hysteresis；同方向 `+1 lot` 低价值增仓抑制；completed-return 驱动的 margin soft-envelope 收缩。
+- **拒绝并回退**：product replacement persistence（Base 约 58.41%、Stress 约 22.55%）；cost-aware meta hysteresis（Base 约 58.32%、Stress -13.03%、DD 超 30% 且 HALT）；same-direction weight resize hysteresis（未通过 L3 promotion gate）。
+- 更早已拒绝：Base/Stress 50/50 meta score（Base 约 94.59%）和只保留慢 rebalance templates（Base 约 69.78%）。
+
+最终 Stress 从 `20.4057%` 提升到 **28.9559%**，但仍没有达到 80%。高频 entry/exit 中包含真实 Alpha，不能把 turnover 本身当作错误并无限压低；继续在同一两年历史上追到 80% 会把研究目标变成 selection fitting。

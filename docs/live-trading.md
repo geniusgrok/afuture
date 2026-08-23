@@ -7,10 +7,10 @@
 Directional 历史证据必须分层：
 
 - Float-notional L4：selection-biased Base 年化 **107.4623%**，Stress 15bp 年化 **58.1372%**；
-- 当前 production-mechanics L3 Base：**108.8461% 年化 / 17.8010% DD / 1.998253x actual gross / no permanent halt**；
-- 当前 production-mechanics L3 Stress：**20.4057% 年化 / 27.9925% DD / 1.684784x actual gross / no permanent halt**。
+- 当前 production-mechanics L3 Base：**109.0636% 年化 / 15.8529% DD / 1.998253x actual gross / no permanent halt**；
+- 当前 production-mechanics L3 Stress：**28.9559% 年化 / 28.1152% DD / 1.668769x actual gross / no permanent halt**。
 
-Stress 已从上一版 `0.9249% + margin HALT` 修复为 472/484 个活跃交易日、0 margin reject、无永久 HALT，但没有达到 80%。历史结果不能作为真实资金收益承诺。
+Stress 已从上一版 `0.9249% + margin HALT` 修复为 474/484 个活跃交易日、0 margin reject、无永久 HALT，但没有达到 80%。历史结果不能作为真实资金收益承诺。
 
 ## 2. 推荐上线顺序
 
@@ -70,10 +70,12 @@ Signal gross 仍可到 2.0x，但目标手数在开仓前先使用 Broker live `
 
 ```text
 hard_share = min(max_margin_ratio, 1 - min_available_ratio)
-soft_target_share = max(0, hard_share - max_daily_loss_ratio)
+conservative = max(0, hard_share - max_daily_loss_ratio)
+shock = clamp(max(3%, abs(latest completed return), two-day sample volatility), 3%, 5%)
+soft_target_share = min(conservative, conservative * (1 - max(0, shock - 3%)))
 ```
 
-当前配置得到 `35% - 5% = 30% equity` 的正常 target margin budget。
+当前配置的无历史/平静基线为 `35% - 5% = 30% equity`；completed shock 高于 3% 时 soft target 进一步收缩。
 
 这不是把 hard gate 改成 30%。语义是：
 
@@ -82,6 +84,7 @@ soft_target_share = max(0, hard_share - max_daily_loss_ratio)
 3. 结合当前 mid、multiplier、`margin_estimate_buffer=1.25` 计算逐手 margin；
 4. integer fitter 只向下缩手数，缺少可信 margin evidence 时 fail-closed；
 5. 生成 openings 后，原 `RiskManager.check_open_orders()` 仍重新检查 35% max margin 和 25% min available，并拥有最终否决权。
+6. margin fitting 后若只是同方向 `+1 lot` 增仓，且当前持仓本身仍在 soft margin 与 2x gross 内，可保持 incumbent lot；减仓、反转、换月、daily circuit 与 gross guard 不受该 no-trade 规则抑制。
 
 Shadow/test 必须对比 modeled target margin 与 Broker 实际冻结保证金；真实逐品种/逐日 margin 与历史 12%/15% proxy 不同是预期情况。
 
@@ -98,7 +101,7 @@ D 日最终 volume/OI
 → D+1 选约只读 completed snapshot
 ```
 
-D+1 当前 Tick 仍用于 fresh quote、bid/ask、depth、limit、价格、margin sizing 和下单，但不能改变 D 已冻结主力。
+D+1 当前 Tick 仍用于 fresh quote、bid/ask、depth、limit、价格、margin sizing 和下单，但不能改变 D 已冻结 activity evidence。已有持仓合约若仍 eligible，会继续作为 incumbent；只有另一个合约在 D 日 completed OI **和** volume 两项都严格更高时才换月，expiry/listing/activity 失效则立即按确定性排名切换。
 
 新部署无 completed snapshot 时不新增风险；重启 snapshot 若落后于已确认完整 OHLC day，也 fail-closed。
 
@@ -215,10 +218,10 @@ Directional 不持久化第二份策略仓位。重启必须以 Broker 完整 ac
 最终固定历史 L3：
 
 ```text
-Base   108.8461% annualized / 17.8010% DD / no permanent halt
-Stress  20.4057% annualized / 27.9925% DD / no permanent halt
+Base   109.0636% annualized / 15.8529% DD / no permanent halt
+Stress  28.9559% annualized / 28.1152% DD / no permanent halt
 ```
 
-Stress 已证明 15bp + 15% margin proxy 下不再因结构性 margin sizing 问题早停，但 20.4057% 不是 80%，也不是未来收益下限。
+Stress 已证明 15bp + 15% margin proxy 下不再因结构性 margin sizing 问题早停，但 28.9559% 不是 80%，也不是未来收益下限。
 
 仍缺多年历史真实 L1 bid/ask/depth/queue、partial/reject、CTP 流控、逐日 Broker margin schedule、真实结算手续费和 market impact。因此下一步应取得真实 Shadow/test/small-capital/new-data 证据，而不是继续拟合同一历史。
