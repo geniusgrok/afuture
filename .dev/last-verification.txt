@@ -1,6 +1,41 @@
-source_sha=2536fec03dfac8c67e0daab3cf70821e42411431
-test_exit=0
+source_sha=68d53e2040d21d2bbdec954cd456cd62af0c9087
+test_exit=1
 research_exit=not-run
 --- targeted tail ---
-...........................................                              [100%]
-43 passed in 4.18s
+...........................................F                             [100%]
+=================================== FAILURES ===================================
+_ test_execution_stress_summary_attributes_fill_spread_impact_latency_and_unfilled_quantity _
+
+    def test_execution_stress_summary_attributes_fill_spread_impact_latency_and_unfilled_quantity():
+        broker = SimBroker(
+            500_000,
+            {"RBX": _spec()},
+            conservative=True,
+            latency_ticks=1,
+            depth_haircut=0.75,
+            size_impact_ticks=1,
+        )
+        broker.start()
+        try:
+            broker.publish_tick(_tick(ask_volume=8))
+            broker.send_order(
+                OrderRequest(
+                    "RBX",
+                    "SHFE",
+                    OrderSide.BUY,
+                    Offset.OPEN,
+                    10,
+                    105,
+                    OrderType.FAK,
+                    "directional:test",
+                )
+            )
+            broker.publish_tick(_tick(ask_volume=8))
+>           summary = broker.get_execution_stress_summary()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: 'SimBroker' object has no attribute 'get_execution_stress_summary'
+
+tests/test_directional_microstructure.py:141: AttributeError
+=========================== short test summary info ============================
+FAILED tests/test_directional_microstructure.py::test_execution_stress_summary_attributes_fill_spread_impact_latency_and_unfilled_quantity - AttributeError: 'SimBroker' object has no attribute 'get_execution_stress_summary'
+1 failed, 43 passed in 6.15s
