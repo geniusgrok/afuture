@@ -8,7 +8,13 @@ def _spec() -> ContractSpec:
     return ContractSpec("RBX", "SHFE", 10, 1, 0.15, 0.15)
 
 
-def _tick(*, bid_volume: float = 8, ask_volume: float = 8, limit_up: float = 0.0) -> Tick:
+def _tick(
+    *,
+    bid_volume: float = 8,
+    ask_volume: float = 8,
+    limit_up: float = 0.0,
+    limit_down: float = 0.0,
+) -> Tick:
     return Tick(
         symbol="RBX",
         exchange="SHFE",
@@ -20,6 +26,7 @@ def _tick(*, bid_volume: float = 8, ask_volume: float = 8, limit_up: float = 0.0
         ask_volume=ask_volume,
         trading_day="20260824",
         limit_up=limit_up,
+        limit_down=limit_down,
         volume=1000,
         open_interest=5000,
     )
@@ -85,6 +92,60 @@ def test_realistic_l1_size_impact_respects_daily_price_limit():
         assert broker.get_trades()[0].price == 100.5
     finally:
         broker.stop()
+
+
+def test_realistic_l1_dynamic_impact_never_executes_beyond_order_limit():
+    buy = SimBroker(
+        500_000,
+        {"RBX": _spec()},
+        conservative=True,
+        depth_haircut=0.75,
+        size_impact_ticks=1,
+    )
+    buy.start()
+    try:
+        buy.publish_tick(_tick(ask_volume=8))
+        buy.send_order(
+            OrderRequest(
+                "RBX",
+                "SHFE",
+                OrderSide.BUY,
+                Offset.OPEN,
+                10,
+                100,
+                OrderType.FAK,
+                "directional:test",
+            )
+        )
+        assert buy.get_trades()[0].price == 100
+    finally:
+        buy.stop()
+
+    sell = SimBroker(
+        500_000,
+        {"RBX": _spec()},
+        conservative=True,
+        depth_haircut=0.75,
+        size_impact_ticks=1,
+    )
+    sell.start()
+    try:
+        sell.publish_tick(_tick(bid_volume=8))
+        sell.send_order(
+            OrderRequest(
+                "RBX",
+                "SHFE",
+                OrderSide.SELL,
+                Offset.OPEN,
+                10,
+                99,
+                OrderType.FAK,
+                "directional:test",
+            )
+        )
+        assert sell.get_trades()[0].price == 99
+    finally:
+        sell.stop()
 
 
 def test_default_simulator_keeps_full_displayed_depth_and_no_dynamic_impact():
