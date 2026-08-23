@@ -40,7 +40,10 @@ class DirectionalTradingEngine(TradingEngine):
             return
         if self.halted:
             self._try_daily_circuit_recovery(self.broker.get_account())
-        if self.halted or self._directional_initialized:
+        self._initialize_directional_manager()
+
+    def _initialize_directional_manager(self) -> None:
+        if self.halted or not self._initialized or self._directional_initialized:
             return
         try:
             self.directional_manager.bootstrap(self._reference_now())
@@ -58,6 +61,7 @@ class DirectionalTradingEngine(TradingEngine):
 
     def run_once(self) -> None:
         super().run_once()
+        self._initialize_directional_manager()
         if (
             self.halted
             or not self._initialized
