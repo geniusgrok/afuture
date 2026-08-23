@@ -34,8 +34,7 @@ jobs:
       - run: python -m compileall -q afuture
 
   fixed-production-evidence:
-    # Disabled during the final RED/GREEN correction. Re-enable once for the next L3 candidate.
-    if: ${{ false }}
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
