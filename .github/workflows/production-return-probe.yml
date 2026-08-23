@@ -5,6 +5,13 @@ on:
     branches: [main]
     paths:
       - .github/workflows/production-return-probe.yml
+      - afuture/execution_aligned_policy.py
+      - afuture/directional_acceptance.py
+      - afuture/directional_risk.py
+
+concurrency:
+  group: production-return-probe-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   actions: read
@@ -24,41 +31,65 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p /tmp/specific /tmp/final
+          mkdir -p /tmp/specific
           gh api /repos/${{ github.repository }}/actions/artifacts/9473260618/zip > /tmp/specific.zip
-          gh api /repos/${{ github.repository }}/actions/artifacts/9474502870/zip > /tmp/final.zip
           unzip -q /tmp/specific.zip -d /tmp/specific
-          unzip -q /tmp/final.zip -d /tmp/final
-      - name: Probe highest-information sizing candidates
+          test -s /tmp/specific/return_target_specific_contracts.csv
+          test -s /tmp/specific/broad_daily_universe.csv
+      - name: Probe current meta under production sizing choices
         run: |
           python - <<'PY'
           import json
           import pandas as pd
           from afuture.directional_acceptance import DirectionalProductionAcceptance, ProductionMechanicsConfig
           from afuture.directional_risk import DirectionalRiskGovernor
+          from afuture.execution_aligned_policy import ExecutionAlignedAggressivePolicy
+          from afuture.execution_aligned_runtime import FROZEN_PRODUCTS
           from tools.evaluate_directional_production_mechanics import _result_stats
 
           specific = pd.read_csv('/tmp/specific/return_target_specific_contracts.csv')
-          long_weights = pd.read_csv('/tmp/final/execution_aligned_weights.csv')
-          weights = long_weights.pivot(index='level_0', columns='level_1', values='weight').fillna(0.0)
-          weights.index = pd.to_datetime(weights.index)
-          weights = weights.sort_index().loc['2024-08-21':'2026-08-20']
+          continuous = pd.read_csv('/tmp/specific/broad_daily_universe.csv')
+          continuous['date'] = pd.to_datetime(continuous['date'], errors='coerce')
+          continuous['product'] = continuous['product'].astype(str).str.upper()
+          for column in ('open', 'close'):
+              continuous[column] = pd.to_numeric(continuous[column], errors='coerce')
+          continuous = continuous.dropna(subset=['date', 'product', 'open', 'close'])
+          continuous = continuous[(continuous['open'] > 0) & (continuous['close'] > 0)]
+          continuous = continuous.drop_duplicates(['date', 'product'], keep='last')
+          products = tuple(FROZEN_PRODUCTS)
+          open_prices = continuous.pivot(index='date', columns='product', values='open').sort_index().reindex(columns=products)
+          close = continuous.pivot(index='date', columns='product', values='close').sort_index().reindex(index=open_prices.index, columns=products)
+          weights = ExecutionAlignedAggressivePolicy(products=products).weight_history(open_prices, close)
+          weights = weights.loc['2024-08-21':'2026-08-20']
           prepared = DirectionalProductionAcceptance(ProductionMechanicsConfig()).prepare_contracts(specific)
+
           profiles = {
               'none': DirectionalRiskGovernor(volatility_trigger=99.0, loss_trigger=99.0, defensive_scale=1.0),
-              'loss3_q25': DirectionalRiskGovernor(volatility_trigger=99.0, loss_trigger=0.03, defensive_scale=0.25),
+              'q25': DirectionalRiskGovernor(),
           }
           rows = []
-          for cap in (35, 40, 45, 50):
+          for cap in (35, 50, 75, 100):
               for name, governor in profiles.items():
-                  sim = DirectionalProductionAcceptance(ProductionMechanicsConfig(max_contract_volume=cap))
+                  sim = DirectionalProductionAcceptance(
+                      ProductionMechanicsConfig(
+                          max_contract_volume=cap,
+                          max_daily_loss_ratio=0.05,
+                          max_total_drawdown_ratio=0.30,
+                          max_margin_ratio=0.35,
+                          min_available_ratio=0.25,
+                      )
+                  )
                   sim.risk_governor = governor
                   result = sim.simulate(specific, weights, cost_bps=5.0, prepared=prepared)
                   stats = _result_stats(result)
                   row = {'cap': cap, 'profile': name, **stats}
                   rows.append(row)
                   print('PROBE', json.dumps(row, sort_keys=True))
-          survivors = [r for r in rows if not r['halted'] and r['max_drawdown'] >= -0.30]
-          survivors.sort(key=lambda x: x['annualized_return'], reverse=True)
+          survivors = [
+              r for r in rows
+              if not r['halted'] and r['max_drawdown'] >= -0.30
+          ]
+          survivors.sort(key=lambda x: (x['annualized_return'], x['sharpe']), reverse=True)
           print('PROBE_TOP', json.dumps(survivors, sort_keys=True))
+          print('ABOVE_TARGET', json.dumps([r for r in survivors if r['annualized_return'] >= 1.0], sort_keys=True))
           PY
