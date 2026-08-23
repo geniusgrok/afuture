@@ -6,7 +6,7 @@ requested, while hard risk actions remain authoritative elsewhere.
 """
 from __future__ import annotations
 
-from typing import Iterable, Mapping
+from typing import Mapping
 
 
 TURNOVER_BUCKETS = ("roll", "resize", "reversal", "entry_exit")
@@ -96,81 +96,3 @@ def stabilize_one_lot_increases(
         if abs(target) == abs(current) + 1:
             result[symbol] = current
     return {symbol: volume for symbol, volume in result.items() if volume}
-
-
-def cost_aware_no_trade_target(
-    *,
-    current_lots: Mapping[str, int],
-    target_lots: Mapping[str, int],
-    lot_notionals: Mapping[str, float],
-    expected_daily_returns: Mapping[str, float],
-    horizon_days: int,
-    cost_bps: float,
-    force_execute_symbols: Iterable[str] = (),
-) -> dict[str, int]:
-    """Suppress only non-positive-net-benefit openings and same-sign increases.
-
-    ``expected_daily_returns`` must be point-in-time evidence supplied by the caller.
-    Reductions, exits, reversals, and explicitly forced symbols (for example a safety
-    roll) always preserve the requested target. The helper can only hold incumbent risk;
-    it never creates additional gross exposure.
-    """
-    horizon = max(1, int(horizon_days))
-    cost_rate = max(0.0, float(cost_bps)) / 10000.0
-    forced = {str(symbol) for symbol in force_execute_symbols}
-    current = {
-        str(symbol): int(volume)
-        for symbol, volume in current_lots.items()
-        if int(volume) != 0
-    }
-    requested = {
-        str(symbol): int(volume)
-        for symbol, volume in target_lots.items()
-        if int(volume) != 0
-    }
-    result = dict(requested)
-
-    # Symbols absent from the target are exits. They remain absent from the returned
-    # target, so downstream reduction-first planning executes them normally.
-    for symbol, target in list(requested.items()):
-        if symbol in forced:
-            continue
-        incumbent = int(current.get(symbol, 0))
-        if incumbent != 0:
-            same_sign = (incumbent > 0) == (target > 0)
-            if not same_sign:
-                # Reversal bypasses the no-trade region.
-                continue
-            if abs(target) <= abs(incumbent):
-                # Any reduction, including partial risk reduction, bypasses the filter.
-                continue
-        # incumbent == 0 => new opening; same-sign absolute increase reaches here.
-        lot_notional = float(lot_notionals.get(symbol, 0.0))
-        if lot_notional <= 0:
-            # Missing cost evidence fails closed for optional new risk: keep incumbent.
-            if incumbent:
-                result[symbol] = incumbent
-            else:
-                result.pop(symbol, None)
-            continue
-        expected_daily = float(expected_daily_returns.get(symbol, 0.0))
-        directional_edge = (1.0 if target > 0 else -1.0) * expected_daily
-        delta_lots = abs(target) - abs(incumbent)
-        expected_benefit = (
-            max(0, delta_lots)
-            * lot_notional
-            * directional_edge
-            * horizon
-        )
-        transition_cost = max(0, delta_lots) * lot_notional * cost_rate
-        if expected_benefit <= transition_cost + 1e-12:
-            if incumbent:
-                result[symbol] = incumbent
-            else:
-                result.pop(symbol, None)
-
-    return {
-        symbol: int(volume)
-        for symbol, volume in result.items()
-        if int(volume) != 0
-    }
