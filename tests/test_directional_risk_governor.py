@@ -22,7 +22,7 @@ def test_directional_risk_governor_keeps_scale_inside_one_and_never_increases_gr
         assert 0.0 < scale <= 1.0
 
 
-def test_scaled_policy_only_reduces_existing_target_weights():
+def test_scaled_policy_reserves_five_percent_gross_headroom_and_only_reduces_targets():
     class _Policy:
         def target_weights(self, *args, **kwargs):
             return {"A": 1.2, "CU": -0.8}
@@ -33,14 +33,14 @@ def test_scaled_policy_only_reduces_existing_target_weights():
         completed_returns_provider=lambda: tuple(completed),
     )
     assert policy.target_weights(object(), object()) == {
-        "A": 0.3,
-        "CU": -0.2,
+        "A": 0.285,
+        "CU": -0.19,
     }
 
     completed[:] = [0.01, 0.01]
     assert policy.target_weights(object(), object()) == {
-        "A": 1.2,
-        "CU": -0.8,
+        "A": 1.14,
+        "CU": -0.76,
     }
 
 
