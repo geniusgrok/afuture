@@ -10,8 +10,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from math import floor
 import re
+from statistics import stdev
 from typing import Iterable, Mapping
 
+from .directional_efficiency import stabilize_one_lot_increases
 from .models import (
     AccountSnapshot,
     ContractInfo,
@@ -179,18 +181,19 @@ def fit_target_lots_to_margin_budget(
     }
 
 
-def margin_sizing_share(
+def adaptive_margin_sizing_share(
     *,
     max_margin_ratio: float,
     min_available_ratio: float,
     max_daily_loss_ratio: float,
+    completed_returns: Iterable[float] = (),
+    volatility_trigger: float = 0.03,
 ) -> float:
-    """Return a soft sizing envelope below the unchanged hard account margin gate.
+    """Causal soft margin envelope below unchanged account hard gates.
 
-    A target placed exactly on the hard margin boundary can become a hard HALT after a
-    normal mark-to-market equity move. Reserve the configured daily-loss budget as an
-    absolute equity share between normal target sizing and the unchanged hard margin/cash
-    gates. This only reduces normal target construction; it never relaxes a hard gate.
+    Missing completed-return evidence keeps the conservative 30%-equivalent envelope.
+    With completed evidence, calm conditions can recover some capacity while the formula
+    still reserves the configured 5% equity-loss budget plus an observed shock allowance.
     """
     margin_ratio = float(max_margin_ratio)
     available_ratio = float(min_available_ratio)
@@ -201,8 +204,34 @@ def margin_sizing_share(
         raise ValueError("min_available_ratio must be in [0, 1)")
     if not 0 < daily_loss_ratio < 1:
         raise ValueError("max_daily_loss_ratio must be in (0, 1)")
+    if volatility_trigger <= 0:
+        raise ValueError("volatility_trigger must be positive")
     hard_share = min(margin_ratio, 1.0 - available_ratio)
-    return max(0.0, hard_share - daily_loss_ratio)
+    conservative = max(0.0, hard_share - daily_loss_ratio)
+    values = [float(value) for value in completed_returns]
+    if not values:
+        return min(hard_share, conservative)
+    sample = values[-2:]
+    sample_vol = stdev(sample) if len(sample) >= 2 else 0.0
+    shock = max(volatility_trigger, abs(values[-1]), sample_vol)
+    shock = min(max(shock, volatility_trigger), daily_loss_ratio)
+    adaptive = hard_share * (1.0 - daily_loss_ratio) / (1.0 + shock)
+    return min(hard_share, max(conservative, adaptive))
+
+
+def margin_sizing_share(
+    *,
+    max_margin_ratio: float,
+    min_available_ratio: float,
+    max_daily_loss_ratio: float,
+) -> float:
+    """Compatibility wrapper for the no-history conservative soft margin envelope."""
+    return adaptive_margin_sizing_share(
+        max_margin_ratio=max_margin_ratio,
+        min_available_ratio=min_available_ratio,
+        max_daily_loss_ratio=max_daily_loss_ratio,
+        completed_returns=(),
+    )
 
 
 def build_target_lots(
@@ -251,6 +280,8 @@ def build_margin_aware_target_lots(
     min_available_ratio: float,
     max_daily_loss_ratio: float,
     margin_estimate_buffer: float,
+    completed_returns: Iterable[float] = (),
+    current_lots: Mapping[str, int] | None = None,
 ) -> dict[str, int]:
     """Build the requested target then fit it inside a soft account margin envelope.
 
@@ -290,15 +321,35 @@ def build_margin_aware_target_lots(
             raise ValueError(f"missing positive per-lot margin: {symbol}")
         per_lot_margin[symbol] = unit_margin
 
-    sizing_share = margin_sizing_share(
+    sizing_share = adaptive_margin_sizing_share(
         max_margin_ratio=max_margin_ratio,
         min_available_ratio=min_available_ratio,
         max_daily_loss_ratio=max_daily_loss_ratio,
+        completed_returns=completed_returns,
     )
-    return fit_target_lots_to_margin_budget(
+    fitted = fit_target_lots_to_margin_budget(
         requested,
         per_lot_margin,
         margin_budget=float(account.equity) * sizing_share,
+    )
+    current = {str(symbol): int(volume) for symbol, volume in (current_lots or {}).items() if int(volume)}
+    if not current:
+        return fitted
+    lot_notionals = {
+        symbol: float(ticks_by_symbol[symbol].mid_price) * float(specs[symbol].multiplier)
+        for symbol in requested
+        if symbol in ticks_by_symbol and symbol in specs
+    }
+    if not set(current).issubset(lot_notionals) or not set(current).issubset(per_lot_margin):
+        return fitted
+    return stabilize_one_lot_increases(
+        current_lots=current,
+        target_lots=fitted,
+        lot_notionals=lot_notionals,
+        per_lot_margin=per_lot_margin,
+        equity=float(account.equity),
+        soft_margin_share=sizing_share,
+        max_gross_ratio=MAX_GROSS_LEVERAGE,
     )
 
 

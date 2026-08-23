@@ -109,6 +109,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         policy=None,
         activity_store_path: str | Path | None = None,
         activity_tracker: DirectionalActivityTracker | None = None,
+        completed_returns_provider=None,
         **kwargs,
     ):
         if policy is None:
@@ -135,6 +136,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             )
         else:
             self.activity_tracker = None
+        self.completed_returns_provider = completed_returns_provider
         self._catalog_by_symbol: dict[str, object] = {}
 
     def bootstrap(self, now: datetime) -> None:
@@ -309,6 +311,12 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             )
         return {str(key).upper(): float(value) for key, value in weights.items()}
 
+    def _completed_returns(self) -> tuple[float, ...]:
+        provider = self.completed_returns_provider
+        if callable(provider):
+            return tuple(float(value) for value in provider())
+        return ()
+
     @staticmethod
     def _post_reduction_target(positions, reductions) -> dict[str, int]:
         target = {
@@ -347,9 +355,19 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             return DirectionalActionResult(action, f"directional signal unavailable: {exc}")
 
         planned_date = self._planned_trading_date(now)
+        catalog_by_symbol = {item.symbol: item for item in self._catalog}
+        preferred_symbols = {
+            catalog_by_symbol[position.symbol].product.upper(): position.symbol
+            for position in positions
+            if not position.empty and position.symbol in catalog_by_symbol
+        }
         selected = (
             select_contracts_from_activity(
-                self.config, self._catalog, snapshot, planned_date
+                self.config,
+                self._catalog,
+                snapshot,
+                planned_date,
+                preferred_symbols=preferred_symbols,
             )
             if snapshot is not None
             else self.selector.select(self._catalog, self._ticks, planned_date)
@@ -394,6 +412,8 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             min_available_ratio=self.risk_manager.config.min_available_ratio,
             max_daily_loss_ratio=self.risk_manager.config.max_daily_loss_ratio,
             margin_estimate_buffer=self.risk_manager.config.margin_estimate_buffer,
+            completed_returns=self._completed_returns(),
+            current_lots={position.symbol: position.net_volume for position in positions if not position.empty},
         )
 
         symbol_product = {item.symbol: item.product.upper() for item in self._catalog}

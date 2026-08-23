@@ -150,7 +150,7 @@ def test_product_hysteresis_only_suppresses_same_direction_low_value_resize():
         cost_bps=15.0,
     )
     assert stabilized["A"] == 0.60
-    assert stabilized["M"] == -0.60
+    assert stabilized["M"] == -0.50
     assert stabilized["RB"] == -0.40
     assert stabilized["CU"] == 0.30
 

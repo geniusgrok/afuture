@@ -25,6 +25,9 @@ class DirectionalTradingEngine(TradingEngine):
         super().__init__(*args, **kwargs)
         self.directional_manager = directional_manager
         self._directional_initialized = False
+        self.directional_manager.completed_returns_provider = (
+            lambda: tuple(self.state.recent_daily_returns)
+        )
         policy = getattr(self.directional_manager, "policy", None)
         if policy is not None and not isinstance(policy, DirectionalRiskScaledPolicy):
             self.directional_manager.policy = DirectionalRiskScaledPolicy(

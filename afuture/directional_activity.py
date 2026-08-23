@@ -10,7 +10,7 @@ from datetime import date, datetime
 import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from .directional import DirectionalConfig
 from .models import ContractInfo, Tick
@@ -124,10 +124,17 @@ def select_contracts_from_activity(
     catalog: Iterable[ContractInfo],
     snapshot: DirectionalActivitySnapshot | None,
     planned_date: date,
+    preferred_symbols: Mapping[str, str] | None = None,
 ) -> dict[str, ContractInfo]:
-    """Choose next-day concrete contracts only from the previous completed activity day."""
+    """Choose next-day contracts from completed activity with causal roll hysteresis.
+
+    An eligible incumbent is retained unless one challenger has both strictly higher
+    completed-day open interest and strictly higher volume. Expiry/listing/activity
+    eligibility remains authoritative and immediately forces a deterministic roll.
+    """
     if snapshot is None:
         return {}
+    preferred = {str(k).upper(): str(v) for k, v in (preferred_symbols or {}).items()}
     products = {item.upper() for item in config.products}
     exchanges = {item.upper() for item in config.exchanges}
     candidates: dict[str, list[tuple[float, float, date, ContractInfo]]] = {}
@@ -150,16 +157,22 @@ def select_contracts_from_activity(
         activity = snapshot.contracts.get(item.symbol)
         if activity is None or activity.trading_day != snapshot.trading_day:
             continue
-        if activity.volume < config.min_volume:
+        if activity.volume < config.min_volume or activity.open_interest < config.min_open_interest:
             continue
-        if activity.open_interest < config.min_open_interest:
-            continue
-        candidates.setdefault(product, []).append(
-            (activity.open_interest, activity.volume, expiry, item)
-        )
+        candidates.setdefault(product, []).append((activity.open_interest, activity.volume, expiry, item))
 
     result: dict[str, ContractInfo] = {}
     for product, rows in candidates.items():
         rows.sort(key=lambda row: (-row[0], -row[1], row[2], row[3].symbol))
+        incumbent_symbol = preferred.get(product)
+        incumbent = next((row for row in rows if row[3].symbol == incumbent_symbol), None)
+        if incumbent is not None:
+            dominant = [row for row in rows if row[0] > incumbent[0] and row[1] > incumbent[1]]
+            if not dominant:
+                result[product] = incumbent[3]
+                continue
+            dominant.sort(key=lambda row: (-row[0], -row[1], row[2], row[3].symbol))
+            result[product] = dominant[0][3]
+            continue
         result[product] = rows[0][3]
     return result

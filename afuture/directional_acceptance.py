@@ -14,6 +14,7 @@ from typing import Mapping
 import pandas as pd
 
 from .directional import RebalancePlan
+from .directional_efficiency import attribute_rebalance_deltas
 from .directional_risk import DirectionalRiskGovernor
 
 
@@ -107,6 +108,8 @@ class DirectionalProductionAcceptance:
         product_weights: Mapping[str, float],
         product_open_prices: Mapping[str, float],
         selected_symbols: Mapping[str, str],
+        current_lots: Mapping[str, int] | None = None,
+        completed_returns: tuple[float, ...] = (),
     ) -> dict[str, int]:
         if equity <= 0:
             return {}
@@ -263,24 +266,31 @@ class DirectionalProductionAcceptance:
         )
 
     def _select_contracts_from_snapshot(
-        self, snapshot: pd.DataFrame, target_day: pd.Timestamp
+        self,
+        snapshot: pd.DataFrame,
+        target_day: pd.Timestamp,
+        preferred_symbols: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
         day = pd.Timestamp(target_day).normalize()
-        eligible = snapshot[
-            (snapshot["delivery"] - day).dt.days
-            >= self.config.min_days_to_delivery
-        ]
-        eligible = eligible[
-            (eligible["volume"] >= self.config.min_volume)
-            & (eligible["hold"] >= self.config.min_open_interest)
-        ]
+        eligible = snapshot[(snapshot["delivery"] - day).dt.days >= self.config.min_days_to_delivery]
+        eligible = eligible[(eligible["volume"] >= self.config.min_volume) & (eligible["hold"] >= self.config.min_open_interest)]
+        preferred = {str(k).upper(): str(v).upper() for k, v in (preferred_symbols or {}).items()}
         result: dict[str, str] = {}
         for product, rows in eligible.groupby("product"):
-            rows = rows.sort_values(
-                ["hold", "volume", "delivery", "symbol"],
-                ascending=[False, False, True, True],
-            )
-            if not rows.empty:
+            rows = rows.sort_values(["hold", "volume", "delivery", "symbol"], ascending=[False, False, True, True])
+            if rows.empty:
+                continue
+            incumbent_symbol = preferred.get(str(product).upper())
+            incumbent_rows = rows[rows["symbol"] == incumbent_symbol] if incumbent_symbol else rows.iloc[0:0]
+            if not incumbent_rows.empty:
+                incumbent = incumbent_rows.iloc[0]
+                dominant = rows[(rows["hold"] > float(incumbent["hold"])) & (rows["volume"] > float(incumbent["volume"]))]
+                if dominant.empty:
+                    result[str(product)] = str(incumbent["symbol"])
+                    continue
+                dominant = dominant.sort_values(["hold", "volume", "delivery", "symbol"], ascending=[False, False, True, True])
+                result[str(product)] = str(dominant.iloc[0]["symbol"])
+            else:
                 result[str(product)] = str(rows.iloc[0]["symbol"])
         return result
 
@@ -339,6 +349,25 @@ class DirectionalProductionAcceptance:
                 * PRODUCT_MULTIPLIERS[self._product(symbol)]
                 for symbol, delta in deltas.items()
             )
+        )
+
+    def _attribute_normal_turnover(
+        self,
+        *,
+        original_lots: Mapping[str, int],
+        target_lots: Mapping[str, int],
+        deltas: Mapping[str, int],
+        prices: Mapping[str, float],
+    ) -> dict[str, float]:
+        symbols = set(original_lots) | set(target_lots) | set(deltas)
+        lot_notionals = {symbol: float(prices.get(symbol, 0.0)) * PRODUCT_MULTIPLIERS[self._product(symbol)] for symbol in symbols}
+        products = {symbol: self._product(symbol) for symbol in symbols}
+        return attribute_rebalance_deltas(
+            original_lots=original_lots,
+            target_lots=target_lots,
+            executed_deltas=deltas,
+            lot_notionals=lot_notionals,
+            symbol_products=products,
         )
 
     def _gross_notional(
@@ -458,6 +487,16 @@ class DirectionalProductionAcceptance:
             previous_equity = equity
             day_start_equity = previous_equity
             turnover_notional = 0.0
+            turnover_roll = 0.0
+            turnover_resize = 0.0
+            turnover_reversal = 0.0
+            turnover_entry_exit = 0.0
+            turnover_daily_circuit = 0.0
+            turnover_hard_halt = 0.0
+            turnover_gross_guard = 0.0
+            normal_original_lots: dict[str, int] = {}
+            normal_target_lots: dict[str, int] = {}
+            normal_deltas: dict[str, int] = {}
             risk_reason = ""
             margin_reject = ""
             daily_circuit = False
@@ -471,6 +510,13 @@ class DirectionalProductionAcceptance:
                         "equity": equity,
                         "daily_return": 0.0,
                         "turnover_notional": 0.0,
+                        "turnover_roll": 0.0,
+                        "turnover_resize": 0.0,
+                        "turnover_reversal": 0.0,
+                        "turnover_entry_exit": 0.0,
+                        "turnover_daily_circuit": 0.0,
+                        "turnover_hard_halt": 0.0,
+                        "turnover_gross_guard": 0.0,
                         "gross_notional": 0.0,
                         "margin": 0.0,
                         "risk_reason": first_divergence,
@@ -508,6 +554,13 @@ class DirectionalProductionAcceptance:
                         "equity": equity,
                         "daily_return": equity / previous_equity - 1.0,
                         "turnover_notional": 0.0,
+                        "turnover_roll": 0.0,
+                        "turnover_resize": 0.0,
+                        "turnover_reversal": 0.0,
+                        "turnover_entry_exit": 0.0,
+                        "turnover_daily_circuit": 0.0,
+                        "turnover_hard_halt": 0.0,
+                        "turnover_gross_guard": 0.0,
                         "gross_notional": 0.0,
                         "margin": 0.0,
                         "risk_reason": risk_reason,
@@ -536,6 +589,10 @@ class DirectionalProductionAcceptance:
                     closing = {symbol: -volume for symbol, volume in lots.items()}
                     close_turnover = self._turnover(closing, open_prices)
                     turnover_notional += close_turnover
+                    if risk_reason == "daily loss limit reached":
+                        turnover_daily_circuit += close_turnover
+                    else:
+                        turnover_hard_halt += close_turnover
                     equity -= close_turnover * cost_rate
                     lots.clear()
                 if risk_reason == "daily loss limit reached":
@@ -553,8 +610,11 @@ class DirectionalProductionAcceptance:
                     completed_activity_day = pd.Timestamp(
                         available_activity_days[activity_position]
                     ).normalize()
+                    preferred_symbols = {self._product(symbol): symbol for symbol in lots}
                     selected = self._select_contracts_from_snapshot(
-                        activity_by_day[completed_activity_day], day
+                        activity_by_day[completed_activity_day],
+                        day,
+                        preferred_symbols=preferred_symbols,
                     )
                 product_open: dict[str, float] = {}
                 selected_symbols: dict[str, str] = {}
@@ -576,6 +636,8 @@ class DirectionalProductionAcceptance:
                     product_weights=product_weights,
                     product_open_prices=product_open,
                     selected_symbols=selected_symbols,
+                    current_lots=lots,
+                    completed_returns=tuple(completed_returns),
                 )
                 required_products = {
                     product
@@ -587,6 +649,8 @@ class DirectionalProductionAcceptance:
                     if self._product(symbol) in unavailable_products:
                         target[symbol] = int(volume)
 
+                normal_original_lots = dict(lots)
+                normal_target_lots = dict(target)
                 phase = self.rebalance_plan(
                     current_lots=lots,
                     target_lots=target,
@@ -596,6 +660,8 @@ class DirectionalProductionAcceptance:
                         phase.reductions, open_prices
                     )
                     turnover_notional += reduction_turnover
+                    for symbol, delta in phase.reductions.items():
+                        normal_deltas[symbol] = normal_deltas.get(symbol, 0) + int(delta)
                     equity -= reduction_turnover * cost_rate
                     self._apply_deltas(lots, phase.reductions)
 
@@ -617,10 +683,24 @@ class DirectionalProductionAcceptance:
                             phase.openings, open_prices
                         )
                         turnover_notional += opening_turnover
+                        for symbol, delta in phase.openings.items():
+                            normal_deltas[symbol] = normal_deltas.get(symbol, 0) + int(delta)
                         equity -= opening_turnover * cost_rate
                         self._apply_deltas(lots, phase.openings)
                     else:
                         first_divergence = first_divergence or margin_reject
+
+                if normal_deltas:
+                    attributed = self._attribute_normal_turnover(
+                        original_lots=normal_original_lots,
+                        target_lots=normal_target_lots,
+                        deltas=normal_deltas,
+                        prices=open_prices,
+                    )
+                    turnover_roll += attributed["roll"]
+                    turnover_resize += attributed["resize"]
+                    turnover_reversal += attributed["reversal"]
+                    turnover_entry_exit += attributed["entry_exit"]
 
                 intraday_pnl = 0.0
                 for symbol, volume in lots.items():
@@ -644,6 +724,10 @@ class DirectionalProductionAcceptance:
                         closing = {symbol: -volume for symbol, volume in lots.items()}
                         close_turnover = self._turnover(closing, close_prices)
                         turnover_notional += close_turnover
+                        if risk_reason == "daily loss limit reached":
+                            turnover_daily_circuit += close_turnover
+                        else:
+                            turnover_hard_halt += close_turnover
                         equity -= close_turnover * cost_rate
                         lots.clear()
                     if risk_reason == "daily loss limit reached":
@@ -663,6 +747,7 @@ class DirectionalProductionAcceptance:
                             guard_reductions, close_prices
                         )
                         turnover_notional += guard_turnover
+                        turnover_gross_guard += guard_turnover
                         equity -= guard_turnover * cost_rate
                         self._apply_deltas(lots, guard_reductions)
 
@@ -686,6 +771,10 @@ class DirectionalProductionAcceptance:
                                     closing, close_prices
                                 )
                                 turnover_notional += close_turnover
+                                if risk_reason == "daily loss limit reached":
+                                    turnover_daily_circuit += close_turnover
+                                else:
+                                    turnover_hard_halt += close_turnover
                                 equity -= close_turnover * cost_rate
                                 lots.clear()
                             if risk_reason == "daily loss limit reached":
@@ -710,6 +799,13 @@ class DirectionalProductionAcceptance:
                     "equity": equity,
                     "daily_return": daily_return,
                     "turnover_notional": turnover_notional,
+                    "turnover_roll": turnover_roll,
+                    "turnover_resize": turnover_resize,
+                    "turnover_reversal": turnover_reversal,
+                    "turnover_entry_exit": turnover_entry_exit,
+                    "turnover_daily_circuit": turnover_daily_circuit,
+                    "turnover_hard_halt": turnover_hard_halt,
+                    "turnover_gross_guard": turnover_gross_guard,
                     "gross_notional": gross_notional,
                     "margin": margin,
                     "risk_reason": risk_reason,
@@ -726,6 +822,9 @@ class DirectionalProductionAcceptance:
             daily = pd.DataFrame(
                 columns=[
                     "equity", "daily_return", "turnover_notional",
+                    "turnover_roll", "turnover_resize", "turnover_reversal",
+                    "turnover_entry_exit", "turnover_daily_circuit",
+                    "turnover_hard_halt", "turnover_gross_guard",
                     "gross_notional", "margin", "risk_reason",
                     "margin_reject", "daily_circuit", "gross_guard",
                     "risk_scale", "halted",

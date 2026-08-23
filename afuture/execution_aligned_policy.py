@@ -17,6 +17,8 @@ import re
 import numpy as np
 import pandas as pd
 
+from .directional_efficiency import should_switch_meta, stabilize_same_direction_weights
+
 MAX_GROSS_LEVERAGE = 2.0
 MAX_ABS_DAILY_RETURN = 0.20
 BASE_COST_BPS = 5.0
@@ -319,6 +321,8 @@ class ExecutionAlignedAggressivePolicy:
         open_prices = _clean_prices(open_prices, self.products).reindex(close.index)
         returns = close.pct_change(fill_method=None)
         returns = returns.mask(returns.abs() > MAX_ABS_DAILY_RETURN)
+        intraday = close.div(open_prices) - 1.0
+        intraday = intraday.mask(intraday.abs() > MAX_ABS_DAILY_RETURN).fillna(0.0)
 
         base_streams: dict[str, pd.Series] = {}
         stress_streams: dict[str, pd.Series] = {}
@@ -326,51 +330,60 @@ class ExecutionAlignedAggressivePolicy:
         for template_id, template in zip(self.template_ids, _EXECUTION_TEMPLATES):
             weights = _template_weight_path(returns, template)
             paths[template_id] = weights
-            base_streams[template_id] = _intraday_proxy_stream(
-                open_prices,
-                close,
-                weights,
-                cost_bps=BASE_COST_BPS,
-            )
-            stress_streams[template_id] = _intraday_proxy_stream(
-                open_prices,
-                close,
-                weights,
-                cost_bps=STRESS_COST_BPS,
-            )
+            base_streams[template_id] = _intraday_proxy_stream(open_prices, close, weights, cost_bps=BASE_COST_BPS)
+            stress_streams[template_id] = _intraday_proxy_stream(open_prices, close, weights, cost_bps=STRESS_COST_BPS)
 
         base_frame = pd.DataFrame(base_streams).sort_index().fillna(0.0)
-        stress_frame = pd.DataFrame(stress_streams).reindex(
-            index=base_frame.index,
-            columns=base_frame.columns,
-        ).fillna(0.0)
-        scores = _robust_trailing_scores(
-            base_frame,
-            stress_frame,
-            lookback=self.meta_lookback,
-        )
+        stress_frame = pd.DataFrame(stress_streams).reindex(index=base_frame.index, columns=base_frame.columns).fillna(0.0)
+        scores = _robust_trailing_scores(base_frame, stress_frame, lookback=self.meta_lookback)
         names = list(base_frame.columns)
         final = pd.DataFrame(0.0, index=close.index, columns=close.columns)
         selected: list[int] = []
+        previous_weights: dict[str, float] = {}
+
+        def aggregate(indices: list[int], timestamp) -> dict[str, float]:
+            if not indices:
+                return {}
+            rows = [paths[names[item]].loc[timestamp] for item in indices]
+            series = pd.concat(rows, axis=1).mean(axis=1)
+            return {str(product): float(value) for product, value in series.items() if abs(float(value)) > 1e-15}
+
         for position, timestamp in enumerate(close.index):
-            if position >= self.meta_lookback and (
-                not selected or position % self.meta_rebalance == 0
-            ):
+            if position >= self.meta_lookback and (not selected or position % self.meta_rebalance == 0):
                 row = scores[position]
                 valid = np.flatnonzero(np.isfinite(row))
-                selected = (
-                    [
-                        int(item)
-                        for item in valid[
-                            np.argsort(-row[valid], kind="stable")
-                        ][: self.meta_count]
-                    ]
-                    if valid.size
-                    else []
+                candidate = ([int(item) for item in valid[np.argsort(-row[valid], kind="stable")][: self.meta_count]] if valid.size else [])
+                if not selected:
+                    selected = candidate
+                elif candidate != selected:
+                    incumbent_survives = all(np.isfinite(row[item]) for item in selected)
+                    history = base_frame.iloc[position - self.meta_lookback : position]
+                    incumbent_mean = float(history.iloc[:, selected].mean(axis=1).mean()) if selected else 0.0
+                    candidate_mean = float(history.iloc[:, candidate].mean(axis=1).mean()) if candidate else 0.0
+                    if should_switch_meta(
+                        incumbent_mean_return=incumbent_mean,
+                        candidate_mean_return=candidate_mean,
+                        incumbent_weights=aggregate(selected, timestamp),
+                        candidate_weights=aggregate(candidate, timestamp),
+                        horizon=self.meta_rebalance,
+                        cost_bps=STRESS_COST_BPS,
+                        incumbent_survives=incumbent_survives,
+                    ):
+                        selected = candidate
+
+            raw = aggregate(selected, timestamp)
+            if position > 0 and raw:
+                trailing = intraday.iloc[max(0, position - self.meta_lookback) : position].mean(axis=0).to_dict()
+                raw = stabilize_same_direction_weights(
+                    previous_weights,
+                    raw,
+                    trailing_mean_returns=trailing,
+                    horizon=self.meta_rebalance,
+                    cost_bps=STRESS_COST_BPS,
                 )
-            if selected:
-                rows = [paths[names[item]].loc[timestamp] for item in selected]
-                final.loc[timestamp] = pd.concat(rows, axis=1).mean(axis=1)
+            if raw:
+                final.loc[timestamp] = pd.Series(raw).reindex(final.columns).fillna(0.0)
+            previous_weights = {str(product): float(value) for product, value in final.loc[timestamp].items() if abs(float(value)) > 1e-15}
 
         gross = final.abs().sum(axis=1)
         if bool((gross > MAX_GROSS_LEVERAGE + 1e-10).any()):
