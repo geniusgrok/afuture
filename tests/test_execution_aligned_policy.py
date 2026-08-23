@@ -3,6 +3,8 @@ import pandas as pd
 
 from afuture.execution_aligned_policy import (
     ExecutionAlignedAggressivePolicy,
+    META_ANNUALIZED_WEIGHT,
+    META_SHARPE_WEIGHT,
     _clean_prices,
 )
 
@@ -46,9 +48,11 @@ def test_execution_aligned_policy_freezes_product_order():
 
 def test_execution_aligned_policy_uses_frozen_meta_shape():
     policy = ExecutionAlignedAggressivePolicy(products=("A", "M"))
-    assert policy.meta_lookback == 10
-    assert policy.meta_rebalance == 5
+    assert policy.meta_lookback == 11
+    assert policy.meta_rebalance == 3
     assert policy.meta_count == 3
+    assert META_ANNUALIZED_WEIGHT == 0.25
+    assert META_SHARPE_WEIGHT == 1.0
     assert len(policy.template_ids) == 96
     assert policy.meta_score_source == "continuous_intraday_proxy"
 
@@ -62,3 +66,30 @@ def test_execution_proxy_changes_meta_evidence_without_future_leakage():
     altered_open.iloc[-30:-1] = altered_open.iloc[-30:-1] * 1.03
     altered = policy.weight_history(altered_open, close)
     assert not baseline.iloc[-1].equals(altered.iloc[-1])
+
+
+def test_l4_weight_generator_matches_production_policy(monkeypatch):
+    from tools import evaluate_execution_aligned_target as l4
+
+    open_prices, close = _history()
+    rows = []
+    for timestamp in close.index:
+        for product in close.columns:
+            rows.append(
+                {
+                    "date": timestamp,
+                    "product": product,
+                    "open": float(open_prices.loc[timestamp, product]),
+                    "close": float(close.loc[timestamp, product]),
+                }
+            )
+    continuous = pd.DataFrame(rows)
+    products = tuple(sorted(close.columns))
+    monkeypatch.setattr(l4, "REQUIRED_PRODUCTS", products)
+
+    generated = l4.generate_execution_signal_weights(continuous)
+    expected = ExecutionAlignedAggressivePolicy(products=products).weight_history(
+        open_prices.reindex(columns=products),
+        close.reindex(columns=products),
+    )
+    pd.testing.assert_frame_equal(generated, expected)
