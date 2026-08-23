@@ -192,7 +192,7 @@ def test_adaptive_margin_share_uses_completed_risk_and_never_relaxes_hard_gate()
     assert adaptive_margin_sizing_share(completed_returns=(), **common) == pytest.approx(0.30)
     calm = adaptive_margin_sizing_share(completed_returns=(0.002, 0.003), **common)
     stressed = adaptive_margin_sizing_share(completed_returns=(-0.04, 0.01), **common)
-    assert 0.30 < calm < 0.35
-    assert 0.30 <= stressed < calm
+    assert calm == pytest.approx(0.30)
+    assert 0.0 < stressed < calm
     assert calm <= 0.35
     assert stressed <= 0.35

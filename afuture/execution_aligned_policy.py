@@ -356,20 +356,7 @@ class ExecutionAlignedAggressivePolicy:
                 if not selected:
                     selected = candidate
                 elif candidate != selected:
-                    incumbent_survives = all(np.isfinite(row[item]) for item in selected)
-                    history = base_frame.iloc[position - self.meta_lookback : position]
-                    incumbent_mean = float(history.iloc[:, selected].mean(axis=1).mean()) if selected else 0.0
-                    candidate_mean = float(history.iloc[:, candidate].mean(axis=1).mean()) if candidate else 0.0
-                    if should_switch_meta(
-                        incumbent_mean_return=incumbent_mean,
-                        candidate_mean_return=candidate_mean,
-                        incumbent_weights=aggregate(selected, timestamp),
-                        candidate_weights=aggregate(candidate, timestamp),
-                        horizon=self.meta_rebalance,
-                        cost_bps=STRESS_COST_BPS,
-                        incumbent_survives=incumbent_survives,
-                    ):
-                        selected = candidate
+                    selected = candidate
 
             raw = aggregate(selected, timestamp)
             if position > 0 and raw:

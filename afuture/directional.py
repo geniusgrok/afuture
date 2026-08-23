@@ -215,8 +215,9 @@ def adaptive_margin_sizing_share(
     sample_vol = stdev(sample) if len(sample) >= 2 else 0.0
     shock = max(volatility_trigger, abs(values[-1]), sample_vol)
     shock = min(max(shock, volatility_trigger), daily_loss_ratio)
-    adaptive = hard_share * (1.0 - daily_loss_ratio) / (1.0 + shock)
-    return min(hard_share, max(conservative, adaptive))
+    excess_shock = max(0.0, shock - volatility_trigger)
+    adaptive = conservative * (1.0 - excess_shock)
+    return min(hard_share, max(0.0, min(conservative, adaptive)))
 
 
 def margin_sizing_share(
