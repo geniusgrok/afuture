@@ -4,17 +4,21 @@ on:
   push:
     branches:
       - codex/afuture-microstructure-cost-alpha-20260824
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: directional-microstructure-dev-${{ github.ref }}
+  group: directional-microstructure-dev-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
   targeted:
+    if: github.event_name != 'pull_request' || github.head_ref == 'codex/afuture-microstructure-cost-alpha-20260824'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -47,7 +51,7 @@ jobs:
       - run: python -m compileall -q afuture
 
   research:
-    if: contains(github.event.head_commit.message, '[research]')
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[research]')
     runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
