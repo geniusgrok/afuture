@@ -5,7 +5,7 @@ on:
     branches:
       - codex/afuture-stress-80-efficiency-20260823
     paths:
-      - .github/patches/stress-efficiency.patch
+      - .github/scripts/stress_efficiency_edit.py
 
 permissions:
   contents: write
@@ -18,18 +18,16 @@ jobs:
         with:
           ref: codex/afuture-stress-80-efficiency-20260823
           fetch-depth: 0
-      - name: Validate and apply patch
+      - name: Apply asserted source edit
         shell: bash
         run: |
           set -euo pipefail
-          patch=.github/patches/stress-efficiency.patch
-          test -s "$patch"
-          message=$(sed -n 's/^# message: //p' "$patch" | head -n1)
+          script=.github/scripts/stress_efficiency_edit.py
+          test -s "$script"
+          message=$(sed -n 's/^# message: //p' "$script" | head -n1)
           test -n "$message"
-          tail -n +2 "$patch" > /tmp/stress-efficiency.patch
-          git apply --check /tmp/stress-efficiency.patch
-          git apply /tmp/stress-efficiency.patch
-          git rm "$patch"
+          python "$script"
+          git rm "$script"
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
