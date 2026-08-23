@@ -97,8 +97,10 @@ for name in formal_docs:
 mechanics = Path("docs/directional-production-mechanics-evidence.md").read_text(encoding="utf-8")
 if "soft_target_margin_share = max(0, hard_share - max_daily_loss_ratio)" in mechanics:
     raise SystemExit("production mechanics: obsolete fixed soft-margin formula remains")
-if "completed shock" not in mechanics:
-    raise SystemExit("production mechanics: adaptive margin contraction missing")
+if "shock = clamp(max(3%, abs(latest completed return), two-day sample volatility), 3%, 5%)" not in mechanics:
+    raise SystemExit("production mechanics: adaptive shock formula missing")
+if "只会进一步收缩" not in mechanics:
+    raise SystemExit("production mechanics: contraction-only semantics missing")
 
 code = Path("afuture/directional.py").read_text(encoding="utf-8")
 if "calm conditions can recover some capacity" in code:
