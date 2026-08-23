@@ -7,6 +7,9 @@ from statistics import stdev
 from typing import Callable, Iterable
 
 
+PRODUCTION_GROSS_HEADROOM_SCALE = 0.95
+
+
 @dataclass(frozen=True)
 class DirectionalRiskGovernor:
     """Scale gross risk from completed account returns only.
@@ -49,7 +52,7 @@ class DirectionalRiskGovernor:
 
 
 class DirectionalRiskScaledPolicy:
-    """Decorate a frozen directional policy with a non-increasing gross scale."""
+    """Decorate a frozen directional policy with non-increasing production gross scales."""
 
     def __init__(
         self,
@@ -64,7 +67,10 @@ class DirectionalRiskScaledPolicy:
 
     def target_weights(self, *args, **kwargs) -> dict[str, float]:
         weights = self.policy.target_weights(*args, **kwargs)
-        scale = self.governor.scale(self.completed_returns_provider())
+        scale = (
+            PRODUCTION_GROSS_HEADROOM_SCALE
+            * self.governor.scale(self.completed_returns_provider())
+        )
         return {
             str(product): float(weight) * scale
             for product, weight in weights.items()
