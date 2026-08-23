@@ -1,5 +1,6 @@
 name: directional-microstructure-dev
 
+# temporary branch-only targeted verification harness; removed before final PR
 on:
   push:
     branches:
