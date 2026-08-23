@@ -7,22 +7,18 @@ from statistics import stdev
 from typing import Callable, Iterable
 
 
-PRODUCTION_GROSS_HEADROOM_SCALE = 0.95
-
-
 @dataclass(frozen=True)
 class DirectionalRiskGovernor:
-    """Return the complete non-increasing production gross scale.
+    """Scale future targets using completed account returns only.
 
-    Normal production targets reserve five percent gross headroom so mark-to-market
-    movement does not immediately push a 2x signal target beyond the 2x hard ceiling.
-    Defensive scaling is applied on top of that reserve and uses completed account
-    returns only, so current-session PnL cannot leak into the next target decision.
+    The governor never increases the frozen policy target. It preserves the normal
+    target and moves to the defensive scale after either a completed daily loss or
+    two-day sample-volatility trigger. Current-session PnL is deliberately excluded.
     """
 
     lookback_days: int = 2
     volatility_trigger: float = 0.03
-    loss_trigger: float = 0.03
+    loss_trigger: float = 0.02
     defensive_scale: float = 0.25
 
     def __post_init__(self) -> None:
@@ -42,18 +38,18 @@ class DirectionalRiskGovernor:
             if isfinite(float(value))
         ]
         if values and values[-1] <= -self.loss_trigger:
-            return PRODUCTION_GROSS_HEADROOM_SCALE * self.defensive_scale
+            return self.defensive_scale
         sample = values[-self.lookback_days :]
         if (
             len(sample) >= self.lookback_days
             and stdev(sample) >= self.volatility_trigger
         ):
-            return PRODUCTION_GROSS_HEADROOM_SCALE * self.defensive_scale
-        return PRODUCTION_GROSS_HEADROOM_SCALE
+            return self.defensive_scale
+        return 1.0
 
 
 class DirectionalRiskScaledPolicy:
-    """Decorate a frozen directional policy with the production gross scale."""
+    """Decorate a frozen directional policy with the causal risk scale."""
 
     def __init__(
         self,
