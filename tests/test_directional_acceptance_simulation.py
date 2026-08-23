@@ -15,6 +15,18 @@ def test_simulation_orders_gap_rebalance_intraday_and_cost():
     assert abs(result.final_equity - 110894.5) < 1e-9
 
 
+def test_simulation_uses_same_five_percent_production_gross_headroom_as_runtime():
+    raw = pd.DataFrame([
+        {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":1000,"close":1000,"volume":5000,"hold":30000},
+        {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":1000,"close":1000,"volume":5000,"hold":30000},
+    ])
+    weights = pd.DataFrame({"A":[2.0]}, index=pd.to_datetime(["2026-08-21"]))
+    sim = DirectionalProductionAcceptance(ProductionMechanicsConfig(initial_capital=100000,max_contract_volume=100,max_daily_loss_ratio=.5,max_total_drawdown_ratio=.8,max_margin_ratio=.9,min_available_ratio=0))
+    day = sim.simulate(raw, weights, cost_bps=0).daily.loc[pd.Timestamp("2026-08-21")]
+    assert day["risk_scale"] == 0.95
+    assert day["gross_notional"] == 190000.0
+
+
 def test_daily_loss_circuit_recovers_on_next_trading_day_with_defensive_scale():
     raw = pd.DataFrame([
         {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
@@ -30,7 +42,7 @@ def test_daily_loss_circuit_recovers_on_next_trading_day_with_defensive_scale():
     assert first["daily_circuit"]
     assert not first["halted"]
     assert recovered["gross_notional"] > 0
-    assert recovered["risk_scale"] == 0.25
+    assert recovered["risk_scale"] == 0.2375
     assert not recovered["halted"]
     assert result.first_divergence == "daily loss limit reached"
 
