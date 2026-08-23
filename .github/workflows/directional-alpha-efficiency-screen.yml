@@ -1,0 +1,96 @@
+name: directional-alpha-efficiency-screen
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/directional-alpha-efficiency-screen.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install screen dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" "akshare>=1.17"
+      - name: Download frozen PR17 input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${GITHUB_REPOSITORY}/actions/artifacts/9473260618/zip > fixed-input.zip
+          echo "ab4321a9cf8b9a61a0f9d435a6fb6bba7dd63986043b429c12c0ff47fd15389c  fixed-input.zip" | sha256sum -c -
+          mkdir -p fixed runtime
+          unzip -q fixed-input.zip -d fixed
+          cp fixed/broad_daily_universe.csv runtime/
+          cp fixed/return_target_specific_contracts.csv runtime/
+      - name: Targeted selector tests
+        run: python -m pytest -q tests/test_directional_alpha_efficiency.py
+      - name: Run baseline and Candidate B float screens
+        run: |
+          python tools/evaluate_execution_aligned_target.py
+          cp runtime/execution_aligned_target_report.json runtime/alpha_efficiency_baseline_report.json
+          python tools/evaluate_alpha_efficiency_target.py
+      - name: Compare every evidence window
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          base = json.loads(Path("runtime/alpha_efficiency_baseline_report.json").read_text())
+          cand = json.loads(Path("runtime/alpha_efficiency_target_report.json").read_text())
+          windows = ["prior1", "prior2", "train", "validation", "oos", "full_recent"]
+          summary = {"windows": {}, "gate": {}}
+          for window in windows:
+              row = {}
+              for endpoint in ("base", "stress"):
+                  b = base["next_open_execution"][endpoint][window]
+                  c = cand["next_open_execution"][endpoint][window]
+                  row[endpoint] = {
+                      "baseline_annualized": b["annualized_return"],
+                      "candidate_annualized": c["annualized_return"],
+                      "delta_pp": (c["annualized_return"] - b["annualized_return"]) * 100.0,
+                      "baseline_sharpe": b["sharpe"],
+                      "candidate_sharpe": c["sharpe"],
+                      "baseline_max_drawdown": b["max_drawdown"],
+                      "candidate_max_drawdown": c["max_drawdown"],
+                  }
+              summary["windows"][window] = row
+          bf = summary["windows"]["full_recent"]["base"]
+          sf = summary["windows"]["full_recent"]["stress"]
+          bo = summary["windows"]["oos"]["base"]
+          so = summary["windows"]["oos"]["stress"]
+          summary["gate"] = {
+              "full_base_improved": bf["candidate_annualized"] > bf["baseline_annualized"],
+              "full_stress_improved": sf["candidate_annualized"] > sf["baseline_annualized"],
+              "oos_base_not_worse": bo["candidate_annualized"] >= bo["baseline_annualized"],
+              "oos_stress_not_worse": so["candidate_annualized"] >= so["baseline_annualized"],
+              "stress_prior1_not_worse": summary["windows"]["prior1"]["stress"]["delta_pp"] >= -1.0,
+              "stress_prior2_not_worse": summary["windows"]["prior2"]["stress"]["delta_pp"] >= -1.0,
+              "stress_train_not_worse": summary["windows"]["train"]["stress"]["delta_pp"] >= -1.0,
+          }
+          Path("runtime/alpha_efficiency_screen_summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if not all(summary["gate"].values()):
+              raise SystemExit("Candidate B failed the predeclared cheap screen; Production L3 is not justified")
+          PY
+      - name: Upload cheap-screen evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: directional-alpha-efficiency-screen
+          path: |
+            runtime/alpha_efficiency_baseline_report.json
+            runtime/alpha_efficiency_target_report.json
+            runtime/alpha_efficiency_screen_summary.json
+            runtime/alpha_efficiency_weights.csv
+          if-no-files-found: warn
