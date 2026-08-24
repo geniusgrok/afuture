@@ -1,7 +1,7 @@
-"""Research-only Production adapter driven by a fixed baseline shadow ledger.
+"""Research-only Production adapter driven by fixed baseline signal outcomes.
 
 The candidate account never contributes evidence to its own value estimates. Every
-decision reads only baseline shadow events strictly before the active decision day. The
+decision reads only baseline shadow outcomes strictly before the active decision day. The
 adapter reallocates solely inside the already-requested directional intent and the
 validated margin-aware target envelope; downstream hard account gates remain unchanged.
 """
@@ -13,7 +13,10 @@ import pandas as pd
 
 from .directional_acceptance import PRODUCT_MULTIPLIERS, TargetLotStages
 from .directional_robustness import MarginAwareDirectionalProductionAcceptance
-from .directional_shadow_mpv import ShadowMPVOptimization, optimize_with_shadow_mpv
+from .directional_shadow_outcomes import (
+    ShadowOutcomeOptimization,
+    optimize_with_shadow_outcomes,
+)
 
 SHADOW_OBJECTIVE_COST_BPS = 15.0
 
@@ -21,13 +24,13 @@ SHADOW_OBJECTIVE_COST_BPS = 15.0
 class ShadowMPVDirectionalProductionAcceptance(
     MarginAwareDirectionalProductionAcceptance
 ):
-    """Reallocate constrained lots from exogenous baseline shadow economics."""
+    """Reallocate constrained lots from exogenous baseline signal outcomes."""
 
-    def __init__(self, config=None, *, shadow_events: pd.DataFrame) -> None:
+    def __init__(self, config=None, *, shadow_outcomes: pd.DataFrame) -> None:
         super().__init__(config)
-        self.shadow_events = shadow_events.copy()
+        self.shadow_outcomes = shadow_outcomes.copy()
         self.active_decision_day: pd.Timestamp | None = None
-        self.last_shadow_optimization: ShadowMPVOptimization | None = None
+        self.last_shadow_optimization: ShadowOutcomeOptimization | None = None
 
     @property
     def shadow_objective_cost_rate(self) -> float:
@@ -99,8 +102,8 @@ class ShadowMPVDirectionalProductionAcceptance(
         if not set(current).issubset(lot_notionals):
             return baseline
 
-        result = optimize_with_shadow_mpv(
-            shadow_events=self.shadow_events,
+        result = optimize_with_shadow_outcomes(
+            shadow_outcomes=self.shadow_outcomes,
             decision_date=self.active_decision_day,
             reference_lots=reference,
             requested_lots=requested,
