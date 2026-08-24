@@ -52,6 +52,25 @@ def test_strong_completed_trend_allows_new_entry():
     assert result.iloc[-1, 0] == 2.0
 
 
+def test_archived_trend_uses_sum_of_completed_daily_returns_not_compounded_return():
+    _, _, _, apply_filter = _api()
+    daily_returns = [0.10, -0.095] * 10
+    values = [100.0]
+    for daily_return in daily_returns:
+        values.append(values[-1] * (1.0 + daily_return))
+    values.append(values[-1])
+    prices = _prices(values)
+    weights = pd.DataFrame(0.0, index=prices.index, columns=["AG"])
+    weights.iloc[-1, 0] = 2.0
+
+    result = apply_filter(weights=weights, close_prices=prices)
+
+    # The arithmetic sum is +5%, so the archived 3/20 benefit is +75bp and clears
+    # the 15bp hurdle. The compounded 20-session return is negative; using it would
+    # incorrectly suppress this entry and break the archived 440.8444x lineage.
+    assert result.iloc[-1, 0] == 2.0
+
+
 def test_same_sign_increase_can_be_suppressed_but_reduction_is_never_delayed():
     _, _, _, apply_filter = _api()
     prices = _prices([100.0] * 24)
