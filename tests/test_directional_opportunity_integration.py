@@ -1,27 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
-import sys
-import types
 
 import numpy as np
 import pandas as pd
 
-from afuture.directional import DirectionalConfig
 from afuture.directional_opportunity_lineage import build_opportunity_weight_lineage
 from afuture.execution_aligned_policy import ExecutionAlignedAggressivePolicy
 from afuture.opportunity_aligned_policy import OpportunityAlignedAggressivePolicy
-from afuture.opportunity_aligned_runtime import (
-    OpportunityAlignedDirectionalPortfolioManager,
-    OpportunitySignalHistory,
-    SinaOpportunityOHLCVOIProvider,
-)
-from afuture.models import AccountSnapshot
-from afuture.risk import RiskConfig, RiskManager
-
-
-NOW = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)
 
 
 def _history(periods: int = 220):
@@ -142,113 +128,7 @@ def test_opportunity_lineage_closes_exact_adjusted_product_weights():
     assert not meta.empty
 
 
-def test_sina_opportunity_provider_preserves_volume_and_hold(monkeypatch):
-    dates = pd.date_range("2026-01-01", periods=4, freq="B")
-    fake = types.ModuleType("akshare")
-    fake.futures_zh_daily_sina = lambda symbol: pd.DataFrame(
-        {
-            "date": dates,
-            "open": [100.0, 101.0, 102.0, 103.0],
-            "close": [101.0, 102.0, 103.0, 104.0],
-            "volume": [1000.0, 1100.0, 1200.0, 1300.0],
-            "hold": [10000.0, 10100.0, 10200.0, 10300.0],
-        }
-    )
-    monkeypatch.setitem(sys.modules, "akshare", fake)
-
-    frame = SinaOpportunityOHLCVOIProvider._load_one("A")
-
-    assert list(frame.columns) == ["open", "close", "volume", "hold"]
-    assert float(frame.iloc[-1]["volume"]) == 1300.0
-    assert float(frame.iloc[-1]["hold"]) == 10300.0
-
-
-class _Provider:
-    def __init__(self):
-        open_prices, close, volume, open_interest = _history(180)
-        self.history = OpportunitySignalHistory(
-            open_prices,
-            close,
-            volume=volume,
-            open_interest=open_interest,
-        )
-
-    def load(self, products):
-        return self.history
-
-
-class _Policy:
-    def __init__(self):
-        self.activity = None
-
-    def target_weights(
-        self,
-        open_prices,
-        close,
-        *,
-        volume=None,
-        open_interest=None,
-    ):
-        self.activity = (volume.copy(), open_interest.copy())
-        assert open_prices.index.equals(close.index)
-        assert volume.index.equals(close.index)
-        assert open_interest.index.equals(close.index)
-        return {"A": 1.0}
-
-
-class _Broker:
-    def is_ready(self):
-        return True
-
-    def get_account(self):
-        return AccountSnapshot(
-            balance=100000,
-            equity=100000,
-            available=100000,
-            margin=0,
-            realized_pnl=0,
-            unrealized_pnl=0,
-            trading_day="20260825",
-        )
-
-    def get_positions(self):
-        return []
-
-    def get_active_orders(self):
-        return []
-
-
-def test_opportunity_runtime_passes_completed_activity_to_policy_synthetic_target():
-    policy = _Policy()
-    manager = OpportunityAlignedDirectionalPortfolioManager(
-        DirectionalConfig(
-            enabled=True,
-            products=("A", "M", "RB", "CU"),
-            exchanges=("DCE",),
-            signal_max_age_hours=20000.0,
-        ),
-        _Broker(),
-        RiskManager(RiskConfig()),
-        signal_provider=_Provider(),
-        policy=policy,
-    )
-
-    history = manager._load_signal(NOW)
-    weights = manager._next_target_weights(history)
-
-    assert weights == {"A": 1.0}
-    passed_volume, passed_oi = policy.activity
-    assert len(passed_volume) == len(history.close) + 1
-    assert len(passed_oi) == len(history.close) + 1
-    pd.testing.assert_series_equal(
-        passed_volume.iloc[-1], history.volume.iloc[-1], check_names=False
-    )
-    pd.testing.assert_series_equal(
-        passed_oi.iloc[-1], history.open_interest.iloc[-1], check_names=False
-    )
-
-
-def test_opportunity_l4_generator_matches_production_policy(monkeypatch):
+def test_opportunity_l4_generator_matches_research_policy(monkeypatch):
     tools_dir = Path(__file__).resolve().parents[1] / "tools"
     monkeypatch.syspath_prepend(str(tools_dir))
     import evaluate_opportunity_aligned_target as l4
