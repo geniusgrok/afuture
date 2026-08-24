@@ -1,6 +1,15 @@
 import pandas as pd
 
 
+def _minimal_contracts():
+    return pd.DataFrame(
+        [
+            {"date": "2026-01-05", "delivery": "2026-09-15", "product": "AG", "symbol": "AG2609", "open": 100.0, "close": 101.0, "volume": 10000.0, "hold": 20000.0},
+            {"date": "2026-01-06", "delivery": "2026-09-15", "product": "AG", "symbol": "AG2609", "open": 101.0, "close": 102.0, "volume": 11000.0, "hold": 21000.0},
+        ]
+    )
+
+
 def test_shadow_adapter_never_accumulates_candidate_owned_audit_rows():
     from afuture.directional_shadow_mpv_robustness import ShadowMPVDirectionalProductionAcceptance
 
@@ -34,11 +43,13 @@ def test_shadow_allocator_objective_is_locked_to_15bp_in_every_evaluation_scenar
     simulator = ShadowMPVDirectionalProductionAcceptance(shadow_outcomes=pd.DataFrame())
     assert abs(simulator.shadow_objective_cost_rate - 0.0015) < 1e-12
 
+    dates = pd.to_datetime(["2026-01-05", "2026-01-06"])
+    zero_weights = pd.DataFrame({"AG": [0.0, 0.0]}, index=dates)
     # Evaluation cost changes account PnL only; it must not reveal Base/Stress scenario
     # to the allocator's decision hurdle.
-    simulator.simulate(pd.DataFrame(), pd.DataFrame(), cost_bps=5.0)
+    simulator.simulate(_minimal_contracts(), zero_weights, cost_bps=5.0)
     assert abs(simulator.shadow_objective_cost_rate - 0.0015) < 1e-12
-    simulator.simulate(pd.DataFrame(), pd.DataFrame(), cost_bps=15.0)
+    simulator.simulate(_minimal_contracts(), zero_weights, cost_bps=15.0)
     assert abs(simulator.shadow_objective_cost_rate - 0.0015) < 1e-12
 
 
