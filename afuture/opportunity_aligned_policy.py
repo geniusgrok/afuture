@@ -1,4 +1,8 @@
-"""Opportunity-driven product selection layered on the frozen directional Alpha core."""
+"""Research-only rejected generic opportunity overlay for directional selection.
+
+This module is retained only to reproduce Candidate A evidence. ``runtime_factory`` never
+wires this policy into live/Shadow production after its fixed Production L3 rejection.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -14,12 +18,7 @@ from .execution_aligned_policy import (
 
 @dataclass(frozen=True)
 class OpportunityAlignedAggressivePolicy:
-    """Conservatively de-emphasize lower-opportunity raw core product targets.
-
-    The wrapped ``ExecutionAlignedAggressivePolicy`` remains the sole owner of the 96
-    templates and global Meta allocator. This layer cannot create, flip, or enlarge a raw
-    product exposure. Missing volume/open-interest evidence returns the exact frozen core.
-    """
+    """Reproduce the rejected lower-opportunity de-emphasis candidate for research."""
 
     products: tuple[str, ...]
     core: ExecutionAlignedAggressivePolicy = field(init=False, repr=False)
