@@ -23,6 +23,24 @@ def test_shadow_adapter_records_current_decision_day_via_behavior_neutral_hook()
     assert simulator.active_decision_day == pd.Timestamp("2026-01-06")
 
 
+def test_shadow_allocator_objective_is_locked_to_15bp_in_every_evaluation_scenario():
+    from afuture.directional_shadow_mpv_robustness import (
+        SHADOW_OBJECTIVE_COST_BPS,
+        ShadowMPVDirectionalProductionAcceptance,
+    )
+
+    assert SHADOW_OBJECTIVE_COST_BPS == 15.0
+    simulator = ShadowMPVDirectionalProductionAcceptance(shadow_events=pd.DataFrame())
+    assert abs(simulator.shadow_objective_cost_rate - 0.0015) < 1e-12
+
+    # Evaluation cost changes account PnL only; it must not reveal Base/Stress scenario
+    # to the allocator's decision hurdle.
+    simulator.simulate(pd.DataFrame(), pd.DataFrame(), cost_bps=5.0)
+    assert abs(simulator.shadow_objective_cost_rate - 0.0015) < 1e-12
+    simulator.simulate(pd.DataFrame(), pd.DataFrame(), cost_bps=15.0)
+    assert abs(simulator.shadow_objective_cost_rate - 0.0015) < 1e-12
+
+
 def test_target_stage_exactly_falls_back_before_decision_day_or_without_shadow_support():
     from afuture.directional_shadow_mpv_robustness import ShadowMPVDirectionalProductionAcceptance
 
