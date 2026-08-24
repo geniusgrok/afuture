@@ -57,7 +57,7 @@ class HistoricalMarginAwareDirectionalProductionAcceptance(
 
     def simulate(self, raw, weights, *, cost_bps: float, prepared=None):
         raw_dates = (
-            pd.to_datetime(raw["date"], errors="coerce").dropna().normalize()
+            pd.to_datetime(raw["date"], errors="coerce").dropna().dt.normalize()
             if "date" in raw
             else pd.DatetimeIndex([])
         )
