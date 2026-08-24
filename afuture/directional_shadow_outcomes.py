@@ -7,8 +7,10 @@ may use rows strictly before D.
 
 Product expected returns use an expanding, parameter-free empirical shrinkage: each
 product mean is shrunk toward the global mean with prior strength equal to the median
-positive product observation count. Monetary allocation then evaluates current one-lot
-notional times expected return minus exact 15bp-style transition cost.
+positive product observation count. Monetary allocation evaluates current one-lot
+notional times expected return times the caller-supplied causal remaining lifecycle,
+minus exact transition cost. Omitting lifecycle evidence is exactly the original one-day
+objective.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ class ShadowOutcomeOptimization:
     optimization: IntegerOptimizationResult
     completed_outcome_count: int
     product_expected_returns: dict[str, float]
+    product_expected_horizons: dict[str, float]
     product_support: dict[str, int]
     prior_support: float
     global_expected_return: float
@@ -141,6 +144,23 @@ def _shrunk_product_returns(
     return estimates, supports, prior_support, global_mean
 
 
+def _normalize_expected_horizons(
+    products: list[str],
+    expected_horizons: Mapping[str, float] | None,
+) -> dict[str, float]:
+    source = {
+        str(product).upper(): float(value)
+        for product, value in (expected_horizons or {}).items()
+    }
+    result: dict[str, float] = {}
+    for product in products:
+        value = float(source.get(product, 1.0))
+        if not isfinite(value) or value < 1.0:
+            raise ValueError("expected lifecycle horizon must be finite and >= 1")
+        result[product] = value
+    return result
+
+
 def optimize_with_shadow_outcomes(
     *,
     shadow_outcomes: pd.DataFrame,
@@ -156,8 +176,9 @@ def optimize_with_shadow_outcomes(
     max_gross_ratio: float,
     max_abs_lots: int,
     cost_rate: float,
+    expected_horizons: Mapping[str, float] | None = None,
 ) -> ShadowOutcomeOptimization:
-    """Optimize current monetary net edge from completed exogenous signal outcomes."""
+    """Optimize monetary lifecycle net edge from completed exogenous outcomes."""
     if not isfinite(float(cost_rate)) or float(cost_rate) < 0.0:
         raise ValueError("cost_rate must be finite and nonnegative")
     completed = _completed_outcomes(shadow_outcomes, decision_date)
@@ -165,6 +186,7 @@ def optimize_with_shadow_outcomes(
     estimates, supports, prior_support, global_mean = _shrunk_product_returns(
         completed, products
     )
+    horizons = _normalize_expected_horizons(products, expected_horizons)
     reference = {
         str(symbol): int(volume)
         for symbol, volume in reference_lots.items()
@@ -184,6 +206,7 @@ def optimize_with_shadow_outcomes(
             optimization=fallback,
             completed_outcome_count=0,
             product_expected_returns=estimates,
+            product_expected_horizons=horizons,
             product_support=supports,
             prior_support=prior_support,
             global_expected_return=global_mean,
@@ -205,10 +228,12 @@ def optimize_with_shadow_outcomes(
         for symbol, volume in target.items():
             product = product_by_symbol[str(symbol)]
             expected_return = float(estimates[product])
+            expected_horizon = float(horizons[product])
             expected_gross_alpha += (
                 abs(int(volume))
                 * float(lot_notionals[str(symbol)])
                 * expected_return
+                * expected_horizon
             )
         transition_cost = 0.0
         for symbol in set(current) | set(target):
@@ -237,6 +262,7 @@ def optimize_with_shadow_outcomes(
         optimization=optimization,
         completed_outcome_count=int(len(completed)),
         product_expected_returns=estimates,
+        product_expected_horizons=horizons,
         product_support=supports,
         prior_support=prior_support,
         global_expected_return=global_mean,
