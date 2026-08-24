@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after fixed OI + cost + freeze evaluator implementation.
+# Refresh after cost-approved survivor RED registration.
 on:
   push:
     branches:
