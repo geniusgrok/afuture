@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: locate fixed 60m OI Production L3 run.
+# Refresh point: locate 60m timing Production L3 after f107f315.
 on:
   push:
     branches:
