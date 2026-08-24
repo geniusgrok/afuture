@@ -19,7 +19,7 @@ permissions:
 
 concurrency:
   group: research-stress80-cost-aware-no-trade-l3-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   evaluate:
