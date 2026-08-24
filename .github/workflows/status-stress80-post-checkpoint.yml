@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after hard-limit-derived drawdown-reserve TDD registration.
+# Refresh after hard-limit-derived drawdown-reserve GREEN implementation.
 on:
   push:
     branches:
