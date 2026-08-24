@@ -36,17 +36,14 @@ def _config(enabled: bool):
     )
 
 
-def test_cli_engine_builder_routes_directional_mode_through_execution_aligned_manager(tmp_path):
+def test_cli_engine_builder_routes_directional_mode_through_exact_execution_aligned_manager(tmp_path):
     engine = _build_cli_engine(
         _config(True),
         _Broker(),
         StateStore(tmp_path / "directional.json"),
     )
     assert isinstance(engine, DirectionalTradingEngine)
-    assert isinstance(
-        engine.directional_manager,
-        ExecutionAlignedDirectionalPortfolioManager,
-    )
+    assert type(engine.directional_manager) is ExecutionAlignedDirectionalPortfolioManager
 
 
 def test_cli_engine_builder_preserves_plain_trading_engine_when_directional_disabled(tmp_path):
