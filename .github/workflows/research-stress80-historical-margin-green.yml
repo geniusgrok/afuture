@@ -1,0 +1,97 @@
+name: research-stress80-historical-margin-green
+
+on:
+  push:
+    branches:
+      - research/stress-80-causal-product-alpha
+    paths:
+      - ".github/workflows/research-stress80-historical-margin-green.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  implement-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Apply minimal historical-margin extension
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          acceptance = Path("afuture/directional_acceptance.py")
+          text = acceptance.read_text(encoding="utf-8")
+
+          old = '''        return prefix\n\n    def target_lot_stages(\n'''
+          new = '''        return prefix\n\n    def _on_simulation_day(self, day: pd.Timestamp) -> None:\n        \"\"\"Behavior-neutral hook for research adapters that need causal day state.\"\"\"\n        del day\n\n    def margin_rate(self, symbol: str) -> float:\n        \"\"\"Return the scenario margin ratio used by the baseline Production proxy.\"\"\"\n        self._product(symbol)\n        return float(self.config.margin_rate_proxy)\n\n    def per_lot_margin(self, symbol: str, price: float) -> float:\n        \"\"\"Return buffered margin for one lot without changing baseline economics.\"\"\"\n        multiplier = PRODUCT_MULTIPLIERS[self._product(symbol)]\n        return float(\n            float(price)\n            * float(multiplier)\n            * self.margin_rate(symbol)\n            * float(self.config.margin_estimate_buffer)\n        )\n\n    def target_lot_stages(\n'''
+          if old not in text:
+              raise SystemExit("acceptance hook insertion anchor not found")
+          text = text.replace(old, new, 1)
+
+          old = '''            multiplier = PRODUCT_MULTIPLIERS[self._product(symbol)]\n            estimated += (\n                price\n                * multiplier\n                * requested\n                * self.config.margin_rate_proxy\n                * self.config.margin_estimate_buffer\n            )\n'''
+          new = '''            estimated += requested * self.per_lot_margin(symbol, price)\n'''
+          if old not in text:
+              raise SystemExit("opening margin anchor not found")
+          text = text.replace(old, new, 1)
+
+          old = '''        return float(\n            sum(\n                abs(int(volume))\n                * float(prices.get(symbol, 0.0))\n                * PRODUCT_MULTIPLIERS[self._product(symbol)]\n                * self.config.margin_rate_proxy\n                * self.config.margin_estimate_buffer\n                for symbol, volume in lots.items()\n            )\n        )\n'''
+          new = '''        return float(\n            sum(\n                abs(int(volume))\n                * self.per_lot_margin(symbol, float(prices.get(symbol, 0.0)))\n                for symbol, volume in lots.items()\n            )\n        )\n'''
+          if old not in text:
+              raise SystemExit("account margin anchor not found")
+          text = text.replace(old, new, 1)
+
+          old = '''        for day, weight_row in weight_frame.iterrows():\n            day = pd.Timestamp(day).normalize()\n            previous_equity = equity\n'''
+          new = '''        for day, weight_row in weight_frame.iterrows():\n            day = pd.Timestamp(day).normalize()\n            self._on_simulation_day(day)\n            previous_equity = equity\n'''
+          if old not in text:
+              raise SystemExit("simulation day anchor not found")
+          text = text.replace(old, new, 1)
+          acceptance.write_text(text, encoding="utf-8")
+
+          robustness = Path("afuture/directional_robustness.py")
+          text = robustness.read_text(encoding="utf-8")
+          old = '''            per_lot_margin[str(symbol)] = (\n                lot_notionals[str(symbol)]\n                * float(self.config.margin_rate_proxy)\n                * float(self.config.margin_estimate_buffer)\n            )\n'''
+          new = '''            per_lot_margin[str(symbol)] = self.per_lot_margin(\n                str(symbol), price\n            )\n'''
+          if old not in text:
+              raise SystemExit("soft-margin sizing anchor not found")
+          text = text.replace(old, new, 1)
+          robustness.write_text(text, encoding="utf-8")
+
+          historical = Path("afuture/directional_historical_margin.py")
+          historical.write_text('''\"\"\"Research-only point-in-time historical margin adapter.\n\nThe validated live runtime is not wired to this module. A decision day may use only a\nstrictly earlier exact-symbol exchange margin observation; missing evidence falls back to\nthe caller's existing scenario proxy. The existing 1.25 estimate buffer and all account\nhard gates remain authoritative.\n\"\"\"\nfrom __future__ import annotations\n\nfrom math import isfinite\n\nimport pandas as pd\n\nfrom .directional_robustness import MarginAwareDirectionalProductionAcceptance\n\n\nclass HistoricalMarginAwareDirectionalProductionAcceptance(\n    MarginAwareDirectionalProductionAcceptance\n):\n    \"\"\"Use causal exact-symbol historical margins when available.\"\"\"\n\n    def __init__(self, config=None, *, margin_history: pd.DataFrame) -> None:\n        super().__init__(config)\n        frame = margin_history.copy()\n        required = {\"date\", \"symbol\", \"conservative_margin_ratio\"}\n        missing = required - set(frame.columns)\n        if missing:\n            raise ValueError(f\"historical margin missing columns: {sorted(missing)}\")\n        frame[\"date\"] = pd.to_datetime(frame[\"date\"], errors=\"coerce\").dt.normalize()\n        frame[\"symbol\"] = frame[\"symbol\"].astype(str).str.upper()\n        frame[\"conservative_margin_ratio\"] = pd.to_numeric(\n            frame[\"conservative_margin_ratio\"], errors=\"coerce\"\n        )\n        frame = frame.dropna(\n            subset=[\"date\", \"symbol\", \"conservative_margin_ratio\"]\n        )\n        frame = frame[\n            (frame[\"conservative_margin_ratio\"] > 0.0)\n            & (frame[\"conservative_margin_ratio\"] < 1.0)\n        ].copy()\n        if not frame.empty:\n            frame = (\n                frame.groupby([\"date\", \"symbol\"], as_index=False)[\n                    \"conservative_margin_ratio\"\n                ]\n                .max()\n                .sort_values([\"symbol\", \"date\"])\n            )\n        self._historical_margin = frame\n        self._margin_by_symbol = {\n            str(symbol): group.set_index(\"date\")[\"conservative_margin_ratio\"].sort_index()\n            for symbol, group in frame.groupby(\"symbol\", sort=False)\n        }\n        self._active_margin_day: pd.Timestamp | None = None\n\n    def _on_simulation_day(self, day: pd.Timestamp) -> None:\n        self._active_margin_day = pd.Timestamp(day).normalize()\n\n    def margin_rate(self, symbol: str) -> float:\n        fallback = super().margin_rate(symbol)\n        if self._active_margin_day is None:\n            return fallback\n        series = self._margin_by_symbol.get(str(symbol).upper())\n        if series is None or series.empty:\n            return fallback\n        prior = series.loc[series.index < self._active_margin_day]\n        if prior.empty:\n            return fallback\n        value = float(prior.iloc[-1])\n        if not isfinite(value) or not 0.0 < value < 1.0:\n            return fallback\n        return value\n''', encoding="utf-8")
+          PY
+      - name: Verify focused GREEN and affected Production mechanics
+        run: >-
+          python -m pytest -q
+          tests/test_directional_historical_margin.py
+          tests/test_directional_acceptance.py
+          tests/test_directional_acceptance_simulation.py
+          tests/test_directional_review_regressions.py
+      - run: python tools/test_directional_production_mechanics.py
+      - run: python -m compileall -q afuture
+      - name: Commit verified implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add afuture/directional_acceptance.py afuture/directional_robustness.py afuture/directional_historical_margin.py
+          git commit -m "research: add causal historical margin adapter"
+          git push origin HEAD:research/stress-80-causal-product-alpha
+      - name: Post GREEN result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment 21 --repo "$GITHUB_REPOSITORY" --body "### Stress80 historical-margin GREEN \`${GITHUB_RUN_ID}\`\n\nImplementation gate finished with job status **${{ job.status }}**. Source is pushed only after focused + affected Production mechanics tests pass."
