@@ -1,7 +1,6 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: historical-margin RED and full-history data collection.
 on:
   push:
     branches:
@@ -25,13 +24,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          echo "### Stress80 workflow status \\`${GITHUB_RUN_ID}\`" > /tmp/status.md
-          echo >> /tmp/status.md
           gh run list \
             --repo "$GITHUB_REPOSITORY" \
             --branch "$GITHUB_REF_NAME" \
             --limit 30 \
             --json databaseId,name,status,conclusion,headSha,createdAt \
-            --jq '.[] | "- `\(.databaseId)` **\(.name)**: \(.status) / \(.conclusion // "-") @ `\(.headSha[0:8])`"' \
-            >> /tmp/status.md
+            > /tmp/runs.json
+          python - <<'PY' > /tmp/status.md
+          import json
+          import os
+          rows = json.load(open('/tmp/runs.json', encoding='utf-8'))
+          print(f"### Stress80 workflow status `{os.environ['GITHUB_RUN_ID']}`")
+          print()
+          for row in rows:
+              conclusion = row.get('conclusion') or '-'
+              sha = str(row.get('headSha') or '')[:8]
+              print(f"- `{row['databaseId']}` **{row['name']}**: {row['status']} / {conclusion} @ `{sha}`")
+          PY
           gh pr comment 21 --repo "$GITHUB_REPOSITORY" --body-file /tmp/status.md
