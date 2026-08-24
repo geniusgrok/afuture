@@ -1,0 +1,35 @@
+name: research-stress80-status
+
+on:
+  push:
+    branches:
+      - research/stress-80-causal-product-alpha
+    paths:
+      - ".github/workflows/research-stress80-status.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: List current research branch workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          echo "### Stress80 workflow status \\`${GITHUB_RUN_ID}\`" > /tmp/status.md
+          echo >> /tmp/status.md
+          gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --branch "$GITHUB_REF_NAME" \
+            --limit 30 \
+            --json databaseId,name,status,conclusion,headSha,createdAt \
+            --jq '.[] | "- `\(.databaseId)` **\(.name)**: \(.status) / \(.conclusion // "-") @ `\(.headSha[0:8])`"' \
+            >> /tmp/status.md
+          gh pr comment 21 --repo "$GITHUB_REPOSITORY" --body-file /tmp/status.md
