@@ -1,5 +1,6 @@
 name: status-stress80-post-checkpoint
 
+# Refresh after fixed OI + cost + freeze evaluator implementation.
 on:
   push:
     branches:
