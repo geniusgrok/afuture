@@ -1,0 +1,157 @@
+name: research-stress80-dce-remaining-60m-coverage
+
+# Coverage only for the five remaining frozen DCE roots. No returns are evaluated.
+on:
+  push:
+    branches:
+      - research/stress-80-causal-product-alpha
+    paths:
+      - ".github/workflows/research-stress80-dce-remaining-60m-coverage.yml"
+      - "tools/fetch_dce_remaining_keymonth_60m.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: research-stress80-dce-remaining-60m-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    strategy:
+      fail-fast: false
+      matrix:
+        era: [prior, recent]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" akshare==1.18.91
+      - name: Collect remaining DCE 60m evidence
+        run: >-
+          python tools/fetch_dce_remaining_keymonth_60m.py
+          --era ${{ matrix.era }}
+          --output-dir runtime/dce_remaining_60m
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stress80-dce-remaining-60m-${{ matrix.era }}
+          path: runtime/dce_remaining_60m/
+          retention-days: 14
+
+  audit:
+    needs: collect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install pandas>=2.2,<4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stress80-dce-remaining-60m-*
+          path: runtime/dce_remaining_60m
+          merge-multiple: true
+      - name: Download frozen daily calendar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p runtime
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9473260618/zip" \
+            -o /tmp/fixed-input.zip
+          echo "ab4321a9cf8b9a61a0f9d435a6fb6bba7dd63986043b429c12c0ff47fd15389c  /tmp/fixed-input.zip" | sha256sum -c -
+          unzip -j /tmp/fixed-input.zip broad_daily_universe.csv -d runtime
+      - name: Audit exact daily coverage
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          products = ("B", "CS", "EB", "LH", "PG")
+          eras = {
+              "prior": (pd.Timestamp("2022-08-21"), pd.Timestamp("2024-08-20")),
+              "recent": (pd.Timestamp("2024-08-21"), pd.Timestamp("2026-08-20")),
+          }
+          daily = pd.read_csv("runtime/broad_daily_universe.csv")
+          daily["date"] = pd.to_datetime(daily["date"], errors="coerce").dt.normalize()
+          daily["product"] = daily["product"].astype(str).str.upper()
+          rows = []
+          for era, (start, end) in eras.items():
+              frame = pd.read_csv(f"runtime/dce_remaining_60m/dce_remaining_{era}_60m.csv")
+              frame["datetime"] = pd.to_datetime(frame["datetime"], errors="coerce")
+              frame["date"] = frame["datetime"].dt.normalize()
+              frame["product"] = frame["product"].astype(str).str.upper()
+              for product in products:
+                  expected = set(daily.loc[
+                      (daily["product"] == product)
+                      & daily["date"].between(start, end),
+                      "date",
+                  ].dropna())
+                  observed = set(frame.loc[frame["product"] == product, "date"].dropna())
+                  covered = len(expected & observed)
+                  coverage = covered / max(len(expected), 1)
+                  rows.append({
+                      "era": era,
+                      "product": product,
+                      "expected_days": len(expected),
+                      "covered_days": covered,
+                      "coverage": coverage,
+                  })
+          audit = pd.DataFrame(rows)
+          usable = []
+          for product in products:
+              values = audit.loc[audit["product"] == product].set_index("era")["coverage"]
+              if float(values.get("prior", 0.0)) >= 0.80 and float(values.get("recent", 0.0)) >= 0.80:
+                  usable.append(product)
+          report = {
+              "role": "remaining frozen DCE key-month 60m coverage gate",
+              "strategy_evaluation": False,
+              "coverage_threshold_per_era": 0.80,
+              "products": list(products),
+              "usable_products": usable,
+              "passed": len(usable) == len(products),
+              "rows": rows,
+          }
+          Path("runtime/dce_remaining_60m_coverage.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
+              encoding="utf-8",
+          )
+          print(json.dumps(report, ensure_ascii=False, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stress80-dce-remaining-60m-coverage
+          path: |
+            runtime/dce_remaining_60m/
+            runtime/dce_remaining_60m_coverage.json
+          retention-days: 14
+      - name: Post coverage result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > /tmp/comment.md
+          import json, os
+          report = json.load(open("runtime/dce_remaining_60m_coverage.json", encoding="utf-8"))
+          print(f"### Stress80 remaining DCE 60m coverage `{os.environ['GITHUB_RUN_ID']}`")
+          print(f"\n- coverage gate: **{report['passed']}**")
+          print(f"- structurally complete remaining DCE roots: `{report['products']}`")
+          print(f"- usable products: `{report['usable_products']}`")
+          for product in report['products']:
+              prior = next(x for x in report['rows'] if x['era']=='prior' and x['product']==product)
+              recent = next(x for x in report['rows'] if x['era']=='recent' and x['product']==product)
+              print(f"- {product}: prior **{prior['coverage']:.1%}**, recent **{recent['coverage']:.1%}**")
+          PY
+          gh pr comment 21 --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
