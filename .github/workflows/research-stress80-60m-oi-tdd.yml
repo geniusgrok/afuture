@@ -1,0 +1,46 @@
+name: research-stress80-60m-oi-tdd
+
+on:
+  push:
+    branches:
+      - research/stress-80-causal-product-alpha
+    paths:
+      - ".github/workflows/research-stress80-60m-oi-tdd.yml"
+      - "afuture/directional_60m_oi_confirmation.py"
+      - "tests/test_directional_60m_oi_confirmation.py"
+      - "tests/test_directional_60m_oi_production_gate.py"
+      - "tools/evaluate_directional_60m_oi_confirmation.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Run 60m OI focused tests
+        id: tests
+        continue-on-error: true
+        run: >-
+          python -m pytest -q
+          tests/test_directional_60m_oi_confirmation.py
+          tests/test_directional_60m_oi_production_gate.py
+      - name: Post TDD result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          gh pr comment 21 --repo "$GITHUB_REPOSITORY" --body "### Stress80 60m OI TDD \`${GITHUB_RUN_ID}\`\n\n- focused outcome: **${OUTCOME}**\n- head: \`${GITHUB_SHA}\`"
+      - name: Preserve RED/GREEN failure
+        if: steps.tests.outcome != 'success'
+        run: exit 1
