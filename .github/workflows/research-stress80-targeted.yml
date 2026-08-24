@@ -17,6 +17,7 @@ on:
       - "afuture/directional_historical_margin.py"
       - "afuture/directional_60m_oi_confirmation.py"
       - "afuture/directional_shadow_mpv.py"
+      - "afuture/directional_shadow_mpv_robustness.py"
       - "afuture/directional_acceptance.py"
       - "afuture/directional_robustness.py"
       - "tests/test_directional_opportunity_ledger.py"
@@ -33,6 +34,7 @@ on:
       - "tests/test_directional_60m_oi_confirmation.py"
       - "tests/test_directional_60m_oi_production_gate.py"
       - "tests/test_directional_shadow_mpv.py"
+      - "tests/test_directional_shadow_mpv_robustness.py"
       - "tools/evaluate_directional_stress80.py"
       - "tools/evaluate_directional_member_flow.py"
       - "tools/evaluate_directional_receipt_flow.py"
@@ -70,7 +72,8 @@ jobs:
             tests/test_directional_historical_margin.py \
             tests/test_directional_60m_oi_confirmation.py \
             tests/test_directional_60m_oi_production_gate.py \
-            tests/test_directional_shadow_mpv.py
+            tests/test_directional_shadow_mpv.py \
+            tests/test_directional_shadow_mpv_robustness.py
           do
             if [ -f "$file" ]; then
               existing+=("$file")
