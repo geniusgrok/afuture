@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after hard-feasible margin RED registration.
+# Refresh after hard-feasible margin GREEN implementation.
 on:
   push:
     branches:
