@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: locate Shadow MPV Production L3 after 9ab40de3.
+# Refresh point: locate staged lifecycle Shadow MPV run after 987edf90.
 on:
   push:
     branches:
