@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: integer-tracking RED verification after 59bb0f85.
+# Refresh point: locate integer-tracking Production L3 after 429eb689.
 on:
   push:
     branches:
