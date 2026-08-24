@@ -62,5 +62,7 @@ def test_horizon_panel_is_parameter_free_and_at_least_one_for_active_targets():
     panel = build_causal_remaining_horizon_panel(weights)
     active = weights.abs() > 0
 
-    assert (panel.where(active).stack() >= 1.0).all()
+    active_values = panel.to_numpy()[active.to_numpy()]
+    assert pd.Series(active_values).notna().all()
+    assert (active_values >= 1.0).all()
     assert (panel.where(~active).fillna(1.0) == 1.0).all().all()
