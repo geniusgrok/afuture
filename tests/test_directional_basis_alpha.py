@@ -19,8 +19,10 @@ def test_basis_carry_uses_only_previous_target_session_basis():
     )
 
     assert weights.loc[pd.Timestamp("2026-08-18")].to_dict() == {"AG": 0.0, "CU": 0.0}
-    assert weights.loc[pd.Timestamp("2026-08-19")].to_dict() == {"AG": 1.0, "CU": -1.0}
-    assert weights.loc[pd.Timestamp("2026-08-20")].to_dict() == {"AG": -1.0, "CU": 1.0}
+    # AKShare dom_basis_rate is dominant_futures / spot - 1. A positive value is
+    # futures premium (contango), so carry is short; a negative value is long.
+    assert weights.loc[pd.Timestamp("2026-08-19")].to_dict() == {"AG": -1.0, "CU": 1.0}
+    assert weights.loc[pd.Timestamp("2026-08-20")].to_dict() == {"AG": 1.0, "CU": -1.0}
 
 
 def test_basis_carry_fails_closed_on_missing_previous_session_product_evidence():
@@ -37,7 +39,7 @@ def test_basis_carry_fails_closed_on_missing_previous_session_product_evidence()
         products=("AG", "CU"),
     )
 
-    assert weights.loc[pd.Timestamp("2026-08-20"), "AG"] == -2.0
+    assert weights.loc[pd.Timestamp("2026-08-20"), "AG"] == 2.0
     assert weights.loc[pd.Timestamp("2026-08-20"), "CU"] == 0.0
     assert weights.loc[pd.Timestamp("2026-08-20")].abs().sum() == 2.0
 
@@ -57,6 +59,6 @@ def test_basis_carry_zero_basis_creates_no_position_and_never_exceeds_two_x_gros
     )
 
     assert weights.loc[pd.Timestamp("2026-08-19"), "AG"] == 0.0
-    assert weights.loc[pd.Timestamp("2026-08-19"), "CU"] == -1.0
-    assert weights.loc[pd.Timestamp("2026-08-19"), "RB"] == 1.0
+    assert weights.loc[pd.Timestamp("2026-08-19"), "CU"] == 1.0
+    assert weights.loc[pd.Timestamp("2026-08-19"), "RB"] == -1.0
     assert float(weights.abs().sum(axis=1).max()) <= 2.0

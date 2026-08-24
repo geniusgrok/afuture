@@ -92,6 +92,49 @@ def test_mpv_acceptance_reallocates_same_soft_margin_capacity_to_higher_value_pr
     ].expected_gross_alpha_per_lot_segment
 
 
+def test_mpv_simulation_seeds_only_completed_evidence_before_window_start():
+    seed = pd.DataFrame(
+        [
+            {
+                "date": "2026-08-19",
+                "kind": "pnl",
+                "action": "intraday",
+                "product": "AG",
+                "lots_before": 1,
+                "gross_pnl": 100.0,
+                "turnover_notional": 0.0,
+                "transaction_cost": 0.0,
+            },
+            {
+                "date": "2026-08-20",
+                "kind": "pnl",
+                "action": "intraday",
+                "product": "AG",
+                "lots_before": 1,
+                "gross_pnl": 999999.0,
+                "turnover_notional": 0.0,
+                "transaction_cost": 0.0,
+            },
+        ]
+    )
+    candidate = MPVDirectionalProductionAcceptance(
+        _config(), historical_seed_events=seed
+    )
+    raw = pd.DataFrame(
+        columns=["date", "delivery", "product", "symbol", "open", "close", "volume", "hold"]
+    )
+    weights = pd.DataFrame(
+        {"AG": [0.0]}, index=pd.to_datetime(["2026-08-20"])
+    )
+
+    candidate.simulate(raw, weights, cost_bps=15.0)
+
+    observed = pd.DataFrame(candidate._mpv_observed_event_rows)
+    assert len(observed) == 1
+    assert pd.Timestamp(observed.iloc[0]["date"]).normalize() == pd.Timestamp("2026-08-19")
+    assert float(observed.iloc[0]["gross_pnl"]) == 100.0
+
+
 def test_live_runtime_modules_do_not_import_offline_mpv_labels_or_research_adapter():
     for path in (
         Path("afuture/directional_runtime.py"),
