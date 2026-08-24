@@ -55,8 +55,7 @@ def test_strong_completed_trend_allows_new_entry():
 def test_same_sign_increase_can_be_suppressed_but_reduction_is_never_delayed():
     _, _, _, apply_filter = _api()
     prices = _prices([100.0] * 24)
-    weights = pd.DataFrame(0.0, index=prices.index, columns=["AG"])
-    weights.iloc[-3, 0] = 1.0
+    weights = pd.DataFrame(1.0, index=prices.index, columns=["AG"])
     weights.iloc[-2, 0] = 2.0
     weights.iloc[-1, 0] = 0.5
 
@@ -70,7 +69,7 @@ def test_same_sign_increase_can_be_suppressed_but_reduction_is_never_delayed():
 def test_reversal_bypasses_filter_even_when_completed_trend_disagrees():
     _, _, _, apply_filter = _api()
     prices = _prices([100.0] * 22)
-    weights = pd.DataFrame(0.0, index=prices.index, columns=["AG"])
+    weights = pd.DataFrame(1.0, index=prices.index, columns=["AG"])
     weights.iloc[-1, 0] = -2.0
 
     result = apply_filter(weights=weights, close_prices=prices, initial_weights={"AG": 1.0})
