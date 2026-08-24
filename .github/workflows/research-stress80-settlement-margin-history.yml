@@ -1,0 +1,150 @@
+name: research-stress80-settlement-margin-history
+
+on:
+  push:
+    branches:
+      - research/stress-80-causal-product-alpha
+    paths:
+      - ".github/workflows/research-stress80-settlement-margin-history.yml"
+      - "tools/fetch_directional_settlement_margin_history.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: research-stress80-settlement-margin-history-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    strategy:
+      fail-fast: false
+      matrix:
+        window: [train, validation, oos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" akshare==1.18.91
+      - name: Download frozen specific-contract input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p runtime
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9473260618/zip" \
+            -o /tmp/fixed-input.zip
+          echo "ab4321a9cf8b9a61a0f9d435a6fb6bba7dd63986043b429c12c0ff47fd15389c  /tmp/fixed-input.zip" | sha256sum -c -
+          unzip -j /tmp/fixed-input.zip return_target_specific_contracts.csv -d runtime
+      - name: Collect frozen settlement-margin window
+        run: >-
+          python tools/fetch_directional_settlement_margin_history.py
+          --window ${{ matrix.window }}
+          --output-dir runtime/settlement_margin
+          --sleep-seconds 0.05
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stress80-settlement-margin-${{ matrix.window }}
+          path: runtime/settlement_margin/
+          retention-days: 14
+
+  summarize:
+    needs: collect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stress80-settlement-margin-*
+          path: runtime/settlement_margin
+          merge-multiple: true
+      - name: Summarize coverage gate
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("runtime/settlement_margin")
+          windows = ("train", "validation", "oos")
+          markets = ("SHFE", "INE")
+          rows = []
+          passed = True
+          for window in windows:
+              report = json.loads((root / f"settlement_margin_{window}_report.json").read_text(encoding="utf-8"))
+              for market in markets:
+                  summary = report["market_summary"][market]
+                  trading_days = int(report["trading_days"])
+                  full_ratio = float(summary["full_coverage_days"]) / max(trading_days, 1)
+                  mean_exact = float(summary["mean_exact_symbol_coverage"])
+                  market_passed = mean_exact >= 0.90 and full_ratio >= 0.90
+                  passed = passed and market_passed
+                  rows.append(
+                      {
+                          "window": window,
+                          "market": market,
+                          "trading_days": trading_days,
+                          "calls_ok": int(summary["ok"]),
+                          "calls_attempted": int(summary["attempts"]),
+                          "mean_exact_symbol_coverage": mean_exact,
+                          "min_exact_symbol_coverage": float(summary["min_exact_symbol_coverage"]),
+                          "full_coverage_days": int(summary["full_coverage_days"]),
+                          "full_coverage_ratio": full_ratio,
+                          "passed": market_passed,
+                          "errors": summary["errors"],
+                      }
+                  )
+          output = {
+              "role": "settlement-margin full_recent coverage gate",
+              "strategy_evaluation": False,
+              "thresholds": {
+                  "mean_exact_symbol_coverage": 0.90,
+                  "full_coverage_day_ratio": 0.90,
+              },
+              "passed": passed,
+              "rows": rows,
+          }
+          Path("runtime/settlement_margin_coverage_gate.json").write_text(
+              json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True),
+              encoding="utf-8",
+          )
+          print(json.dumps(output, ensure_ascii=False, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stress80-settlement-margin-history
+          path: |
+            runtime/settlement_margin/
+            runtime/settlement_margin_coverage_gate.json
+          retention-days: 14
+      - name: Post settlement margin coverage to draft PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python - <<'PY' > /tmp/margin-history-comment.md
+          import json
+          import os
+
+          report = json.load(open("runtime/settlement_margin_coverage_gate.json", encoding="utf-8"))
+          print(f"### Stress80 full_recent settlement-margin coverage `{os.environ['GITHUB_RUN_ID']}`")
+          print(f"\n- coverage gate: **{report['passed']}**")
+          print("- no forward-fill; missing/DCE/CZCE remain scenario-proxy fallback")
+          for row in report["rows"]:
+              print(
+                  f"- {row['window']} {row['market']}: mean exact **{row['mean_exact_symbol_coverage']:.2%}**, "
+                  f"full days **{row['full_coverage_ratio']:.2%}**, "
+                  f"calls {row['calls_ok']}/{row['calls_attempted']}, errors={row['errors']}"
+              )
+          PY
+          gh pr comment 21 --body-file /tmp/margin-history-comment.md
