@@ -46,13 +46,6 @@ def _validated_frames(
     ).all():
         raise ValueError("weights must be finite")
 
-    original_gross = original.abs().sum(axis=1)
-    approved_gross = approved.abs().sum(axis=1)
-    if bool((original_gross > MAX_GROSS_LEVERAGE + _EPS).any()):
-        raise ValueError("original weights exceed 2x gross")
-    if bool((approved_gross > original_gross + _EPS).any()):
-        raise ValueError("approved gross exceeds original gross")
-
     approved_support = approved.abs() > _EPS
     original_support = original.abs() > _EPS
     if bool((approved_support & ~original_support).any().any()):
@@ -63,6 +56,13 @@ def _validated_frames(
     )
     if bool(np.asarray(sign_flip).any()):
         raise ValueError("approved weights changed original target sign")
+
+    original_gross = original.abs().sum(axis=1)
+    approved_gross = approved.abs().sum(axis=1)
+    if bool((original_gross > MAX_GROSS_LEVERAGE + _EPS).any()):
+        raise ValueError("original weights exceed 2x gross")
+    if bool((approved_gross > original_gross + _EPS).any()):
+        raise ValueError("approved gross exceeds original gross")
     return original, approved
 
 
