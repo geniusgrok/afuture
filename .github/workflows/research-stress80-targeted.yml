@@ -15,6 +15,7 @@ on:
       - "afuture/directional_stress_balanced_meta.py"
       - "afuture/directional_prior_product_selection.py"
       - "afuture/directional_historical_margin.py"
+      - "afuture/directional_60m_oi_confirmation.py"
       - "afuture/directional_acceptance.py"
       - "afuture/directional_robustness.py"
       - "tests/test_directional_opportunity_ledger.py"
@@ -28,12 +29,14 @@ on:
       - "tests/test_directional_stress_balanced_meta.py"
       - "tests/test_directional_prior_product_selection.py"
       - "tests/test_directional_historical_margin.py"
+      - "tests/test_directional_60m_oi_confirmation.py"
       - "tools/evaluate_directional_stress80.py"
       - "tools/evaluate_directional_member_flow.py"
       - "tools/evaluate_directional_receipt_flow.py"
       - "tools/evaluate_directional_cost_aware_no_trade.py"
       - "tools/evaluate_directional_stress_balanced_meta.py"
       - "tools/evaluate_directional_prior_product_selection.py"
+      - "tools/evaluate_directional_60m_oi_confirmation.py"
   workflow_dispatch:
 
 jobs:
@@ -61,7 +64,8 @@ jobs:
             tests/test_directional_cost_aware_no_trade.py \
             tests/test_directional_stress_balanced_meta.py \
             tests/test_directional_prior_product_selection.py \
-            tests/test_directional_historical_margin.py
+            tests/test_directional_historical_margin.py \
+            tests/test_directional_60m_oi_confirmation.py
           do
             if [ -f "$file" ]; then
               existing+=("$file")
