@@ -1,5 +1,6 @@
 name: research-stress80-status
 
+# Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
 on:
   push:
     branches:
