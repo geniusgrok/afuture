@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after OI-reversal plus freeze-new-product quick Production gate registration.
+# Refresh after hard-limit-derived drawdown-reserve TDD registration.
 on:
   push:
     branches:
