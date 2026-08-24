@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after lot-feasibility reallocation TDD registration.
+# Refresh after lot-feasibility reallocation GREEN implementation.
 on:
   push:
     branches:
