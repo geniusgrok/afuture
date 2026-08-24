@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: confirm 60m OI confirmation GREEN before Production L3.
+# Refresh point: confirm frozen 9-product 60m OI boundary RED.
 on:
   push:
     branches:
