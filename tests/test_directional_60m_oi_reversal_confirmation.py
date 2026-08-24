@@ -1,5 +1,7 @@
 import pandas as pd
 
+# TDD contract: reversing into a new side requires completed D->D+1 OI confirmation.
+
 
 def _api():
     from afuture.directional_60m_oi_reversal_confirmation import (
