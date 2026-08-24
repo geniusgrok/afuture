@@ -1,0 +1,174 @@
+name: research-stress80-60m-coverage
+
+# Coverage-only audit. No strategy parameters or return gates are evaluated here.
+on:
+  push:
+    branches:
+      - research/stress-80-causal-product-alpha
+    paths:
+      - ".github/workflows/research-stress80-60m-coverage.yml"
+      - "tools/fetch_two_year_60m_universe.py"
+      - "tools/fetch_prior_two_year_60m_universe.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: research-stress80-60m-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    strategy:
+      fail-fast: false
+      matrix:
+        era: [prior, recent]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" akshare==1.18.91
+      - name: Fetch frozen 60m universe slice
+        shell: bash
+        run: |
+          if [ "${{ matrix.era }}" = "prior" ]; then
+            python tools/fetch_prior_two_year_60m_universe.py
+          else
+            python tools/fetch_two_year_60m_universe.py
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stress80-60m-${{ matrix.era }}
+          path: |
+            runtime/*60m.csv
+            runtime/*60m_summary.csv
+            runtime/*60m_failures.txt
+          retention-days: 14
+
+  summarize:
+    needs: collect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stress80-60m-*
+          path: runtime/60m
+          merge-multiple: true
+      - name: Download frozen daily lineage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9473260618/zip" \
+            -o /tmp/fixed-input.zip
+          echo "ab4321a9cf8b9a61a0f9d435a6fb6bba7dd63986043b429c12c0ff47fd15389c  /tmp/fixed-input.zip" | sha256sum -c -
+          unzip -j /tmp/fixed-input.zip broad_daily_universe.csv return_target_specific_contracts.csv -d runtime
+      - name: Audit exact daily coverage
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          products = ("M","C","P","A","Y","I","PP","EG","TA","MA","FG","RM","OI","SA","RB")
+          periods = {
+              "prior": (pd.Timestamp("2022-08-21"), pd.Timestamp("2024-08-20"), Path("runtime/60m/prior_two_year_broad_60m.csv")),
+              "recent": (pd.Timestamp("2024-08-21"), pd.Timestamp("2026-08-20"), Path("runtime/60m/two_year_broad_60m.csv")),
+          }
+          daily = pd.read_csv("runtime/broad_daily_universe.csv")
+          daily["date"] = pd.to_datetime(daily["date"], errors="coerce").dt.normalize()
+          daily["product"] = daily["product"].astype(str).str.upper()
+          specific = pd.read_csv("runtime/return_target_specific_contracts.csv", usecols=["product","exchange"])
+          exchange = specific.drop_duplicates("product").set_index("product")["exchange"].astype(str).to_dict()
+
+          rows = []
+          for era, (start, end, path) in periods.items():
+              frame = pd.read_csv(path)
+              frame["datetime"] = pd.to_datetime(frame["datetime"], errors="coerce")
+              frame["product"] = frame["product"].astype(str).str.upper()
+              frame["date"] = frame["datetime"].dt.normalize()
+              for product in products:
+                  expected = set(
+                      daily.loc[
+                          (daily["product"] == product)
+                          & (daily["date"] >= start)
+                          & (daily["date"] <= end),
+                          "date",
+                      ].dropna()
+                  )
+                  observed = set(
+                      frame.loc[frame["product"] == product, "date"].dropna()
+                  )
+                  covered = len(expected & observed)
+                  coverage = covered / max(len(expected), 1)
+                  rows.append({
+                      "era": era,
+                      "product": product,
+                      "exchange": exchange.get(product, ""),
+                      "expected_days": len(expected),
+                      "observed_days": len(observed),
+                      "covered_expected_days": covered,
+                      "coverage": coverage,
+                  })
+          audit = pd.DataFrame(rows)
+          pivot = audit.pivot(index="product", columns="era", values="coverage").fillna(0.0)
+          usable = sorted(
+              product for product in products
+              if float(pivot.loc[product, "prior"]) >= 0.80
+              and float(pivot.loc[product, "recent"]) >= 0.80
+          )
+          exchanges = sorted({exchange.get(product, "") for product in usable if exchange.get(product, "")})
+          gate = len(usable) >= 8 and len(exchanges) >= 2
+          report = {
+              "role": "60m source coverage audit only",
+              "strategy_evaluation": False,
+              "coverage_threshold_per_era": 0.80,
+              "minimum_usable_products": 8,
+              "minimum_exchanges": 2,
+              "passed": gate,
+              "usable_products": usable,
+              "usable_exchanges": exchanges,
+              "rows": audit.to_dict(orient="records"),
+          }
+          Path("runtime/stress80_60m_coverage.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(json.dumps(report, ensure_ascii=False, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stress80-60m-coverage
+          path: |
+            runtime/60m/
+            runtime/stress80_60m_coverage.json
+          retention-days: 14
+      - name: Post 60m coverage to draft PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > /tmp/comment.md
+          import json, os
+          report = json.load(open("runtime/stress80_60m_coverage.json", encoding="utf-8"))
+          print(f"### Stress80 60m coverage audit `{os.environ['GITHUB_RUN_ID']}`")
+          print(f"\n- coverage gate: **{report['passed']}**")
+          print(f"- usable products: **{len(report['usable_products'])}/15** `{report['usable_products']}`")
+          print(f"- usable exchanges: `{report['usable_exchanges']}`")
+          for row in report["rows"]:
+              if row["era"] == "recent":
+                  prior = next(x for x in report["rows"] if x["era"] == "prior" and x["product"] == row["product"])
+                  print(f"- {row['product']}: prior **{prior['coverage']:.1%}**, recent **{row['coverage']:.1%}**")
+          PY
+          gh pr comment 21 --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
