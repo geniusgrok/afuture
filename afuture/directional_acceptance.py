@@ -116,6 +116,19 @@ class DirectionalProductionAcceptance:
         self.config.validate()
         self.risk_governor = DirectionalRiskGovernor()
 
+    def retain_completed_returns(self, completed_returns: list[float]) -> list[float]:
+        """Keep the default governor's exact two-completed-session state."""
+        return list(completed_returns[-2:])
+
+    def observe_target_state(
+        self,
+        *,
+        day: pd.Timestamp,
+        product_weights: Mapping[str, float],
+    ) -> None:
+        """Behavior-neutral hook for adapters using exogenous target state."""
+        del day, product_weights
+
     @staticmethod
     def _product(symbol: str) -> str:
         value = str(symbol).upper()
@@ -655,6 +668,14 @@ class DirectionalProductionAcceptance:
             margin_reject = ""
             daily_circuit = False
             gross_guard = False
+            raw_product_weights = {
+                str(product).upper(): float(value)
+                for product, value in weight_row.items()
+            }
+            self.observe_target_state(
+                day=day,
+                product_weights=raw_product_weights,
+            )
             risk_scale = self.risk_governor.scale(completed_returns)
             raw_target_gross_ratio = float(weight_row.abs().sum())
             governor_target_gross_ratio = raw_target_gross_ratio * float(risk_scale)
@@ -838,8 +859,8 @@ class DirectionalProductionAcceptance:
                     close_prices[symbol] = float(row["close"])
 
                 product_weights = {
-                    str(product).upper(): float(value) * risk_scale
-                    for product, value in weight_row.items()
+                    product: value * risk_scale
+                    for product, value in raw_product_weights.items()
                 }
                 target_stages = self.target_lot_stages(
                     equity=equity,
@@ -1094,7 +1115,7 @@ class DirectionalProductionAcceptance:
             }
             daily_return = equity / previous_equity - 1.0
             completed_returns.append(float(daily_return))
-            completed_returns = completed_returns[-2:]
+            completed_returns = self.retain_completed_returns(completed_returns)
             output_rows.append(
                 {
                     "date": day,

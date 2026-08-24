@@ -68,3 +68,13 @@ class DrawdownReserveFreezeDirectionalProductionAcceptance(
             hard_drawdown=float(self.config.max_total_drawdown_ratio),
             daily_loss=float(self.config.max_daily_loss_ratio),
         )
+
+
+class FullPathDrawdownReserveFreezeDirectionalProductionAcceptance(
+    DrawdownReserveFreezeDirectionalProductionAcceptance
+):
+    """Reserve adapter retaining the full causal account return path."""
+
+    def retain_completed_returns(self, completed_returns: list[float]) -> list[float]:
+        """Preserve the causal account path required by running-high-watermark DD."""
+        return list(completed_returns)

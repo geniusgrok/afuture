@@ -29,6 +29,27 @@ def test_no_history_does_not_trigger_soft_defense():
     assert triggered((), hard_drawdown=0.30, daily_loss=0.05) is False
 
 
+def test_full_path_adapter_does_not_change_default_two_return_buffer():
+    from afuture.directional_acceptance import DirectionalProductionAcceptance
+    from afuture.directional_drawdown_reserve_freeze import (
+        DrawdownReserveFreezeDirectionalProductionAcceptance,
+        FullPathDrawdownReserveFreezeDirectionalProductionAcceptance,
+    )
+
+    completed = [0.01, -0.02, 0.03, -0.04]
+
+    assert DirectionalProductionAcceptance().retain_completed_returns(completed) == [
+        0.03,
+        -0.04,
+    ]
+    assert DrawdownReserveFreezeDirectionalProductionAcceptance().retain_completed_returns(
+        completed
+    ) == [0.03, -0.04]
+    assert FullPathDrawdownReserveFreezeDirectionalProductionAcceptance().retain_completed_returns(
+        completed
+    ) == completed
+
+
 def test_invalid_hard_limits_fail_closed():
     _, triggered = _api()
     for hard_dd, daily in ((0.0, 0.05), (0.30, 0.0), (0.05, 0.05), (0.04, 0.05)):
