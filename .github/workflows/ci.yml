@@ -3,6 +3,8 @@ name: ci
 # Final repository gate after the production-return feature cleanup.
 on:
   push:
+    branches-ignore:
+      - research/stress-80-causal-product-alpha
   pull_request:
 
 jobs:
