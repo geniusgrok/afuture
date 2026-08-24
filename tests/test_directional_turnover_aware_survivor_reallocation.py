@@ -33,11 +33,17 @@ def test_reallocation_preserves_only_survivor_support_sign_and_original_gross():
 def test_lexicographic_tie_break_prefers_previous_survivor_allocation():
     reallocate = _api()
     index = pd.to_datetime(["2026-01-05", "2026-01-06"])
-    # Day 1 leaves A as the only survivor, so A receives the full 2x budget.
-    # Day 2 both products survive and original tracking has 1x/1x as its base.
-    # The rejected-gross L1-optimal set is tied; minimum turnover keeps A at 2x.
-    original = pd.DataFrame({"A": [1.0, 1.0], "M": [1.0, 1.0]}, index=index)
-    approved = pd.DataFrame({"A": [1.0, 1.0], "M": [0.0, 0.5]}, index=index)
+    # The cost layer is an eligibility mask here: survivor magnitudes first track the
+    # original OI target as closely as possible. Day 1 leaves only A eligible, so A gets
+    # the full 2x budget. On day 2 A and M survive while C is rejected; after restoring
+    # their original 0.5/0.5 target magnitudes, one extra unit is L1-tracking indifferent.
+    # The secondary turnover objective keeps that residual in A, closest to yesterday.
+    original = pd.DataFrame(
+        {"A": [1.0, 0.5], "M": [1.0, 0.5], "C": [0.0, 1.0]}, index=index
+    )
+    approved = pd.DataFrame(
+        {"A": [1.0, 0.5], "M": [0.0, 0.5], "C": [0.0, 0.0]}, index=index
+    )
 
     result = reallocate(original_weights=original, approved_weights=approved)
 
@@ -45,6 +51,7 @@ def test_lexicographic_tie_break_prefers_previous_survivor_allocation():
     assert result.loc[index[0], "M"] == 0.0
     assert result.loc[index[1], "A"] == 1.5
     assert result.loc[index[1], "M"] == 0.5
+    assert result.loc[index[1], "C"] == 0.0
 
 
 def test_no_survivor_fails_closed_to_zero_instead_of_creating_support():
