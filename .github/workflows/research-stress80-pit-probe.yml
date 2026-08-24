@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]" akshare==1.18.84
+      - run: python -m pip install -e ".[dev]" akshare==1.18.91
       - name: Download frozen directional inputs
         env:
           GH_TOKEN: ${{ github.token }}
