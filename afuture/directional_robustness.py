@@ -69,10 +69,8 @@ class MarginAwareDirectionalProductionAcceptance(DirectionalProductionAcceptance
             if price <= 0 or multiplier is None:
                 raise ValueError(f"missing positive target margin evidence: {symbol}")
             lot_notionals[str(symbol)] = price * float(multiplier)
-            per_lot_margin[str(symbol)] = (
-                lot_notionals[str(symbol)]
-                * float(self.config.margin_rate_proxy)
-                * float(self.config.margin_estimate_buffer)
+            per_lot_margin[str(symbol)] = self.per_lot_margin(
+                str(symbol), price
             )
         fitted = fit_target_lots_to_margin_budget(
             requested,

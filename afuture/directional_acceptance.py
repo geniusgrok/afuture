@@ -124,6 +124,25 @@ class DirectionalProductionAcceptance:
             raise ValueError(f"unknown frozen product multiplier: {symbol}")
         return prefix
 
+    def _on_simulation_day(self, day: pd.Timestamp) -> None:
+        """Behavior-neutral hook for research adapters that need causal day state."""
+        del day
+
+    def margin_rate(self, symbol: str) -> float:
+        """Return the scenario margin ratio used by the baseline Production proxy."""
+        self._product(symbol)
+        return float(self.config.margin_rate_proxy)
+
+    def per_lot_margin(self, symbol: str, price: float) -> float:
+        """Return buffered margin for one lot without changing baseline economics."""
+        multiplier = PRODUCT_MULTIPLIERS[self._product(symbol)]
+        return float(
+            float(price)
+            * float(multiplier)
+            * self.margin_rate(symbol)
+            * float(self.config.margin_estimate_buffer)
+        )
+
     def target_lot_stages(
         self,
         *,
@@ -246,14 +265,7 @@ class DirectionalProductionAcceptance:
             price = float(open_prices.get(symbol, 0.0))
             if price <= 0:
                 return False, f"missing opening price: {symbol}", estimated
-            multiplier = PRODUCT_MULTIPLIERS[self._product(symbol)]
-            estimated += (
-                price
-                * multiplier
-                * requested
-                * self.config.margin_rate_proxy
-                * self.config.margin_estimate_buffer
-            )
+            estimated += requested * self.per_lot_margin(symbol, price)
         post_margin = float(current_margin) + estimated
         if post_margin / equity > self.config.max_margin_ratio:
             return False, "combined margin ratio would exceed limit", float(estimated)
@@ -385,10 +397,7 @@ class DirectionalProductionAcceptance:
         return float(
             sum(
                 abs(int(volume))
-                * float(prices.get(symbol, 0.0))
-                * PRODUCT_MULTIPLIERS[self._product(symbol)]
-                * self.config.margin_rate_proxy
-                * self.config.margin_estimate_buffer
+                * self.per_lot_margin(symbol, float(prices.get(symbol, 0.0)))
                 for symbol, volume in lots.items()
             )
         )
@@ -638,6 +647,7 @@ class DirectionalProductionAcceptance:
 
         for day, weight_row in weight_frame.iterrows():
             day = pd.Timestamp(day).normalize()
+            self._on_simulation_day(day)
             previous_equity = equity
             day_start_equity = previous_equity
             turnover_notional = 0.0
