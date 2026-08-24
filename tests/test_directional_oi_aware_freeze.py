@@ -1,5 +1,7 @@
 from pathlib import Path
 
+# TDD trigger checkpoint: this file intentionally lands before the implementation module.
+
 
 def _api():
     from afuture.directional_oi_aware_freeze import (
