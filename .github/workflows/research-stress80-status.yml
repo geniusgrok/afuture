@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: confirm 60m Production gate RED before evaluator implementation.
+# Refresh point: read explicit 60m OI TDD RED result.
 on:
   push:
     branches:
