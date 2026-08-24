@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after survivor-aware integer quick Production gate registration.
+# Refresh after lot-feasibility reallocation TDD registration.
 on:
   push:
     branches:
