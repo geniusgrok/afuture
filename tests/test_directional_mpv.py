@@ -1,9 +1,15 @@
 from datetime import date
+import inspect
 import math
 
+import pandas as pd
 import pytest
 
-from afuture.directional_mpv import MarginalLotAction, score_marginal_production_value
+from afuture.directional_mpv import (
+    MarginalLotAction,
+    estimate_causal_product_value,
+    score_marginal_production_value,
+)
 
 
 def valid_action(**overrides):
@@ -92,3 +98,69 @@ def test_mpv_rejects_non_finite_or_negative_drag():
             action,
             **(kwargs | {"turnover_penalty": -1.0}),
         )
+
+
+def test_causal_product_value_uses_data_derived_shrinkage_and_global_fallback():
+    evidence = pd.DataFrame(
+        {
+            "gross_pnl": [300.0, 1000.0],
+            "transaction_cost": [15.0, 150.0],
+            "net_alpha": [285.0, 850.0],
+            "lot_segment_exposure": [1.0, 10.0],
+        },
+        index=["AG", "CU"],
+    )
+    estimate = estimate_causal_product_value(evidence=evidence, product="AG")
+    assert estimate.product_rate_gross == 300.0
+    assert estimate.global_rate_gross == 1300.0 / 11.0
+    assert 0.0 < estimate.product_weight < 1.0
+    assert estimate.prior_support == 5.5
+    assert estimate.global_fallback_weight == 1.0 - estimate.product_weight
+    assert set(inspect.signature(estimate_causal_product_value).parameters) == {
+        "evidence",
+        "product",
+    }
+
+    missing = estimate_causal_product_value(evidence=evidence, product="ZN")
+    assert missing.product_weight == 0.0
+    assert missing.expected_gross_alpha_per_lot_segment == missing.global_rate_gross
+
+
+def test_causal_product_value_moves_toward_product_rate_as_completed_support_grows():
+    small = pd.DataFrame(
+        {
+            "gross_pnl": [300.0, 1000.0],
+            "transaction_cost": [0.0, 0.0],
+            "net_alpha": [300.0, 1000.0],
+            "lot_segment_exposure": [1.0, 10.0],
+        },
+        index=["AG", "CU"],
+    )
+    large = pd.DataFrame(
+        {
+            "gross_pnl": [6000.0, 1000.0],
+            "transaction_cost": [0.0, 0.0],
+            "net_alpha": [6000.0, 1000.0],
+            "lot_segment_exposure": [20.0, 10.0],
+        },
+        index=["AG", "CU"],
+    )
+    small_est = estimate_causal_product_value(evidence=small, product="AG")
+    large_est = estimate_causal_product_value(evidence=large, product="AG")
+    assert abs(large_est.expected_gross_alpha_per_lot_segment - 300.0) < abs(
+        small_est.expected_gross_alpha_per_lot_segment - 300.0
+    )
+
+
+def test_causal_product_value_fails_closed_without_exposure_support():
+    evidence = pd.DataFrame(
+        {
+            "gross_pnl": [100.0],
+            "transaction_cost": [10.0],
+            "net_alpha": [90.0],
+            "lot_segment_exposure": [0.0],
+        },
+        index=["AG"],
+    )
+    estimate = estimate_causal_product_value(evidence=evidence, product="AG")
+    assert estimate.insufficient_evidence is True
