@@ -1,0 +1,183 @@
+name: research-stress80-60m-oi-production
+
+# Expensive fixed-input Production L3 for the already-frozen 9-product 60m Price x OI
+# confirmation candidate. No search or parameter variation is permitted in this workflow.
+on:
+  push:
+    branches:
+      - research/stress-80-causal-product-alpha
+    paths:
+      - ".github/workflows/research-stress80-60m-oi-production.yml"
+      - "afuture/directional_60m_oi_confirmation.py"
+      - "tests/test_directional_60m_oi_confirmation.py"
+      - "tests/test_directional_60m_oi_production_gate.py"
+      - "tools/evaluate_directional_60m_oi_confirmation.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: research-stress80-60m-oi-production-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-l3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" akshare==1.18.91
+
+      - name: Download fixed concrete-contract input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p runtime
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9473260618/zip" \
+            -o /tmp/fixed-input.zip
+          echo "ab4321a9cf8b9a61a0f9d435a6fb6bba7dd63986043b429c12c0ff47fd15389c  /tmp/fixed-input.zip" | sha256sum -c -
+          unzip -j /tmp/fixed-input.zip return_target_specific_contracts.csv -d runtime
+
+      - name: Download validated frozen weight lineage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9491959916/zip" \
+            -o /tmp/baseline-production.zip
+          echo "e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d  /tmp/baseline-production.zip" | sha256sum -c -
+          unzip -j /tmp/baseline-production.zip execution_aligned_weights.csv -d runtime
+
+      - name: Download frozen prior 60m artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9516473115/zip" \
+            -o /tmp/stress80-60m-prior.zip
+          echo "d0adcfb348c5ae89ddb488474c088d74a2402a2426c0e84fee7877dda5bd2a4e  /tmp/stress80-60m-prior.zip" | sha256sum -c -
+          unzip -j /tmp/stress80-60m-prior.zip prior_two_year_broad_60m.csv -d runtime
+
+      - name: Download frozen recent 60m artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9516472727/zip" \
+            -o /tmp/stress80-60m-recent.zip
+          echo "68ff2200eed8326741ce76f1cff46379c4e1dbc263297f4602bd84422e95e421  /tmp/stress80-60m-recent.zip" | sha256sum -c -
+          unzip -j /tmp/stress80-60m-recent.zip two_year_broad_60m.csv -d runtime
+
+      - name: Verify frozen 60m research surface
+        run: >-
+          python -m pytest -q
+          tests/test_directional_60m_oi_confirmation.py
+          tests/test_directional_60m_oi_production_gate.py
+
+      - name: Run fixed-input Production L3
+        run: python tools/evaluate_directional_60m_oi_confirmation.py
+
+      - name: Verify baseline lineage before interpreting candidate
+        run: |
+          python - <<'PY'
+          import json
+          report = json.load(open("runtime/stress80_60m_oi_production_report.json", encoding="utf-8"))
+          assert report["baseline_reproduction"]["passed"] is True
+          assert report["production_wiring"] is False
+          assert report["parameter_search"] is False
+          assert report["supported_products"] == ["A", "C", "EG", "I", "M", "P", "PP", "TA", "Y"]
+          assert report["constraints"]["target_gross_leverage_cap"] == 2.0
+          assert report["constraints"]["hard_margin_ratio"] == 0.35
+          assert report["constraints"]["min_available_ratio"] == 0.25
+          assert report["constraints"]["max_contract_volume"] == 35
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stress80-60m-oi-production-evidence
+          path: |
+            runtime/stress80_60m_oi_production_report.json
+            runtime/stress80_60m_oi_weights.csv
+            runtime/stress80_60m_oi_base_daily.csv
+            runtime/stress80_60m_oi_stress_daily.csv
+            runtime/stress80_60m_oi_base_events.csv
+            runtime/stress80_60m_oi_stress_events.csv
+          retention-days: 14
+
+      - name: Post Production result to draft PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python - <<'PY' > /tmp/comment.md
+          import json
+          import os
+          from pathlib import Path
+
+          print(f"### Stress80 60m OI Production L3 `{os.environ['GITHUB_RUN_ID']}`")
+          path = Path("runtime/stress80_60m_oi_production_report.json")
+          if not path.exists():
+              print("\nNo Production report was produced; inspect workflow failure before any economic interpretation.")
+          else:
+              report = json.loads(path.read_text(encoding="utf-8"))
+              print(f"\n- baseline reproduction: **{report['baseline_reproduction']['passed']}** `{report['baseline_reproduction']['checks']}`")
+              cheap = report["cheap"]["candidate"]
+              print(f"- cheap Base full_recent: **{cheap['base']['full_recent']['annualized_return']:.6%}**")
+              print(f"- cheap Stress full_recent: **{cheap['stress']['full_recent']['annualized_return']:.6%}**")
+              print(f"- cheap Stress validation: **{cheap['stress']['validation']['annualized_return']:.6%}**")
+              print(f"- cheap Stress OOS: **{cheap['stress']['oos']['annualized_return']:.6%}**")
+              print(f"- cheap weight turnover: **{cheap['weight_turnover_full_path']:.6f}x**")
+
+              candidate = report["production"]["candidate"]
+              base = candidate["base"]["windows"]
+              stress = candidate["stress"]["windows"]
+              print(f"- Production Base full_recent: **{base['full_recent']['annualized_return']:.6%}**, DD {base['full_recent']['max_drawdown']:.6%}")
+              print(f"- Production Stress full_recent: **{stress['full_recent']['annualized_return']:.6%}**, DD {stress['full_recent']['max_drawdown']:.6%}")
+              print(f"- Production Stress validation: **{stress['validation']['annualized_return']:.6%}**, DD {stress['validation']['max_drawdown']:.6%}")
+              print(f"- Production Stress OOS: **{stress['oos']['annualized_return']:.6%}**, DD {stress['oos']['max_drawdown']:.6%}")
+              print(f"- Stress gross peak: **{stress['full_recent']['max_realized_gross_notional_ratio']:.6f}x**")
+              print(f"- Stress margin reject days: **{stress['full_recent']['margin_reject_days']}**")
+              print(f"- Stress halted: **{stress['full_recent']['halted']}**")
+              attr = candidate["production_attribution"]["stress"]
+              gross = float(attr["alpha"]["gross_signal_pnl"])
+              turnover = float(attr["transaction_cost"]["turnover_notional"])
+              cost = float(attr["transaction_cost"]["total_cost"])
+              net = gross - cost
+              bps = net / turnover * 10000.0 if turnover else 0.0
+              print(f"- Stress gross signal PnL: **{gross:.2f}**")
+              print(f"- Stress turnover: **{turnover:.2f}**")
+              print(f"- Stress transaction cost: **{cost:.2f}**")
+              print(f"- Stress net alpha / turnover: **{bps:.6f} bps**")
+              gate = report["promotion_gate"]
+              print(f"- promotion gate: **{gate['passed']}**")
+              if gate["reasons"]:
+                  print("- failed gates: " + ", ".join(gate["reasons"]))
+          PY
+          gh pr comment 21 --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
