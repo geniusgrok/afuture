@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after OI direction-change confirmation TDD registration.
+# Refresh after OI direction-change confirmation GREEN implementation.
 on:
   push:
     branches:
