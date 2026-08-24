@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after hard-limit-derived drawdown-reserve GREEN implementation.
+# Refresh after drawdown-reserve five-window quick Production gate registration.
 on:
   push:
     branches:
