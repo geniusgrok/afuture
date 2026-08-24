@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: 60m OI confirmation RED before implementation.
+# Refresh point: confirm 60m OI overlay RED run.
 on:
   push:
     branches:
