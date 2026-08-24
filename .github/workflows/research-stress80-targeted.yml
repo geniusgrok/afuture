@@ -20,6 +20,7 @@ on:
       - "afuture/directional_shadow_mpv_robustness.py"
       - "afuture/directional_integer_tracking.py"
       - "afuture/directional_freeze_new_risk.py"
+      - "afuture/directional_oi_aware_freeze.py"
       - "afuture/directional_acceptance.py"
       - "afuture/directional_robustness.py"
       - "tests/test_directional_opportunity_ledger.py"
@@ -39,6 +40,7 @@ on:
       - "tests/test_directional_shadow_mpv_robustness.py"
       - "tests/test_directional_integer_tracking.py"
       - "tests/test_directional_freeze_new_risk.py"
+      - "tests/test_directional_oi_aware_freeze.py"
       - "tools/evaluate_directional_stress80.py"
       - "tools/evaluate_directional_member_flow.py"
       - "tools/evaluate_directional_receipt_flow.py"
@@ -79,7 +81,8 @@ jobs:
             tests/test_directional_shadow_mpv.py \
             tests/test_directional_shadow_mpv_robustness.py \
             tests/test_directional_integer_tracking.py \
-            tests/test_directional_freeze_new_risk.py
+            tests/test_directional_freeze_new_risk.py \
+            tests/test_directional_oi_aware_freeze.py
           do
             if [ -f "$file" ]; then
               existing+=("$file")
