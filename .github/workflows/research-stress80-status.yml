@@ -1,6 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
+# Refresh point: stale-margin GREEN + four-year 60m coverage.
 on:
   push:
     branches:
