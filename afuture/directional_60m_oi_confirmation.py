@@ -14,6 +14,12 @@ from collections.abc import Iterable
 import numpy as np
 import pandas as pd
 
+# Frozen from coverage workflow 32717335780. Each product has >=80% exact daily 60m
+# coverage in both 2022-08-21..2024-08-20 and 2024-08-21..2026-08-20, and the set spans
+# at least two exchanges. Do not expand this set from later provider responses inside
+# this research phase.
+SUPPORTED_PRODUCTS = ("A", "C", "EG", "I", "M", "P", "PP", "TA", "Y")
+
 _REQUIRED_COLUMNS = {
     "datetime",
     "product",
@@ -68,9 +74,10 @@ def build_daily_price_oi_flow(raw: pd.DataFrame) -> pd.DataFrame:
     )
     dominant = contract.groupby(["date", "product"], as_index=False, sort=False).first()
     intraday = dominant["last_close"].div(dominant["first_open"]) - 1.0
-    direction = np.sign(intraday.to_numpy(float))
-    direction[~np.isfinite(intraday.to_numpy(float))] = 0.0
-    direction[np.abs(intraday.to_numpy(float)) <= 1e-15] = 0.0
+    intraday_values = intraday.to_numpy(float)
+    direction = np.sign(intraday_values)
+    direction[~np.isfinite(intraday_values)] = 0.0
+    direction[np.abs(intraday_values) <= 1e-15] = 0.0
     direction[
         dominant["last_hold"].to_numpy(float)
         <= dominant["first_hold"].to_numpy(float)
