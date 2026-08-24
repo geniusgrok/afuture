@@ -1,0 +1,200 @@
+name: verify-stress80-final
+
+on:
+  push:
+    branches:
+      - promote/stress80-final
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: verify-stress80-final-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" akshare==1.18.91
+      - name: Winner focused tests
+        run: >-
+          python -m pytest -q
+          tests/test_directional_60m_oi_confirmation.py
+          tests/test_directional_freeze_new_risk.py
+          tests/test_directional_cost_aware_no_trade.py
+          tests/test_directional_turnover_aware_survivor_reallocation.py
+          tests/test_directional_60m_oi_reversal_confirmation.py
+          tests/test_directional_drawdown_reserve_freeze.py
+          tests/test_directional_stress80_final_gate.py
+      - name: Affected Production mechanics smoke
+        run: python tools/test_directional_production_mechanics.py
+
+  matrix:
+    needs: focused
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scenario: base
+            window: full_recent
+          - scenario: stress
+            window: prior1
+          - scenario: stress
+            window: prior2
+          - scenario: stress
+            window: train
+          - scenario: stress
+            window: validation
+          - scenario: stress
+            window: oos
+          - scenario: stress
+            window: full_recent
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" akshare==1.18.91
+      - name: Download frozen Production inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p runtime
+          curl -L --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9473260618/zip" -o /tmp/fixed-input.zip
+          echo "ab4321a9cf8b9a61a0f9d435a6fb6bba7dd63986043b429c12c0ff47fd15389c  /tmp/fixed-input.zip" | sha256sum -c -
+          unzip -j /tmp/fixed-input.zip return_target_specific_contracts.csv broad_daily_universe.csv -d runtime
+          curl -L --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9491959916/zip" -o /tmp/baseline.zip
+          echo "e531f2874cbc26c3a54ff561e074f59b86ac887a1f509e33effd6908eaa3144d  /tmp/baseline.zip" | sha256sum -c -
+          unzip -j /tmp/baseline.zip execution_aligned_weights.csv -d runtime
+      - name: Download frozen 60m evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          curl -L --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9516473115/zip" -o /tmp/prior.zip
+          echo "d0adcfb348c5ae89ddb488474c088d74a2402a2426c0e84fee7877dda5bd2a4e  /tmp/prior.zip" | sha256sum -c -
+          unzip -j /tmp/prior.zip prior_two_year_broad_60m.csv -d runtime
+          curl -L --fail --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9516472727/zip" -o /tmp/recent.zip
+          echo "68ff2200eed8326741ce76f1cff46379c4e1dbc263297f4602bd84422e95e421  /tmp/recent.zip" | sha256sum -c -
+          unzip -j /tmp/recent.zip two_year_broad_60m.csv -d runtime
+      - name: Run independent account window
+        run: >-
+          python tools/evaluate_directional_stress80_final.py
+          --scenario ${{ matrix.scenario }}
+          --window ${{ matrix.window }}
+          --output runtime/final_${{ matrix.scenario }}_${{ matrix.window }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stress80-final-${{ matrix.scenario }}-${{ matrix.window }}
+          path: runtime/final_${{ matrix.scenario }}_${{ matrix.window }}.json
+          retention-days: 14
+
+  summary:
+    needs: matrix
+    if: always() && needs.matrix.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" akshare==1.18.91
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stress80-final-*
+          path: runtime/final_matrix
+          merge-multiple: true
+      - name: Aggregate and enforce final promotion gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.evaluate_directional_stress80_final import promotion_gate
+
+          files = sorted(Path('runtime/final_matrix').glob('final_*.json'))
+          if len(files) != 7:
+              raise SystemExit(f'expected 7 final matrix results, got {len(files)}')
+          raw = [json.loads(path.read_text(encoding='utf-8')) for path in files]
+          digests = {item['candidate']['candidate_weight_sha256'] for item in raw}
+          if len(digests) != 1:
+              raise SystemExit(f'candidate weight digests differ across jobs: {digests}')
+          results = {}
+          serial = {}
+          for item in raw:
+              result = item['result']
+              key = (result['scenario'], result['window'])
+              if key in results:
+                  raise SystemExit(f'duplicate result: {key}')
+              results[key] = result
+              serial[f'{key[0]}:{key[1]}'] = result
+          gate = promotion_gate(results)
+          summary = {
+              'role': 'fresh clean-tree final Stress80 Production matrix',
+              'candidate_weight_sha256': next(iter(digests)),
+              'gate': gate,
+              'results': serial,
+              'constraints': raw[0]['constraints'],
+              'quick_reference': {
+                  'workflow_run': 32760575269,
+                  'base_full_recent': 1.28119261,
+                  'stress_full_recent': 0.80067891,
+                  'stress_full_recent_dd': -0.29727688,
+                  'stress_net_alpha_per_turnover_bps': 30.990722,
+              },
+          }
+          output = Path('runtime/stress80_final_summary.json')
+          output.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+          if not gate['passed']:
+              raise SystemExit('final Stress80 promotion gate failed: ' + ', '.join(gate['reasons']))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stress80-final-summary
+          path: runtime/stress80_final_summary.json
+          retention-days: 14
+      - name: Post final result to PR 24
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python - <<'PY' > /tmp/comment.md
+          import json, os
+          from pathlib import Path
+          print(f"### Fresh clean-tree Stress80 final matrix `{os.environ['GITHUB_RUN_ID']}`")
+          path=Path('runtime/stress80_final_summary.json')
+          if not path.exists():
+              print('\nSummary was not produced; inspect matrix failure.')
+          else:
+              r=json.loads(path.read_text(encoding='utf-8'))
+              print(f"\n- candidate SHA256: `{r['candidate_weight_sha256']}`")
+              def show(scenario, window):
+                  item=r['results'][f'{scenario}:{window}']
+                  x=item['stats']; e=item['economics']
+                  print(f"- {scenario.title()} {window}: **{x['annualized_return']:.6%}**, DD {x['max_drawdown']:.6%}, gross {x['max_realized_gross_notional_ratio']:.6f}x, halted={x['halted']}, margin_rejects={x['margin_reject_days']}, net/turn={e['net_alpha_per_turnover_bps']:.6f}bps")
+              show('base','full_recent')
+              for w in ('prior1','prior2','train','validation','oos','full_recent'):
+                  show('stress',w)
+              print(f"- final promotion gate: **{r['gate']['passed']}**")
+              if r['gate']['reasons']:
+                  print('- failed gates: ' + ', '.join(r['gate']['reasons']))
+          PY
+          gh pr comment 24 --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
