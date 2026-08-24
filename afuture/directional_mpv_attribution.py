@@ -10,31 +10,46 @@ from dataclasses import dataclass
 import pandas as pd
 
 
-def completed_product_evidence(*, events: pd.DataFrame, decision_date) -> pd.DataFrame:
-    cutoff = pd.Timestamp(decision_date).normalize()
-    columns = [
-        "gross_pnl",
-        "turnover_notional",
-        "transaction_cost",
-        "net_alpha",
-        "pnl_event_count",
-        "trade_event_count",
-    ]
-    if events.empty:
-        return pd.DataFrame(columns=columns).rename_axis("product")
-    frame = events.copy()
-    frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
-    frame["product"] = frame["product"].astype(str).str.upper()
-    frame = frame[frame["date"].notna() & (frame["date"] < cutoff)]
+def _empty_product_evidence() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "gross_pnl",
+            "turnover_notional",
+            "transaction_cost",
+            "net_alpha",
+            "pnl_event_count",
+            "trade_event_count",
+            "lot_segment_exposure",
+        ]
+    ).rename_axis("product")
+
+
+def _aggregate_product_evidence(
+    frame: pd.DataFrame,
+    *,
+    pnl_actions: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
+    columns = list(_empty_product_evidence().columns)
     if frame.empty:
-        return pd.DataFrame(columns=columns).rename_axis("product")
-    for column in ("gross_pnl", "turnover_notional", "transaction_cost"):
-        frame[column] = pd.to_numeric(frame.get(column, 0.0), errors="coerce").fillna(0.0)
+        return _empty_product_evidence()
+    work = frame.copy()
+    work["product"] = work["product"].astype(str).str.upper()
+    for column in ("gross_pnl", "turnover_notional", "transaction_cost", "lots_before"):
+        if column not in work:
+            work[column] = 0.0
+        work[column] = pd.to_numeric(work[column], errors="coerce").fillna(0.0)
     rows = []
-    for product, group in frame.groupby("product", sort=True):
+    allowed_actions = {str(value) for value in pnl_actions} if pnl_actions is not None else None
+    for product, group in work.groupby("product", sort=True):
         pnl = group[group["kind"] == "pnl"]
+        if allowed_actions is not None:
+            if "action" not in pnl:
+                pnl = pnl.iloc[0:0]
+            else:
+                pnl = pnl[pnl["action"].astype(str).isin(allowed_actions)]
         trades = group[group["kind"] == "trade"]
         gross_pnl = float(pnl["gross_pnl"].sum())
+        lot_segment_exposure = float(pnl["lots_before"].abs().sum())
         turnover = float(trades["turnover_notional"].sum())
         cost = float(trades["transaction_cost"].sum())
         rows.append(
@@ -46,9 +61,32 @@ def completed_product_evidence(*, events: pd.DataFrame, decision_date) -> pd.Dat
                 "net_alpha": gross_pnl - cost,
                 "pnl_event_count": int(len(pnl)),
                 "trade_event_count": int(len(trades)),
+                "lot_segment_exposure": lot_segment_exposure,
             }
         )
     return pd.DataFrame(rows).set_index("product")[columns]
+
+
+def observed_product_evidence(
+    *,
+    events: pd.DataFrame,
+    pnl_actions: tuple[str, ...] | None = None,
+) -> pd.DataFrame:
+    """Aggregate only events the caller has already observed at decision time."""
+    if events.empty:
+        return _empty_product_evidence()
+    return _aggregate_product_evidence(events, pnl_actions=pnl_actions)
+
+
+def completed_product_evidence(*, events: pd.DataFrame, decision_date) -> pd.DataFrame:
+    """Aggregate events strictly before ``decision_date`` for offline causal research."""
+    cutoff = pd.Timestamp(decision_date).normalize()
+    if events.empty:
+        return _empty_product_evidence()
+    frame = events.copy()
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+    frame = frame[frame["date"].notna() & (frame["date"] < cutoff)]
+    return _aggregate_product_evidence(frame)
 
 
 @dataclass(frozen=True)
