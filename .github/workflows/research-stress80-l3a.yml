@@ -11,6 +11,8 @@ on:
 permissions:
   contents: read
   actions: read
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: research-stress80-l3a-${{ github.ref }}
@@ -76,3 +78,34 @@ jobs:
             runtime/stress80_l3a_weights.csv
             runtime/stress80_l3a_expected_product_returns.csv
           retention-days: 14
+      - name: Post L3A result to draft PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python - <<'PY' > /tmp/stress80-comment.md
+          import json
+          import os
+          from pathlib import Path
+
+          print(f"### Stress80 L3A workflow `{os.environ['GITHUB_RUN_ID']}`")
+          report_path = Path("runtime/stress80_l3a_report.json")
+          if not report_path.exists():
+              print("\nL3A did not produce a report; inspect the workflow failure before any economic interpretation.")
+          else:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              stress = report["stress"]
+              econ = report["economics"]["stress"]["full_recent"]
+              gate = report["l3a_gate"]
+              print(f"\n- gate: **{gate['passed']}**")
+              print(f"- Stress full_recent annualized: **{stress['full_recent']['annualized_return']:.6%}**")
+              print(f"- Stress validation annualized: **{stress['validation']['annualized_return']:.6%}**")
+              print(f"- Stress OOS annualized: **{stress['oos']['annualized_return']:.6%}**")
+              print(f"- Stress full_recent DD: **{stress['full_recent']['max_drawdown']:.6%}**")
+              print(f"- Stress net alpha / turnover: **{econ['net_alpha_per_turnover_bps']:.6f} bps**")
+              print(f"- ledger rows: **{report['opportunity_ledger']['rows']}**")
+              if gate["reasons"]:
+                  print("- failed gates: " + ", ".join(gate["reasons"]))
+          PY
+          gh pr comment 21 --body-file /tmp/stress80-comment.md
