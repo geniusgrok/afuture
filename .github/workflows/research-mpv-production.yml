@@ -2,9 +2,7 @@ name: research-mpv-production
 
 # Temporary fixed-input P0 research gate. Remove before final merge.
 on:
-  push:
-    branches:
-      - research/production-mpv-integer-optimizer
+  pull_request:
     paths:
       - .github/workflows/research-mpv-production.yml
       - afuture/directional_mpv.py
