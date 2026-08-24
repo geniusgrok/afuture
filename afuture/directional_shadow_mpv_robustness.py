@@ -15,6 +15,8 @@ from .directional_acceptance import PRODUCT_MULTIPLIERS, TargetLotStages
 from .directional_robustness import MarginAwareDirectionalProductionAcceptance
 from .directional_shadow_mpv import ShadowMPVOptimization, optimize_with_shadow_mpv
 
+SHADOW_OBJECTIVE_COST_BPS = 15.0
+
 
 class ShadowMPVDirectionalProductionAcceptance(
     MarginAwareDirectionalProductionAcceptance
@@ -25,15 +27,18 @@ class ShadowMPVDirectionalProductionAcceptance(
         super().__init__(config)
         self.shadow_events = shadow_events.copy()
         self.active_decision_day: pd.Timestamp | None = None
-        self._shadow_cost_rate = 0.0
         self.last_shadow_optimization: ShadowMPVOptimization | None = None
+
+    @property
+    def shadow_objective_cost_rate(self) -> float:
+        """Stress-aware decision hurdle, fixed independently of evaluation scenario."""
+        return SHADOW_OBJECTIVE_COST_BPS / 10000.0
 
     def _on_simulation_day(self, day: pd.Timestamp) -> None:
         self.active_decision_day = pd.Timestamp(day).normalize()
 
     def simulate(self, raw, weights, *, cost_bps: float, prepared=None):
         self.active_decision_day = None
-        self._shadow_cost_rate = float(cost_bps) / 10000.0
         self.last_shadow_optimization = None
         return super().simulate(raw, weights, cost_bps=cost_bps, prepared=prepared)
 
@@ -107,7 +112,7 @@ class ShadowMPVDirectionalProductionAcceptance(
             soft_margin_budget=float(equity) * float(baseline.soft_margin_share),
             max_gross_ratio=float(self.config.max_realized_gross_ratio),
             max_abs_lots=min(int(self.config.max_contract_volume), 35),
-            cost_rate=float(self._shadow_cost_rate),
+            cost_rate=self.shadow_objective_cost_rate,
         )
         self.last_shadow_optimization = result
         if result.optimization.fallback_reason:
