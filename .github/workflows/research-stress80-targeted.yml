@@ -9,12 +9,15 @@ on:
       - "afuture/directional_causal_edge.py"
       - "afuture/directional_net_edge_allocator.py"
       - "afuture/directional_stress80_research.py"
+      - "afuture/directional_member_flow.py"
       - "tests/test_directional_opportunity_ledger.py"
       - "tests/test_directional_causal_edge.py"
       - "tests/test_directional_net_edge_allocator.py"
       - "tests/test_directional_stress80_research.py"
       - "tests/test_directional_stress80_evaluator.py"
+      - "tests/test_directional_member_flow.py"
       - "tools/evaluate_directional_stress80.py"
+      - "tools/evaluate_directional_member_flow.py"
   workflow_dispatch:
 
 jobs:
@@ -36,7 +39,8 @@ jobs:
             tests/test_directional_causal_edge.py \
             tests/test_directional_net_edge_allocator.py \
             tests/test_directional_stress80_research.py \
-            tests/test_directional_stress80_evaluator.py
+            tests/test_directional_stress80_evaluator.py \
+            tests/test_directional_member_flow.py
           do
             if [ -f "$file" ]; then
               existing+=("$file")
