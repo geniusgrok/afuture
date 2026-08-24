@@ -29,6 +29,11 @@ jobs:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
+      # The evaluator imports the existing roll-safe specific-contract helper, whose
+      # module graph imports the historical fetch helper even though this rerun reuses
+      # an already-fetched basis artifact. Keep the dependency explicit for this
+      # temporary correctness rerun; no new market data is fetched here.
+      - run: python -m pip install "akshare==1.18.84"
 
       - name: Targeted causal basis tests
         run: python -m pytest -q tests/test_directional_basis_alpha.py
