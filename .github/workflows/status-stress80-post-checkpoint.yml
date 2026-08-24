@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after lot-feasibility reallocation GREEN implementation.
+# Refresh after lot-feasibility five-window quick Production gate registration.
 on:
   push:
     branches:
