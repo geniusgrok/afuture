@@ -5,19 +5,20 @@ def test_shadow_adapter_never_accumulates_candidate_owned_audit_rows():
     from afuture.directional_shadow_mpv_robustness import ShadowMPVDirectionalProductionAcceptance
 
     simulator = ShadowMPVDirectionalProductionAcceptance(
-        shadow_events=pd.DataFrame(
-            [{"date": "2026-01-05", "kind": "pnl", "action": "intraday", "product": "AG", "symbol": "AG2606", "lots_before": 1, "gross_pnl": 100.0, "turnover_notional": 0.0, "transaction_cost": 0.0}]
+        shadow_outcomes=pd.DataFrame(
+            [{"date": "2026-01-05", "product": "AG", "gross_return": 0.01, "baseline_abs_weight": 1.0}]
         )
     )
 
     assert not hasattr(simulator, "_mpv_observed_event_rows")
-    assert len(simulator.shadow_events) == 1
+    assert not hasattr(simulator, "shadow_events")
+    assert len(simulator.shadow_outcomes) == 1
 
 
 def test_shadow_adapter_records_current_decision_day_via_behavior_neutral_hook():
     from afuture.directional_shadow_mpv_robustness import ShadowMPVDirectionalProductionAcceptance
 
-    simulator = ShadowMPVDirectionalProductionAcceptance(shadow_events=pd.DataFrame())
+    simulator = ShadowMPVDirectionalProductionAcceptance(shadow_outcomes=pd.DataFrame())
     assert simulator.active_decision_day is None
     simulator._on_simulation_day(pd.Timestamp("2026-01-06"))
     assert simulator.active_decision_day == pd.Timestamp("2026-01-06")
@@ -30,7 +31,7 @@ def test_shadow_allocator_objective_is_locked_to_15bp_in_every_evaluation_scenar
     )
 
     assert SHADOW_OBJECTIVE_COST_BPS == 15.0
-    simulator = ShadowMPVDirectionalProductionAcceptance(shadow_events=pd.DataFrame())
+    simulator = ShadowMPVDirectionalProductionAcceptance(shadow_outcomes=pd.DataFrame())
     assert abs(simulator.shadow_objective_cost_rate - 0.0015) < 1e-12
 
     # Evaluation cost changes account PnL only; it must not reveal Base/Stress scenario
@@ -44,7 +45,7 @@ def test_shadow_allocator_objective_is_locked_to_15bp_in_every_evaluation_scenar
 def test_target_stage_exactly_falls_back_before_decision_day_or_without_shadow_support():
     from afuture.directional_shadow_mpv_robustness import ShadowMPVDirectionalProductionAcceptance
 
-    simulator = ShadowMPVDirectionalProductionAcceptance(shadow_events=pd.DataFrame())
+    simulator = ShadowMPVDirectionalProductionAcceptance(shadow_outcomes=pd.DataFrame())
     kwargs = dict(
         equity=100000.0,
         product_weights={"AG": 1.0},
@@ -59,7 +60,7 @@ def test_target_stage_exactly_falls_back_before_decision_day_or_without_shadow_s
 
     assert with_day.final_lots == baseline.final_lots
     assert simulator.last_shadow_optimization is not None
-    assert simulator.last_shadow_optimization.optimization.fallback_reason == "insufficient causal MPV evidence"
+    assert simulator.last_shadow_optimization.optimization.fallback_reason == "insufficient shadow outcome evidence"
 
 
 def test_live_runtime_does_not_import_shadow_mpv_research_adapter():
@@ -71,4 +72,6 @@ def test_live_runtime_does_not_import_shadow_mpv_research_adapter():
         Path("afuture/directional_runtime.py"),
     ):
         if path.exists():
-            assert "directional_shadow_mpv_robustness" not in path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8")
+            assert "directional_shadow_mpv_robustness" not in text
+            assert "directional_shadow_outcomes" not in text
