@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after survivor-reallocation GREEN implementation.
+# Refresh after hard-feasible margin RED registration.
 on:
   push:
     branches:
