@@ -197,11 +197,24 @@ Required reporting by prior1/prior2/train/validation/OOS/full_recent:
 - active days;
 - family/product contribution concentration.
 
+A candidate may advance from L3A to fixed Production L3B only when all of these predeclared conditions hold on the cheap screen:
+
+1. full_recent Stress annualized is **> 28.9559%**;
+2. validation Stress annualized is **> 0%**;
+3. OOS Stress annualized is **> 0%**;
+4. validation and OOS Stress max DD are each **<= 30%**;
+5. full_recent Stress net alpha / turnover is **> 12.2556 bps**;
+6. no validation/OOS permanent HALT or hard-risk violation.
+
+This gate is deliberately weaker than the final 80% Production target because L3A does not reproduce all Production path dependence; it exists only to prevent spending an expensive L3B run on an obviously weak candidate.
+
 ### L3B — fixed Production mechanics
 
-Only candidates that show non-pathological cross-window edge quality proceed to the expensive fixed-input Production path.
+Only a candidate that passes every L3A condition proceeds to the expensive fixed-input Production path.
 
 The authoritative economic gate is the same specific-contract/integer/margin/governor/circuit path used by the current Production baseline.
+
+For final Production promotion, validation and OOS each must remain economically alive: Stress annualized **> 0%**, max DD **<= 30%**, no permanent HALT and no hard-risk violation. This is the exact definition of "no catastrophic window failure" for this phase.
 
 ### L4 — final robustness matrix
 
@@ -216,8 +229,8 @@ A candidate may replace validated Production only if all hard conditions hold:
 3. Base annualized **>= 80%**.
 4. No permanent HALT in full_recent.
 5. No violation of gross <=2x, margin <=35%, available >=25%, max lots 35.
-6. Validation and OOS must not reveal a catastrophic regime-specific failure hidden by full_recent aggregation.
-7. Improvement must remain after exact transaction costs and Production mechanics.
+6. Validation and OOS each satisfy Stress annualized >0%, max DD <=30%, no permanent HALT and no hard-risk violation.
+7. Improvement remains after exact transaction costs and Production mechanics.
 8. No future leakage or non-causal data source.
 9. No post-hoc threshold/parameter rescue after reading the final windows.
 
@@ -253,8 +266,8 @@ Only after a candidate passes the complete promotion gate may `runtime_factory.p
 Research failures are evidence, not reasons to loosen constraints.
 
 - If a unit test exposes leakage, fix causality before any economic run.
-- If a cheap screen is weak across windows, stop that candidate before Production L3.
-- If Float/cheap results look strong but Production collapses, diagnose integer/margin/governor path dependence rather than tuning headline weights.
+- If L3A misses any predeclared gate, stop that candidate before Production L3B.
+- If L3A looks strong but Production collapses, diagnose integer/margin/governor path dependence rather than tuning headline weights.
 - If a full Production run fails because of an implementation bug, fix the bug and rerun the affected gate.
 - If it fails economically, do not silently alter horizons, thresholds, costs or risk limits to rescue it.
 
