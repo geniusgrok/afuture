@@ -30,6 +30,7 @@ on:
       - "tests/test_directional_prior_product_selection.py"
       - "tests/test_directional_historical_margin.py"
       - "tests/test_directional_60m_oi_confirmation.py"
+      - "tests/test_directional_60m_oi_production_gate.py"
       - "tools/evaluate_directional_stress80.py"
       - "tools/evaluate_directional_member_flow.py"
       - "tools/evaluate_directional_receipt_flow.py"
@@ -65,7 +66,8 @@ jobs:
             tests/test_directional_stress_balanced_meta.py \
             tests/test_directional_prior_product_selection.py \
             tests/test_directional_historical_margin.py \
-            tests/test_directional_60m_oi_confirmation.py
+            tests/test_directional_60m_oi_confirmation.py \
+            tests/test_directional_60m_oi_production_gate.py
           do
             if [ -f "$file" ]; then
               existing+=("$file")
