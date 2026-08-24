@@ -15,6 +15,21 @@ from .directional_efficiency import stabilize_one_lot_increases
 class MarginAwareDirectionalProductionAcceptance(DirectionalProductionAcceptance):
     """Production proxy whose integer target is feasible before opening hard gates."""
 
+    def margin_sizing_share(
+        self, completed_returns: tuple[float, ...] = ()
+    ) -> float:
+        """Return the baseline adaptive soft margin envelope.
+
+        Kept as an overridable policy hook so research adapters can test a different soft
+        sizing response without changing any hard account limit or baseline behavior.
+        """
+        return adaptive_margin_sizing_share(
+            max_margin_ratio=self.config.max_margin_ratio,
+            min_available_ratio=self.config.min_available_ratio,
+            max_daily_loss_ratio=self.config.max_daily_loss_ratio,
+            completed_returns=completed_returns,
+        )
+
     def target_lot_stages(
         self,
         *,
@@ -33,12 +48,7 @@ class MarginAwareDirectionalProductionAcceptance(DirectionalProductionAcceptance
             current_lots=current_lots,
             completed_returns=completed_returns,
         )
-        sizing_share = adaptive_margin_sizing_share(
-            max_margin_ratio=self.config.max_margin_ratio,
-            min_available_ratio=self.config.min_available_ratio,
-            max_daily_loss_ratio=self.config.max_daily_loss_ratio,
-            completed_returns=completed_returns,
-        )
+        sizing_share = self.margin_sizing_share(completed_returns)
         requested = raw.raw_integer_lots
         if not requested or equity <= 0:
             return TargetLotStages(
