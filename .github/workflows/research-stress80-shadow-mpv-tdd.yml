@@ -7,8 +7,10 @@ on:
     paths:
       - ".github/workflows/research-stress80-shadow-mpv-tdd.yml"
       - "afuture/directional_shadow_mpv.py"
+      - "afuture/directional_shadow_outcomes.py"
       - "afuture/directional_shadow_mpv_robustness.py"
       - "tests/test_directional_shadow_mpv.py"
+      - "tests/test_directional_shadow_outcomes.py"
       - "tests/test_directional_shadow_mpv_robustness.py"
   workflow_dispatch:
 
@@ -31,6 +33,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/test_directional_shadow_mpv.py
+          tests/test_directional_shadow_outcomes.py
           tests/test_directional_shadow_mpv_robustness.py
       - run: python -m compileall -q afuture
       - name: Post Shadow MPV TDD result
