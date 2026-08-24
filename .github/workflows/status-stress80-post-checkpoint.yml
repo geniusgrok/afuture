@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after freeze-new-product-only TDD registration.
+# Refresh after freeze-new-product-only GREEN implementation.
 on:
   push:
     branches:
