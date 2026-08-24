@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after survivor-aware integer TDD registration.
+# Refresh after survivor-aware integer GREEN implementation.
 on:
   push:
     branches:
