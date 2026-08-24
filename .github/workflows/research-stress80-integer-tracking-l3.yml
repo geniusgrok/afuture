@@ -1,5 +1,6 @@
 name: research-stress80-integer-tracking-l3
 
+# Explicit post-registration trigger checkpoint; no strategy semantics changed.
 on:
   push:
     branches:
