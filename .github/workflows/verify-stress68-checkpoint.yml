@@ -9,6 +9,8 @@ on:
 permissions:
   contents: read
   actions: read
+  issues: write
+  pull-requests: write
 
 jobs:
   verify:
@@ -106,7 +108,38 @@ jobs:
           }, indent=2))
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: stress68-checkpoint-evidence
           path: runtime/stress80_60m_oi_freeze_production_report.json
           retention-days: 14
+      - name: Post checkpoint verification to PR 22
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python - <<'PY' > /tmp/comment.md
+          import json
+          import os
+          from pathlib import Path
+          print(f"### Clean Stress68 checkpoint verification `{os.environ['GITHUB_RUN_ID']}`")
+          path = Path('runtime/stress80_60m_oi_freeze_production_report.json')
+          if not path.exists():
+              print('\nNo report was produced; inspect the workflow failure.')
+          else:
+              r = json.loads(path.read_text())
+              b = r['candidate']['base']['windows']['full_recent']
+              s = r['candidate']['stress']['windows']['full_recent']
+              sw = r['candidate']['stress']['windows']
+              e = r['economics']['stress']
+              print(f"\n- Base annualized: **{b['annualized_return']:.6%}**, DD {b['max_drawdown']:.6%}")
+              print(f"- Stress annualized: **{s['annualized_return']:.6%}**, DD {s['max_drawdown']:.6%}")
+              print(f"- Stress validation: **{sw['validation']['annualized_return']:.6%}**")
+              print(f"- Stress OOS: **{sw['oos']['annualized_return']:.6%}**")
+              print(f"- Stress gross peak: **{s['max_realized_gross_notional_ratio']:.6f}x**")
+              print(f"- Stress margin rejects: **{s['margin_reject_days']}**, halted={s['halted']}")
+              print(f"- Stress net alpha / turnover: **{e['net_alpha_per_turnover_bps']:.6f} bps**")
+              print('- This is a checkpoint, not the final >=80% promotion.')
+          PY
+          gh pr comment 22 --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
