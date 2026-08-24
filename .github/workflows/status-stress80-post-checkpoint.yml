@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after turnover-first five-window quick gate registration.
+# Refresh after survivor-aware integer TDD registration.
 on:
   push:
     branches:
