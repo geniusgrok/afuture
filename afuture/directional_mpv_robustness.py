@@ -18,14 +18,34 @@ from .directional_robustness import MarginAwareDirectionalProductionAcceptance
 class MPVDirectionalProductionAcceptance(MarginAwareDirectionalProductionAcceptance):
     """Research adapter that reallocates only within the validated target envelope."""
 
-    def __init__(self, config=None) -> None:
+    def __init__(self, config=None, *, historical_seed_events: pd.DataFrame | None = None) -> None:
         super().__init__(config)
+        self._mpv_historical_seed_events = (
+            pd.DataFrame() if historical_seed_events is None else historical_seed_events.copy()
+        )
         self._mpv_observed_event_rows: list[dict] = []
         self._mpv_cost_rate = 0.0
         self.last_mpv_optimization: MPVResearchOptimization | None = None
 
+    def _seed_rows_before(self, decision_start) -> list[dict]:
+        if self._mpv_historical_seed_events.empty:
+            return []
+        frame = self._mpv_historical_seed_events.copy()
+        if "date" not in frame.columns:
+            return []
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+        cutoff = pd.Timestamp(decision_start).normalize()
+        frame = frame[frame["date"].notna() & (frame["date"] < cutoff)]
+        return [dict(row) for row in frame.to_dict(orient="records")]
+
     def simulate(self, raw, weights, *, cost_bps: float, prepared=None):
-        self._mpv_observed_event_rows = []
+        index = pd.DatetimeIndex(
+            pd.to_datetime(getattr(weights, "index", []), errors="coerce")
+        )
+        valid = index[~index.isna()]
+        self._mpv_observed_event_rows = (
+            self._seed_rows_before(valid.min()) if len(valid) else []
+        )
         self._mpv_cost_rate = float(cost_bps) / 10000.0
         self.last_mpv_optimization = None
         return super().simulate(raw, weights, cost_bps=cost_bps, prepared=prepared)

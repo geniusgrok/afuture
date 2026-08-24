@@ -2,8 +2,10 @@
 
 The evaluator reuses the frozen PR #17 execution-aligned product weights and the exact
 concrete-contract artifact used by the validated Production baseline. It does not rebuild
-or retune Alpha. Every reporting window remains an independent account experiment, while
-MPV learns only from Production audit events observed inside that causal simulation.
+or retune Alpha. Every reporting window remains an independent account experiment. MPV
+forecast evidence is warmed only by events from a single chronological candidate training
+path whose event date is strictly earlier than the reporting-window start; account state,
+margin, governor and high-watermark still reset independently per published window.
 """
 from __future__ import annotations
 
@@ -81,20 +83,61 @@ def _economic_summary(attribution: dict) -> dict[str, float]:
     }
 
 
+def _training_result(
+    *,
+    config: ProductionMechanicsConfig,
+    specific_raw: pd.DataFrame,
+    weights: pd.DataFrame,
+    prepared,
+    cost_bps: float,
+):
+    trainer = MPVDirectionalProductionAcceptance(config)
+    return trainer.simulate(
+        specific_raw,
+        weights,
+        cost_bps=cost_bps,
+        prepared=prepared,
+    )
+
+
 def evaluate_with_weights(specific_raw: pd.DataFrame, weights: pd.DataFrame) -> dict:
+    base_config = ProductionMechanicsConfig(
+        initial_capital=mechanics.INITIAL_CAPITAL,
+        margin_rate_proxy=mechanics.BASE_MARGIN_PROXY,
+    )
+    stress_config = ProductionMechanicsConfig(
+        initial_capital=mechanics.INITIAL_CAPITAL,
+        margin_rate_proxy=mechanics.STRESS_MARGIN_PROXY,
+    )
+    preparation_sim = MPVDirectionalProductionAcceptance(base_config)
+    prepared = preparation_sim.prepare_contracts(specific_raw)
+
+    # One chronological candidate path provides only pre-window model evidence. The
+    # account/reporting simulations below still reset independently exactly like the
+    # validated Production-mechanics evaluator. Filtering is enforced again inside the
+    # simulator from each window's first decision date, so future events in this pool can
+    # never seed an earlier window.
+    base_training = _training_result(
+        config=base_config,
+        specific_raw=specific_raw,
+        weights=weights,
+        prepared=prepared,
+        cost_bps=mechanics.BASE_COST_BPS,
+    )
+    stress_training = _training_result(
+        config=stress_config,
+        specific_raw=specific_raw,
+        weights=weights,
+        prepared=prepared,
+        cost_bps=mechanics.STRESS_COST_BPS,
+    )
+
     base_sim = MPVDirectionalProductionAcceptance(
-        ProductionMechanicsConfig(
-            initial_capital=mechanics.INITIAL_CAPITAL,
-            margin_rate_proxy=mechanics.BASE_MARGIN_PROXY,
-        )
+        base_config, historical_seed_events=base_training.events
     )
     stress_sim = MPVDirectionalProductionAcceptance(
-        ProductionMechanicsConfig(
-            initial_capital=mechanics.INITIAL_CAPITAL,
-            margin_rate_proxy=mechanics.STRESS_MARGIN_PROXY,
-        )
+        stress_config, historical_seed_events=stress_training.events
     )
-    prepared = base_sim.prepare_contracts(specific_raw)
     base, base_daily, base_events = mechanics._simulation_report(
         base_sim,
         specific_raw,
@@ -123,15 +166,30 @@ def evaluate_with_weights(specific_raw: pd.DataFrame, weights: pd.DataFrame) -> 
             initial_capital=mechanics.INITIAL_CAPITAL,
         ),
     }
+    weight_index = pd.DatetimeIndex(weights.index)
     return {
         "role": "research-only Production MPV integer allocation",
-        "strategy_version": "production_mpv_integer_v1",
+        "strategy_version": "production_mpv_integer_v1_causal_warmup",
         "selection_frozen": True,
         "parameter_search": False,
         "production_wiring": False,
         "decision_horizon": "observed completed intraday Production PnL per lot-segment",
         "weight_source": "frozen PR #17 execution_aligned_weights.csv",
         "state_reset_per_window": True,
+        "mpv_estimator_causal_warmup": {
+            "account_state_reset_per_window": True,
+            "seed_rule": "candidate training event date < reporting-window first decision date",
+            "training_start": str(weight_index.min().date()) if len(weight_index) else "",
+            "training_end": str(weight_index.max().date()) if len(weight_index) else "",
+            "base_training_event_count": int(len(base_training.events)),
+            "stress_training_event_count": int(len(stress_training.events)),
+            "base_training_halted": bool(
+                not base_training.daily.empty and base_training.daily["halted"].astype(bool).any()
+            ),
+            "stress_training_halted": bool(
+                not stress_training.daily.empty and stress_training.daily["halted"].astype(bool).any()
+            ),
+        },
         "base": base,
         "stress": stress,
         "turnover_attribution": {
@@ -154,7 +212,8 @@ def evaluate_with_weights(specific_raw: pd.DataFrame, weights: pd.DataFrame) -> 
         "limitations": [
             "historical broker margin schedules remain unavailable; the established Production L3 margin proxy is unchanged",
             "the first MPV candidate uses completed intraday Production gross PnL plus exact current turnover cost; unsupported risk/correlation penalty weights are not fabricated",
-            "each published account window starts flat with fresh account state and therefore also starts without prior-window Production outcome evidence",
+            "published account windows reset capital, positions, governor and high-watermark, while MPV receives only causally prior candidate events from one chronological training path",
+            "candidate-owned outcome learning remains subject to endogenous selection/off-policy censoring when the candidate stops carrying a product",
             "research results are not live runtime wiring and are not a forecast or guarantee of future return",
         ],
         "_base_daily": base_daily,

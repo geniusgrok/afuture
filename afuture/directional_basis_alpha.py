@@ -17,11 +17,15 @@ def build_basis_carry_weights(
     products: Iterable[str],
     max_gross_leverage: float = HARD_MAX_GROSS_LEVERAGE,
 ) -> pd.DataFrame:
-    """Use D completed dominant basis sign for D+1 equal-gross product direction.
+    """Use D completed dominant basis carry for D+1 equal-gross direction.
 
-    The candidate has no fitted threshold, lookback or cross-sectional rank. Missing or
-    zero basis evidence produces zero exposure. A target session only consumes basis from
-    the immediately preceding target session, so stale evidence never carries forward.
+    AKShare 1.18.84 reports ``dom_basis_rate`` as
+    ``dominant_futures_price / spot_price - 1``. Therefore a positive value is futures
+    premium/contango and has negative convergence carry for a long future; carry direction
+    is the *negative* sign of that field. The candidate has no fitted threshold, lookback
+    or cross-sectional rank. Missing or zero basis evidence produces zero exposure. A
+    target session only consumes basis from the immediately preceding target session, so
+    stale evidence never carries forward.
     """
     gross_cap = float(max_gross_leverage)
     if not isfinite(gross_cap) or not 0.0 < gross_cap <= HARD_MAX_GROSS_LEVERAGE:
@@ -57,8 +61,8 @@ def build_basis_carry_weights(
         .reindex(index=index, columns=ordered_products)
         .astype(float)
     )
-    completed_sign = np.sign(rates).fillna(0.0)
-    signal = completed_sign.shift(1).fillna(0.0)
+    completed_carry_sign = -np.sign(rates).fillna(0.0)
+    signal = completed_carry_sign.shift(1).fillna(0.0)
     active_count = (signal.abs() > 0.0).sum(axis=1).astype(float)
     per_product = pd.Series(0.0, index=index, dtype=float)
     active = active_count > 0.0
