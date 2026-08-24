@@ -75,3 +75,32 @@ def test_overlay_never_increases_raw_daily_gross():
 
     assert (result.abs().sum(axis=1) <= raw.abs().sum(axis=1) + 1e-12).all()
     assert (result.abs().sum(axis=1) <= 2.0 + 1e-12).all()
+
+
+def test_night_session_is_assigned_to_next_frozen_trading_day():
+    from afuture.directional_hourly_timing import build_completed_hourly_state
+
+    days = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"])
+    hourly = pd.DataFrame(
+        [
+            {"datetime": "2026-01-05 21:00:00", "open": 100.0, "close": 101.0, "volume": 10, "hold": 100, "symbol": "M2605", "product": "M"},
+            {"datetime": "2026-01-06 14:00:00", "open": 101.0, "close": 102.0, "volume": 20, "hold": 110, "symbol": "M2605", "product": "M"},
+        ]
+    )
+
+    state = build_completed_hourly_state(hourly, trading_days=days)
+
+    assert state.loc[pd.Timestamp("2026-01-06"), "M"] == 1.0
+    assert pd.Timestamp("2026-01-05") not in state.dropna(how="all").index
+
+
+def test_completed_state_moves_exactly_one_frozen_session_forward():
+    from afuture.directional_hourly_timing import shift_completed_state_to_next_session
+
+    days = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07"])
+    completed = pd.DataFrame({"M": [1.0]}, index=pd.to_datetime(["2026-01-06"]))
+
+    target = shift_completed_state_to_next_session(completed, trading_days=days)
+
+    assert pd.isna(target.loc[pd.Timestamp("2026-01-06"), "M"])
+    assert target.loc[pd.Timestamp("2026-01-07"), "M"] == 1.0
