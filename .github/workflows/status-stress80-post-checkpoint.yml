@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after OI direction-change confirmation GREEN implementation.
+# Refresh after OI-reversal plus freeze-new-product quick Production gate registration.
 on:
   push:
     branches:
