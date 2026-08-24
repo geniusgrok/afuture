@@ -1,5 +1,7 @@
 import pandas as pd
 
+# TDD trigger checkpoint: workflow is registered while implementation is intentionally absent.
+
 
 def _api():
     from afuture.directional_60m_oi_all_dce import (
