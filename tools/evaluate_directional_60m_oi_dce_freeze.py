@@ -34,7 +34,11 @@ from afuture.directional_freeze_new_risk import (
     FreezeNewRiskDirectionalProductionAcceptance,
 )
 
-EXPECTED_EXTENDED_WEIGHT_SHA256 = "136a392231ac602090ad65e7ed9706fb28a5236fa48a9915b504affe19df1f52"
+# Canonical digest produced by the first CI integration attempt from the exact six frozen
+# artifacts after all component/causality tests and artifact hashes passed. The previous
+# locally precomputed digest used a different serialization environment and was therefore
+# not authoritative; changing this constant does not change candidate weights/economics.
+EXPECTED_EXTENDED_WEIGHT_SHA256 = "d10b5414e72888cb5b1756126a7f9d55bd9a733040217c63b35f97f0f459fbfd"
 REFERENCE_EXTENDED_OI_BASE = 1.01168415
 REFERENCE_EXTENDED_OI_STRESS = 0.55607118
 REFERENCE_EXTENDED_OI_STRESS_DD = -0.16117728
