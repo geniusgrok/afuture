@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after freeze-new-product-only five-window quick Production gate registration.
+# Refresh after OI direction-change confirmation TDD registration.
 on:
   push:
     branches:
