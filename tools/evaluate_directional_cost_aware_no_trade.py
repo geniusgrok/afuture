@@ -29,6 +29,8 @@ LEGACY_CANDIDATE_TURNOVER = 440.8444
 LEGACY_BASE_FULL_RECENT = 1.685521
 LEGACY_STRESS_FULL_RECENT = 1.134880
 LINEAGE_TOLERANCE = 5e-5
+FULL_RECENT_START = pd.Timestamp("2024-08-21")
+FULL_RECENT_END = pd.Timestamp("2026-08-20")
 
 
 def load_frozen_weights(path: Path) -> pd.DataFrame:
@@ -74,10 +76,17 @@ def _metrics(series: pd.Series) -> dict[str, dict]:
     }
 
 
-def _weight_turnover(weights: pd.DataFrame) -> float:
+def _weight_turnover(
+    weights: pd.DataFrame,
+    *,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+) -> float:
     turnover = weights.diff().abs().sum(axis=1)
     if len(turnover):
         turnover.iloc[0] = float(weights.iloc[0].abs().sum())
+    if start is not None or end is not None:
+        turnover = turnover.loc[start:end]
     return float(turnover.sum())
 
 
@@ -112,11 +121,11 @@ def _promotion_gate(report: dict) -> dict:
             reasons.append(f"stress_{window}_dd_exceeds_30pct")
         if stress[window]["halted"]:
             reasons.append(f"stress_{window}_halted")
-    if report["stress"]["windows"]["full_recent"]["halted"]:
+    if stress["full_recent"]["halted"]:
         reasons.append("stress_full_recent_halted")
-    if report["base"]["windows"]["full_recent"]["halted"]:
+    if base["full_recent"]["halted"]:
         reasons.append("base_full_recent_halted")
-    if report["stress"]["windows"]["full_recent"]["max_realized_gross_notional_ratio"] > 2.0 + 1e-10:
+    if stress["full_recent"]["max_realized_gross_notional_ratio"] > 2.0 + 1e-10:
         reasons.append("stress_realized_gross_above_2x")
     return {"passed": not reasons, "reasons": reasons}
 
@@ -153,8 +162,16 @@ def evaluate(
                 cost_bps=cost,
             )
         )
-    baseline_turnover = _weight_turnover(baseline_aligned)
-    candidate_turnover = _weight_turnover(candidate_aligned)
+    baseline_turnover = _weight_turnover(
+        baseline_aligned,
+        start=FULL_RECENT_START,
+        end=FULL_RECENT_END,
+    )
+    candidate_turnover = _weight_turnover(
+        candidate_aligned,
+        start=FULL_RECENT_START,
+        end=FULL_RECENT_END,
+    )
     cheap_base = float(cheap["base"]["full_recent"]["annualized_return"])
     cheap_stress = float(cheap["stress"]["full_recent"]["annualized_return"])
     lineage_checks = {
@@ -170,6 +187,7 @@ def evaluate(
         "production_wiring": False,
         "rule": {
             "completed_product_return_sessions": 20,
+            "completed_product_return_definition": "arithmetic sum of 20 completed daily pct returns",
             "benefit_horizon_sessions": 3,
             "one_way_hurdle_bps": 15.0,
             "suppressed_actions": ["entry", "same_sign_absolute_increase"],
@@ -177,6 +195,7 @@ def evaluate(
         },
         "cheap_screen": cheap,
         "weight_turnover": {
+            "window": "full_recent",
             "baseline": baseline_turnover,
             "candidate": candidate_turnover,
         },
