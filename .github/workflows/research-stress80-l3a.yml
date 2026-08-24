@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]"
+      - run: python -m pip install -e ".[dev]" akshare==1.18.84
       - name: Download frozen historical inputs
         env:
           GH_TOKEN: ${{ github.token }}
