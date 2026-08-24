@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: locate explicit integer-tracking L3 trigger 144e3850.
+# Refresh point: locate freeze-new-risk RED after 02444b81.
 on:
   push:
     branches:
