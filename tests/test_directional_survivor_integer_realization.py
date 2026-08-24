@@ -14,10 +14,10 @@ def test_recovery_uses_only_floor_or_one_ceil_and_preserves_direction():
     _, recover = _api()
     result = recover(
         floor_lots={"A2501": 1, "M2501": -1},
-        ideal_lots={"A2501": 1.7, "M2501": -1.2},
+        ideal_lots={"A2501": 1.7, "M2501": -1.3},
         lot_notionals={"A2501": 100.0, "M2501": 100.0},
         per_lot_margin={"A2501": 10.0, "M2501": 10.0},
-        gross_budget=290.0,
+        gross_budget=300.0,
         margin_budget=30.0,
         max_contract_volume=35,
     )
@@ -56,15 +56,26 @@ def test_equal_fractional_tie_is_deterministic_and_half_rounds_down():
     _, recover = _api()
     result = recover(
         floor_lots={},
-        ideal_lots={"M2501": 0.8, "A2501": 0.8, "C2501": 0.5},
-        lot_notionals={"M2501": 100.0, "A2501": 100.0, "C2501": 100.0},
-        per_lot_margin={"M2501": 10.0, "A2501": 10.0, "C2501": 10.0},
+        ideal_lots={"M2501": 0.8, "A2501": 0.8},
+        lot_notionals={"M2501": 100.0, "A2501": 100.0},
+        per_lot_margin={"M2501": 10.0, "A2501": 10.0},
         gross_budget=160.0,
         margin_budget=30.0,
         max_contract_volume=35,
     )
     # Only one 100-notional ceil fits the continuous 160 gross. A wins the exact tie.
     assert result == {"A2501": 1}
+
+    half = recover(
+        floor_lots={},
+        ideal_lots={"C2501": 0.5},
+        lot_notionals={"C2501": 100.0},
+        per_lot_margin={"C2501": 10.0},
+        gross_budget=50.0,
+        margin_budget=30.0,
+        max_contract_volume=35,
+    )
+    assert half == {}
 
 
 def test_max_contract_volume_is_never_exceeded():
