@@ -1,6 +1,7 @@
 name: research-stress80-oi-aware-freeze-l3
 
 # Fixed 9-product OI confirmation plus OI-aware selective freeze. No parameter search.
+# Explicit post-registration trigger; candidate economics are unchanged.
 on:
   push:
     branches:
