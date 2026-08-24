@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: read 60m OI evaluator GREEN result.
+# Refresh point: confirm post-lazy-import 60m OI TDD GREEN.
 on:
   push:
     branches:
