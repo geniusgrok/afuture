@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: locate OI + freeze Production L3 after cb7ae4cb.
+# Refresh point: locate DCE key-month 60m coverage after 48673c58.
 on:
   push:
     branches:
