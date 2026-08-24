@@ -29,7 +29,6 @@ from afuture.directional_60m_oi_confirmation import (
 
 import evaluate_aggressive_directional as aggressive
 import evaluate_directional_production_mechanics as mechanics
-import evaluate_return_target_specific as specific
 
 BASE_COST_BPS = 5.0
 STRESS_COST_BPS = 15.0
@@ -98,6 +97,10 @@ def build_candidate_weights(base_weights: pd.DataFrame, bars_60m: pd.DataFrame) 
 
 
 def _cheap_report(specific_raw: pd.DataFrame, weights: pd.DataFrame) -> dict:
+    # This historical helper imports the network fetch module at module load. Keep it
+    # lazy so pure gate/unit tests do not acquire AKShare as a core dependency.
+    import evaluate_return_target_specific as specific
+
     _close, gap, intraday, _selections, _quality = specific.build_roll_safe_execution_returns(specific_raw)
     weights = weights.reindex(index=gap.index, columns=gap.columns, fill_value=0.0).fillna(0.0)
     result = {}
@@ -126,10 +129,7 @@ def baseline_reproduction_gate(*, cheap: dict, production: dict) -> dict:
         "production_base": abs(float(production["base"]["windows"]["full_recent"]["annualized_return"]) - EXPECTED_PRODUCTION_BASE) <= BASELINE_TOLERANCE,
         "production_stress": abs(float(production["stress"]["windows"]["full_recent"]["annualized_return"]) - EXPECTED_PRODUCTION_STRESS) <= BASELINE_TOLERANCE,
     }
-    return {
-        "passed": bool(all(checks.values())),
-        "checks": checks,
-    }
+    return {"passed": bool(all(checks.values())), "checks": checks}
 
 
 def production_promotion_gate(*, base: dict, stress: dict) -> dict:
@@ -164,29 +164,18 @@ def production_promotion_gate(*, base: dict, stress: dict) -> dict:
     return {"passed": not reasons, "reasons": reasons}
 
 
-def evaluate(
-    *,
-    specific_raw: pd.DataFrame,
-    base_weights: pd.DataFrame,
-    bars_60m: pd.DataFrame,
-) -> dict:
+def evaluate(*, specific_raw: pd.DataFrame, base_weights: pd.DataFrame, bars_60m: pd.DataFrame) -> dict:
     candidate_weights, lagged_flow = build_candidate_weights(base_weights, bars_60m)
 
     cheap_baseline = _cheap_report(specific_raw, base_weights)
     cheap_candidate = _cheap_report(specific_raw, candidate_weights)
     production_baseline = mechanics.evaluate_with_weights(specific_raw, base_weights)
-    baseline_gate = baseline_reproduction_gate(
-        cheap=cheap_baseline,
-        production=production_baseline,
-    )
+    baseline_gate = baseline_reproduction_gate(cheap=cheap_baseline, production=production_baseline)
     if not baseline_gate["passed"]:
         raise RuntimeError(f"60m OI baseline lineage reproduction failed: {baseline_gate}")
 
     production_candidate = mechanics.evaluate_with_weights(specific_raw, candidate_weights)
-    promotion = production_promotion_gate(
-        base=production_candidate["base"],
-        stress=production_candidate["stress"],
-    )
+    promotion = production_promotion_gate(base=production_candidate["base"], stress=production_candidate["stress"])
 
     full_index = base_weights.loc[pd.Timestamp("2024-08-21"):pd.Timestamp("2026-08-20")].index
     supported_activity = {}
@@ -208,10 +197,7 @@ def evaluate(
         },
         "decision_rule": "D dominant-contract first-open to last-close direction when D hold_last > hold_first; D+1 only; suppress only new/same-sign increases",
         "baseline_reproduction": baseline_gate,
-        "cheap": {
-            "baseline": cheap_baseline,
-            "candidate": cheap_candidate,
-        },
+        "cheap": {"baseline": cheap_baseline, "candidate": cheap_candidate},
         "production": {
             "baseline": {key: value for key, value in production_baseline.items() if not key.startswith("_")},
             "candidate": {key: value for key, value in production_candidate.items() if not key.startswith("_")},
@@ -256,18 +242,15 @@ def main() -> None:
         base_weights=load_frozen_weights(weights_path),
         bars_60m=load_60m([prior_60m, recent_60m]),
     )
-    report["_candidate_weights"].stack().rename("weight").reset_index().query(
-        "abs(weight) > 1e-15"
-    ).to_csv(runtime / "stress80_60m_oi_weights.csv", index=False)
+    report["_candidate_weights"].stack().rename("weight").reset_index().query("abs(weight) > 1e-15").to_csv(
+        runtime / "stress80_60m_oi_weights.csv", index=False
+    )
     report["_candidate_base_daily"].to_csv(runtime / "stress80_60m_oi_base_daily.csv", index=False)
     report["_candidate_stress_daily"].to_csv(runtime / "stress80_60m_oi_stress_daily.csv", index=False)
     report["_candidate_base_events"].to_csv(runtime / "stress80_60m_oi_base_events.csv", index=False)
     report["_candidate_stress_events"].to_csv(runtime / "stress80_60m_oi_stress_events.csv", index=False)
     output = runtime / "stress80_60m_oi_production_report.json"
-    output.write_text(
-        json.dumps(_jsonable(report), ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    output.write_text(json.dumps(_jsonable(report), ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(_jsonable(report), ensure_ascii=False, indent=2))
 
 
