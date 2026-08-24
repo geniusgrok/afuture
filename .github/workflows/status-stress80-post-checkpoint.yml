@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after freeze-new-product-only GREEN implementation.
+# Refresh after freeze-new-product-only five-window quick Production gate registration.
 on:
   push:
     branches:
