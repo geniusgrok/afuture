@@ -132,3 +132,124 @@ def score_marginal_production_value(
         if name != "expected_incremental_gross_alpha" and value < 0.0:
             raise ValueError(f"{name} must be nonnegative")
     return MarginalProductionValue(action=action, **components)
+
+
+@dataclass(frozen=True)
+class CausalProductValueEstimate:
+    product: str
+    product_support: float
+    prior_support: float
+    product_weight: float
+    global_fallback_weight: float
+    product_rate_gross: float
+    global_rate_gross: float
+    product_rate_cost: float
+    global_rate_cost: float
+    product_rate_net: float
+    global_rate_net: float
+    expected_gross_alpha_per_lot_segment: float
+    expected_transaction_cost_per_lot_segment: float
+    expected_net_alpha_per_lot_segment: float
+    insufficient_evidence: bool = False
+
+
+def estimate_causal_product_value(*, evidence, product: str) -> CausalProductValueEstimate:
+    """Shrink completed product Production economics toward completed global evidence.
+
+    The prior strength is the cross-sectional median completed lot-segment support. It is
+    derived from the evidence snapshot rather than a searched lookback/threshold knob.
+    """
+    required = {
+        "gross_pnl",
+        "transaction_cost",
+        "net_alpha",
+        "lot_segment_exposure",
+    }
+    if evidence is None or not required.issubset(set(getattr(evidence, "columns", ()))):
+        return CausalProductValueEstimate(
+            product=str(product).upper(),
+            product_support=0.0,
+            prior_support=0.0,
+            product_weight=0.0,
+            global_fallback_weight=1.0,
+            product_rate_gross=0.0,
+            global_rate_gross=0.0,
+            product_rate_cost=0.0,
+            global_rate_cost=0.0,
+            product_rate_net=0.0,
+            global_rate_net=0.0,
+            expected_gross_alpha_per_lot_segment=0.0,
+            expected_transaction_cost_per_lot_segment=0.0,
+            expected_net_alpha_per_lot_segment=0.0,
+            insufficient_evidence=True,
+        )
+
+    frame = evidence.copy()
+    frame.index = [str(value).upper() for value in frame.index]
+    support = frame["lot_segment_exposure"].astype(float).clip(lower=0.0)
+    positive_support = support[support > 0.0]
+    total_support = float(positive_support.sum())
+    if total_support <= 0.0:
+        return CausalProductValueEstimate(
+            product=str(product).upper(),
+            product_support=0.0,
+            prior_support=0.0,
+            product_weight=0.0,
+            global_fallback_weight=1.0,
+            product_rate_gross=0.0,
+            global_rate_gross=0.0,
+            product_rate_cost=0.0,
+            global_rate_cost=0.0,
+            product_rate_net=0.0,
+            global_rate_net=0.0,
+            expected_gross_alpha_per_lot_segment=0.0,
+            expected_transaction_cost_per_lot_segment=0.0,
+            expected_net_alpha_per_lot_segment=0.0,
+            insufficient_evidence=True,
+        )
+
+    global_gross = float(frame.loc[support > 0.0, "gross_pnl"].astype(float).sum()) / total_support
+    global_cost = float(frame.loc[support > 0.0, "transaction_cost"].astype(float).sum()) / total_support
+    global_net = float(frame.loc[support > 0.0, "net_alpha"].astype(float).sum()) / total_support
+    prior_support = float(positive_support.median())
+
+    key = str(product).upper()
+    product_support = float(support.get(key, 0.0))
+    if product_support > 0.0:
+        row = frame.loc[key]
+        if getattr(row, "ndim", 1) != 1:
+            row = row.iloc[-1]
+        product_gross = float(row["gross_pnl"]) / product_support
+        product_cost = float(row["transaction_cost"]) / product_support
+        product_net = float(row["net_alpha"]) / product_support
+        product_weight = product_support / (product_support + prior_support)
+    else:
+        product_gross = global_gross
+        product_cost = global_cost
+        product_net = global_net
+        product_weight = 0.0
+    global_weight = 1.0 - product_weight
+
+    return CausalProductValueEstimate(
+        product=key,
+        product_support=product_support,
+        prior_support=prior_support,
+        product_weight=product_weight,
+        global_fallback_weight=global_weight,
+        product_rate_gross=product_gross,
+        global_rate_gross=global_gross,
+        product_rate_cost=product_cost,
+        global_rate_cost=global_cost,
+        product_rate_net=product_net,
+        global_rate_net=global_net,
+        expected_gross_alpha_per_lot_segment=(
+            product_weight * product_gross + global_weight * global_gross
+        ),
+        expected_transaction_cost_per_lot_segment=(
+            product_weight * product_cost + global_weight * global_cost
+        ),
+        expected_net_alpha_per_lot_segment=(
+            product_weight * product_net + global_weight * global_net
+        ),
+        insufficient_evidence=False,
+    )
