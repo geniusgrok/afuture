@@ -2,9 +2,9 @@
 
 The filter is deliberately narrow: it may suppress only new risk and same-direction
 absolute increases. Reductions, exits and reversals are never delayed. A target-session
-decision uses only a completed 20-session product return through the previous close and
-permits an increase only when the direction-conditioned three-session benefit estimate
-strictly exceeds the fixed 15bp one-way cost hurdle.
+decision uses only the arithmetic sum of the 20 completed daily product returns through
+the previous close and permits an increase only when the direction-conditioned three-
+session benefit estimate strictly exceeds the fixed 15bp one-way cost hurdle.
 """
 from __future__ import annotations
 
@@ -30,12 +30,15 @@ def _clean(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _completed_twenty_session_return(close_prices: pd.DataFrame) -> pd.DataFrame:
     close = _clean(close_prices).where(lambda item: item > 0.0)
-    # At target session D the most recent admissible close is D-1. Therefore the
-    # completed 20-session return available at D is close[D-1] / close[D-21] - 1.
-    return close.pct_change(
-        periods=TREND_LOOKBACK_SESSIONS,
-        fill_method=None,
-    ).shift(1)
+    # This intentionally reproduces the archived PR #17 research definition: sum the
+    # 20 individually completed daily percentage returns, then lag one target session.
+    # It is not a 20-session compounded price return. The exact definition matters for
+    # the archived 440.8444x / 168.5521% / 113.4880% cheap-screen lineage.
+    daily = close.pct_change(fill_method=None)
+    return daily.rolling(
+        TREND_LOOKBACK_SESSIONS,
+        min_periods=TREND_LOOKBACK_SESSIONS,
+    ).sum().shift(1)
 
 
 def apply_cost_aware_no_trade(
