@@ -1,4 +1,9 @@
-"""Production candidate using completed product Alpha efficiency for selection."""
+"""Research-only rejected completed product Alpha-efficiency selector.
+
+This wrapper is retained to reproduce Candidate B's cheap Float and fixed Production
+screens. It is intentionally not reachable from ``runtime_factory`` after Candidate B
+failed the predeclared Production economics gates.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -17,7 +22,7 @@ from .execution_aligned_policy import (
 
 @dataclass(frozen=True)
 class AlphaEfficiencyDirectionalPolicy:
-    """Conservative product selector layered after the frozen 96-template core."""
+    """Reproduce the rejected completed product Alpha-efficiency overlay for research."""
 
     products: tuple[str, ...]
     core: ExecutionAlignedAggressivePolicy = field(init=False, repr=False)
