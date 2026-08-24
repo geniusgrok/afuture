@@ -1,6 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
+# Refresh point: historical-margin RED and full-history data collection.
 on:
   push:
     branches:
