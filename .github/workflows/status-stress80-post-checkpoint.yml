@@ -1,6 +1,6 @@
 name: status-stress80-post-checkpoint
 
-# Refresh after turnover-first survivor TDD registration.
+# Refresh after turnover-first survivor GREEN implementation.
 on:
   push:
     branches:
