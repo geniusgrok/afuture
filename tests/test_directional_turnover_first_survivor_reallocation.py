@@ -31,7 +31,7 @@ def test_turnover_first_keeps_previous_survivor_allocation_when_feasible():
     assert result.loc[index[1], "C"] == 0.0
 
 
-def test_when_previous_gross_is_insufficient_secondary_objective_tracks_original():
+def test_when_previous_gross_is_insufficient_secondary_tracks_then_tertiary_is_proportional():
     reallocate = _api()
     index = pd.to_datetime(["2026-01-05", "2026-01-06"])
     original = pd.DataFrame(
@@ -44,8 +44,11 @@ def test_when_previous_gross_is_insufficient_secondary_objective_tracks_original
     result = reallocate(original_weights=original, approved_weights=approved)
 
     assert result.loc[index[0], "A"] == 1.0
-    assert result.loc[index[1], "A"] == 1.0
-    assert result.loc[index[1], "M"] == 1.0
+    # Day 2 needs one extra gross unit beyond yesterday's A=1. First fill M's 0.5
+    # original-target deficit; the remaining 0.5 is tracking-indifferent and therefore
+    # split in the original survivor 0.5/0.5 proportions.
+    assert result.loc[index[1], "A"] == 1.25
+    assert result.loc[index[1], "M"] == 0.75
 
 
 def test_support_sign_and_original_gross_are_hard_constraints():
