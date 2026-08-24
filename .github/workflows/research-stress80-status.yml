@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: locate OI-aware selective-freeze L3 after 89c4b4dc.
+# Refresh point: second direct lookup for OI-aware selective-freeze L3 after 89c4b4dc.
 on:
   push:
     branches:
