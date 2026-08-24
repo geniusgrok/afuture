@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: locate DCE OI extension RED after a1aaaa8c.
+# Refresh point: locate DCE OI extension GREEN/L3 after 053672e7.
 on:
   push:
     branches:
