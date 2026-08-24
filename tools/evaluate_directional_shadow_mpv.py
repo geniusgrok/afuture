@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from afuture.directional_acceptance import ProductionMechanicsConfig
 from afuture.directional_attribution import summarize_production_attribution
+from afuture.directional_robustness import MarginAwareDirectionalProductionAcceptance
 from afuture.directional_shadow_mpv_robustness import (
     SHADOW_OBJECTIVE_COST_BPS,
     ShadowMPVDirectionalProductionAcceptance,
@@ -76,14 +77,40 @@ def _economics(events: pd.DataFrame, daily: pd.DataFrame) -> dict[str, float]:
 
 
 def _baseline_reproduction(specific_raw: pd.DataFrame, weights: pd.DataFrame) -> tuple[dict, dict]:
-    report = production.evaluate_with_weights(specific_raw, weights)
-    base_value = float(report["base"]["windows"]["full_recent"]["annualized_return"])
-    stress_value = float(report["stress"]["windows"]["full_recent"]["annualized_return"])
+    """Reproduce only the principal fixed window; do not rerun seven baseline windows."""
+    window = weights.loc[pd.Timestamp("2024-08-21") : pd.Timestamp("2026-08-20")].copy()
+    base_sim = MarginAwareDirectionalProductionAcceptance(
+        ProductionMechanicsConfig(
+            initial_capital=production.INITIAL_CAPITAL,
+            margin_rate_proxy=production.BASE_MARGIN_PROXY,
+        )
+    )
+    stress_sim = MarginAwareDirectionalProductionAcceptance(
+        ProductionMechanicsConfig(
+            initial_capital=production.INITIAL_CAPITAL,
+            margin_rate_proxy=production.STRESS_MARGIN_PROXY,
+        )
+    )
+    prepared = base_sim.prepare_contracts(specific_raw)
+    base_result = base_sim.simulate(
+        specific_raw,
+        window,
+        cost_bps=production.BASE_COST_BPS,
+        prepared=prepared,
+    )
+    stress_result = stress_sim.simulate(
+        specific_raw,
+        window,
+        cost_bps=production.STRESS_COST_BPS,
+        prepared=prepared,
+    )
+    base_stats = production._result_stats(base_result)
+    stress_stats = production._result_stats(stress_result)
     checks = {
-        "base": abs(base_value - BASELINE_BASE_ANNUALIZED) <= BASELINE_TOLERANCE,
-        "stress": abs(stress_value - BASELINE_STRESS_ANNUALIZED) <= BASELINE_TOLERANCE,
+        "base": abs(float(base_stats["annualized_return"]) - BASELINE_BASE_ANNUALIZED) <= BASELINE_TOLERANCE,
+        "stress": abs(float(stress_stats["annualized_return"]) - BASELINE_STRESS_ANNUALIZED) <= BASELINE_TOLERANCE,
     }
-    return report, checks
+    return {"base": base_stats, "stress": stress_stats}, checks
 
 
 def _candidate_simulation(
@@ -170,6 +197,7 @@ def evaluate(
             "baseline_reproduction": reproduction,
             "candidate_evaluated": False,
             "reason": "fixed Production baseline did not reproduce",
+            "baseline": baseline,
         }
 
     candidate, base_daily, base_events, stress_daily, stress_events = _candidate_simulation(
@@ -194,10 +222,7 @@ def evaluate(
             "last": pd.Timestamp(shadow_outcomes["date"].max()).date().isoformat(),
         },
         "specific_quality": quality,
-        "baseline": {
-            "base": baseline["base"],
-            "stress": baseline["stress"],
-        },
+        "baseline": baseline,
         "candidate": candidate,
         "economics": {
             "base": _economics(base_events, base_daily),
