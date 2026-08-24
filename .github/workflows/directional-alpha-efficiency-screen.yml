@@ -12,6 +12,7 @@ permissions:
 jobs:
   screen:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -83,7 +84,129 @@ jobs:
           if not all(summary["gate"].values()):
               raise SystemExit("Candidate B failed the predeclared cheap screen; Production L3 is not justified")
           PY
-      - name: Upload cheap-screen evidence
+      - name: Run exactly one fixed Production L3 for Candidate B
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          import pandas as pd
+
+          sys.path.insert(0, "tools")
+          import evaluate_alpha_efficiency_target as alpha_target
+          import evaluate_directional_production_mechanics as mechanics
+
+          runtime = Path("runtime")
+          specific = pd.read_csv(runtime / "return_target_specific_contracts.csv")
+          continuous = pd.read_csv(runtime / "broad_daily_universe.csv")
+
+          # Recompute the PR17 baseline and Candidate B from the same frozen inputs.
+          # This is the one Production-mechanics gate for Candidate B; no parameter
+          # changes are permitted after this result.
+          baseline = mechanics.evaluate(specific, continuous)
+          weights = alpha_target.generate_alpha_efficiency_weights(continuous)
+          historical = alpha_target.evaluate(specific, continuous)
+          candidate = mechanics.evaluate_with_weights(
+              specific,
+              weights,
+              float_report=historical,
+          )
+          candidate["role"] = "production-mechanics proxy acceptance for product alpha-efficiency Candidate B"
+          candidate["selection_frozen"] = True
+          candidate["parameter_search"] = False
+          candidate["strategy_version"] = "product_alpha_efficiency_candidate_b"
+
+          def jsonable(report):
+              return {key: value for key, value in report.items() if not key.startswith("_")}
+
+          (runtime / "alpha_efficiency_baseline_production_report.json").write_text(
+              json.dumps(jsonable(baseline), indent=2, sort_keys=True), encoding="utf-8"
+          )
+          (runtime / "alpha_efficiency_production_report.json").write_text(
+              json.dumps(jsonable(candidate), indent=2, sort_keys=True), encoding="utf-8"
+          )
+          candidate["_base_daily"].to_csv(runtime / "alpha_efficiency_production_base_daily.csv")
+          candidate["_stress_daily"].to_csv(runtime / "alpha_efficiency_production_stress_daily.csv")
+          candidate["_base_events"].to_csv(runtime / "alpha_efficiency_production_base_events.csv", index=False)
+          candidate["_stress_events"].to_csv(runtime / "alpha_efficiency_production_stress_events.csv", index=False)
+
+          windows = ["prior1", "prior2", "train", "validation", "oos", "full_recent"]
+          comparison = {"windows": {}, "gate": {}, "efficiency": {}}
+          for window in windows:
+              comparison["windows"][window] = {}
+              for endpoint in ("base", "stress"):
+                  b = baseline[endpoint]["windows"][window]
+                  c = candidate[endpoint]["windows"][window]
+                  comparison["windows"][window][endpoint] = {
+                      "baseline_annualized": b["annualized_return"],
+                      "candidate_annualized": c["annualized_return"],
+                      "delta_pp": (c["annualized_return"] - b["annualized_return"]) * 100.0,
+                      "baseline_sharpe": b["sharpe"],
+                      "candidate_sharpe": c["sharpe"],
+                      "baseline_max_drawdown": b["max_drawdown"],
+                      "candidate_max_drawdown": c["max_drawdown"],
+                      "baseline_halted": b["halted"],
+                      "candidate_halted": c["halted"],
+                      "baseline_margin_reject_days": b["margin_reject_days"],
+                      "candidate_margin_reject_days": c["margin_reject_days"],
+                  }
+
+          bf = comparison["windows"]["full_recent"]["base"]
+          sf = comparison["windows"]["full_recent"]["stress"]
+          bo = comparison["windows"]["oos"]["base"]
+          so = comparison["windows"]["oos"]["stress"]
+
+          no_new_halt = all(
+              (not comparison["windows"][window][endpoint]["candidate_halted"])
+              or comparison["windows"][window][endpoint]["baseline_halted"]
+              for window in windows
+              for endpoint in ("base", "stress")
+          )
+          no_new_margin_reject = all(
+              comparison["windows"][window][endpoint]["candidate_margin_reject_days"]
+              <= comparison["windows"][window][endpoint]["baseline_margin_reject_days"]
+              for window in windows
+              for endpoint in ("base", "stress")
+          )
+
+          comparison["gate"] = {
+              "full_base_not_worse": bf["candidate_annualized"] >= bf["baseline_annualized"],
+              "full_stress_improved": sf["candidate_annualized"] > sf["baseline_annualized"],
+              "full_stress_sharpe_not_worse": sf["candidate_sharpe"] >= sf["baseline_sharpe"],
+              "full_stress_drawdown_not_worse": sf["candidate_max_drawdown"] >= sf["baseline_max_drawdown"],
+              "oos_base_not_worse": bo["candidate_annualized"] >= bo["baseline_annualized"],
+              "oos_stress_not_worse": so["candidate_annualized"] >= so["baseline_annualized"],
+              "stress_prior1_not_worse_by_1pp": comparison["windows"]["prior1"]["stress"]["delta_pp"] >= -1.0,
+              "stress_prior2_not_worse_by_1pp": comparison["windows"]["prior2"]["stress"]["delta_pp"] >= -1.0,
+              "stress_train_not_worse_by_1pp": comparison["windows"]["train"]["stress"]["delta_pp"] >= -1.0,
+              "no_new_halt": no_new_halt,
+              "no_new_margin_reject": no_new_margin_reject,
+              "stress_gross_within_2x": candidate["stress"]["max_realized_gross_notional_ratio"] <= 2.0 + 1e-10,
+              "base_gross_within_2x": candidate["base"]["max_realized_gross_notional_ratio"] <= 2.0 + 1e-10,
+          }
+
+          for label, report in (("baseline", baseline), ("candidate", candidate)):
+              attr = report["production_attribution"]["stress"]
+              turnover = float(attr["transaction_cost"]["turnover_notional"])
+              gross_pnl = float(attr["alpha"]["gross_signal_pnl"])
+              cost = float(attr["transaction_cost"]["total_cost"])
+              comparison["efficiency"][label] = {
+                  "stress_turnover_notional": turnover,
+                  "stress_gross_signal_pnl": gross_pnl,
+                  "stress_transaction_cost": cost,
+                  "stress_net_alpha_pnl": gross_pnl - cost,
+                  "stress_net_alpha_per_turnover_bps": ((gross_pnl - cost) / turnover * 10000.0) if turnover > 0 else 0.0,
+              }
+
+          (runtime / "alpha_efficiency_production_gate_summary.json").write_text(
+              json.dumps(comparison, indent=2, sort_keys=True), encoding="utf-8"
+          )
+          print(json.dumps(comparison, indent=2, sort_keys=True))
+          if not all(comparison["gate"].values()):
+              raise SystemExit("Candidate B failed the frozen Production L3; do not tune or promote it")
+          PY
+      - name: Upload Candidate B evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -93,4 +216,11 @@ jobs:
             runtime/alpha_efficiency_target_report.json
             runtime/alpha_efficiency_screen_summary.json
             runtime/alpha_efficiency_weights.csv
+            runtime/alpha_efficiency_baseline_production_report.json
+            runtime/alpha_efficiency_production_report.json
+            runtime/alpha_efficiency_production_gate_summary.json
+            runtime/alpha_efficiency_production_base_daily.csv
+            runtime/alpha_efficiency_production_stress_daily.csv
+            runtime/alpha_efficiency_production_base_events.csv
+            runtime/alpha_efficiency_production_stress_events.csv
           if-no-files-found: warn
