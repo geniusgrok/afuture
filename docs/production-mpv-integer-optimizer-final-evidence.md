@@ -219,4 +219,4 @@ Engineering verification completed on the real repository:
 - corrected basis unit tests: 3 passed in workflow;
 - corrected basis screen run `32689234528`: success and independent gate false.
 
-The final stable tree must remove temporary research workflows/planning artifacts and pass the normal full CI once more before merge.
+The final stable tree removes temporary research workflows/planning artifacts and is accepted only after its normal Python 3.10 / 3.13 CI is green.
