@@ -1,0 +1,50 @@
+name: research-stress80-targeted
+
+on:
+  push:
+    branches:
+      - research/stress-80-causal-product-alpha
+    paths:
+      - "afuture/directional_opportunity_ledger.py"
+      - "afuture/directional_causal_edge.py"
+      - "afuture/directional_net_edge_allocator.py"
+      - "afuture/directional_stress80_research.py"
+      - "tests/test_directional_opportunity_ledger.py"
+      - "tests/test_directional_causal_edge.py"
+      - "tests/test_directional_net_edge_allocator.py"
+      - "tests/test_directional_stress80_research.py"
+      - "tests/test_directional_stress80_evaluator.py"
+      - "tools/evaluate_directional_stress80.py"
+  workflow_dispatch:
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Run existing focused Stress 80 tests
+        shell: bash
+        run: |
+          existing=()
+          for file in \
+            tests/test_directional_opportunity_ledger.py \
+            tests/test_directional_causal_edge.py \
+            tests/test_directional_net_edge_allocator.py \
+            tests/test_directional_stress80_research.py \
+            tests/test_directional_stress80_evaluator.py
+          do
+            if [ -f "$file" ]; then
+              existing+=("$file")
+            fi
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo "No focused Stress 80 tests exist yet."
+            exit 0
+          fi
+          python -m pytest -q "${existing[@]}"
+      - run: python -m compileall -q afuture
