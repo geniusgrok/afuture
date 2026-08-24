@@ -1,0 +1,48 @@
+name: research-stress80-shadow-mpv-tdd
+
+on:
+  push:
+    branches:
+      - research/stress-80-causal-product-alpha
+    paths:
+      - ".github/workflows/research-stress80-shadow-mpv-tdd.yml"
+      - "afuture/directional_shadow_mpv.py"
+      - "afuture/directional_shadow_mpv_robustness.py"
+      - "tests/test_directional_shadow_mpv.py"
+      - "tests/test_directional_shadow_mpv_robustness.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Run Shadow MPV focused tests
+        run: >-
+          python -m pytest -q
+          tests/test_directional_shadow_mpv.py
+          tests/test_directional_shadow_mpv_robustness.py
+      - run: python -m compileall -q afuture
+      - name: Post Shadow MPV TDD result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          cat > /tmp/comment.md <<EOF
+          ### Stress80 Shadow MPV TDD \`${GITHUB_RUN_ID}\`
+
+          - focused outcome: **${{ job.status }}**
+          - head: \`${GITHUB_SHA}\`
+          EOF
+          gh pr comment 21 --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
