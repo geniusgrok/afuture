@@ -1,7 +1,7 @@
 name: research-stress80-status
 
 # Lightweight status-only checkpoint. This workflow never runs a strategy or test suite.
-# Refresh point: locate OI-aware freeze RED and remaining DCE coverage after 0428fe65.
+# Refresh point: confirm OI-aware freeze RED after 5603a275.
 on:
   push:
     branches:
