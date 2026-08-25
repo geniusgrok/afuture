@@ -8,7 +8,7 @@ proxy assumption rather than claimed exact CTP history.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import floor
+from math import floor, isfinite
 from typing import Mapping
 
 import pandas as pd
@@ -20,6 +20,11 @@ from .directional_attribution import (
     exposure_side,
 )
 from .directional_efficiency import attribute_rebalance_deltas
+from .directional_data_validation import (
+    validate_daily_index,
+    validate_finite_columns,
+    validate_unique_keys,
+)
 from .directional_risk import DirectionalRiskGovernor
 
 
@@ -303,6 +308,22 @@ class DirectionalProductionAcceptance:
 
     @staticmethod
     def _normalize_contracts(raw: pd.DataFrame) -> pd.DataFrame:
+        required = {
+            "date",
+            "delivery",
+            "product",
+            "symbol",
+            "open",
+            "close",
+            "volume",
+            "hold",
+        }
+        missing = sorted(required.difference(raw.columns))
+        if missing:
+            raise ValueError(
+                "directional contracts missing columns: "
+                + ", ".join(missing)
+            )
         frame = raw.copy()
         frame["date"] = pd.to_datetime(
             frame["date"], errors="coerce"
@@ -314,15 +335,42 @@ class DirectionalProductionAcceptance:
         frame["symbol"] = frame["symbol"].astype(str).str.upper()
         for column in ("open", "close", "volume", "hold"):
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
-        frame = frame.dropna(
-            subset=[
-                "date", "delivery", "product", "symbol",
-                "open", "close", "volume", "hold",
-            ]
+        for column in ("date", "delivery"):
+            invalid = frame[column].isna()
+            if bool(invalid.any()):
+                row = frame.index[invalid][0]
+                raise ValueError(
+                    f"directional contracts column {column} has invalid date; "
+                    f"row={row!r}"
+                )
+        for column in ("product", "symbol"):
+            invalid = frame[column].isin({"", "NAN", "NONE"})
+            if bool(invalid.any()):
+                row = frame.index[invalid][0]
+                raise ValueError(
+                    f"directional contracts column {column} cannot be empty; "
+                    f"row={row!r}"
+                )
+        validate_finite_columns(
+            frame,
+            ("open", "close", "volume", "hold"),
+            name="directional contracts",
+            positive=("open", "close"),
         )
-        return frame[
-            (frame["open"] > 0) & (frame["close"] > 0)
-        ].copy()
+        for column in ("volume", "hold"):
+            invalid = frame[column] < 0
+            if bool(invalid.any()):
+                row = frame.index[invalid][0]
+                raise ValueError(
+                    f"directional contracts column {column} cannot be negative; "
+                    f"row={row!r}"
+                )
+        validate_unique_keys(
+            frame,
+            ("date", "symbol"),
+            name="directional contracts",
+        )
+        return frame
 
     def prepare_contracts(self, raw: pd.DataFrame) -> PreparedDirectionalContracts:
         frame = self._normalize_contracts(raw)
@@ -619,14 +667,37 @@ class DirectionalProductionAcceptance:
         cost_bps: float,
         prepared: PreparedDirectionalContracts | None = None,
     ) -> ProductionSimulationResult:
+        cost_bps = float(cost_bps)
+        if not isfinite(cost_bps) or cost_bps < 0:
+            raise ValueError(
+                "cost_bps must be finite and non-negative"
+            )
         context = prepared or self.prepare_contracts(raw)
         weight_frame = weights.copy()
         weight_frame.index = pd.to_datetime(
             weight_frame.index, errors="coerce"
         ).normalize()
-        weight_frame = weight_frame[
-            ~weight_frame.index.isna()
-        ].sort_index().fillna(0.0)
+        validate_daily_index(
+            weight_frame,
+            name="directional target weights",
+        )
+        numeric_weights = weight_frame.apply(
+            pd.to_numeric,
+            errors="coerce",
+        )
+        nonnumeric = numeric_weights.isna() & weight_frame.notna()
+        if bool(nonnumeric.any(axis=None)):
+            row, column = nonnumeric.stack().loc[lambda item: item].index[0]
+            raise ValueError(
+                "directional target weights must be numeric; "
+                f"row={row!r}, column={column!r}"
+            )
+        weight_frame = numeric_weights.sort_index().fillna(0.0)
+        validate_finite_columns(
+            weight_frame,
+            tuple(str(column) for column in weight_frame.columns),
+            name="directional target weights",
+        )
         weight_frame.columns = [
             str(column).upper() for column in weight_frame.columns
         ]
@@ -647,7 +718,7 @@ class DirectionalProductionAcceptance:
         first_divergence = ""
         output_rows: list[dict] = []
         event_rows: list[dict] = []
-        cost_rate = float(cost_bps) / 10000.0
+        cost_rate = cost_bps / 10000.0
 
         for day, weight_row in weight_frame.iterrows():
             day = pd.Timestamp(day).normalize()

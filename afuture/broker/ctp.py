@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+from math import isfinite
 from queue import Empty, Queue
 from threading import Event
 from time import monotonic, sleep
@@ -469,29 +470,53 @@ class CtpBroker(Broker):
         self._events.put(BrokerEvent("tick", tick))
 
     def _on_order(self, event) -> None:
-        self._events.put(BrokerEvent("order", self._convert_order(event.data)))
+        try:
+            order = self._convert_order(event.data)
+        except (AttributeError, TypeError, ValueError) as exc:
+            self._events.put(
+                BrokerEvent(
+                    "broker_error",
+                    f"CTP order conversion failed: {exc}",
+                )
+            )
+            return
+        self._events.put(BrokerEvent("order", order))
 
     def _on_trade(self, event) -> None:
         raw = event.data
-        side = OrderSide.BUY if getattr(raw.direction, "name", "").upper() == "LONG" else OrderSide.SELL
-        offset_name = getattr(raw.offset, "name", "CLOSE").upper()
-        offset = {
-            "OPEN": Offset.OPEN,
-            "CLOSE": Offset.CLOSE,
-            "CLOSETODAY": Offset.CLOSE_TODAY,
-            "CLOSEYESTERDAY": Offset.CLOSE_YESTERDAY,
-        }.get(offset_name, Offset.CLOSE)
-        trade = Trade(
-            raw.vt_tradeid,
-            raw.vt_orderid,
-            raw.symbol,
-            raw.exchange.value,
-            side,
-            offset,
-            int(raw.volume),
-            float(raw.price),
-            raw.datetime or datetime.now(ZoneInfo("Asia/Shanghai")),
-        )
+        try:
+            numeric_volume = float(raw.volume)
+            if (
+                isinstance(raw.volume, bool)
+                or not isfinite(numeric_volume)
+                or numeric_volume <= 0
+                or not numeric_volume.is_integer()
+            ):
+                raise ValueError(
+                    f"invalid CTP trade volume: {raw.volume!r}"
+                )
+            price = float(raw.price)
+            if not isfinite(price) or price <= 0:
+                raise ValueError(f"invalid CTP trade price: {raw.price!r}")
+            trade = Trade(
+                raw.vt_tradeid,
+                raw.vt_orderid,
+                raw.symbol,
+                raw.exchange.value,
+                self._direction_to_side(raw.direction),
+                self._offset_to_model(raw.offset),
+                int(numeric_volume),
+                price,
+                raw.datetime or datetime.now(ZoneInfo("Asia/Shanghai")),
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            self._events.put(
+                BrokerEvent(
+                    "broker_error",
+                    f"CTP trade conversion failed: {exc}",
+                )
+            )
+            return
         try:
             book = PositionBook(self.get_positions())
             book.apply_trade(trade)
@@ -543,6 +568,72 @@ class CtpBroker(Broker):
         return AccountSnapshot(balance, balance, available, margin, 0.0, 0.0, self.get_trading_day())
 
     def _convert_order(self, raw) -> Order:
+        reference = getattr(raw, "reference", "") or self._order_references.get(raw.vt_orderid, "")
+        request = OrderRequest(
+            raw.symbol,
+            raw.exchange.value,
+            self._direction_to_side(raw.direction),
+            self._offset_to_model(raw.offset),
+            int(raw.volume),
+            float(raw.price),
+            self._type_to_model(raw.type),
+            reference,
+        )
+        return Order(
+            raw.vt_orderid,
+            request,
+            self._status_to_model(raw.status),
+            int(raw.traded),
+            float(raw.price),
+        )
+
+    @staticmethod
+    def _enum_name(value: object, field: str) -> str:
+        name = getattr(value, "name", None)
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"unsupported CTP {field}: {value!r}")
+        return name.upper()
+
+    @classmethod
+    def _direction_to_side(cls, value: object) -> OrderSide:
+        name = cls._enum_name(value, "direction")
+        mapping = {
+            "LONG": OrderSide.BUY,
+            "SHORT": OrderSide.SELL,
+        }
+        try:
+            return mapping[name]
+        except KeyError as exc:
+            raise ValueError(f"unsupported CTP direction: {name}") from exc
+
+    @classmethod
+    def _offset_to_model(cls, value: object) -> Offset:
+        name = cls._enum_name(value, "offset")
+        mapping = {
+            "OPEN": Offset.OPEN,
+            "CLOSE": Offset.CLOSE,
+            "CLOSETODAY": Offset.CLOSE_TODAY,
+            "CLOSEYESTERDAY": Offset.CLOSE_YESTERDAY,
+        }
+        try:
+            return mapping[name]
+        except KeyError as exc:
+            raise ValueError(f"unsupported CTP offset: {name}") from exc
+
+    @classmethod
+    def _type_to_model(cls, value: object) -> OrderType:
+        name = cls._enum_name(value, "order type")
+        mapping = {
+            "LIMIT": OrderType.LIMIT,
+            "FAK": OrderType.FAK,
+            "FOK": OrderType.FOK,
+        }
+        try:
+            return mapping[name]
+        except KeyError as exc:
+            raise ValueError(f"unsupported CTP order type: {name}") from exc
+
+    def _status_to_model(self, value: object) -> OrderStatus:
         runtime = self._load_runtime()
         status_map = {
             runtime["Status"].SUBMITTING: OrderStatus.SUBMITTING,
@@ -552,31 +643,7 @@ class CtpBroker(Broker):
             runtime["Status"].CANCELLED: OrderStatus.CANCELLED,
             runtime["Status"].REJECTED: OrderStatus.REJECTED,
         }
-        side = OrderSide.BUY if getattr(raw.direction, "name", "").upper() == "LONG" else OrderSide.SELL
-        offset_name = getattr(raw.offset, "name", "CLOSE").upper()
-        offset = {
-            "OPEN": Offset.OPEN,
-            "CLOSE": Offset.CLOSE,
-            "CLOSETODAY": Offset.CLOSE_TODAY,
-            "CLOSEYESTERDAY": Offset.CLOSE_YESTERDAY,
-        }.get(offset_name, Offset.CLOSE)
-        type_name = getattr(raw.type, "name", "LIMIT").upper()
-        order_type = {"FAK": OrderType.FAK, "FOK": OrderType.FOK}.get(type_name, OrderType.LIMIT)
-        reference = getattr(raw, "reference", "") or self._order_references.get(raw.vt_orderid, "")
-        request = OrderRequest(
-            raw.symbol,
-            raw.exchange.value,
-            side,
-            offset,
-            int(raw.volume),
-            float(raw.price),
-            order_type,
-            reference,
-        )
-        return Order(
-            raw.vt_orderid,
-            request,
-            status_map.get(raw.status, OrderStatus.REJECTED),
-            int(raw.traded),
-            float(raw.price),
-        )
+        try:
+            return status_map[value]
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"unsupported CTP status: {value!r}") from exc

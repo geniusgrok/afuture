@@ -110,7 +110,7 @@ Publish through the authorized GitHub branch and align the local branch without 
 - Consumes: `PositionBook.apply_trade(trade: Trade) -> float`.
 - Produces: unchanged public signature; invalid bucket-specific closes raise `ValueError` before mutation.
 
-- [ ] **Step 1: Add failing long and short bucket tests**
+- [x] **Step 1: Add failing long and short bucket tests**
 
 Create helpers that build SHFE positions and trades, then assert both error and no mutation:
 
@@ -137,7 +137,7 @@ def test_bucket_specific_close_rejects_insufficient_bucket_without_mutation(side
 
 Add exact-boundary success cases and generic `CLOSE` depletion tests for long and short.
 
-- [ ] **Step 2: Verify the regression fails for the right reason**
+- [x] **Step 2: Verify the regression fails for the right reason**
 
 Run:
 
@@ -147,7 +147,7 @@ Run:
 
 Expected: bucket-specific cases fail because a bucket becomes negative or no exception is raised; existing valid cases pass.
 
-- [ ] **Step 3: Implement pre-mutation validation**
+- [x] **Step 3: Implement pre-mutation validation**
 
 Add a private validation method and call it before realized PnL or mutation:
 
@@ -178,7 +178,7 @@ def _validate_close_volume(position: ContractPosition, trade: Trade) -> None:
 
 Reject non-finite or non-positive trade prices before opening or closing. Add a post-mutation assertion/helper that checks all four buckets are non-negative without changing valid paths.
 
-- [ ] **Step 4: Run affected accounting and execution tests**
+- [x] **Step 4: Run affected accounting and execution tests**
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_position_invariants.py tests/test_legacy_contracts.py tests/test_integration.py tests/test_sim_event_causality.py
@@ -187,7 +187,7 @@ Reject non-finite or non-positive trade prices before opening or closing. Add a 
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit the position fix**
+- [x] **Step 5: Commit the position fix**
 
 ```bash
 git add afuture/position.py tests/test_position_invariants.py
@@ -207,7 +207,7 @@ git commit -m "fix: enforce position close bucket invariants"
 - Produces: `StateIntegrityError(ValueError)` and unchanged `StateStore.load/save` signatures.
 - Preserves: valid versioned envelopes and legacy unversioned `RuntimeState` JSON.
 
-- [ ] **Step 1: Add failing corruption and sequence tests**
+- [x] **Step 1: Add failing corruption and sequence tests**
 
 ```python
 def test_save_refuses_to_replace_corrupt_existing_state(tmp_path: Path):
@@ -227,7 +227,7 @@ def test_save_increments_only_a_verified_sequence(tmp_path: Path):
 
 Also cover checksum mismatch, newer schema, non-positive/non-integer sequence, missing envelope fields, valid legacy migration, and original-file preservation.
 
-- [ ] **Step 2: Verify failures**
+- [x] **Step 2: Verify failures**
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_state_integrity.py tests/test_hardening.py::test_state_has_checksum_sequence_and_legacy_migration
@@ -235,7 +235,7 @@ Also cover checksum mismatch, newer schema, non-positive/non-integer sequence, m
 
 Expected: corruption-on-save test fails because current code silently overwrites.
 
-- [ ] **Step 3: Implement one verified decoder**
+- [x] **Step 3: Implement one verified decoder**
 
 Define:
 
@@ -252,11 +252,11 @@ class _DecodedState:
 
 Add `_read_verified() -> _DecodedState` that wraps JSON/type/key errors with `StateIntegrityError`, rejects newer schemas and invalid sequences, verifies the checksum before constructing `RuntimeState`, and returns `sequence=0, legacy=True` for a valid legacy document. `load()` returns its state. `save()` calls it when the target exists and derives `sequence + 1`; it never catches integrity errors.
 
-- [ ] **Step 4: Preserve atomic replacement and clean temporary files**
+- [x] **Step 4: Preserve atomic replacement and clean temporary files**
 
 Write and flush the complete envelope to the same directory, then replace the target. If serialization or replace fails, unlink only the explicitly created temporary path in `finally`; never delete or truncate the target.
 
-- [ ] **Step 5: Run restart/persistence subsystem tests**
+- [x] **Step 5: Run restart/persistence subsystem tests**
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_state_integrity.py tests/test_hardening.py tests/test_directional_restart.py tests/test_strategy_rejection_state.py
@@ -265,7 +265,7 @@ Write and flush the complete envelope to the same directory, then replace the ta
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit the persistence fix**
+- [x] **Step 6: Commit the persistence fix**
 
 ```bash
 git add afuture/state.py tests/test_state_integrity.py tests/test_hardening.py
@@ -284,7 +284,7 @@ git commit -m "fix: fail closed on corrupt runtime state"
 - Produces private helpers `_direction_to_side`, `_offset_to_model`, `_type_to_model`, and `_status_to_model`, each returning the corresponding domain enum or raising `ValueError`.
 - Preserves `BrokerEvent` shapes and supported VeighNa/CTP values.
 
-- [ ] **Step 1: Add conversion characterization and rejection tests**
+- [x] **Step 1: Add conversion characterization and rejection tests**
 
 Use `SimpleNamespace(name=...)` inputs and assert every supported mapping. Add:
 
@@ -305,7 +305,7 @@ def test_ctp_order_conversion_rejects_unknown_protocol_value(field, value):
 
 For `_on_trade`, assert one `broker_error` event, no `trade` event, and no mirror-position mutation for an unknown direction or offset.
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_ctp_compat.py
@@ -313,7 +313,7 @@ For `_on_trade`, assert one `broker_error` event, no `trade` event, and no mirro
 
 Expected: unknown direction/offset/type/status are currently defaulted instead of rejected.
 
-- [ ] **Step 3: Implement explicit converters**
+- [x] **Step 3: Implement explicit converters**
 
 Normalize enum names with a helper that rejects missing values. Use exhaustive maps:
 
@@ -330,11 +330,11 @@ _TYPE_BY_NAME = {"LIMIT": OrderType.LIMIT, "FAK": OrderType.FAK, "FOK": OrderTyp
 
 Map statuses explicitly from the runtime enum object. Do not use `dict.get(..., economic_default)`.
 
-- [ ] **Step 4: Make event handlers fail closed**
+- [x] **Step 4: Make event handlers fail closed**
 
 `_on_order` and `_on_trade` catch conversion `ValueError`, enqueue one contextual `broker_error`, and return before emitting an order/trade or mutating the position mirror. Position-mirror accounting failures still emit the existing error and trade event because the upstream trade itself is valid exchange truth.
 
-- [ ] **Step 5: Run broker and event-causality tests**
+- [x] **Step 5: Run broker and event-causality tests**
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_ctp_compat.py tests/test_sim_event_causality.py tests/test_integration.py tests/test_strategy_rejection_state.py
@@ -343,7 +343,7 @@ Map statuses explicitly from the runtime enum object. Do not use `dict.get(..., 
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit the broker fix**
+- [x] **Step 6: Commit the broker fix**
 
 ```bash
 git add afuture/broker/ctp.py tests/test_ctp_compat.py
@@ -365,9 +365,10 @@ git commit -m "fix: reject unknown CTP protocol values"
 **Interfaces:**
 - Produces `validate_daily_index(frame: pd.DataFrame, *, name: str) -> None`.
 - Produces `validate_finite_columns(frame: pd.DataFrame, columns: Collection[str], *, name: str, positive: Collection[str] = ()) -> None`.
-- Produces `validate_date_windows(windows: Mapping[str, tuple[date, date]]) -> None`.
+- Produces `validate_unique_keys(frame: pd.DataFrame, columns: Collection[str], *, name: str) -> None`.
+- Does not add a generic non-overlap window validator: the frozen `full_recent` reporting window intentionally overlaps the disjoint train/validation/OOS slices, and their definitions remain owned by the evaluators.
 
-- [ ] **Step 1: Add failing pure validation tests**
+- [x] **Step 1: Add failing pure validation tests**
 
 ```python
 def test_daily_index_rejects_duplicate_and_non_monotonic_dates():
@@ -381,27 +382,27 @@ def test_required_values_reject_nan_inf_and_non_positive_prices():
         validate_finite_columns(frame, ["close"], name="signals", positive=["close"])
 ```
 
-Cover timezone-normalized dates, missing columns, empty data, inverted windows, and overlapping train/validation/OOS windows.
+Cover timezone-normalized dates, missing columns, empty data, duplicate business keys, non-finite values, and non-positive prices.
 
-- [ ] **Step 2: Verify pure tests fail because the module does not exist**
+- [x] **Step 2: Verify pure tests fail because the module does not exist**
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_directional_data_validation.py
 ```
 
-- [ ] **Step 3: Implement pure validators**
+- [x] **Step 3: Implement pure validators**
 
 Validators report the dataset name, offending field, and first offending date/value. They do not sort, deduplicate, forward-fill, or clip; callers decide how missing optional observations are represented.
 
-- [ ] **Step 4: Replace implicit duplicate resolution**
+- [x] **Step 4: Replace implicit duplicate resolution**
 
-In `CsvExecutionAlignedSignalProvider._read`, parse dates, reject invalid/duplicate dates, sort only after proving uniqueness, and preserve the existing return columns. Validate the joined index before returning `ExecutionAlignedSignalHistory`.
+In `SinaContinuousOHLCProvider._load_one`, parse dates, reject invalid/duplicate dates, sort only after proving uniqueness, and preserve the existing return columns. Validate the joined index before returning `ExecutionAlignedSignalHistory`.
 
-- [ ] **Step 5: Validate acceptance inputs at the public boundary**
+- [x] **Step 5: Validate acceptance inputs at the public boundary**
 
 Call the pure validators before `prepare_contracts` and before simulation window slicing. Required price/notional columns must be finite and economically positive; signal/return columns may be zero but not non-finite. Preserve every valid-row calculation and existing evaluator entry point.
 
-- [ ] **Step 6: Run causal and acceptance subsystem tests**
+- [x] **Step 6: Run causal and acceptance subsystem tests**
 
 ```bash
 .venv/bin/python -m pytest -q \
@@ -415,7 +416,7 @@ Call the pure validators before `prepare_contracts` and before simulation window
 
 Expected: all pass with no frozen valid-input result change.
 
-- [ ] **Step 7: Commit and publish Checkpoint B**
+- [x] **Step 7: Commit and publish Checkpoint B**
 
 ```bash
 git add afuture/directional_data_validation.py afuture/execution_aligned_runtime.py \

@@ -1,4 +1,6 @@
 from datetime import date, datetime, timezone
+import sys
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -8,6 +10,7 @@ from afuture.execution_aligned_runtime import (
     ExecutionAlignedDirectionalPortfolioManager,
     ExecutionAlignedSignalHistory,
     FROZEN_PRODUCTS,
+    SinaContinuousOHLCProvider,
 )
 from afuture.models import (
     AccountSnapshot,
@@ -216,3 +219,33 @@ def test_execution_aligned_flatten_closes_both_sides_when_same_contract_is_hedge
     assert all(order.offset is not Offset.OPEN for order in broker.orders)
     assert all(order.order_type is OrderType.FAK for order in broker.orders)
     assert all(order.reference == "directional:flatten" for order in broker.orders)
+
+
+def test_sina_provider_rejects_duplicate_daily_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = pd.DataFrame(
+        {
+            "date": ["2026-08-21", "2026-08-21"],
+            "open": [100.0, 200.0],
+            "close": [101.0, 201.0],
+        }
+    )
+    fake_akshare = SimpleNamespace(
+        futures_zh_daily_sina=lambda symbol: source
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
+
+    with pytest.raises(ValueError, match="duplicate daily date"):
+        SinaContinuousOHLCProvider._load_one("A")
+
+
+def test_execution_history_rejects_duplicate_daily_index() -> None:
+    manager = _manager()
+    dates = list(pd.date_range("2026-01-01", periods=140, freq="B"))
+    dates.append(dates[-1])
+    frame = pd.DataFrame({"A": range(len(dates))}, index=dates, dtype=float)
+    history = ExecutionAlignedSignalHistory(frame, frame)
+
+    with pytest.raises(ValueError, match="duplicate daily date"):
+        manager._normalize_history(history, max_date=date(2026, 8, 21))

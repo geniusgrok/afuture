@@ -14,6 +14,10 @@ from .directional_activity import (
     DirectionalActivityTracker,
     select_contracts_from_activity,
 )
+from .directional_data_validation import (
+    validate_daily_index,
+    validate_finite_columns,
+)
 from .directional_runtime import (
     DirectionalActionResult,
     DirectionalPortfolioManager,
@@ -58,12 +62,18 @@ class SinaContinuousOHLCProvider:
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
         for column in ("open", "close"):
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
-        frame = frame.dropna(subset=["date", "open", "close"])
-        frame = frame[(frame["open"] > 0) & (frame["close"] > 0)]
-        frame.drop_duplicates("date", keep="last", inplace=True)
+        indexed = frame.set_index("date")
+        validate_daily_index(
+            indexed,
+            name=f"{product.upper()} continuous OHLC",
+        )
+        validate_finite_columns(
+            frame,
+            ("open", "close"),
+            name=f"{product.upper()} continuous OHLC",
+            positive=("open", "close"),
+        )
         frame.sort_values("date", inplace=True)
-        if frame.empty:
-            raise RuntimeError(f"continuous OHLC history empty: {product}")
         return frame.set_index("date")[["open", "close"]]
 
     def load(self, products: tuple[str, ...]) -> ExecutionAlignedSignalHistory:
@@ -93,6 +103,8 @@ class SinaContinuousOHLCProvider:
         close = pd.concat(
             [frames[product]["close"].rename(product) for product in unique], axis=1
         ).sort_index()
+        validate_daily_index(open_prices, name="execution-aligned open history")
+        validate_daily_index(close, name="execution-aligned close history")
         return ExecutionAlignedSignalHistory(open_prices, close)
 
 
@@ -155,9 +167,19 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
     def _normalize_frame(frame: pd.DataFrame, max_date: date) -> pd.DataFrame:
         result = frame.copy()
         result.index = pd.to_datetime(result.index, errors="coerce")
-        result = result[~result.index.isna()].sort_index()
+        validate_daily_index(result, name="execution-aligned signal history")
+        result = result.sort_index()
         result.columns = [str(item).upper() for item in result.columns]
         result = result.loc[result.index.normalize() <= pd.Timestamp(max_date)]
+        for column in result.columns:
+            observed = result[[column]].dropna()
+            if not observed.empty:
+                validate_finite_columns(
+                    observed,
+                    (column,),
+                    name="execution-aligned signal history",
+                    positive=(column,),
+                )
         return result.dropna(how="all")
 
     def _normalize_history(

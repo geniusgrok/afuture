@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import pandas as pd
+import pytest
 
 from afuture.directional_acceptance import (
     DirectionalProductionAcceptance,
@@ -208,3 +209,89 @@ def test_prepared_contract_context_can_be_reused_without_renormalizing(monkeypat
     assert calls == 1
     pd.testing.assert_frame_equal(first.daily, second.daily)
     assert first.final_equity == second.final_equity
+
+
+def contract_row(**overrides):
+    row = {
+        "date": "2026-08-20",
+        "product": "A",
+        "exchange": "DCE",
+        "symbol": "A2609",
+        "delivery": "2026-12-15",
+        "open": 100.0,
+        "close": 101.0,
+        "volume": 5000.0,
+        "hold": 30000.0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_prepare_contracts_rejects_duplicate_daily_symbol_observation():
+    sim = _acceptance()
+    raw = pd.DataFrame(
+        [
+            contract_row(close=101.0),
+            contract_row(close=201.0),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="duplicate date/symbol"):
+        sim.prepare_contracts(raw)
+
+
+@pytest.mark.parametrize("close", ["bad", 0.0, -1.0, float("inf")])
+def test_prepare_contracts_rejects_invalid_price_instead_of_dropping_row(close):
+    sim = _acceptance()
+
+    with pytest.raises(ValueError, match="close.*(finite|positive)"):
+        sim.prepare_contracts(pd.DataFrame([contract_row(close=close)]))
+
+
+@pytest.mark.parametrize(
+    ("dates", "message"),
+    [
+        (["2026-08-21", "2026-08-21"], "duplicate daily date"),
+        (["2026-08-24", "2026-08-21"], "monotonic increasing"),
+    ],
+)
+def test_simulation_rejects_ambiguous_weight_dates(dates, message):
+    sim = _acceptance(
+        max_contract_volume=100,
+        max_daily_loss_ratio=0.50,
+        max_total_drawdown_ratio=0.80,
+        max_margin_ratio=0.90,
+        min_available_ratio=0.0,
+    )
+    raw = pd.DataFrame(
+        [
+            contract_row(date="2026-08-20", close=100.0),
+            contract_row(date="2026-08-21", open=100.0, close=101.0),
+            contract_row(date="2026-08-24", open=101.0, close=102.0),
+        ]
+    )
+    weights = pd.DataFrame(
+        {"A": [1.0, 1.0]},
+        index=pd.to_datetime(dates),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        sim.simulate(raw, weights, cost_bps=0)
+
+
+@pytest.mark.parametrize("cost_bps", [-1.0, float("nan"), float("inf")])
+def test_simulation_rejects_invalid_transaction_cost(cost_bps):
+    sim = _acceptance()
+    raw = pd.DataFrame(
+        [
+            contract_row(date="2026-08-20", close=100.0),
+            contract_row(date="2026-08-21", open=100.0, close=101.0),
+        ]
+    )
+    weights = pd.DataFrame(
+        {"A": [1.0]},
+        index=pd.to_datetime(["2026-08-21"]),
+    )
+
+    with pytest.raises(ValueError, match="cost_bps must be finite and non-negative"):
+        sim.simulate(raw, weights, cost_bps=cost_bps)
