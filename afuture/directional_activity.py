@@ -3,14 +3,15 @@
 This sidecar owns only market-selection evidence. Account, order, fill and position truth
 remain exclusively in Broker/TradingEngine state.
 """
+
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Iterable, Mapping
 
 from .directional import DirectionalConfig
 from .models import ContractInfo, Tick
@@ -159,7 +160,9 @@ def select_contracts_from_activity(
             continue
         if activity.volume < config.min_volume or activity.open_interest < config.min_open_interest:
             continue
-        candidates.setdefault(product, []).append((activity.open_interest, activity.volume, expiry, item))
+        candidates.setdefault(product, []).append(
+            (activity.open_interest, activity.volume, expiry, item)
+        )
 
     result: dict[str, ContractInfo] = {}
     for product, rows in candidates.items():

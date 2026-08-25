@@ -137,7 +137,8 @@ class AutoPortfolioRunner:
                 candidates.append(
                     {
                         **parameters,
-                        "score": 0.35 * self._score(train_metrics) + 0.65 * self._score(validation_metrics),
+                        "score": 0.35 * self._score(train_metrics)
+                        + 0.65 * self._score(validation_metrics),
                         "max_drawdown": max(
                             abs(float(train_metrics.get("max_drawdown", 0.0))),
                             abs(float(validation_metrics.get("max_drawdown", 0.0))),
@@ -174,7 +175,9 @@ class AutoPortfolioRunner:
             )
             selected_rows.append(parameters)
 
-        selected_parameters = selected_rows[-1] if selected_rows else self._parameter_row(self.base.auto)
+        selected_parameters = (
+            selected_rows[-1] if selected_rows else self._parameter_row(self.base.auto)
+        )
         final_config = self._config_with_parameters(selected_parameters)
         stress_results = {
             float(multiplier): self._run_portfolio(
@@ -196,12 +199,12 @@ class AutoPortfolioRunner:
         single: dict[str, dict] = {}
         for product in products:
             leave_one[product] = self._run_portfolio(
-                self._with_products(config, tuple(item for item in config.auto.products if item.lower() != product)),
+                self._with_products(
+                    config, tuple(item for item in config.auto.products if item.lower() != product)
+                ),
                 ticks,
             )
-            single[product] = self._run_portfolio(
-                self._with_products(config, (product,)), ticks
-            )
+            single[product] = self._run_portfolio(self._with_products(config, (product,)), ticks)
 
         remove_best = self._remove_best_period(config, ticks, folds)
         depth = {
@@ -209,7 +212,9 @@ class AutoPortfolioRunner:
             for value in research.depth_haircuts
         }
         latency = {
-            str(value): self._run_portfolio(replace(config, latency_ticks=config.latency_ticks + value), ticks)
+            str(value): self._run_portfolio(
+                replace(config, latency_ticks=config.latency_ticks + value), ticks
+            )
             for value in research.extra_latency_ticks
         }
         impact = {
@@ -223,7 +228,9 @@ class AutoPortfolioRunner:
             for value in research.data_gap_rates
         }
         quote_skew = {
-            str(value): self._run_portfolio(config, self._skew_far_legs(ticks, config.contract_catalog, value))
+            str(value): self._run_portfolio(
+                config, self._skew_far_legs(ticks, config.contract_catalog, value)
+            )
             for value in research.quote_skew_seconds
         }
         activity_missing = {
@@ -247,7 +254,9 @@ class AutoPortfolioRunner:
             return self._run_portfolio(config, ticks)
         best = max(folds, key=lambda fold: float(fold.oos_metrics.get("total_return", 0.0)))
         excluded = set(best.oos_days)
-        return self._run_portfolio(config, [row for row in ticks if row.trading_day not in excluded])
+        return self._run_portfolio(
+            config, [row for row in ticks if row.trading_day not in excluded]
+        )
 
     def _run_portfolio(self, config, ticks: list[Tick]) -> dict:
         if not ticks:
@@ -281,7 +290,9 @@ class AutoPortfolioRunner:
             equity_curve: list[tuple[str, float]] = []
             engine.start()
             try:
-                for _, group in groupby(sorted(ticks, key=lambda row: row.timestamp), key=lambda row: row.timestamp):
+                for _, group in groupby(
+                    sorted(ticks, key=lambda row: row.timestamp), key=lambda row: row.timestamp
+                ):
                     batch = list(group)
                     for row in batch:
                         broker.publish_tick(row)
@@ -319,7 +330,9 @@ class AutoPortfolioRunner:
         }
 
     def _cost_stress(self, config, multiplier: float):
-        specs = {symbol: self._scale_spec(row, multiplier) for symbol, row in config.contracts.items()}
+        specs = {
+            symbol: self._scale_spec(row, multiplier) for symbol, row in config.contracts.items()
+        }
         auto = replace(config.auto, legging_buffer=config.auto.legging_buffer * multiplier)
         slippage = max(config.slippage_ticks, int(round(config.slippage_ticks * multiplier)))
         return replace(config, contracts=specs, auto=auto, slippage_ticks=slippage)
@@ -384,9 +397,7 @@ class AutoPortfolioRunner:
             far_symbols.update(item.symbol for item in ordered[1:])
         delta = timedelta(seconds=max(0.0, float(seconds)))
         return [
-            replace(row, timestamp=row.timestamp + delta)
-            if row.symbol in far_symbols
-            else row
+            replace(row, timestamp=row.timestamp + delta) if row.symbol in far_symbols else row
             for row in ticks
         ]
 
@@ -397,7 +408,9 @@ class AutoPortfolioRunner:
             return list(ticks)
         every = max(2, int(round(1.0 / ratio)))
         result: list[Tick] = []
-        for index, row in enumerate(sorted(ticks, key=lambda item: (item.timestamp, item.symbol)), start=1):
+        for index, row in enumerate(
+            sorted(ticks, key=lambda item: (item.timestamp, item.symbol)), start=1
+        ):
             if index % every == 0:
                 result.append(replace(row, volume=0.0, open_interest=0.0))
             else:
@@ -440,15 +453,27 @@ class AutoPortfolioRunner:
 
     @staticmethod
     def _validate(config: AutoPortfolioResearchConfig) -> None:
-        if any(value <= 0 for value in (config.train_days, config.validation_days, config.oos_days, config.step_days)):
+        if any(
+            value <= 0
+            for value in (
+                config.train_days,
+                config.validation_days,
+                config.oos_days,
+                config.step_days,
+            )
+        ):
             raise ValueError("auto walk-forward windows must be positive")
-        if not config.cost_stress_multipliers or any(value <= 0 for value in config.cost_stress_multipliers):
+        if not config.cost_stress_multipliers or any(
+            value <= 0 for value in config.cost_stress_multipliers
+        ):
             raise ValueError("cost stress multipliers must be positive")
         if any(not 0 < value <= 1 for value in config.depth_haircuts):
             raise ValueError("depth haircuts must be within (0, 1]")
         if any(value < 0 for value in config.extra_latency_ticks + config.extra_impact_ticks):
             raise ValueError("latency/impact stress cannot be negative")
-        if any(not 0 < value < 1 for value in config.data_gap_rates + config.activity_missing_rates):
+        if any(
+            not 0 < value < 1 for value in config.data_gap_rates + config.activity_missing_rates
+        ):
             raise ValueError("data gap/activity missing rates must be within (0, 1)")
         if any(value < 0 for value in config.quote_skew_seconds):
             raise ValueError("quote skew stress cannot be negative")

@@ -4,6 +4,7 @@ This module is decision-side only. It accepts point-in-time evidence and express
 marginal value component in account currency. Ex-post counterfactual labels belong in
 ``directional_mpv_attribution`` and must never be imported here.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -52,7 +53,10 @@ class MarginalLotAction:
             raise ValueError("evidence_through must precede decision_date")
         if int(self.delta_lots) not in (-1, 1) or int(self.delta_lots) != self.delta_lots:
             raise ValueError("delta_lots must be exactly -1 or +1")
-        if int(self.current_lots) != self.current_lots or int(self.requested_lots) != self.requested_lots:
+        if (
+            int(self.current_lots) != self.current_lots
+            or int(self.requested_lots) != self.requested_lots
+        ):
             raise ValueError("current_lots and requested_lots must be integers")
         if not str(self.product).strip() or not str(self.symbol).strip():
             raise ValueError("product and symbol are required")
@@ -209,7 +213,9 @@ def estimate_causal_product_value(*, evidence, product: str) -> CausalProductVal
         )
 
     global_gross = float(frame.loc[support > 0.0, "gross_pnl"].astype(float).sum()) / total_support
-    global_cost = float(frame.loc[support > 0.0, "transaction_cost"].astype(float).sum()) / total_support
+    global_cost = (
+        float(frame.loc[support > 0.0, "transaction_cost"].astype(float).sum()) / total_support
+    )
     global_net = float(frame.loc[support > 0.0, "net_alpha"].astype(float).sum()) / total_support
     prior_support = float(positive_support.median())
 

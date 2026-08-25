@@ -3,12 +3,12 @@
 The helpers in this module classify already-requested/executed activity. They do not
 own signal selection, account state, risk authority, or order generation.
 """
+
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 import pandas as pd
-
 
 AUDIT_EVENT_COLUMNS = (
     "date",
@@ -96,17 +96,11 @@ def _holding_sessions(daily, pnl_events) -> float:
     grouped = pnl_events.copy()
     grouped["date"] = pd.to_datetime(grouped["date"]).dt.normalize()
     for (_, _), frame in grouped.groupby(["product", "side"], sort=True):
-        positions = sorted(
-            {
-                session_index[day]
-                for day in frame["date"]
-                if day in session_index
-            }
-        )
+        positions = sorted({session_index[day] for day in frame["date"] if day in session_index})
         if not positions:
             continue
         length = 1
-        for previous, current in zip(positions, positions[1:]):
+        for previous, current in zip(positions, positions[1:], strict=False):
             if current == previous + 1:
                 length += 1
             else:
@@ -140,16 +134,22 @@ def summarize_production_attribution(
     pnl_events = event_frame[event_frame["kind"] == "pnl"].copy()
     trade_events = event_frame[event_frame["kind"] == "trade"].copy()
     gross_signal_pnl = float(pnl_events["gross_pnl"].sum()) if not pnl_events.empty else 0.0
-    long_pnl = float(
-        pnl_events.loc[pnl_events["side"] == "long", "gross_pnl"].sum()
-    ) if not pnl_events.empty else 0.0
-    short_pnl = float(
-        pnl_events.loc[pnl_events["side"] == "short", "gross_pnl"].sum()
-    ) if not pnl_events.empty else 0.0
+    long_pnl = (
+        float(pnl_events.loc[pnl_events["side"] == "long", "gross_pnl"].sum())
+        if not pnl_events.empty
+        else 0.0
+    )
+    short_pnl = (
+        float(pnl_events.loc[pnl_events["side"] == "short", "gross_pnl"].sum())
+        if not pnl_events.empty
+        else 0.0
+    )
     product_pnl = (
         {
             str(product): float(value)
-            for product, value in pnl_events.groupby("product", sort=True)["gross_pnl"].sum().items()
+            for product, value in pnl_events.groupby("product", sort=True)["gross_pnl"]
+            .sum()
+            .items()
         }
         if not pnl_events.empty
         else {}
@@ -181,9 +181,7 @@ def summarize_production_attribution(
         for action, frame in trade_events.groupby("action", sort=True):
             cost_daily = dollar_stream(frame, "transaction_cost")
             if not daily_frame.empty:
-                cost_return = cost_daily.div(
-                    previous_equity.replace(0.0, pd.NA)
-                ).fillna(0.0)
+                cost_return = cost_daily.div(previous_equity.replace(0.0, pd.NA)).fillna(0.0)
                 no_action_cost = actual_returns + cost_return
                 drag = _annualized_return(no_action_cost) - _annualized_return(actual_returns)
             else:
@@ -196,12 +194,12 @@ def summarize_production_attribution(
                 "annualized_return_drag_proxy": float(drag),
             }
     total_cost = float(trade_events["transaction_cost"].sum()) if not trade_events.empty else 0.0
-    total_turnover = float(trade_events["turnover_notional"].sum()) if not trade_events.empty else 0.0
+    total_turnover = (
+        float(trade_events["turnover_notional"].sum()) if not trade_events.empty else 0.0
+    )
     if not daily_frame.empty:
         total_cost_daily = dollar_stream(trade_events, "transaction_cost")
-        total_cost_return = total_cost_daily.div(
-            previous_equity.replace(0.0, pd.NA)
-        ).fillna(0.0)
+        total_cost_return = total_cost_daily.div(previous_equity.replace(0.0, pd.NA)).fillna(0.0)
         no_cost_ann = _annualized_return(actual_returns + total_cost_return)
         actual_ann = _annualized_return(actual_returns)
         total_cost_drag = no_cost_ann - actual_ann
@@ -235,7 +233,8 @@ def summarize_production_attribution(
         else pd.Series(dtype=float)
     )
     realized_ratios = (
-        daily_frame["gross_notional"].astype(float)
+        daily_frame["gross_notional"]
+        .astype(float)
         .div(daily_frame["equity"].replace(0.0, pd.NA))
         .fillna(0.0)
         if not daily_frame.empty and "gross_notional" in daily_frame
@@ -243,12 +242,22 @@ def summarize_production_attribution(
     )
     capacity.update(
         {
-            "average_raw_target_gross_ratio": float(raw_ratios.mean()) if not raw_ratios.empty else 0.0,
+            "average_raw_target_gross_ratio": float(raw_ratios.mean())
+            if not raw_ratios.empty
+            else 0.0,
             "peak_raw_target_gross_ratio": float(raw_ratios.max()) if not raw_ratios.empty else 0.0,
-            "average_governor_target_gross_ratio": float(governor_ratios.mean()) if not governor_ratios.empty else 0.0,
-            "peak_governor_target_gross_ratio": float(governor_ratios.max()) if not governor_ratios.empty else 0.0,
-            "average_realized_gross_ratio": float(realized_ratios.mean()) if not realized_ratios.empty else 0.0,
-            "peak_realized_gross_ratio": float(realized_ratios.max()) if not realized_ratios.empty else 0.0,
+            "average_governor_target_gross_ratio": float(governor_ratios.mean())
+            if not governor_ratios.empty
+            else 0.0,
+            "peak_governor_target_gross_ratio": float(governor_ratios.max())
+            if not governor_ratios.empty
+            else 0.0,
+            "average_realized_gross_ratio": float(realized_ratios.mean())
+            if not realized_ratios.empty
+            else 0.0,
+            "peak_realized_gross_ratio": float(realized_ratios.max())
+            if not realized_ratios.empty
+            else 0.0,
         }
     )
     if not daily_frame.empty:
@@ -283,7 +292,9 @@ def summarize_production_attribution(
         "risk_actions": risk_actions,
         "activity": {
             "execution_event_count": int(len(trade_events)),
-            "affected_trade_days": int(trade_events["date"].nunique()) if not trade_events.empty else 0,
+            "affected_trade_days": int(trade_events["date"].nunique())
+            if not trade_events.empty
+            else 0,
             "average_holding_sessions": _holding_sessions(daily_frame, pnl_events),
         },
     }

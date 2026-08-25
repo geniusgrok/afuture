@@ -1,10 +1,11 @@
 """Offline causal-feature / future-label diagnostics for directional entry and exit events."""
+
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -16,7 +17,6 @@ from afuture.directional_entry_diagnostics import (
     label_directional_entry_exit_events,
     summarize_entry_exit_quality,
 )
-
 
 DEFAULT_SLICES = {
     "train": ("2024-08-21", "2025-08-20"),
@@ -62,7 +62,11 @@ def main() -> None:
         stress_cost_bps=float(args.stress_cost_bps),
     )
     slices: dict[str, dict] = {}
-    dates = pd.to_datetime(labeled["date"], errors="coerce") if not labeled.empty else pd.Series(dtype="datetime64[ns]")
+    dates = (
+        pd.to_datetime(labeled["date"], errors="coerce")
+        if not labeled.empty
+        else pd.Series(dtype="datetime64[ns]")
+    )
     for name, (start, end) in DEFAULT_SLICES.items():
         mask = (dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))
         slices[name] = summarize_entry_exit_quality(labeled.loc[mask].copy())
@@ -85,9 +89,7 @@ def main() -> None:
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    labeled_path = args.labeled_output or args.output.with_name(
-        f"{args.output.stem}_labeled.csv"
-    )
+    labeled_path = args.labeled_output or args.output.with_name(f"{args.output.stem}_labeled.csv")
     labeled_path.parent.mkdir(parents=True, exist_ok=True)
     labeled.to_csv(labeled_path, index=False)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))

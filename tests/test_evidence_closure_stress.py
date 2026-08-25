@@ -10,7 +10,7 @@ from afuture.broker.shadow import ShadowBroker
 from afuture.config import AppConfig
 from afuture.data import read_ticks
 from afuture.data_quality import DataQualityAnalyzer
-from afuture.models import AccountSnapshot, ContractInfo, ContractSpec, Tick
+from afuture.models import ContractInfo, ContractSpec, Tick
 from afuture.risk import RiskConfig
 from afuture.sample_store import MarketSampleStore
 
@@ -19,7 +19,9 @@ def spec(symbol: str) -> ContractSpec:
     return ContractSpec(symbol, "DCE", 10, 1, 0.10, 0.10)
 
 
-def tick(symbol: str, when: datetime, mid: float, *, day: str = "20260821", volume=20000, oi=80000) -> Tick:
+def tick(
+    symbol: str, when: datetime, mid: float, *, day: str = "20260821", volume=20000, oi=80000
+) -> Tick:
     return Tick(
         symbol=symbol,
         exchange="DCE",
@@ -115,10 +117,12 @@ def test_auto_research_includes_data_gap_skew_and_activity_stress(tmp_path: Path
         trading_day = f"202608{day + 1:02d}"
         for minute, spread in enumerate([10, 11, 10, 25, 10, 10]):
             when = start + timedelta(days=day, minutes=minute)
-            rows.extend([
-                tick("m2609", when, 3000 + spread, day=trading_day),
-                tick("m2701", when, 3000, day=trading_day),
-            ])
+            rows.extend(
+                [
+                    tick("m2609", when, 3000 + spread, day=trading_day),
+                    tick("m2701", when, 3000, day=trading_day),
+                ]
+            )
     result = AutoPortfolioRunner(cfg).run(
         rows,
         AutoPortfolioResearchConfig(
@@ -137,18 +141,38 @@ def test_auto_research_includes_data_gap_skew_and_activity_stress(tmp_path: Path
 
 def test_shadow_account_uses_live_trading_day():
     class Live:
-        def start(self): pass
-        def stop(self): pass
-        def is_ready(self): return True
-        def subscribe(self, symbol, exchange): pass
-        def get_trading_day(self): return "20260822"
-        def get_contract_catalog(self): return catalog()
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def is_ready(self):
+            return True
+
+        def subscribe(self, symbol, exchange):
+            pass
+
+        def get_trading_day(self):
+            return "20260822"
+
+        def get_contract_catalog(self):
+            return catalog()
+
         def get_live_contract_specs(self, symbols, timeout_seconds=10):
             return {symbol: spec(symbol) for symbol in symbols}
-        def poll_events(self): return []
-        def health_error(self): return None
-        def snapshot_marker(self): return (0, 0)
-        def snapshot_ready(self, marker): return True
+
+        def poll_events(self):
+            return []
+
+        def health_error(self):
+            return None
+
+        def snapshot_marker(self):
+            return (0, 0)
+
+        def snapshot_ready(self, marker):
+            return True
 
     shadow = ShadowBroker(Live(), 500000)
     shadow.start()

@@ -36,7 +36,9 @@ def test_final_gate_rejects_return_risk_halt_margin_and_efficiency_failures():
         ("stress", "train"): _entry(-0.01, -0.31),
         ("stress", "validation"): _entry(0.01, -0.20),
         ("stress", "oos"): _entry(0.01, -0.20),
-        ("stress", "full_recent"): _entry(0.79, -0.31, halted=True, gross=2.01, rejects=1, net_bps=12.0),
+        ("stress", "full_recent"): _entry(
+            0.79, -0.31, halted=True, gross=2.01, rejects=1, net_bps=12.0
+        ),
     }
     result = gate(results)
     assert result["passed"] is False

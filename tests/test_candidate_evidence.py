@@ -70,7 +70,10 @@ def test_auto_selector_records_candidate_statistics_and_reject_reason(tmp_path: 
     manager.select(broker, now=base + timedelta(minutes=4), protected_pair_ids=set())
     manager.close()
 
-    rows = [json.loads(line) for line in (tmp_path / "evidence.jsonl").read_text(encoding="utf-8").splitlines()]
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "evidence.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
     candidate = next(row for row in rows if row.get("event") == "candidate")
     for key in (
         "pair_id",

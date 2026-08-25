@@ -4,10 +4,11 @@ Research only. Signals observed through close t may earn only t+1 returns. Conti
 contracts are L3 discovery evidence; production promotion requires later roll-safe
 specific-contract validation and never bypasses afuture's RiskManager/PairExecutor.
 """
+
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -31,23 +32,62 @@ META_POOL_SIZE = 16
 
 EXCHANGE_PRODUCTS = {
     "DCE": {
-        "A", "B", "C", "CS", "EB", "EG", "I", "J", "JM", "L", "LH",
-        "M", "P", "PG", "PP", "V", "Y",
+        "A",
+        "B",
+        "C",
+        "CS",
+        "EB",
+        "EG",
+        "I",
+        "J",
+        "JM",
+        "L",
+        "LH",
+        "M",
+        "P",
+        "PG",
+        "PP",
+        "V",
+        "Y",
     },
     "CZCE": {
-        "AP", "CF", "CJ", "FG", "MA", "OI", "PF", "PK", "RM", "SA",
-        "SF", "SM", "SR", "TA", "UR",
+        "AP",
+        "CF",
+        "CJ",
+        "FG",
+        "MA",
+        "OI",
+        "PF",
+        "PK",
+        "RM",
+        "SA",
+        "SF",
+        "SM",
+        "SR",
+        "TA",
+        "UR",
     },
     "SHFE": {
-        "AG", "AL", "AU", "BU", "CU", "FU", "HC", "NI", "PB", "RB",
-        "RU", "SN", "SP", "SS", "ZN",
+        "AG",
+        "AL",
+        "AU",
+        "BU",
+        "CU",
+        "FU",
+        "HC",
+        "NI",
+        "PB",
+        "RB",
+        "RU",
+        "SN",
+        "SP",
+        "SS",
+        "ZN",
     },
     "INE": {"BC", "LU", "NR"},
 }
 PRODUCT_EXCHANGE = {
-    product: exchange
-    for exchange, products in EXCHANGE_PRODUCTS.items()
-    for product in products
+    product: exchange for exchange, products in EXCHANGE_PRODUCTS.items() for product in products
 }
 
 
@@ -122,7 +162,9 @@ def signal_scores(returns: pd.DataFrame, template: AlphaTemplate) -> pd.DataFram
 def _exchange_groups(columns: list[str], exchange_map: dict[str, str]) -> list[np.ndarray]:
     groups: list[np.ndarray] = []
     for exchange in sorted(set(exchange_map.values())):
-        indices = [index for index, name in enumerate(columns) if exchange_map.get(name) == exchange]
+        indices = [
+            index for index, name in enumerate(columns) if exchange_map.get(name) == exchange
+        ]
         if len(indices) >= 2:
             groups.append(np.asarray(indices, dtype=int))
     return groups
@@ -142,16 +184,14 @@ def _weights_from_arrays(
     candidates: list[tuple[float, int, int]] = []
     for group in groups:
         valid = group[
-            np.isfinite(score[group])
-            & np.isfinite(volatility[group])
-            & (volatility[group] > 1e-12)
+            np.isfinite(score[group]) & np.isfinite(volatility[group]) & (volatility[group] > 1e-12)
         ]
         if valid.size < 2:
             continue
         ordered = valid[np.argsort(score[valid], kind="stable")]
         lows = ordered
         highs = ordered[::-1]
-        for long_index, short_index in zip(highs, lows):
+        for long_index, short_index in zip(highs, lows, strict=True):
             if long_index == short_index:
                 continue
             spread = float(score[long_index] - score[short_index])
@@ -194,9 +234,9 @@ def _simulate_path(
     columns = list(data.columns)
     values = np.nan_to_num(data.to_numpy(float), nan=0.0, posinf=0.0, neginf=0.0)
     score_values = signal_scores(data, template).to_numpy(float)
-    volatility_values = data.rolling(
-        template.vol_window, min_periods=template.vol_window
-    ).std().to_numpy(float)
+    volatility_values = (
+        data.rolling(template.vol_window, min_periods=template.vol_window).std().to_numpy(float)
+    )
     groups = _exchange_groups(columns, exchange_map)
     weights = np.zeros(len(columns), dtype=float)
     gross_pnl = np.zeros(len(data), dtype=float)
@@ -285,9 +325,7 @@ def _window_metrics(series: pd.Series, name: str) -> dict:
     return _metrics(series.loc[pd.Timestamp(start) : pd.Timestamp(end)])
 
 
-def choose_templates(
-    streams: dict[str, pd.Series], *, start, end, count: int
-) -> list[str]:
+def choose_templates(streams: dict[str, pd.Series], *, start, end, count: int) -> list[str]:
     if count <= 0:
         return []
     ranked: list[tuple[float, str]] = []
@@ -295,7 +333,9 @@ def choose_templates(
         item = _metrics(series.loc[pd.Timestamp(start) : pd.Timestamp(end)])
         if item["annualized_return"] <= 0.0:
             continue
-        score = 4.0 * item["annualized_return"] + 0.5 * item["sharpe"] - 2.0 * abs(item["max_drawdown"])
+        score = (
+            4.0 * item["annualized_return"] + 0.5 * item["sharpe"] - 2.0 * abs(item["max_drawdown"])
+        )
         ranked.append((score, name))
     ranked.sort(key=lambda item: (-item[0], item[1]))
     return [name for _, name in ranked[:count]]
@@ -326,7 +366,11 @@ def dynamic_rotate(
                 item = _metrics_array(history[:, column_index])
                 if item["annualized_return"] <= 0.0 or item["max_drawdown"] <= -0.20:
                     continue
-                score = 4.0 * item["annualized_return"] + 0.5 * item["sharpe"] - 2.0 * abs(item["max_drawdown"])
+                score = (
+                    4.0 * item["annualized_return"]
+                    + 0.5 * item["sharpe"]
+                    - 2.0 * abs(item["max_drawdown"])
+                )
                 ranked.append((score, column_index, name))
             ranked.sort(key=lambda item: (-item[0], item[2]))
             next_selected = [column_index for _, column_index, _ in ranked[:count]]
@@ -437,8 +481,14 @@ def evaluate(raw: pd.DataFrame) -> dict:
                     count=count,
                     switch_cost_bps=BASE_COST_BPS,
                 )
-                item = _metrics(series.loc[pd.Timestamp(selection_start) : pd.Timestamp(selection_end)])
-                score = 4.0 * item["annualized_return"] + 0.5 * item["sharpe"] - 2.0 * abs(item["max_drawdown"])
+                item = _metrics(
+                    series.loc[pd.Timestamp(selection_start) : pd.Timestamp(selection_end)]
+                )
+                score = (
+                    4.0 * item["annualized_return"]
+                    + 0.5 * item["sharpe"]
+                    - 2.0 * abs(item["max_drawdown"])
+                )
                 meta_candidates.append(
                     {
                         "meta_lookback": lookback,
@@ -448,7 +498,9 @@ def evaluate(raw: pd.DataFrame) -> dict:
                         "selection_metrics": item,
                     }
                 )
-    meta_candidates.sort(key=lambda row: (-row["score"], row["meta_lookback"], row["rebalance"], row["count"]))
+    meta_candidates.sort(
+        key=lambda row: (-row["score"], row["meta_lookback"], row["rebalance"], row["count"])
+    )
     chosen = meta_candidates[0]
 
     chosen_base, base_audit = dynamic_rotate(

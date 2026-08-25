@@ -1,6 +1,6 @@
-from pathlib import Path
 import importlib.util
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -33,9 +33,7 @@ profile = module.PairProfile(
     min_volatility_ratio=0.0,
 )
 stats = module._pair_statistics(close, returns, pair, profile.formation)
-series, entries = module._simulate_pair(
-    close, returns, pair, profile, stats, cost_bps=0.0
-)
+series, entries = module._simulate_pair(close, returns, pair, profile, stats, cost_bps=0.0)
 assert series.iloc[:60].abs().sum() == 0.0
 assert all(timestamp >= dates[60] for timestamp in entries)
 assert np.isfinite(series.to_numpy()).all()

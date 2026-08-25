@@ -10,7 +10,6 @@ from zoneinfo import ZoneInfo
 from .economics import executable_spreads
 from .models import PairConfig, SignalAction, SpreadSignal, Tick
 
-
 _CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -94,16 +93,16 @@ class CalendarSpreadStrategy:
 
     def restore_state(self, state: dict) -> None:
         self._history.clear()
-        for value in state.get("history", [])[-self.pair.lookback:]:
+        for value in state.get("history", [])[-self.pair.lookback :]:
             self._history.append(float(value))
         self._raw_history.clear()
         raw_values = state.get("raw_history")
         if raw_values is None and self.pair.signal_transform == "spread":
             raw_values = state.get("history", [])
-        for value in (raw_values or [])[-self.pair.lookback:]:
+        for value in (raw_values or [])[-self.pair.lookback :]:
             self._raw_history.append(float(value))
         self._z_history.clear()
-        for value in state.get("z_history", [])[-self._z_history_window:]:
+        for value in state.get("z_history", [])[-self._z_history_window :]:
             self._z_history.append(float(value))
 
         self._position = int(state.get("position", 0))
@@ -117,9 +116,7 @@ class CalendarSpreadStrategy:
             self._last_sample_ts = datetime.fromisoformat(raw_ts)
         else:
             self._last_sample_ts = None
-        self._last_sample_trading_day = str(
-            state.get("last_sample_trading_day", "")
-        )
+        self._last_sample_trading_day = str(state.get("last_sample_trading_day", ""))
         self._armed_direction = int(state.get("armed_direction", 0))
         if self._armed_direction not in {-1, 0, 1}:
             raise ValueError("invalid persisted confirmation direction")
@@ -138,22 +135,20 @@ class CalendarSpreadStrategy:
 
         self.restore_state(previous_state)
         self._history.clear()
-        for value in observed.get("history", [])[-self.pair.lookback:]:
+        for value in observed.get("history", [])[-self.pair.lookback :]:
             self._history.append(float(value))
         self._raw_history.clear()
-        for value in observed.get("raw_history", [])[-self.pair.lookback:]:
+        for value in observed.get("raw_history", [])[-self.pair.lookback :]:
             self._raw_history.append(float(value))
         self._z_history.clear()
-        for value in observed.get("z_history", [])[-self._z_history_window:]:
+        for value in observed.get("z_history", [])[-self._z_history_window :]:
             self._z_history.append(float(value))
         raw_ts = str(observed.get("last_sample_ts", ""))
         if raw_ts:
             self._last_sample_ts = datetime.fromisoformat(raw_ts)
         else:
             self._last_sample_ts = None
-        self._last_sample_trading_day = str(
-            observed.get("last_sample_trading_day", "")
-        )
+        self._last_sample_trading_day = str(observed.get("last_sample_trading_day", ""))
         self._armed_direction = int(observed.get("armed_direction", 0))
         self._armed_extreme = float(observed.get("armed_extreme", 0.0))
         if previous_position != 0:
@@ -224,14 +219,10 @@ class CalendarSpreadStrategy:
                 # 退出和止损必须基于真实可平仓方向，而不是乐观的 mid ratio。
                 liquidation_z = short_z if self._position > 0 else long_z
                 chosen_z = liquidation_z
-                reverted = (
-                    self._position > 0 and liquidation_z >= -self.pair.exit_z
-                ) or (
+                reverted = (self._position > 0 and liquidation_z >= -self.pair.exit_z) or (
                     self._position < 0 and liquidation_z <= self.pair.exit_z
                 )
-                stop_reached = (
-                    self._position > 0 and liquidation_z <= -self.pair.stop_z
-                ) or (
+                stop_reached = (self._position > 0 and liquidation_z <= -self.pair.stop_z) or (
                     self._position < 0 and liquidation_z >= self.pair.stop_z
                 )
                 if reverted:
@@ -247,9 +238,7 @@ class CalendarSpreadStrategy:
                     action = SignalAction.EMERGENCY_EXIT
                     reason = "maximum holding period reached"
             else:
-                liquidation_z = (
-                    liquidation_spread - self._entry_mean
-                ) / max(self._entry_std, 1e-9)
+                liquidation_z = (liquidation_spread - self._entry_mean) / max(self._entry_std, 1e-9)
                 chosen_z = liquidation_z
                 current_std = max(raw_std, 1e-9)
                 mean_shift_z = max(
@@ -257,18 +246,14 @@ class CalendarSpreadStrategy:
                     abs(raw_spread - self._entry_mean),
                 ) / max(self._entry_std, 1e-9)
                 vol_ratio = current_std / max(self._entry_std, 1e-9)
-                reverted = (
-                    self._position > 0 and liquidation_z >= -self.pair.exit_z
-                ) or (
+                reverted = (self._position > 0 and liquidation_z >= -self.pair.exit_z) or (
                     self._position < 0 and liquidation_z <= self.pair.exit_z
                 )
                 structural_break = (
                     mean_shift_z >= self.pair.structural_mean_shift_z
                     or vol_ratio >= self.pair.structural_vol_ratio
                 )
-                stop_reached = (
-                    self._position > 0 and liquidation_z <= -self.pair.stop_z
-                ) or (
+                stop_reached = (self._position > 0 and liquidation_z <= -self.pair.stop_z) or (
                     self._position < 0 and liquidation_z >= self.pair.stop_z
                 )
                 if structural_break:
@@ -316,10 +301,7 @@ class CalendarSpreadStrategy:
         half_life: float,
         stationarity: float,
     ) -> tuple[SignalAction, str]:
-        if (
-            stationarity < self.pair.min_stationarity_score
-            or half_life > self.pair.max_half_life
-        ):
+        if stationarity < self.pair.min_stationarity_score or half_life > self.pair.max_half_life:
             self._armed_direction = 0
             self._armed_extreme = 0.0
             return SignalAction.HOLD, ""
@@ -376,9 +358,7 @@ class CalendarSpreadStrategy:
             start, end = self._parse_window(self.pair.daily_sample_window)
             return start <= current <= end
         if self._last_sample_ts is not None and self.pair.sample_seconds > 0:
-            return (
-                timestamp - self._last_sample_ts
-            ).total_seconds() >= self.pair.sample_seconds
+            return (timestamp - self._last_sample_ts).total_seconds() >= self.pair.sample_seconds
         return True
 
     def _append_sample(
@@ -424,7 +404,7 @@ class CalendarSpreadStrategy:
 
     def _entry_slope(self, current_z: float) -> float:
         window = self.pair.entry_trend_window
-        values = list(self._z_history)[-(window - 1):] + [current_z]
+        values = list(self._z_history)[-(window - 1) :] + [current_z]
         if len(values) < window:
             return 0.0
         x_mean = (window - 1) / 2.0
@@ -432,34 +412,32 @@ class CalendarSpreadStrategy:
         denominator = sum((index - x_mean) ** 2 for index in range(window))
         if denominator <= 0:
             return 0.0
-        return sum(
-            (index - x_mean) * (value - y_mean)
-            for index, value in enumerate(values)
-        ) / denominator
+        return (
+            sum((index - x_mean) * (value - y_mean) for index, value in enumerate(values))
+            / denominator
+        )
 
     def _mean_reversion_stats(self) -> tuple[float, float]:
         values = list(self._history)
         if len(values) < 4:
             return 999.0, 0.0
         levels = values[:-1]
-        changes = [
-            values[index + 1] - values[index]
-            for index in range(len(values) - 1)
-        ]
+        changes = [values[index + 1] - values[index] for index in range(len(values) - 1)]
         level_mean = sum(levels) / len(levels)
         change_mean = sum(changes) / len(changes)
         denominator = sum((value - level_mean) ** 2 for value in levels)
         if denominator <= 1e-12:
             return 999.0, 0.0
-        beta = sum(
-            (level - level_mean) * (change - change_mean)
-            for level, change in zip(levels, changes)
-        ) / denominator
+        beta = (
+            sum(
+                (level - level_mean) * (change - change_mean)
+                for level, change in zip(levels, changes, strict=True)
+            )
+            / denominator
+        )
         if beta >= 0:
             return 999.0, 0.0
-        return max(0.1, -log(2.0) / beta), min(
-            1.0, max(0.0, -beta)
-        )
+        return max(0.1, -log(2.0) / beta), min(1.0, max(0.0, -beta))
 
     @staticmethod
     def _parse_window(raw: str) -> tuple[time, time]:
@@ -470,9 +448,7 @@ class CalendarSpreadStrategy:
         except ValueError as exc:
             raise ValueError(f"invalid daily sample window: {raw}") from exc
         if start >= end:
-            raise ValueError(
-                "daily sample window must be an intraday increasing window"
-            )
+            raise ValueError("daily sample window must be an intraday increasing window")
         return start, end
 
     @staticmethod
@@ -487,31 +463,19 @@ class CalendarSpreadStrategy:
         return delta / std
 
     def _mean(self) -> float:
-        return (
-            sum(self._history) / len(self._history)
-            if self._history
-            else 0.0
-        )
+        return sum(self._history) / len(self._history) if self._history else 0.0
 
     def _std(self, mean: float) -> float:
         if not self._history:
             return 0.0
-        variance = sum(
-            (value - mean) ** 2 for value in self._history
-        ) / len(self._history)
+        variance = sum((value - mean) ** 2 for value in self._history) / len(self._history)
         return sqrt(variance)
 
     def _raw_mean(self) -> float:
-        return (
-            sum(self._raw_history) / len(self._raw_history)
-            if self._raw_history
-            else 0.0
-        )
+        return sum(self._raw_history) / len(self._raw_history) if self._raw_history else 0.0
 
     def _raw_std(self, mean: float) -> float:
         if not self._raw_history:
             return 0.0
-        variance = sum(
-            (value - mean) ** 2 for value in self._raw_history
-        ) / len(self._raw_history)
+        variance = sum((value - mean) ** 2 for value in self._raw_history) / len(self._raw_history)
         return sqrt(variance)

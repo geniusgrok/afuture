@@ -1,6 +1,6 @@
-from pathlib import Path
 import importlib.util
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -12,11 +12,33 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
-raw = pd.DataFrame([
-    {"date":"2026-08-19","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":99,"close":99,"volume":5000,"hold":30000},
-    {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":101,"volume":5000,"hold":30000},
-])
-weights = pd.DataFrame({"A":[0.5]}, index=pd.to_datetime(["2026-08-20"]))
+raw = pd.DataFrame(
+    [
+        {
+            "date": "2026-08-19",
+            "product": "A",
+            "exchange": "DCE",
+            "symbol": "A2609",
+            "delivery": "2026-12-15",
+            "open": 99,
+            "close": 99,
+            "volume": 5000,
+            "hold": 30000,
+        },
+        {
+            "date": "2026-08-20",
+            "product": "A",
+            "exchange": "DCE",
+            "symbol": "A2609",
+            "delivery": "2026-12-15",
+            "open": 100,
+            "close": 101,
+            "volume": 5000,
+            "hold": 30000,
+        },
+    ]
+)
+weights = pd.DataFrame({"A": [0.5]}, index=pd.to_datetime(["2026-08-20"]))
 report = module.evaluate_with_weights(raw, weights)
 assert report["selection_frozen"] is True
 assert report["parameter_search"] is False
@@ -53,14 +75,46 @@ module.WINDOWS = {
     "early": ("2026-08-21", "2026-08-21"),
     "late": ("2026-08-24", "2026-08-24"),
 }
-window_raw = pd.DataFrame([
-    {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
-    {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":70,"volume":5000,"hold":30000},
-    {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":110,"volume":5000,"hold":30000},
-])
+window_raw = pd.DataFrame(
+    [
+        {
+            "date": "2026-08-20",
+            "product": "A",
+            "exchange": "DCE",
+            "symbol": "A2609",
+            "delivery": "2026-12-15",
+            "open": 100,
+            "close": 100,
+            "volume": 5000,
+            "hold": 30000,
+        },
+        {
+            "date": "2026-08-21",
+            "product": "A",
+            "exchange": "DCE",
+            "symbol": "A2609",
+            "delivery": "2026-12-15",
+            "open": 100,
+            "close": 70,
+            "volume": 5000,
+            "hold": 30000,
+        },
+        {
+            "date": "2026-08-24",
+            "product": "A",
+            "exchange": "DCE",
+            "symbol": "A2609",
+            "delivery": "2026-12-15",
+            "open": 100,
+            "close": 110,
+            "volume": 5000,
+            "hold": 30000,
+        },
+    ]
+)
 window_weights = pd.DataFrame(
-    {"A":[1.0,1.0]},
-    index=pd.to_datetime(["2026-08-21","2026-08-24"]),
+    {"A": [1.0, 1.0]},
+    index=pd.to_datetime(["2026-08-21", "2026-08-24"]),
 )
 window_report = module.evaluate_with_weights(window_raw, window_weights)
 assert window_report["base"]["state_reset_per_window"] is True

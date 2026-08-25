@@ -1,14 +1,13 @@
-from datetime import datetime, timezone
+from datetime import timezone
 
 import pandas as pd
 import pytest
 
 from afuture.directional_acceptance import (
+    PRODUCT_MULTIPLIERS,
     DirectionalProductionAcceptance,
     ProductionMechanicsConfig,
-    PRODUCT_MULTIPLIERS,
 )
-
 
 UTC = timezone.utc
 
@@ -44,9 +43,7 @@ def test_integer_lot_floor_uses_frozen_multiplier_notional_and_contract_cap():
 
 def test_roll_is_two_phase_close_old_contract_then_open_new_contract():
     sim = _acceptance()
-    first = sim.rebalance_plan(
-        current_lots={"A2509": 3}, target_lots={"A2601": 2}
-    )
+    first = sim.rebalance_plan(current_lots={"A2509": 3}, target_lots={"A2601": 2})
     assert first.reductions == {"A2509": -3}
     assert first.openings == {}
 
@@ -76,15 +73,18 @@ def test_margin_proxy_and_cash_reserve_can_reject_an_otherwise_valid_open():
 
 def test_account_risk_matches_daily_loss_and_high_watermark_fail_closed_rules():
     sim = _acceptance(max_daily_loss_ratio=0.05, max_total_drawdown_ratio=0.30)
-    assert sim.account_risk_reason(
-        equity=94999.0, day_start_equity=100000.0, high_watermark=100000.0
-    ) == "daily loss limit reached"
-    assert sim.account_risk_reason(
-        equity=69999.0, day_start_equity=70000.0, high_watermark=100000.0
-    ) == "drawdown limit reached"
-    assert sim.account_risk_reason(
-        equity=95000.0, day_start_equity=100000.0, high_watermark=100000.0
-    ) == "daily loss limit reached"
+    assert (
+        sim.account_risk_reason(equity=94999.0, day_start_equity=100000.0, high_watermark=100000.0)
+        == "daily loss limit reached"
+    )
+    assert (
+        sim.account_risk_reason(equity=69999.0, day_start_equity=70000.0, high_watermark=100000.0)
+        == "drawdown limit reached"
+    )
+    assert (
+        sim.account_risk_reason(equity=95000.0, day_start_equity=100000.0, high_watermark=100000.0)
+        == "daily loss limit reached"
+    )
 
 
 def test_contract_for_day_uses_previous_completed_activity_not_current_day_activity():
@@ -153,9 +153,39 @@ def test_simulation_normalizes_contract_table_only_once(monkeypatch):
     )
     raw = pd.DataFrame(
         [
-            {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
-            {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":101,"volume":5000,"hold":30000},
-            {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":101,"close":102,"volume":5000,"hold":30000},
+            {
+                "date": "2026-08-20",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 100,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-21",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 101,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-24",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 101,
+                "close": 102,
+                "volume": 5000,
+                "hold": 30000,
+            },
         ]
     )
     weights = pd.DataFrame(
@@ -185,9 +215,39 @@ def test_prepared_contract_context_can_be_reused_without_renormalizing(monkeypat
     )
     raw = pd.DataFrame(
         [
-            {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
-            {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":101,"volume":5000,"hold":30000},
-            {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":101,"close":102,"volume":5000,"hold":30000},
+            {
+                "date": "2026-08-20",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 100,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-21",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 101,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-24",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 101,
+                "close": 102,
+                "volume": 5000,
+                "hold": 30000,
+            },
         ]
     )
     weights = pd.DataFrame(

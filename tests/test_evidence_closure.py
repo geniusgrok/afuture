@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import date, datetime, timedelta, timezone
 import importlib.util
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
 
@@ -17,10 +16,9 @@ from afuture.models import (
     ContractInfo,
     ContractSpec,
     FeeSpec,
+    Offset,
     OrderRequest,
     OrderSide,
-    Offset,
-    PairConfig,
     Tick,
 )
 from afuture.risk import RiskConfig, RiskManager
@@ -239,26 +237,54 @@ def test_shadow_broker_never_sends_order_to_live_broker():
     class LiveBroker:
         def __init__(self):
             self.sent = 0
-        def start(self): pass
-        def stop(self): pass
-        def is_ready(self): return True
-        def subscribe(self, symbol, exchange): pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def is_ready(self):
+            return True
+
+        def subscribe(self, symbol, exchange):
+            pass
+
         def send_order(self, request):
             self.sent += 1
             raise AssertionError("shadow must never delegate send_order")
-        def get_contract_catalog(self): return catalog()
+
+        def get_contract_catalog(self):
+            return catalog()
+
         def get_live_contract_specs(self, symbols, timeout_seconds=10.0):
             return {symbol: spec(symbol) for symbol in symbols}
-        def poll_events(self): return []
+
+        def poll_events(self):
+            return []
+
         def get_account(self):
             from afuture.models import AccountSnapshot
+
             return AccountSnapshot(500000, 500000, 500000, 0, 0, 0, "20260821")
-        def get_positions(self): return []
-        def get_active_orders(self): return []
-        def get_order(self, order_id): return None
-        def cancel_order(self, order_id): pass
-        def get_trading_day(self): return "20260821"
-        def health_error(self): return None
+
+        def get_positions(self):
+            return []
+
+        def get_active_orders(self):
+            return []
+
+        def get_order(self, order_id):
+            return None
+
+        def cancel_order(self, order_id):
+            pass
+
+        def get_trading_day(self):
+            return "20260821"
+
+        def health_error(self):
+            return None
 
     live = LiveBroker()
     shadow = ShadowBroker(live, 500000)

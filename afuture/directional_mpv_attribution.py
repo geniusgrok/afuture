@@ -3,6 +3,7 @@
 Nothing in this module is decision-side runtime input. Functions that use prices after a
 decision date return explicit labels for research evaluation only.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

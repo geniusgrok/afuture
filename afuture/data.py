@@ -6,7 +6,6 @@ from pathlib import Path
 
 from .models import Tick
 
-
 _REQUIRED_COLUMNS = {
     "timestamp",
     "symbol",

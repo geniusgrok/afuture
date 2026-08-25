@@ -28,42 +28,60 @@ def test_rebalance_action_splits_entry_and_exit_without_losing_existing_classes(
         "RB2610": "RB",
     }
 
-    assert classify_rebalance_action(
-        symbol="A2609",
-        original_lots=original,
-        target_lots=target,
-        symbol_products=products,
-    ) == "roll"
-    assert classify_rebalance_action(
-        symbol="A2701",
-        original_lots=original,
-        target_lots=target,
-        symbol_products=products,
-    ) == "roll"
-    assert classify_rebalance_action(
-        symbol="M2609",
-        original_lots=original,
-        target_lots=target,
-        symbol_products=products,
-    ) == "resize"
-    assert classify_rebalance_action(
-        symbol="CU2609",
-        original_lots=original,
-        target_lots=target,
-        symbol_products=products,
-    ) == "reversal"
-    assert classify_rebalance_action(
-        symbol="RB2610",
-        original_lots=original,
-        target_lots=target,
-        symbol_products=products,
-    ) == "entry"
-    assert classify_rebalance_action(
-        symbol="AL2609",
-        original_lots=original,
-        target_lots=target,
-        symbol_products=products,
-    ) == "exit"
+    assert (
+        classify_rebalance_action(
+            symbol="A2609",
+            original_lots=original,
+            target_lots=target,
+            symbol_products=products,
+        )
+        == "roll"
+    )
+    assert (
+        classify_rebalance_action(
+            symbol="A2701",
+            original_lots=original,
+            target_lots=target,
+            symbol_products=products,
+        )
+        == "roll"
+    )
+    assert (
+        classify_rebalance_action(
+            symbol="M2609",
+            original_lots=original,
+            target_lots=target,
+            symbol_products=products,
+        )
+        == "resize"
+    )
+    assert (
+        classify_rebalance_action(
+            symbol="CU2609",
+            original_lots=original,
+            target_lots=target,
+            symbol_products=products,
+        )
+        == "reversal"
+    )
+    assert (
+        classify_rebalance_action(
+            symbol="RB2610",
+            original_lots=original,
+            target_lots=target,
+            symbol_products=products,
+        )
+        == "entry"
+    )
+    assert (
+        classify_rebalance_action(
+            symbol="AL2609",
+            original_lots=original,
+            target_lots=target,
+            symbol_products=products,
+        )
+        == "exit"
+    )
 
 
 def test_margin_aware_target_stages_expose_capacity_losses_without_changing_final_lots():
@@ -131,14 +149,46 @@ def test_target_stages_split_rounding_volume_cap_and_unavailable_capacity():
 
 
 def test_simulation_audit_reconciles_gross_pnl_and_transaction_cost_to_equity():
-    raw = pd.DataFrame([
-        {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":99,"close":99,"volume":5000,"hold":30000},
-        {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":110,"volume":5000,"hold":30000},
-        {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":111,"close":112,"volume":5000,"hold":30000},
-    ])
+    raw = pd.DataFrame(
+        [
+            {
+                "date": "2026-08-20",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 99,
+                "close": 99,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-21",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 110,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-24",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 111,
+                "close": 112,
+                "volume": 5000,
+                "hold": 30000,
+            },
+        ]
+    )
     weights = pd.DataFrame(
-        {"A":[1.0,0.0]},
-        index=pd.to_datetime(["2026-08-21","2026-08-24"]),
+        {"A": [1.0, 0.0]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-24"]),
     )
     sim = MarginAwareDirectionalProductionAcceptance(
         ProductionMechanicsConfig(
@@ -146,9 +196,9 @@ def test_simulation_audit_reconciles_gross_pnl_and_transaction_cost_to_equity():
             margin_rate_proxy=0.01,
             margin_estimate_buffer=1.0,
             max_contract_volume=100,
-            max_daily_loss_ratio=.5,
-            max_total_drawdown_ratio=.8,
-            max_margin_ratio=.9,
+            max_daily_loss_ratio=0.5,
+            max_total_drawdown_ratio=0.8,
+            max_margin_ratio=0.9,
             min_available_ratio=0,
         )
     )
@@ -160,9 +210,7 @@ def test_simulation_audit_reconciles_gross_pnl_and_transaction_cost_to_equity():
     assert events.loc[events["kind"] == "pnl", "gross_pnl"].sum() == pytest.approx(11000.0)
     assert events.loc[events["kind"] == "trade", "transaction_cost"].sum() == pytest.approx(105.5)
     assert result.final_equity == pytest.approx(
-        sim.config.initial_capital
-        + events["gross_pnl"].sum()
-        - events["transaction_cost"].sum()
+        sim.config.initial_capital + events["gross_pnl"].sum() - events["transaction_cost"].sum()
     )
     assert result.final_equity == pytest.approx(110894.5)
 
@@ -177,14 +225,46 @@ def test_simulation_audit_reconciles_gross_pnl_and_transaction_cost_to_equity():
 def test_production_attribution_summary_reports_pnl_cost_capacity_and_holding_quality():
     from afuture.directional_attribution import summarize_production_attribution
 
-    raw = pd.DataFrame([
-        {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":99,"close":99,"volume":5000,"hold":30000},
-        {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":110,"volume":5000,"hold":30000},
-        {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":111,"close":112,"volume":5000,"hold":30000},
-    ])
+    raw = pd.DataFrame(
+        [
+            {
+                "date": "2026-08-20",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 99,
+                "close": 99,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-21",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 110,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-24",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 111,
+                "close": 112,
+                "volume": 5000,
+                "hold": 30000,
+            },
+        ]
+    )
     weights = pd.DataFrame(
-        {"A":[1.0,0.0]},
-        index=pd.to_datetime(["2026-08-21","2026-08-24"]),
+        {"A": [1.0, 0.0]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-24"]),
     )
     sim = MarginAwareDirectionalProductionAcceptance(
         ProductionMechanicsConfig(
@@ -192,9 +272,9 @@ def test_production_attribution_summary_reports_pnl_cost_capacity_and_holding_qu
             margin_rate_proxy=0.01,
             margin_estimate_buffer=1.0,
             max_contract_volume=100,
-            max_daily_loss_ratio=.5,
-            max_total_drawdown_ratio=.8,
-            max_margin_ratio=.9,
+            max_daily_loss_ratio=0.5,
+            max_total_drawdown_ratio=0.8,
+            max_margin_ratio=0.9,
             min_available_ratio=0,
         )
     )
@@ -211,10 +291,14 @@ def test_production_attribution_summary_reports_pnl_cost_capacity_and_holding_qu
     assert summary["alpha"]["short_pnl"] == pytest.approx(0.0)
     assert summary["alpha"]["product_pnl"] == {"A": pytest.approx(11000.0)}
     assert summary["transaction_cost"]["total_cost"] == pytest.approx(105.5)
-    assert summary["transaction_cost"]["by_action"]["entry"]["turnover_notional"] == pytest.approx(100000.0)
+    assert summary["transaction_cost"]["by_action"]["entry"]["turnover_notional"] == pytest.approx(
+        100000.0
+    )
     assert summary["transaction_cost"]["by_action"]["entry"]["cost"] == pytest.approx(50.0)
     assert summary["transaction_cost"]["by_action"]["entry"]["affected_days"] == 1
-    assert summary["transaction_cost"]["by_action"]["exit"]["turnover_notional"] == pytest.approx(111000.0)
+    assert summary["transaction_cost"]["by_action"]["exit"]["turnover_notional"] == pytest.approx(
+        111000.0
+    )
     assert summary["transaction_cost"]["by_action"]["exit"]["cost"] == pytest.approx(55.5)
     assert summary["transaction_cost"]["annualized_return_drag_proxy"] > 0.0
     assert summary["activity"]["execution_event_count"] == 2
@@ -226,22 +310,42 @@ def test_production_attribution_summary_reports_pnl_cost_capacity_and_holding_qu
 
 
 def test_audit_records_end_of_day_daily_circuit_cost_exactly_once():
-    raw = pd.DataFrame([
-        {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
-        {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":70,"volume":5000,"hold":30000},
-    ])
-    weights = pd.DataFrame(
-        {"A":[1.0]}, index=pd.to_datetime(["2026-08-21"])
+    raw = pd.DataFrame(
+        [
+            {
+                "date": "2026-08-20",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 100,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-21",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 70,
+                "volume": 5000,
+                "hold": 30000,
+            },
+        ]
     )
+    weights = pd.DataFrame({"A": [1.0]}, index=pd.to_datetime(["2026-08-21"]))
     sim = MarginAwareDirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=100000,
             margin_rate_proxy=0.01,
             margin_estimate_buffer=1.0,
             max_contract_volume=100,
-            max_daily_loss_ratio=.05,
-            max_total_drawdown_ratio=.8,
-            max_margin_ratio=.9,
+            max_daily_loss_ratio=0.05,
+            max_total_drawdown_ratio=0.8,
+            max_margin_ratio=0.9,
             min_available_ratio=0,
         )
     )

@@ -5,8 +5,8 @@ from afuture.directional import DirectionalConfig
 from afuture.directional_engine import DirectionalTradingEngine
 from afuture.engine import TradingEngine
 from afuture.execution_aligned_runtime import (
-    ExecutionAlignedDirectionalPortfolioManager,
     FROZEN_PRODUCTS,
+    ExecutionAlignedDirectionalPortfolioManager,
 )
 from afuture.risk import RiskConfig
 from afuture.state import StateStore
@@ -36,7 +36,9 @@ def _config(enabled: bool):
     )
 
 
-def test_cli_engine_builder_routes_directional_mode_through_exact_execution_aligned_manager(tmp_path):
+def test_cli_engine_builder_routes_directional_mode_through_exact_execution_aligned_manager(
+    tmp_path,
+):
     engine = _build_cli_engine(
         _config(True),
         _Broker(),

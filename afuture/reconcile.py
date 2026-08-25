@@ -41,8 +41,5 @@ def compare_positions(
     diffs = []
     for symbol in sorted(set(left) | set(right)):
         if left.get(symbol) != right.get(symbol):
-            diffs.append(
-                f"{symbol}: local={left.get(symbol)}, "
-                f"remote={right.get(symbol)}"
-            )
+            diffs.append(f"{symbol}: local={left.get(symbol)}, remote={right.get(symbol)}")
     return ReconcileResult(False, "; ".join(diffs))

@@ -4,11 +4,12 @@ The optimizer does not generate Alpha and does not own risk authority. It search
 inside raw directional intent and a caller-supplied soft margin envelope; downstream
 RiskManager/Broker gates remain authoritative.
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from math import isfinite
-from typing import Callable, Mapping
 
 HARD_MAX_GROSS_RATIO = 2.0
 HARD_MAX_ABS_LOTS = 35
@@ -82,7 +83,10 @@ def optimize_integer_targets(
         raise ValueError("soft_margin_budget must be finite and nonnegative")
     if float(soft_margin_budget) > float(equity) * 0.35 + _EPS:
         raise ValueError("soft_margin_budget cannot exceed the hard 35% margin gate")
-    if not isfinite(float(max_gross_ratio)) or not 0.0 < float(max_gross_ratio) <= HARD_MAX_GROSS_RATIO:
+    if (
+        not isfinite(float(max_gross_ratio))
+        or not 0.0 < float(max_gross_ratio) <= HARD_MAX_GROSS_RATIO
+    ):
         raise ValueError("max_gross_ratio must be in (0, 2.0]")
     if int(max_abs_lots) <= 0:
         raise ValueError("max_abs_lots must be positive")
@@ -176,15 +180,11 @@ def optimize_integer_targets(
         # A higher-value lot can be blocked by margin/gross capacity even when removing
         # the incumbent lot alone is not beneficial. Evaluate deterministic two-leg
         # swaps only after no positive one-lot move remains.
-        pair_best: tuple[
-            float, str, int, str, int, dict[str, int], float
-        ] | None = None
+        pair_best: tuple[float, str, int, str, int, dict[str, int], float] | None = None
         symbols_with_moves = [
             (symbol, delta)
             for symbol in sorted(requested)
-            for delta in _legal_deltas(
-                int(target.get(symbol, 0)), int(requested[symbol]), cap
-            )
+            for delta in _legal_deltas(int(target.get(symbol, 0)), int(requested[symbol]), cap)
         ]
         for index, (first_symbol, first_delta) in enumerate(symbols_with_moves):
             for second_symbol, second_delta in symbols_with_moves[index + 1 :]:

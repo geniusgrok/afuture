@@ -1,10 +1,9 @@
-from pathlib import Path
 import importlib.util
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
 
 spec = importlib.util.spec_from_file_location(
     "aggressive_directional",
@@ -29,7 +28,7 @@ def synthetic_panel(periods: int = 180) -> pd.DataFrame:
         close = 100.0 * np.cumprod(1.0 + values)
         rows.extend(
             {"date": day, "product": product, "close": price}
-            for day, price in zip(dates, close)
+            for day, price in zip(dates, close, strict=True)
         )
     return pd.DataFrame(rows)
 
@@ -57,7 +56,14 @@ def test_cost_is_monotonic() -> None:
 def test_template_space_is_bounded_and_low_leverage() -> None:
     templates = module.directional_templates()
     families = {item.family for item in templates}
-    assert {"tsmom", "momentum", "reversal", "moving_average", "breakout", "acceleration"} <= families
+    assert {
+        "tsmom",
+        "momentum",
+        "reversal",
+        "moving_average",
+        "breakout",
+        "acceleration",
+    } <= families
     assert len(templates) <= 700
     assert all(item.gross_leverage <= 2.0 for item in templates)
 

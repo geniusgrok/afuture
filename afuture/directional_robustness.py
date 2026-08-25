@@ -1,12 +1,13 @@
 """Robust production-mechanics adapters for the execution-aligned directional path."""
+
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 from .directional import adaptive_margin_sizing_share, fit_target_lots_to_margin_budget
 from .directional_acceptance import (
-    DirectionalProductionAcceptance,
     PRODUCT_MULTIPLIERS,
+    DirectionalProductionAcceptance,
     TargetLotStages,
 )
 from .directional_efficiency import stabilize_one_lot_increases
@@ -55,8 +56,7 @@ class MarginAwareDirectionalProductionAcceptance(DirectionalProductionAcceptance
                 soft_margin_share=sizing_share,
             )
         symbol_product = {
-            str(symbol): str(product).upper()
-            for product, symbol in selected_symbols.items()
+            str(symbol): str(product).upper() for product, symbol in selected_symbols.items()
         }
         per_lot_margin: dict[str, float] = {}
         lot_notionals: dict[str, float] = {}
@@ -98,7 +98,9 @@ class MarginAwareDirectionalProductionAcceptance(DirectionalProductionAcceptance
 
         def gross(lots: Mapping[str, int]) -> float:
             return float(
-                sum(abs(int(volume)) * lot_notionals[str(symbol)] for symbol, volume in lots.items())
+                sum(
+                    abs(int(volume)) * lot_notionals[str(symbol)] for symbol, volume in lots.items()
+                )
             )
 
         return TargetLotStages(

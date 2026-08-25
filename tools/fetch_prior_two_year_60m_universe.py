@@ -7,8 +7,8 @@ window decision, so product promotion/demotion can be tested without look-ahead.
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import akshare as ak
 import pandas as pd
@@ -16,15 +16,23 @@ import pandas as pd
 START = pd.Timestamp("2022-08-21")
 END = pd.Timestamp("2024-08-20 23:59:59")
 KEY_MONTH_PRODUCTS = (
-    "M", "C", "P", "A", "Y", "I", "PP", "EG",
-    "TA", "MA", "FG", "RM", "OI", "SA",
+    "M",
+    "C",
+    "P",
+    "A",
+    "Y",
+    "I",
+    "PP",
+    "EG",
+    "TA",
+    "MA",
+    "FG",
+    "RM",
+    "OI",
+    "SA",
 )
-KEY_MONTH_CONTRACTS = (
-    "2209", "2301", "2305", "2309", "2401", "2405", "2409", "2501"
-)
-RB_CONTRACTS = (
-    "2210", "2301", "2305", "2310", "2401", "2405", "2410", "2501"
-)
+KEY_MONTH_CONTRACTS = ("2209", "2301", "2305", "2309", "2401", "2405", "2409", "2501")
+RB_CONTRACTS = ("2210", "2301", "2305", "2310", "2401", "2405", "2410", "2501")
 
 
 def product_of(symbol: str) -> str:
@@ -34,9 +42,7 @@ def product_of(symbol: str) -> str:
 
 def symbols() -> list[str]:
     rows = [
-        f"{product}{contract}"
-        for product in KEY_MONTH_PRODUCTS
-        for contract in KEY_MONTH_CONTRACTS
+        f"{product}{contract}" for product in KEY_MONTH_PRODUCTS for contract in KEY_MONTH_CONTRACTS
     ]
     rows.extend(f"RB{contract}" for contract in RB_CONTRACTS)
     return rows
@@ -67,9 +73,7 @@ def main() -> None:
     if not frames:
         raise RuntimeError("prior 60m research universe returned no history")
 
-    data = pd.concat(frames, ignore_index=True).sort_values(
-        ["datetime", "product", "symbol"]
-    )
+    data = pd.concat(frames, ignore_index=True).sort_values(["datetime", "product", "symbol"])
     output = Path("runtime")
     output.mkdir(parents=True, exist_ok=True)
     data.to_csv(output / "prior_two_year_broad_60m.csv", index=False)

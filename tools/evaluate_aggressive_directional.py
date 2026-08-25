@@ -10,10 +10,11 @@ Continuous contracts are L3 discovery evidence only. Production promotion requir
 frozen, roll-safe specific-contract L4 and a separate execution integration because the
 current afuture production Auto path is same-product calendar-spread only.
 """
+
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -55,28 +56,16 @@ def directional_templates() -> tuple[DirectionalTemplate, ...]:
         for slow in (3, 5, 10, 20, 40, 60, 120):
             for max_products in (1, 2, 3, 5):
                 for rebalance in (1, 2, 5, 10):
-                    rows.append(
-                        DirectionalTemplate(
-                            family, slow, 0, max_products, rebalance, 2.0
-                        )
-                    )
+                    rows.append(DirectionalTemplate(family, slow, 0, max_products, rebalance, 2.0))
     for family in ("moving_average", "breakout"):
         for slow in (5, 10, 20, 40, 60, 120):
             for max_products in (1, 2, 3, 5):
                 for rebalance in (1, 2, 5, 10):
-                    rows.append(
-                        DirectionalTemplate(
-                            family, slow, 0, max_products, rebalance, 2.0
-                        )
-                    )
+                    rows.append(DirectionalTemplate(family, slow, 0, max_products, rebalance, 2.0))
     for fast in (1, 3, 5, 10):
         for max_products in (1, 2, 3, 5):
             for rebalance in (1, 2, 5, 10):
-                rows.append(
-                    DirectionalTemplate(
-                        "reversal", 0, fast, max_products, rebalance, 2.0
-                    )
-                )
+                rows.append(DirectionalTemplate("reversal", 0, fast, max_products, rebalance, 2.0))
     for slow, fast in (
         (10, 3),
         (20, 3),
@@ -118,11 +107,7 @@ def build_panel(raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     frame = frame.dropna(subset=["date", "product", "close"])
     frame = frame[frame["close"] > 0]
     frame.drop_duplicates(["date", "product"], keep="last", inplace=True)
-    close = (
-        frame.pivot(index="date", columns="product", values="close")
-        .sort_index()
-        .astype(float)
-    )
+    close = frame.pivot(index="date", columns="product", values="close").sort_index().astype(float)
     returns = close.pct_change(fill_method=None)
     outlier = returns.abs() > MAX_ABS_DAILY_RETURN
     removed = int(outlier.sum().sum())
@@ -138,9 +123,7 @@ def build_panel(raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
 
 def _rolling_log_return(returns: pd.DataFrame, window: int) -> pd.DataFrame:
-    return np.log1p(returns.clip(lower=-0.99)).rolling(
-        window, min_periods=window
-    ).sum()
+    return np.log1p(returns.clip(lower=-0.99)).rolling(window, min_periods=window).sum()
 
 
 def _normalized_price(returns: pd.DataFrame) -> pd.DataFrame:
@@ -162,24 +145,14 @@ def signal_scores(
         return -momentum / (vol20 * np.sqrt(max(template.fast, 1)))
     if template.family == "moving_average":
         price = _normalized_price(returns)
-        average = price.rolling(
-            template.slow, min_periods=template.slow
-        ).mean()
+        average = price.rolling(template.slow, min_periods=template.slow).mean()
         deviation = price / average - 1.0
         return deviation / (vol20 * np.sqrt(max(template.slow, 1)))
     if template.family == "breakout":
         price = _normalized_price(returns)
-        rolling_low = price.rolling(
-            template.slow, min_periods=template.slow
-        ).min()
-        rolling_high = price.rolling(
-            template.slow, min_periods=template.slow
-        ).max()
-        return (
-            (price - rolling_low)
-            / (rolling_high - rolling_low).replace(0.0, np.nan)
-            - 0.5
-        )
+        rolling_low = price.rolling(template.slow, min_periods=template.slow).min()
+        rolling_high = price.rolling(template.slow, min_periods=template.slow).max()
+        return (price - rolling_low) / (rolling_high - rolling_low).replace(0.0, np.nan) - 0.5
     if template.family == "acceleration":
         slow = _rolling_log_return(returns, template.slow)
         fast = _rolling_log_return(returns, template.fast)
@@ -196,9 +169,7 @@ def _simulate_arrays(
     data = returns.astype(float).replace([np.inf, -np.inf], np.nan)
     data.columns = [str(column) for column in data.columns]
     columns = list(data.columns)
-    values = np.nan_to_num(
-        data.to_numpy(float), nan=0.0, posinf=0.0, neginf=0.0
-    )
+    values = np.nan_to_num(data.to_numpy(float), nan=0.0, posinf=0.0, neginf=0.0)
     scores = signal_scores(data, template).to_numpy(float)
     weights = np.zeros(len(columns), dtype=float)
     gross_pnl = np.zeros(len(data), dtype=float)
@@ -263,9 +234,7 @@ def apply_cost(
 
 
 def _metrics_array(values: np.ndarray) -> dict:
-    raw = np.nan_to_num(
-        np.asarray(values, dtype=float), nan=0.0, posinf=0.0, neginf=0.0
-    )
+    raw = np.nan_to_num(np.asarray(values, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
     if raw.size == 0:
         return {
             "days": 0,
@@ -278,17 +247,9 @@ def _metrics_array(values: np.ndarray) -> dict:
         }
     equity = np.cumprod(1.0 + raw)
     total = float(equity[-1] - 1.0)
-    annualized = (
-        (1.0 + total) ** (252.0 / raw.size) - 1.0
-        if total > -1.0
-        else -1.0
-    )
+    annualized = (1.0 + total) ** (252.0 / raw.size) - 1.0 if total > -1.0 else -1.0
     std = float(raw.std(ddof=1)) if raw.size > 1 else 0.0
-    sharpe = (
-        float(raw.mean() / std * np.sqrt(252.0))
-        if std > 1e-12
-        else 0.0
-    )
+    sharpe = float(raw.mean() / std * np.sqrt(252.0)) if std > 1e-12 else 0.0
     peak = np.maximum.accumulate(equity)
     drawdown = equity / peak - 1.0
     return {
@@ -325,9 +286,7 @@ def _trailing_score_matrix(frame: pd.DataFrame, lookback: int) -> np.ndarray:
         std = history.std(axis=0, ddof=1)
         sharpe = np.zeros(history.shape[1], dtype=float)
         valid_std = std > 1e-12
-        sharpe[valid_std] = (
-            mean[valid_std] / std[valid_std] * np.sqrt(252.0)
-        )
+        sharpe[valid_std] = mean[valid_std] / std[valid_std] * np.sqrt(252.0)
         row = 4.0 * annualized + 0.5 * sharpe
         row[annualized <= 0.0] = np.nan
         score[index] = row
@@ -351,9 +310,7 @@ def _meta_rotate(
     audit: list[dict] = []
     step = max(int(rebalance), 1)
     for index in range(len(frame)):
-        if index >= meta_lookback and (
-            not selected or index % step == 0
-        ):
+        if index >= meta_lookback and (not selected or index % step == 0):
             row = scores[index]
             valid = np.flatnonzero(np.isfinite(row))
             if valid.size:
@@ -362,9 +319,7 @@ def _meta_rotate(
             else:
                 next_selected = []
             if next_selected != selected:
-                churn = len(
-                    set(selected).symmetric_difference(next_selected)
-                ) / max(count, 1)
+                churn = len(set(selected).symmetric_difference(next_selected)) / max(count, 1)
                 output[index] -= churn * float(switch_cost_bps) / 10000.0
             selected = next_selected
         if selected:
@@ -402,9 +357,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
     for template in templates:
         name = template_id(template)
         template_lookup[name] = template
-        gross_pnl, turnover, _ = _simulate_arrays(
-            returns, template, record_weights=False
-        )
+        gross_pnl, turnover, _ = _simulate_arrays(returns, template, record_weights=False)
         path_cache[name] = (gross_pnl, turnover)
         base = apply_cost(gross_pnl, turnover, BASE_COST_BPS)
         stress = apply_cost(gross_pnl, turnover, STRESS_COST_BPS)
@@ -414,14 +367,8 @@ def evaluate(raw: pd.DataFrame) -> dict:
             {
                 "template_id": name,
                 "template": asdict(template),
-                "base": {
-                    window: _window_metrics(base, window)
-                    for window in WINDOWS
-                },
-                "stress": {
-                    window: _window_metrics(stress, window)
-                    for window in WINDOWS
-                },
+                "base": {window: _window_metrics(base, window) for window in WINDOWS},
+                "stress": {window: _window_metrics(stress, window) for window in WINDOWS},
             }
         )
 
@@ -436,10 +383,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
 
     candidates: list[dict] = []
     for pool_size in POOL_SIZES:
-        pool_ids = [
-            row["template_id"]
-            for row in results[: min(pool_size, len(results))]
-        ]
+        pool_ids = [row["template_id"] for row in results[: min(pool_size, len(results))]]
         pool_base = {name: base_streams[name] for name in pool_ids}
         pool_stress = {name: stress_streams[name] for name in pool_ids}
         for lookback in META_LOOKBACKS:
@@ -460,9 +404,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
                         switch_cost_bps=STRESS_COST_BPS,
                     )
                     base_recent = _window_metrics(base_series, "full_recent")
-                    stress_recent = _window_metrics(
-                        stress_series, "full_recent"
-                    )
+                    stress_recent = _window_metrics(stress_series, "full_recent")
                     candidates.append(
                         {
                             "pool_size": pool_size,
@@ -470,9 +412,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
                             "rebalance": rebalance,
                             "count": count,
                             "pool_ids": pool_ids,
-                            "target_met": _candidate_target(
-                                base_recent, stress_recent
-                            ),
+                            "target_met": _candidate_target(base_recent, stress_recent),
                             "base_full_recent": base_recent,
                             "stress_full_recent": stress_recent,
                         }
@@ -489,7 +429,8 @@ def evaluate(raw: pd.DataFrame) -> dict:
             candidates,
             key=lambda item: (
                 item["base_full_recent"]["annualized_return"]
-                - 2.0 * max(
+                - 2.0
+                * max(
                     0.0,
                     abs(item["base_full_recent"]["max_drawdown"]) - 0.30,
                 )
@@ -501,9 +442,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
     pool_base = {name: base_streams[name] for name in pool_ids}
     pool_stress = {name: stress_streams[name] for name in pool_ids}
     pool_extreme = {
-        name: apply_cost(
-            path_cache[name][0], path_cache[name][1], EXTREME_COST_BPS
-        )
+        name: apply_cost(path_cache[name][0], path_cache[name][1], EXTREME_COST_BPS)
         for name in pool_ids
     }
     base_series, meta_audit = _meta_rotate(
@@ -528,26 +467,17 @@ def evaluate(raw: pd.DataFrame) -> dict:
         switch_cost_bps=EXTREME_COST_BPS,
     )
 
-    base_windows = {
-        window: _window_metrics(base_series, window) for window in WINDOWS
-    }
-    stress_windows = {
-        window: _window_metrics(stress_series, window) for window in WINDOWS
-    }
-    extreme_windows = {
-        window: _window_metrics(extreme_series, window) for window in WINDOWS
-    }
+    base_windows = {window: _window_metrics(base_series, window) for window in WINDOWS}
+    stress_windows = {window: _window_metrics(stress_series, window) for window in WINDOWS}
+    extreme_windows = {window: _window_metrics(extreme_series, window) for window in WINDOWS}
 
     # Re-simulate only the selected pool with weights retained, then combine the
     # underlying weights according to the causal meta-selection audit.
     weight_audits: dict[str, dict[pd.Timestamp, dict[str, float]]] = {}
     for name in pool_ids:
-        _, _, audit = _simulate_arrays(
-            returns, template_lookup[name], record_weights=True
-        )
+        _, _, audit = _simulate_arrays(returns, template_lookup[name], record_weights=True)
         weight_audits[name] = {
-            pd.Timestamp(item["date"]): dict(item.get("weights", {}))
-            for item in audit
+            pd.Timestamp(item["date"]): dict(item.get("weights", {})) for item in audit
         }
     weight_rows: list[dict] = []
     for item in meta_audit:
@@ -557,19 +487,14 @@ def evaluate(raw: pd.DataFrame) -> dict:
             continue
         aggregate: dict[str, float] = {}
         for name in selected_names:
-            for product, weight in weight_audits[name].get(
-                trading_day, {}
-            ).items():
-                aggregate[product] = aggregate.get(product, 0.0) + float(
-                    weight
-                ) / len(selected_names)
+            for product, weight in weight_audits[name].get(trading_day, {}).items():
+                aggregate[product] = aggregate.get(product, 0.0) + float(weight) / len(
+                    selected_names
+                )
         gross = sum(abs(value) for value in aggregate.values())
         if gross > MAX_GROSS_LEVERAGE + 1e-12:
             scale = MAX_GROSS_LEVERAGE / gross
-            aggregate = {
-                product: weight * scale
-                for product, weight in aggregate.items()
-            }
+            aggregate = {product: weight * scale for product, weight in aggregate.items()}
         for product, weight in sorted(aggregate.items()):
             if abs(weight) > 1e-15:
                 weight_rows.append(
@@ -582,33 +507,25 @@ def evaluate(raw: pd.DataFrame) -> dict:
 
     output = Path("runtime")
     output.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(weight_rows).to_csv(
-        output / "aggressive_directional_weights.csv", index=False
-    )
+    pd.DataFrame(weight_rows).to_csv(output / "aggressive_directional_weights.csv", index=False)
     flat_results: list[dict] = []
     for row in results:
         flat_results.append(
             {
                 **row["template"],
                 "template_id": row["template_id"],
-                "base_full_recent_annualized_return": row["base"][
-                    "full_recent"
-                ]["annualized_return"],
-                "base_full_recent_max_drawdown": row["base"][
-                    "full_recent"
-                ]["max_drawdown"],
-                "stress_full_recent_annualized_return": row["stress"][
-                    "full_recent"
-                ]["annualized_return"],
+                "base_full_recent_annualized_return": row["base"]["full_recent"][
+                    "annualized_return"
+                ],
+                "base_full_recent_max_drawdown": row["base"]["full_recent"]["max_drawdown"],
+                "stress_full_recent_annualized_return": row["stress"]["full_recent"][
+                    "annualized_return"
+                ],
             }
         )
-    pd.DataFrame(flat_results).to_csv(
-        output / "aggressive_directional_results.csv", index=False
-    )
+    pd.DataFrame(flat_results).to_csv(output / "aggressive_directional_results.csv", index=False)
 
-    target_met = _candidate_target(
-        base_windows["full_recent"], stress_windows["full_recent"]
-    )
+    target_met = _candidate_target(base_windows["full_recent"], stress_windows["full_recent"])
     selected_day_counts: dict[str, int] = {}
     for item in meta_audit:
         for name in item["selected"]:
@@ -661,9 +578,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
 def main() -> None:
     source = Path("runtime/broad_daily_universe.csv")
     if not source.exists():
-        raise SystemExit(
-            "broad daily universe missing; run fetch_broad_daily_universe.py"
-        )
+        raise SystemExit("broad daily universe missing; run fetch_broad_daily_universe.py")
     report = evaluate(pd.read_csv(source))
     print(
         json.dumps(

@@ -5,7 +5,6 @@ import pytest
 from afuture.models import ContractPosition, Offset, OrderSide, Trade
 from afuture.position import PositionBook
 
-
 _TRADE_TIME = datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc)
 
 
@@ -78,9 +77,7 @@ def test_bucket_specific_close_rejects_insufficient_bucket_without_mutation(
     [
         (
             OrderSide.SELL,
-            ContractPosition(
-                "cu2609", "SHFE", long_today=2, long_yesterday=1, long_price=70_000
-            ),
+            ContractPosition("cu2609", "SHFE", long_today=2, long_yesterday=1, long_price=70_000),
             1,
             0,
         ),
@@ -167,9 +164,7 @@ def test_trade_rejects_invalid_price_without_mutation(
     side: OrderSide,
     offset: Offset,
 ) -> None:
-    book = PositionBook(
-        [ContractPosition("cu2609", "SHFE", long_today=1, long_price=70_000)]
-    )
+    book = PositionBook([ContractPosition("cu2609", "SHFE", long_today=1, long_price=70_000)])
     before = book.all()
 
     with pytest.raises(ValueError, match="price must be finite and positive"):

@@ -8,10 +8,11 @@ reuse afuture's existing two-leg execution and exchange semantics.
 Continuous daily contracts are used only for family screening. Production promotion
 still requires specific-contract and CTP Shadow evidence.
 """
+
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
+from dataclasses import asdict, dataclass
 from math import log
 from pathlib import Path
 
@@ -106,11 +107,7 @@ def _metrics(series: pd.Series) -> dict:
         }
     equity = (1.0 + values).cumprod()
     total = float(equity.iloc[-1] - 1.0)
-    annualized = (
-        (1.0 + total) ** (252.0 / len(values)) - 1.0
-        if total > -1.0
-        else -1.0
-    )
+    annualized = (1.0 + total) ** (252.0 / len(values)) - 1.0 if total > -1.0 else -1.0
     standard_deviation = float(values.std(ddof=1))
     volatility = standard_deviation * np.sqrt(252.0)
     sharpe = (
@@ -132,7 +129,7 @@ def _metrics(series: pd.Series) -> dict:
 
 def _window_metrics(series: pd.Series, window: str) -> dict:
     start, end = WINDOWS[window]
-    return _metrics(series.loc[pd.Timestamp(start):pd.Timestamp(end)])
+    return _metrics(series.loc[pd.Timestamp(start) : pd.Timestamp(end)])
 
 
 def _load_panel(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -141,14 +138,8 @@ def _load_panel(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
     frame = frame[frame["close"] > 0].dropna(subset=["date", "product", "close"])
     frame = frame.drop_duplicates(["date", "product"], keep="last")
-    close = (
-        frame.pivot(index="date", columns="product", values="close")
-        .sort_index()
-        .astype(float)
-    )
-    returns = close.pct_change(fill_method=None).mask(
-        lambda values: values.abs() > 0.20
-    )
+    close = frame.pivot(index="date", columns="product", values="close").sort_index().astype(float)
+    returns = close.pct_change(fill_method=None).mask(lambda values: values.abs() > 0.20)
     return close, returns
 
 
@@ -169,30 +160,26 @@ def _pair_statistics(
     alpha = left_mean - beta * right_mean
 
     residual = left - (alpha + beta * right)
-    residual_std = residual.rolling(
-        formation, min_periods=max(20, formation // 2)
-    ).std().shift(1)
+    residual_std = residual.rolling(formation, min_periods=max(20, formation // 2)).std().shift(1)
     zscore = residual / residual_std
-    correlation = right.rolling(
-        formation, min_periods=formation
-    ).corr(left).shift(1)
+    correlation = right.rolling(formation, min_periods=formation).corr(left).shift(1)
 
     # Lag-one residual persistence is a lightweight causal OU proxy. A finite
     # positive half-life is required; non-reverting or explosive residuals fail closed.
-    phi = residual.rolling(
-        formation, min_periods=max(20, formation // 2)
-    ).corr(residual.shift(1)).shift(1)
+    phi = (
+        residual.rolling(formation, min_periods=max(20, formation // 2))
+        .corr(residual.shift(1))
+        .shift(1)
+    )
     half_life = pd.Series(999.0, index=close.index)
     valid_phi = (phi > 0.0) & (phi < 0.9999)
     half_life.loc[valid_phi] = -log(2.0) / np.log(phi.loc[valid_phi])
 
-    normalized_return = (
-        returns[pair.left] - beta * returns[pair.right]
-    ) / (1.0 + beta.abs())
+    normalized_return = (returns[pair.left] - beta * returns[pair.right]) / (1.0 + beta.abs())
     fast_volatility = normalized_return.rolling(20, min_periods=20).std().shift(1)
-    formation_volatility = normalized_return.rolling(
-        formation, min_periods=max(20, formation // 2)
-    ).std().shift(1)
+    formation_volatility = (
+        normalized_return.rolling(formation, min_periods=max(20, formation // 2)).std().shift(1)
+    )
     volatility_ratio = fast_volatility / formation_volatility
 
     return {
@@ -278,9 +265,7 @@ def _simulate_pair(
             left_value = left_returns[next_index]
             right_value = right_returns[next_index]
             if np.isfinite(left_value) and np.isfinite(right_value):
-                pnl[next_index] += (
-                    left_weight * left_value + right_weight * right_value
-                )
+                pnl[next_index] += left_weight * left_value + right_weight * right_value
 
     if position != 0:
         pnl[-1] -= cost_bps / 10000.0
@@ -343,9 +328,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
             cache_key = (pair_id, profile.formation)
             statistics = statistics_cache.get(cache_key)
             if statistics is None:
-                statistics = _pair_statistics(
-                    close, returns, pair, profile.formation
-                )
+                statistics = _pair_statistics(close, returns, pair, profile.formation)
                 statistics_cache[cache_key] = statistics
             stressed, entries = _simulate_pair(
                 close,
@@ -370,9 +353,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
                 "entries": int(len(entries)),
                 **{
                     window: _window_metrics(stressed, window)
-                    for window in (
-                        "prior1", "prior2", "train", "validation", "oos", "full_recent"
-                    )
+                    for window in ("prior1", "prior2", "train", "validation", "oos", "full_recent")
                 },
             }
 
@@ -434,20 +415,16 @@ def evaluate(raw: pd.DataFrame) -> dict:
 
     eligible_profiles = [row for row in results if row["pre_oos_pass"]]
     selected = (
-        max(eligible_profiles, key=lambda row: row["pre_oos_score"])
-        if eligible_profiles
-        else None
+        max(eligible_profiles, key=lambda row: row["pre_oos_score"]) if eligible_profiles else None
     )
     support = {
         "eligible_profiles": int(len(eligible_profiles)),
         "total_profiles": int(len(results)),
         "formation_60": sum(
-            row["pre_oos_pass"] and row["profile"]["formation"] == 60
-            for row in results
+            row["pre_oos_pass"] and row["profile"]["formation"] == 60 for row in results
         ),
         "formation_120": sum(
-            row["pre_oos_pass"] and row["profile"]["formation"] == 120
-            for row in results
+            row["pre_oos_pass"] and row["profile"]["formation"] == 120 for row in results
         ),
     }
 
@@ -468,13 +445,9 @@ def evaluate(raw: pd.DataFrame) -> dict:
         "selected_profile_id": selected["profile_id"] if selected else None,
         "selected_prior_pairs": selected["prior_pairs"] if selected else [],
         "selected_current_pairs": selected["current_pairs"] if selected else [],
-        "selected_prior_forward_train": (
-            selected["prior_forward_train"] if selected else None
-        ),
+        "selected_prior_forward_train": (selected["prior_forward_train"] if selected else None),
         "selected_oos_unlevered": selected["oos"] if selected else None,
-        "selected_full_recent_unlevered": (
-            selected["full_recent_stress"] if selected else None
-        ),
+        "selected_full_recent_unlevered": (selected["full_recent_stress"] if selected else None),
     }
 
     reasons: list[str] = []
@@ -500,12 +473,10 @@ def evaluate(raw: pd.DataFrame) -> dict:
                 cost_bps=STRESS_COST_BPS,
             )
             selected_series[pair_id] = series
-        selected_portfolio = _portfolio(
-            selected_series, selected["current_pairs"], close.index
-        )
+        selected_portfolio = _portfolio(selected_series, selected["current_pairs"], close.index)
         selection_start, selection_end = WINDOWS["selection_full"]
         calibration = selected_portfolio.loc[
-            pd.Timestamp(selection_start):pd.Timestamp(selection_end)
+            pd.Timestamp(selection_start) : pd.Timestamp(selection_end)
         ]
         leverage = _choose_leverage(calibration)
         report["selected_leverage"] = leverage
@@ -515,9 +486,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
         else:
             scaled = selected_portfolio * leverage
         report["selected_oos"] = _window_metrics(scaled, "oos")
-        report["selected_full_recent"] = _window_metrics(
-            scaled, "full_recent"
-        )
+        report["selected_full_recent"] = _window_metrics(scaled, "full_recent")
         if support["eligible_profiles"] < 2:
             reasons.append("profile neighborhood support is below two")
         if report["selected_oos"]["annualized_return"] <= 0.0:
@@ -546,17 +515,23 @@ def main() -> None:
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    print(json.dumps({
-        "support": report["support"],
-        "selected_profile": report["selected_profile"],
-        "selected_prior_pairs": report["selected_prior_pairs"],
-        "selected_current_pairs": report["selected_current_pairs"],
-        "selected_prior_forward_train": report["selected_prior_forward_train"],
-        "selected_leverage": report["selected_leverage"],
-        "selected_oos": report["selected_oos"],
-        "selected_full_recent": report["selected_full_recent"],
-        "target": report["target"],
-    }, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "support": report["support"],
+                "selected_profile": report["selected_profile"],
+                "selected_prior_pairs": report["selected_prior_pairs"],
+                "selected_current_pairs": report["selected_current_pairs"],
+                "selected_prior_forward_train": report["selected_prior_forward_train"],
+                "selected_leverage": report["selected_leverage"],
+                "selected_oos": report["selected_oos"],
+                "selected_full_recent": report["selected_full_recent"],
+                "target": report["target"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

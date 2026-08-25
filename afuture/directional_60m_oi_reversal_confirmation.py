@@ -10,6 +10,7 @@ Unsupported products remain exactly unchanged.
 The helper never increases absolute product exposure relative to the raw target and has
 no fitted threshold, lookback, product ranking or return estimate.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable

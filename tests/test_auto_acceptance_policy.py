@@ -32,9 +32,15 @@ def test_accept_auto_default_uses_small_global_parameter_neighborhood():
 
 def test_gate_rejects_negative_aggregate_oos_even_when_majority_folds_positive():
     folds = [
-        SimpleNamespace(oos_metrics={"total_return": 0.01, "max_drawdown": -0.01, "trade_count": 4}),
-        SimpleNamespace(oos_metrics={"total_return": 0.01, "max_drawdown": -0.01, "trade_count": 4}),
-        SimpleNamespace(oos_metrics={"total_return": -0.05, "max_drawdown": -0.05, "trade_count": 4}),
+        SimpleNamespace(
+            oos_metrics={"total_return": 0.01, "max_drawdown": -0.01, "trade_count": 4}
+        ),
+        SimpleNamespace(
+            oos_metrics={"total_return": 0.01, "max_drawdown": -0.01, "trade_count": 4}
+        ),
+        SimpleNamespace(
+            oos_metrics={"total_return": -0.05, "max_drawdown": -0.05, "trade_count": 4}
+        ),
     ]
     result = SimpleNamespace(
         folds=folds,

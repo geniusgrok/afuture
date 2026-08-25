@@ -17,12 +17,8 @@ def _frame(values, columns=("A", "B", "C", "D")) -> pd.DataFrame:
 
 def test_opportunity_overlay_keeps_top_half_and_only_deemphasizes_lower_ranked_risk():
     index = pd.DatetimeIndex([pd.Timestamp("2026-08-20")])
-    raw = pd.DataFrame(
-        [[0.8, -0.6, 0.4, -0.2]], index=index, columns=["A", "B", "C", "D"]
-    )
-    score = pd.DataFrame(
-        [[0.9, 0.2, 0.8, 0.1]], index=index, columns=raw.columns
-    )
+    raw = pd.DataFrame([[0.8, -0.6, 0.4, -0.2]], index=index, columns=["A", "B", "C", "D"])
+    score = pd.DataFrame([[0.9, 0.2, 0.8, 0.1]], index=index, columns=raw.columns)
 
     actual = apply_opportunity_overlay(raw, score)
 
@@ -33,9 +29,7 @@ def test_opportunity_overlay_keeps_top_half_and_only_deemphasizes_lower_ranked_r
     assert actual.loc[index[0], "D"] == raw.loc[index[0], "D"] * 0.75
     assert bool((actual.abs() <= raw.abs() + 1e-12).all().all())
     assert bool(((actual * raw) >= -1e-12).all().all())
-    assert bool(
-        actual.abs().sum(axis=1).le(raw.abs().sum(axis=1) + 1e-12).all()
-    )
+    assert bool(actual.abs().sum(axis=1).le(raw.abs().sum(axis=1) + 1e-12).all())
 
 
 def test_opportunity_overlay_cannot_create_exposure_and_fails_open_without_evidence():

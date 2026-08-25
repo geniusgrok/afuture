@@ -22,9 +22,7 @@ class ParameterCalibrator:
         "max_pair_volume",
     )
 
-    def __init__(
-        self, neighbor_radius: float = 0.20, min_neighbors: int = 2
-    ) -> None:
+    def __init__(self, neighbor_radius: float = 0.20, min_neighbors: int = 2) -> None:
         if neighbor_radius <= 0:
             raise ValueError("neighbor_radius must be positive")
         if min_neighbors <= 0:
@@ -54,9 +52,7 @@ class ParameterCalibrator:
         auto_grid = self._extended_grid_varies(results)
         if grid_adjacency or auto_grid:
             required_neighbors = (
-                self.min_neighbors
-                if grid_adjacency
-                else max(self.min_neighbors, 3)
+                self.min_neighbors if grid_adjacency else max(self.min_neighbors, 3)
             )
             return self._select_best_grid(
                 results,
@@ -66,18 +62,14 @@ class ParameterCalibrator:
 
         stable_candidates: list[tuple[float, float, dict]] = []
         for row in results:
-            neighbors = [
-                other for other in results if self._neighbor(row, other)
-            ]
+            neighbors = [other for other in results if self._neighbor(row, other)]
             if len(neighbors) < self.min_neighbors:
                 continue
-            neighborhood_score = sum(
-                self._risk_adjusted(item) for item in neighbors
-            ) / len(neighbors)
-            own_score = self._risk_adjusted(row)
-            stable_candidates.append(
-                (neighborhood_score, own_score, row)
+            neighborhood_score = sum(self._risk_adjusted(item) for item in neighbors) / len(
+                neighbors
             )
+            own_score = self._risk_adjusted(row)
+            stable_candidates.append((neighborhood_score, own_score, row))
 
         if not stable_candidates:
             return None
@@ -93,31 +85,20 @@ class ParameterCalibrator:
         keys = self._grid_keys(results, parameter_keys)
         if not keys:
             return None
-        axes = {
-            key: sorted({float(row[key]) for row in results})
-            for key in keys
-        }
+        axes = {key: sorted({float(row[key]) for row in results}) for key in keys}
         stable_candidates: list[tuple[float, int, float, dict]] = []
         for row in results:
-            neighbors = [
-                other
-                for other in results
-                if self._grid_neighbor(row, other, keys, axes)
-            ]
+            neighbors = [other for other in results if self._grid_neighbor(row, other, keys, axes)]
             if len(neighbors) < required_neighbors:
                 continue
             support = [other for other in neighbors if other is not row]
             if not support:
                 continue
             own_score = self._risk_adjusted(row)
-            support_score = sum(
-                self._risk_adjusted(item) for item in support
-            ) / len(support)
+            support_score = sum(self._risk_adjusted(item) for item in support) / len(support)
             # 中心和邻域必须同时成立；单点尖峰不能用自身高分抬高稳定分。
             stability_score = min(own_score, support_score)
-            stable_candidates.append(
-                (stability_score, len(support), support_score, row)
-            )
+            stable_candidates.append((stability_score, len(support), support_score, row))
         if not stable_candidates:
             return None
         return max(
@@ -147,11 +128,7 @@ class ParameterCalibrator:
             "stop_z",
             *cls._EXTENDED_RESEARCH_KEYS,
         )
-        return tuple(
-            key
-            for key in requested
-            if all(key in row for row in results)
-        )
+        return tuple(key for key in requested if all(key in row for row in results))
 
     @staticmethod
     def _grid_neighbor(

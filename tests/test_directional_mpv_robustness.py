@@ -85,11 +85,12 @@ def test_mpv_acceptance_reallocates_same_soft_margin_capacity_to_higher_value_pr
     assert stages.soft_margin_share == pytest.approx(0.30)
     assert stages.final_notional == pytest.approx(800000.0)
     assert candidate.last_mpv_optimization is not None
-    assert candidate.last_mpv_optimization.product_estimates[
-        "AG"
-    ].expected_gross_alpha_per_lot_segment > candidate.last_mpv_optimization.product_estimates[
-        "CU"
-    ].expected_gross_alpha_per_lot_segment
+    assert (
+        candidate.last_mpv_optimization.product_estimates["AG"].expected_gross_alpha_per_lot_segment
+        > candidate.last_mpv_optimization.product_estimates[
+            "CU"
+        ].expected_gross_alpha_per_lot_segment
+    )
 
 
 def test_mpv_simulation_seeds_only_completed_evidence_before_window_start():
@@ -117,15 +118,11 @@ def test_mpv_simulation_seeds_only_completed_evidence_before_window_start():
             },
         ]
     )
-    candidate = MPVDirectionalProductionAcceptance(
-        _config(), historical_seed_events=seed
-    )
+    candidate = MPVDirectionalProductionAcceptance(_config(), historical_seed_events=seed)
     raw = pd.DataFrame(
         columns=["date", "delivery", "product", "symbol", "open", "close", "volume", "hold"]
     )
-    weights = pd.DataFrame(
-        {"AG": [0.0]}, index=pd.to_datetime(["2026-08-20"])
-    )
+    weights = pd.DataFrame({"AG": [0.0]}, index=pd.to_datetime(["2026-08-20"]))
 
     candidate.simulate(raw, weights, cost_bps=15.0)
 

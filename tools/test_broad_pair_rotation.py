@@ -1,6 +1,6 @@
-from pathlib import Path
 import importlib.util
 import sys
+from pathlib import Path
 
 # Make sibling research modules importable exactly as the workflow executes them.
 tools_dir = str(Path(__file__).resolve().parent)

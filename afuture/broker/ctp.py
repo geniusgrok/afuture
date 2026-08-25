@@ -6,17 +6,16 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from datetime import datetime
 from math import isfinite
 from queue import Empty, Queue
 from threading import Event
 from time import monotonic, sleep
-import re
 from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
 
-from .base import Broker
 from ..models import (
     AccountSnapshot,
     BrokerEvent,
@@ -34,6 +33,7 @@ from ..models import (
     Trade,
 )
 from ..position import PositionBook
+from .base import Broker
 
 
 class _RateWaiter(TypedDict):
@@ -46,6 +46,7 @@ class _RateWaiter(TypedDict):
 @dataclass(frozen=True)
 class CtpCredentials:
     """CTP 连接参数。敏感字段从环境变量注入。"""
+
     user_id: str
     password: str
     broker_id: str
@@ -75,7 +76,9 @@ class CtpBroker(Broker):
 
     gateway_name = "CTP"
 
-    def __init__(self, credentials: CtpCredentials, *, snapshot_stale_seconds: float = 20.0) -> None:
+    def __init__(
+        self, credentials: CtpCredentials, *, snapshot_stale_seconds: float = 20.0
+    ) -> None:
         if snapshot_stale_seconds <= 0:
             raise ValueError("snapshot_stale_seconds must be positive")
         self.credentials = credentials
@@ -102,13 +105,18 @@ class CtpBroker(Broker):
             return self._runtime
         try:
             from vnpy.event import EventEngine
-            from vnpy.trader.constant import Direction, Exchange, Offset as VnOffset, OrderType as VnOrderType, Status
+            from vnpy.trader.constant import Direction, Exchange, Status
+            from vnpy.trader.constant import Offset as VnOffset
+            from vnpy.trader.constant import OrderType as VnOrderType
             from vnpy.trader.engine import MainEngine
             from vnpy.trader.event import EVENT_ACCOUNT, EVENT_ORDER, EVENT_TICK, EVENT_TRADE
-            from vnpy.trader.object import OrderRequest as VnOrderRequest, SubscribeRequest
+            from vnpy.trader.object import OrderRequest as VnOrderRequest
+            from vnpy.trader.object import SubscribeRequest
             from vnpy_ctp.gateway.ctp_gateway import CtpGateway, CtpTdApi
         except ImportError as exc:
-            raise RuntimeError("CTP live dependencies are missing; install with: pip install -e '.[live]'") from exc
+            raise RuntimeError(
+                "CTP live dependencies are missing; install with: pip install -e '.[live]'"
+            ) from exc
 
         class TrackedCtpTdApi(CtpTdApi):
             """在官方交易 API 上增加查询完成边界，不改动官方下单逻辑。"""
@@ -140,9 +148,7 @@ class CtpBroker(Broker):
                 super().onRspQryInstrument(data, error, reqid, last)
                 if int((error or {}).get("ErrorID", 0)) or not data:
                     return
-                callback = getattr(
-                    self.gateway, "_afuture_contract_metadata_callback", None
-                )
+                callback = getattr(self.gateway, "_afuture_contract_metadata_callback", None)
                 if callable(callback):
                     callback(dict(data))
 
@@ -151,7 +157,9 @@ class CtpBroker(Broker):
                 if waiter is None or waiter.get("kind") != kind:
                     return
                 if int((error or {}).get("ErrorID", 0)):
-                    waiter["error"] = str((error or {}).get("ErrorMsg", "CTP metadata query failed"))
+                    waiter["error"] = str(
+                        (error or {}).get("ErrorMsg", "CTP metadata query failed")
+                    )
                 elif data:
                     waiter["rows"].append(dict(data))
                 if last:
@@ -165,6 +173,7 @@ class CtpBroker(Broker):
 
         class TrackedCtpGateway(CtpGateway):
             default_name = "CTP"
+
             def __init__(self, event_engine, gateway_name):
                 super().__init__(event_engine, gateway_name)
                 self._afuture_position_snapshot_callback = None
@@ -353,7 +362,9 @@ class CtpBroker(Broker):
             expiry=expiry,
         )
 
-    def get_live_contract_specs(self, symbols: list[str], timeout_seconds: float = 10.0) -> dict[str, ContractSpec]:
+    def get_live_contract_specs(
+        self, symbols: list[str], timeout_seconds: float = 10.0
+    ) -> dict[str, ContractSpec]:
         """从 CTP/VeighNa 获取乘数、tick、保证金和手续费用于启动安全门。
 
         查询失败、固定金额保证金等无法可靠映射的情况一律报错，由上层 fail-closed。
@@ -411,7 +422,9 @@ class CtpBroker(Broker):
                 if monotonic() >= deadline:
                     raise RuntimeError(f"CTP {kind} query timeout: {symbol}")
                 if kind == "margin":
-                    status = td_api.reqQryInstrumentMarginRate({"InstrumentID": symbol, "HedgeFlag": "1"}, reqid)
+                    status = td_api.reqQryInstrumentMarginRate(
+                        {"InstrumentID": symbol, "HedgeFlag": "1"}, reqid
+                    )
                 else:
                     status = td_api.reqQryInstrumentCommissionRate({"InstrumentID": symbol}, reqid)
                 if not status:
@@ -430,7 +443,11 @@ class CtpBroker(Broker):
 
     def _to_vnpy_order(self, request: OrderRequest):
         runtime = self._load_runtime()
-        direction = runtime["Direction"].LONG if request.side is OrderSide.BUY else runtime["Direction"].SHORT
+        direction = (
+            runtime["Direction"].LONG
+            if request.side is OrderSide.BUY
+            else runtime["Direction"].SHORT
+        )
         offset_map = {
             Offset.OPEN: runtime["Offset"].OPEN,
             Offset.CLOSE: runtime["Offset"].CLOSE,
@@ -506,9 +523,7 @@ class CtpBroker(Broker):
                 or numeric_volume <= 0
                 or not numeric_volume.is_integer()
             ):
-                raise ValueError(
-                    f"invalid CTP trade volume: {raw.volume!r}"
-                )
+                raise ValueError(f"invalid CTP trade volume: {raw.volume!r}")
             price = float(raw.price)
             if not isfinite(price) or price <= 0:
                 raise ValueError(f"invalid CTP trade price: {raw.price!r}")
@@ -554,7 +569,9 @@ class CtpBroker(Broker):
                 if volume < 0 or yesterday < 0 or yesterday > volume:
                     raise ValueError(f"invalid CTP position volume for {raw.symbol}")
                 today = volume - yesterday
-                position = combined.setdefault(raw.symbol, ContractPosition(raw.symbol, raw.exchange.value))
+                position = combined.setdefault(
+                    raw.symbol, ContractPosition(raw.symbol, raw.exchange.value)
+                )
                 direction_value = getattr(raw.direction, "name", str(raw.direction)).upper()
                 if "LONG" in direction_value:
                     position.long_today += today
@@ -569,7 +586,9 @@ class CtpBroker(Broker):
         except Exception as exc:
             self._events.put(BrokerEvent("broker_error", str(exc)))
             return
-        self._positions = {symbol: position for symbol, position in combined.items() if not position.empty}
+        self._positions = {
+            symbol: position for symbol, position in combined.items() if not position.empty
+        }
         self._position_snapshot_generation += 1
         self._last_position_snapshot_monotonic = monotonic()
         self._events.put(BrokerEvent("position_snapshot", self.get_positions()))
@@ -579,7 +598,9 @@ class CtpBroker(Broker):
         available = float(raw.available)
         # VeighNa AccountData 不暴露 CurrMargin，用权益与可用资金差额作为保守代理。
         margin = max(0.0, balance - available)
-        return AccountSnapshot(balance, balance, available, margin, 0.0, 0.0, self.get_trading_day())
+        return AccountSnapshot(
+            balance, balance, available, margin, 0.0, 0.0, self.get_trading_day()
+        )
 
     def _convert_order(self, raw) -> Order:
         reference = getattr(raw, "reference", "") or self._order_references.get(raw.vt_orderid, "")

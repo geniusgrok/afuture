@@ -5,16 +5,13 @@ from math import isfinite
 
 from .models import ContractPosition, Offset, OrderRequest, OrderSide, Trade
 
-
 _SPECIAL_CLOSE_EXCHANGES = {"SHFE", "INE"}
 
 
 class PositionBook:
     """维护今昨、多空数量和持仓均价。"""
 
-    def __init__(
-        self, positions: list[ContractPosition] | None = None
-    ) -> None:
+    def __init__(self, positions: list[ContractPosition] | None = None) -> None:
         self._positions: dict[str, ContractPosition] = {}
         for source in positions or []:
             position = replace(source)
@@ -28,11 +25,7 @@ class PositionBook:
         return self._positions[symbol]
 
     def all(self) -> list[ContractPosition]:
-        return [
-            replace(position)
-            for position in self._positions.values()
-            if not position.empty
-        ]
+        return [replace(position) for position in self._positions.values() if not position.empty]
 
     def roll_trading_day(self) -> None:
         """进入新交易日时把今仓转成昨仓。"""
@@ -58,16 +51,12 @@ class PositionBook:
 
         self._validate_close_volume(position, trade)
         if trade.side is OrderSide.SELL:
-            realized = (
-                trade.price - position.long_price
-            ) * trade.volume
+            realized = (trade.price - position.long_price) * trade.volume
             self._consume_long(position, trade.offset, trade.volume)
             if position.long_total == 0:
                 position.long_price = 0.0
         else:
-            realized = (
-                position.short_price - trade.price
-            ) * trade.volume
+            realized = (position.short_price - trade.price) * trade.volume
             self._consume_short(position, trade.offset, trade.volume)
             if position.short_total == 0:
                 position.short_price = 0.0
@@ -116,24 +105,20 @@ class PositionBook:
             Offset.CLOSE_YESTERDAY: "yesterday",
         }[trade.offset]
         if trade.volume > available:
-            raise ValueError(
-                f"close volume exceeds {bucket} {label} position"
-            )
+            raise ValueError(f"close volume exceeds {bucket} {label} position")
 
     @staticmethod
     def _apply_open(position: ContractPosition, trade: Trade) -> None:
         if trade.side is OrderSide.BUY:
             total = position.long_total + trade.volume
             position.long_price = (
-                position.long_price * position.long_total
-                + trade.price * trade.volume
+                position.long_price * position.long_total + trade.price * trade.volume
             ) / total
             position.long_today += trade.volume
         else:
             total = position.short_total + trade.volume
             position.short_price = (
-                position.short_price * position.short_total
-                + trade.price * trade.volume
+                position.short_price * position.short_total + trade.price * trade.volume
             ) / total
             position.short_today += trade.volume
 

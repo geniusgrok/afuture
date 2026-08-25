@@ -1,9 +1,10 @@
 """Cheap causal specific-contract screen for the predeclared Dominant Basis Carry family."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -12,20 +13,17 @@ ROOT = TOOLS.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from afuture.directional_basis_alpha import build_basis_carry_weights
-
 import evaluate_aggressive_directional as aggressive
 import evaluate_return_target_specific as specific
+
+from afuture.directional_basis_alpha import build_basis_carry_weights
 
 BASE_COST_BPS = 5.0
 STRESS_COST_BPS = 15.0
 
 
 def _window_metrics(series: pd.Series) -> dict[str, dict]:
-    return {
-        name: aggressive._window_metrics(series, name)
-        for name in aggressive.WINDOWS
-    }
+    return {name: aggressive._window_metrics(series, name) for name in aggressive.WINDOWS}
 
 
 def evaluate(specific_raw: pd.DataFrame, basis_raw: pd.DataFrame) -> dict:
@@ -37,9 +35,7 @@ def evaluate(specific_raw: pd.DataFrame, basis_raw: pd.DataFrame) -> dict:
         target_index=gap.index,
         products=tuple(gap.columns),
     )
-    base = specific.apply_next_open_product_weights(
-        gap, intraday, weights, cost_bps=BASE_COST_BPS
-    )
+    base = specific.apply_next_open_product_weights(gap, intraday, weights, cost_bps=BASE_COST_BPS)
     stress = specific.apply_next_open_product_weights(
         gap, intraday, weights, cost_bps=STRESS_COST_BPS
     )

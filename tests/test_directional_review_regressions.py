@@ -19,7 +19,6 @@ from afuture.models import AccountSnapshot, RuntimeMode, Tick
 from afuture.risk import RiskConfig, RiskManager
 from afuture.state import StateStore
 
-
 NOW = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)
 
 
@@ -171,22 +170,52 @@ def test_nonpositive_equity_with_directional_risk_reduces_before_halting(tmp_pat
 def test_proxy_open_equity_updates_high_watermark_before_intraday_drawdown():
     raw = pd.DataFrame(
         [
-            {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
-            {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
-            {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":150,"close":100,"volume":5000,"hold":30000},
+            {
+                "date": "2026-08-20",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 100,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-21",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 100,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-24",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 150,
+                "close": 100,
+                "volume": 5000,
+                "hold": 30000,
+            },
         ]
     )
     weights = pd.DataFrame(
-        {"A":[1.0,1.0]},
-        index=pd.to_datetime(["2026-08-21","2026-08-24"]),
+        {"A": [1.0, 1.0]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-24"]),
     )
     sim = DirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=100000,
             max_contract_volume=100,
-            max_daily_loss_ratio=.90,
-            max_total_drawdown_ratio=.30,
-            max_margin_ratio=.90,
+            max_daily_loss_ratio=0.90,
+            max_total_drawdown_ratio=0.30,
+            max_margin_ratio=0.90,
             min_available_ratio=0,
         )
     )
@@ -200,22 +229,52 @@ def test_proxy_open_equity_updates_high_watermark_before_intraday_drawdown():
 def test_proxy_existing_margin_breach_reduces_before_normal_rebalance():
     raw = pd.DataFrame(
         [
-            {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
-            {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":100,"volume":5000,"hold":30000},
-            {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":150,"close":150,"volume":5000,"hold":30000},
+            {
+                "date": "2026-08-20",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 100,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-21",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 100,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-24",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 150,
+                "close": 150,
+                "volume": 5000,
+                "hold": 30000,
+            },
         ]
     )
     weights = pd.DataFrame(
-        {"A":[-1.0,-1.0]},
-        index=pd.to_datetime(["2026-08-21","2026-08-24"]),
+        {"A": [-1.0, -1.0]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-24"]),
     )
     sim = DirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=100000,
             max_contract_volume=100,
-            max_daily_loss_ratio=.90,
-            max_total_drawdown_ratio=.90,
-            max_margin_ratio=.35,
+            max_daily_loss_ratio=0.90,
+            max_total_drawdown_ratio=0.90,
+            max_margin_ratio=0.35,
             min_available_ratio=0,
         )
     )

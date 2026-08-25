@@ -5,11 +5,12 @@ artifact, the fixed concrete-contract daily artifact, and the official four-year
 coverage artifacts. Before interpreting the candidate it reproduces both the exact cheap
 specific-contract baseline and the validated Production baseline.
 """
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -20,15 +21,15 @@ if str(TOOLS) not in sys.path:
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import evaluate_aggressive_directional as aggressive
+import evaluate_directional_production_mechanics as mechanics
+
 from afuture.directional_60m_oi_confirmation import (
     SUPPORTED_PRODUCTS,
     apply_oi_confirmation_to_weights,
     build_daily_price_oi_flow,
     lag_flow_to_target_days,
 )
-
-import evaluate_aggressive_directional as aggressive
-import evaluate_directional_production_mechanics as mechanics
 
 BASE_COST_BPS = 5.0
 STRESS_COST_BPS = 15.0
@@ -52,9 +53,7 @@ def load_frozen_weights(path: Path) -> pd.DataFrame:
     if rows.duplicated(["level_0", "level_1"]).any():
         raise ValueError("frozen weights contain duplicate date/product rows")
     weights = (
-        rows.pivot(index="level_0", columns="level_1", values="weight")
-        .sort_index()
-        .fillna(0.0)
+        rows.pivot(index="level_0", columns="level_1", values="weight").sort_index().fillna(0.0)
     )
     weights.index.name = None
     weights.columns.name = None
@@ -78,7 +77,9 @@ def load_60m(paths: list[Path]) -> pd.DataFrame:
     return frame.sort_values(["datetime", "product", "symbol"]).reset_index(drop=True)
 
 
-def build_candidate_weights(base_weights: pd.DataFrame, bars_60m: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_candidate_weights(
+    base_weights: pd.DataFrame, bars_60m: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     flow = build_daily_price_oi_flow(bars_60m)
     lagged = lag_flow_to_target_days(
         flow,
@@ -90,7 +91,9 @@ def build_candidate_weights(base_weights: pd.DataFrame, bars_60m: pd.DataFrame) 
         confirming_flow=lagged,
         supported_products=SUPPORTED_PRODUCTS,
     )
-    candidate = candidate.reindex(index=base_weights.index, columns=base_weights.columns).fillna(0.0)
+    candidate = candidate.reindex(index=base_weights.index, columns=base_weights.columns).fillna(
+        0.0
+    )
     if bool((candidate.abs().sum(axis=1) > base_weights.abs().sum(axis=1) + 1e-10).any()):
         raise AssertionError("60m OI candidate increased baseline gross")
     return candidate, lagged
@@ -101,7 +104,9 @@ def _cheap_report(specific_raw: pd.DataFrame, weights: pd.DataFrame) -> dict:
     # lazy so pure gate/unit tests do not acquire AKShare as a core dependency.
     import evaluate_return_target_specific as specific
 
-    _close, gap, intraday, _selections, _quality = specific.build_roll_safe_execution_returns(specific_raw)
+    _close, gap, intraday, _selections, _quality = specific.build_roll_safe_execution_returns(
+        specific_raw
+    )
     weights = weights.reindex(index=gap.index, columns=gap.columns, fill_value=0.0).fillna(0.0)
     result = {}
     for label, cost in (("base", BASE_COST_BPS), ("stress", STRESS_COST_BPS)):
@@ -112,8 +117,7 @@ def _cheap_report(specific_raw: pd.DataFrame, weights: pd.DataFrame) -> dict:
             cost_bps=cost,
         )
         result[label] = {
-            name: aggressive._window_metrics(series, name)
-            for name in aggressive.WINDOWS
+            name: aggressive._window_metrics(series, name) for name in aggressive.WINDOWS
         }
     turnover = weights.diff().abs().sum(axis=1)
     if len(turnover):
@@ -124,10 +128,24 @@ def _cheap_report(specific_raw: pd.DataFrame, weights: pd.DataFrame) -> dict:
 
 def baseline_reproduction_gate(*, cheap: dict, production: dict) -> dict:
     checks = {
-        "cheap_base": abs(float(cheap["base"]["full_recent"]["annualized_return"]) - EXPECTED_CHEAP_BASE) <= BASELINE_TOLERANCE,
-        "cheap_stress": abs(float(cheap["stress"]["full_recent"]["annualized_return"]) - EXPECTED_CHEAP_STRESS) <= BASELINE_TOLERANCE,
-        "production_base": abs(float(production["base"]["windows"]["full_recent"]["annualized_return"]) - EXPECTED_PRODUCTION_BASE) <= BASELINE_TOLERANCE,
-        "production_stress": abs(float(production["stress"]["windows"]["full_recent"]["annualized_return"]) - EXPECTED_PRODUCTION_STRESS) <= BASELINE_TOLERANCE,
+        "cheap_base": abs(
+            float(cheap["base"]["full_recent"]["annualized_return"]) - EXPECTED_CHEAP_BASE
+        )
+        <= BASELINE_TOLERANCE,
+        "cheap_stress": abs(
+            float(cheap["stress"]["full_recent"]["annualized_return"]) - EXPECTED_CHEAP_STRESS
+        )
+        <= BASELINE_TOLERANCE,
+        "production_base": abs(
+            float(production["base"]["windows"]["full_recent"]["annualized_return"])
+            - EXPECTED_PRODUCTION_BASE
+        )
+        <= BASELINE_TOLERANCE,
+        "production_stress": abs(
+            float(production["stress"]["windows"]["full_recent"]["annualized_return"])
+            - EXPECTED_PRODUCTION_STRESS
+        )
+        <= BASELINE_TOLERANCE,
     }
     return {"passed": bool(all(checks.values())), "checks": checks}
 
@@ -164,7 +182,9 @@ def production_promotion_gate(*, base: dict, stress: dict) -> dict:
     return {"passed": not reasons, "reasons": reasons}
 
 
-def evaluate(*, specific_raw: pd.DataFrame, base_weights: pd.DataFrame, bars_60m: pd.DataFrame) -> dict:
+def evaluate(
+    *, specific_raw: pd.DataFrame, base_weights: pd.DataFrame, bars_60m: pd.DataFrame
+) -> dict:
     candidate_weights, lagged_flow = build_candidate_weights(base_weights, bars_60m)
 
     cheap_baseline = _cheap_report(specific_raw, base_weights)
@@ -175,9 +195,11 @@ def evaluate(*, specific_raw: pd.DataFrame, base_weights: pd.DataFrame, bars_60m
         raise RuntimeError(f"60m OI baseline lineage reproduction failed: {baseline_gate}")
 
     production_candidate = mechanics.evaluate_with_weights(specific_raw, candidate_weights)
-    promotion = production_promotion_gate(base=production_candidate["base"], stress=production_candidate["stress"])
+    promotion = production_promotion_gate(
+        base=production_candidate["base"], stress=production_candidate["stress"]
+    )
 
-    full_index = base_weights.loc[pd.Timestamp("2024-08-21"):pd.Timestamp("2026-08-20")].index
+    full_index = base_weights.loc[pd.Timestamp("2024-08-21") : pd.Timestamp("2026-08-20")].index
     supported_activity = {}
     for product in SUPPORTED_PRODUCTS:
         series = lagged_flow.reindex(index=full_index)[product].fillna(0.0)
@@ -199,8 +221,12 @@ def evaluate(*, specific_raw: pd.DataFrame, base_weights: pd.DataFrame, bars_60m
         "baseline_reproduction": baseline_gate,
         "cheap": {"baseline": cheap_baseline, "candidate": cheap_candidate},
         "production": {
-            "baseline": {key: value for key, value in production_baseline.items() if not key.startswith("_")},
-            "candidate": {key: value for key, value in production_candidate.items() if not key.startswith("_")},
+            "baseline": {
+                key: value for key, value in production_baseline.items() if not key.startswith("_")
+            },
+            "candidate": {
+                key: value for key, value in production_candidate.items() if not key.startswith("_")
+            },
         },
         "promotion_gate": promotion,
         "supported_flow_active_days_full_recent": supported_activity,
@@ -242,15 +268,24 @@ def main() -> None:
         base_weights=load_frozen_weights(weights_path),
         bars_60m=load_60m([prior_60m, recent_60m]),
     )
-    report["_candidate_weights"].stack().rename("weight").reset_index().query("abs(weight) > 1e-15").to_csv(
-        runtime / "stress80_60m_oi_weights.csv", index=False
-    )
+    report["_candidate_weights"].stack().rename("weight").reset_index().query(
+        "abs(weight) > 1e-15"
+    ).to_csv(runtime / "stress80_60m_oi_weights.csv", index=False)
     report["_candidate_base_daily"].to_csv(runtime / "stress80_60m_oi_base_daily.csv", index=False)
-    report["_candidate_stress_daily"].to_csv(runtime / "stress80_60m_oi_stress_daily.csv", index=False)
-    report["_candidate_base_events"].to_csv(runtime / "stress80_60m_oi_base_events.csv", index=False)
-    report["_candidate_stress_events"].to_csv(runtime / "stress80_60m_oi_stress_events.csv", index=False)
+    report["_candidate_stress_daily"].to_csv(
+        runtime / "stress80_60m_oi_stress_daily.csv", index=False
+    )
+    report["_candidate_base_events"].to_csv(
+        runtime / "stress80_60m_oi_base_events.csv", index=False
+    )
+    report["_candidate_stress_events"].to_csv(
+        runtime / "stress80_60m_oi_stress_events.csv", index=False
+    )
     output = runtime / "stress80_60m_oi_production_report.json"
-    output.write_text(json.dumps(_jsonable(report), ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    output.write_text(
+        json.dumps(_jsonable(report), ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     print(json.dumps(_jsonable(report), ensure_ascii=False, indent=2))
 
 

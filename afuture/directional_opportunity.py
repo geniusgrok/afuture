@@ -5,13 +5,13 @@ product target is a comparatively attractive opportunity, not whether the produc
 be long or short. It may only preserve or reduce risk created by the frozen directional
 core; it never creates, flips, or enlarges exposure.
 """
+
 from __future__ import annotations
 
 from math import ceil, sqrt
 
 import numpy as np
 import pandas as pd
-
 
 OPPORTUNITY_CORE_SHARE = 0.75
 SHORT_WINDOW = 20
@@ -45,9 +45,7 @@ def _align_activity(
 
 
 def _rolling_log_return(returns: pd.DataFrame, window: int) -> pd.DataFrame:
-    return np.log1p(returns.clip(lower=-0.99)).rolling(
-        window, min_periods=window
-    ).sum()
+    return np.log1p(returns.clip(lower=-0.99)).rolling(window, min_periods=window).sum()
 
 
 def _cross_sectional_rank(frame: pd.DataFrame) -> pd.DataFrame:
@@ -77,45 +75,37 @@ def build_opportunity_score(
     momentum20 = _rolling_log_return(returns, SHORT_WINDOW)
     momentum60 = _rolling_log_return(returns, LONG_WINDOW)
 
-    path20 = returns.abs().rolling(
-        SHORT_WINDOW, min_periods=SHORT_WINDOW
-    ).sum().replace(0.0, np.nan)
-    path60 = returns.abs().rolling(
-        LONG_WINDOW, min_periods=LONG_WINDOW
-    ).sum().replace(0.0, np.nan)
+    path20 = (
+        returns.abs().rolling(SHORT_WINDOW, min_periods=SHORT_WINDOW).sum().replace(0.0, np.nan)
+    )
+    path60 = returns.abs().rolling(LONG_WINDOW, min_periods=LONG_WINDOW).sum().replace(0.0, np.nan)
     efficiency20 = momentum20.abs().div(path20)
     efficiency60 = momentum60.abs().div(path60)
 
-    volatility20 = returns.rolling(
-        SHORT_WINDOW, min_periods=SHORT_WINDOW
-    ).std().replace(0.0, np.nan)
-    strength20 = momentum20.abs().div(
-        volatility20 * sqrt(float(SHORT_WINDOW))
-    ).clip(lower=0.0, upper=MAX_STRENGTH)
+    volatility20 = (
+        returns.rolling(SHORT_WINDOW, min_periods=SHORT_WINDOW).std().replace(0.0, np.nan)
+    )
+    strength20 = (
+        momentum20.abs()
+        .div(volatility20 * sqrt(float(SHORT_WINDOW)))
+        .clip(lower=0.0, upper=MAX_STRENGTH)
+    )
 
-    rolling_low = prices.rolling(
-        SHORT_WINDOW, min_periods=SHORT_WINDOW
-    ).min()
-    rolling_high = prices.rolling(
-        SHORT_WINDOW, min_periods=SHORT_WINDOW
-    ).max()
+    rolling_low = prices.rolling(SHORT_WINDOW, min_periods=SHORT_WINDOW).min()
+    rolling_high = prices.rolling(SHORT_WINDOW, min_periods=SHORT_WINDOW).max()
     range_width = (rolling_high - rolling_low).replace(0.0, np.nan)
-    breakout_location = (
-        (prices - rolling_low).div(range_width).sub(0.5).abs().mul(2.0)
-    ).clip(lower=0.0, upper=1.0)
+    breakout_location = ((prices - rolling_low).div(range_width).sub(0.5).abs().mul(2.0)).clip(
+        lower=0.0, upper=1.0
+    )
 
-    volume_median = traded_volume.rolling(
-        SHORT_WINDOW, min_periods=SHORT_WINDOW
-    ).median().replace(0.0, np.nan)
-    volume_participation = traded_volume.div(volume_median).clip(
-        lower=0.0, upper=MAX_PARTICIPATION
+    volume_median = (
+        traded_volume.rolling(SHORT_WINDOW, min_periods=SHORT_WINDOW).median().replace(0.0, np.nan)
     )
-    oi_median = open_positions.rolling(
-        SHORT_WINDOW, min_periods=SHORT_WINDOW
-    ).median().replace(0.0, np.nan)
-    oi_participation = open_positions.div(oi_median).clip(
-        lower=0.0, upper=MAX_PARTICIPATION
+    volume_participation = traded_volume.div(volume_median).clip(lower=0.0, upper=MAX_PARTICIPATION)
+    oi_median = (
+        open_positions.rolling(SHORT_WINDOW, min_periods=SHORT_WINDOW).median().replace(0.0, np.nan)
     )
+    oi_participation = open_positions.div(oi_median).clip(lower=0.0, upper=MAX_PARTICIPATION)
 
     ranks = [
         _cross_sectional_rank(component)

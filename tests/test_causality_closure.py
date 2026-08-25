@@ -11,9 +11,7 @@ def _tick(symbol: str, trading_day: str) -> Tick:
     return Tick(
         symbol=symbol,
         exchange="DCE",
-        timestamp=datetime.strptime(trading_day, "%Y%m%d").replace(
-            hour=1, tzinfo=timezone.utc
-        ),
+        timestamp=datetime.strptime(trading_day, "%Y%m%d").replace(hour=1, tzinfo=timezone.utc),
         bid_price=99.0,
         ask_price=101.0,
         last_price=100.0,
@@ -74,18 +72,14 @@ def _acceptance_result(*, fold_positions: int = 0, stress_positions: int = 0):
 
 
 def test_acceptance_rejects_oos_residual_positions():
-    decision = AutoPortfolioAcceptanceGate().evaluate(
-        _acceptance_result(fold_positions=1)
-    )
+    decision = AutoPortfolioAcceptanceGate().evaluate(_acceptance_result(fold_positions=1))
     assert not decision.accepted
     assert "OOS folds ended with residual positions" in decision.reasons
     assert decision.metrics["residual_oos_folds"] == 1
 
 
 def test_acceptance_rejects_stress_residual_positions():
-    decision = AutoPortfolioAcceptanceGate().evaluate(
-        _acceptance_result(stress_positions=1)
-    )
+    decision = AutoPortfolioAcceptanceGate().evaluate(_acceptance_result(stress_positions=1))
     assert not decision.accepted
     assert "cost stress ended with residual positions" in decision.reasons
     assert decision.metrics["residual_cost_stress_cases"] == 1

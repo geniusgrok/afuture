@@ -6,7 +6,6 @@ from datetime import date, datetime, timezone
 from itertools import count
 from math import ceil
 
-from .base import Broker
 from ..fees import calculate_commission
 from ..models import (
     AccountSnapshot,
@@ -14,7 +13,6 @@ from ..models import (
     ContractInfo,
     ContractPosition,
     ContractSpec,
-    Offset,
     Order,
     OrderRequest,
     OrderSide,
@@ -24,6 +22,7 @@ from ..models import (
     Trade,
 )
 from ..position import PositionBook
+from .base import Broker
 
 
 class SimBroker(Broker):
@@ -234,9 +233,7 @@ class SimBroker(Broker):
             "spread_cost": float(spread_cost),
             "slippage_impact_cost": float(slippage_impact_cost),
             "commission_cost": float(commission_cost),
-            "total_execution_cost": float(
-                spread_cost + slippage_impact_cost + commission_cost
-            ),
+            "total_execution_cost": float(spread_cost + slippage_impact_cost + commission_cost),
             "volume_weighted_latency_ticks": float(latency_volume / latency_weight)
             if latency_weight
             else 0.0,
@@ -253,19 +250,15 @@ class SimBroker(Broker):
                 if tick is not None
                 else max(position.long_price, position.short_price, 0.0)
             )
-            unrealized += (
-                (mark - position.long_price)
-                * position.long_total
+            unrealized += (mark - position.long_price) * position.long_total * spec.multiplier
+            unrealized += (position.short_price - mark) * position.short_total * spec.multiplier
+            margin += (
+                mark
                 * spec.multiplier
-            )
-            unrealized += (
-                (position.short_price - mark)
-                * position.short_total
-                * spec.multiplier
-            )
-            margin += mark * spec.multiplier * (
-                position.long_total * spec.margin_rate_long
-                + position.short_total * spec.margin_rate_short
+                * (
+                    position.long_total * spec.margin_rate_long
+                    + position.short_total * spec.margin_rate_short
+                )
             )
         equity = self._balance + unrealized
         return AccountSnapshot(
@@ -275,10 +268,7 @@ class SimBroker(Broker):
             margin=margin,
             realized_pnl=self._realized_pnl - self._commission,
             unrealized_pnl=unrealized,
-            trading_day=(
-                self._trading_day
-                or datetime.now(timezone.utc).strftime("%Y%m%d")
-            ),
+            trading_day=(self._trading_day or datetime.now(timezone.utc).strftime("%Y%m%d")),
         )
 
     def poll_events(self) -> list[BrokerEvent]:
@@ -338,9 +328,7 @@ class SimBroker(Broker):
             # by the actually available L1 queue above.
             extra_multiples = max(0, int(ceil(remaining / available)) - 1)
             impact_ticks += extra_multiples * self.size_impact_ticks
-        fill_price = raw_price + sign * (
-            self.slippage_ticks + impact_ticks
-        ) * spec.price_tick
+        fill_price = raw_price + sign * (self.slippage_ticks + impact_ticks) * spec.price_tick
         if request.side is OrderSide.BUY:
             fill_price = min(fill_price, float(request.price))
             if tick.limit_up > 0:
@@ -354,10 +342,7 @@ class SimBroker(Broker):
         self._fill(order, fill_volume, fill_price)
 
     def _cancel_ioc_remainder(self, order: Order) -> None:
-        if (
-            order.request.order_type in {OrderType.FAK, OrderType.FOK}
-            and order.active
-        ):
+        if order.request.order_type in {OrderType.FAK, OrderType.FOK} and order.active:
             order.status = OrderStatus.CANCELLED
             self._events.append(BrokerEvent("order", order))
 
@@ -368,9 +353,7 @@ class SimBroker(Broker):
             order.average_price * previous_traded + price * volume
         ) / order.traded
         order.status = (
-            OrderStatus.FILLED
-            if order.traded == order.request.volume
-            else OrderStatus.PART_TRADED
+            OrderStatus.FILLED if order.traded == order.request.volume else OrderStatus.PART_TRADED
         )
         self._first_fill_seq.setdefault(order.order_id, self._tick_seq)
 
@@ -389,15 +372,11 @@ class SimBroker(Broker):
         realized_points = self.position_book.apply_trade(trade)
         spec = self.specs[trade.symbol]
         realized = realized_points * spec.multiplier
-        commission = calculate_commission(
-            spec, trade.offset, trade.price, trade.volume
-        )
+        commission = calculate_commission(spec, trade.offset, trade.price, trade.volume)
         self._realized_pnl += realized
         self._commission += commission
         self._balance += realized - commission
 
         trade = Trade(**{**trade.__dict__, "commission": commission})
         self._trades.append(trade)
-        self._events.extend(
-            [BrokerEvent("trade", trade), BrokerEvent("order", order)]
-        )
+        self._events.extend([BrokerEvent("trade", trade), BrokerEvent("order", order)])

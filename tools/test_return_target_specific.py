@@ -1,6 +1,6 @@
-from pathlib import Path
 import importlib.util
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -54,11 +54,32 @@ for product in ("A", "M"):
         second,
         (100.0, 80.0, 70.0),
         (50.0, 120.0, 140.0),
+        strict=True,
     ):
         rows.extend(
             [
-                {"date": day, "product": product, "exchange": "DCE", "symbol": f"{product}2509", "delivery": "2025-09-15", "open": p1 * 0.99, "close": p1, "volume": 1000.0, "hold": oi1},
-                {"date": day, "product": product, "exchange": "DCE", "symbol": f"{product}2601", "delivery": "2026-01-15", "open": p2 * 0.99, "close": p2, "volume": 900.0, "hold": oi2},
+                {
+                    "date": day,
+                    "product": product,
+                    "exchange": "DCE",
+                    "symbol": f"{product}2509",
+                    "delivery": "2025-09-15",
+                    "open": p1 * 0.99,
+                    "close": p1,
+                    "volume": 1000.0,
+                    "hold": oi1,
+                },
+                {
+                    "date": day,
+                    "product": product,
+                    "exchange": "DCE",
+                    "symbol": f"{product}2601",
+                    "delivery": "2026-01-15",
+                    "open": p2 * 0.99,
+                    "close": p2,
+                    "volume": 900.0,
+                    "hold": oi2,
+                },
             ]
         )
 
@@ -98,7 +119,12 @@ for product, scale in (("M", 2.0), ("A", 1.0)):
         [
             {"date": idx[0], "product": product, "open": 100.0 * scale, "close": 100.0 * scale},
             {"date": idx[1], "product": product, "open": 110.0 * scale, "close": 113.3 * scale},
-            {"date": idx[2], "product": product, "open": 134.827 * scale, "close": 140.22008 * scale},
+            {
+                "date": idx[2],
+                "product": product,
+                "open": 134.827 * scale,
+                "close": 140.22008 * scale,
+            },
         ]
     )
 proxy_gap, proxy_intraday = evaluator.build_continuous_execution_proxy(

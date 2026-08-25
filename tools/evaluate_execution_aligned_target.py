@@ -1,9 +1,10 @@
 """Final specific-contract L4 for the frozen execution-aligned directional policy."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -15,14 +16,15 @@ if str(ROOT) not in sys.path:
 
 import evaluate_aggressive_directional as aggressive
 import evaluate_return_target_specific as specific
+
 from afuture.execution_aligned_policy import (
+    _EXECUTION_TEMPLATE_IDS,
     BASE_COST_BPS,
     META_COUNT,
     META_LOOKBACK,
     META_REBALANCE,
     META_SCORE_SOURCE,
     ExecutionAlignedAggressivePolicy,
-    _EXECUTION_TEMPLATE_IDS,
 )
 
 MAX_GROSS_LEVERAGE = 2.0
@@ -102,26 +104,16 @@ def _meta_weight_path(
     final = pd.DataFrame(0.0, index=frame.index, columns=example.columns)
     selected: list[int] = []
     for position, timestamp in enumerate(frame.index):
-        if position >= META_LOOKBACK and (
-            not selected or position % META_REBALANCE == 0
-        ):
+        if position >= META_LOOKBACK and (not selected or position % META_REBALANCE == 0):
             row = scores[position]
             valid = np.flatnonzero(np.isfinite(row))
             selected = (
-                [
-                    int(item)
-                    for item in valid[
-                        np.argsort(-row[valid], kind="stable")
-                    ][:META_COUNT]
-                ]
+                [int(item) for item in valid[np.argsort(-row[valid], kind="stable")][:META_COUNT]]
                 if valid.size
                 else []
             )
         if selected:
-            rows = [
-                template_weights[names[item]].loc[timestamp]
-                for item in selected
-            ]
+            rows = [template_weights[names[item]].loc[timestamp] for item in selected]
             final.loc[timestamp] = pd.concat(rows, axis=1).mean(axis=1)
     gross = final.abs().sum(axis=1)
     if bool((gross > MAX_GROSS_LEVERAGE + 1e-10).any()):
@@ -163,16 +155,13 @@ def generate_execution_signal_weights(
         .sort_index()
         .reindex(index=open_prices.index, columns=open_prices.columns)
     )
-    return ExecutionAlignedAggressivePolicy(
-        products=tuple(ordered_products)
-    ).weight_history(open_prices, close)
+    return ExecutionAlignedAggressivePolicy(products=tuple(ordered_products)).weight_history(
+        open_prices, close
+    )
 
 
 def _window_metrics(series: pd.Series) -> dict[str, dict]:
-    return {
-        name: aggressive._window_metrics(series, name)
-        for name in WINDOWS
-    }
+    return {name: aggressive._window_metrics(series, name) for name in WINDOWS}
 
 
 def evaluate(
@@ -197,9 +186,7 @@ def evaluate(
         ("extreme", EXTREME_COST_BPS),
     ):
         close_paths[label] = _window_metrics(
-            specific.apply_product_weights(
-                close_ret, weights, cost_bps=cost
-            )
+            specific.apply_product_weights(close_ret, weights, cost_bps=cost)
         )
         execution_paths[label] = _window_metrics(
             specific.apply_next_open_product_weights(
@@ -255,12 +242,10 @@ def evaluate(
     }
     output = Path("runtime")
     output.mkdir(parents=True, exist_ok=True)
-    selections.to_csv(
-        output / "execution_aligned_specific_selection.csv", index=False
+    selections.to_csv(output / "execution_aligned_specific_selection.csv", index=False)
+    weights.stack().rename("weight").reset_index().query("abs(weight) > 1e-15").to_csv(
+        output / "execution_aligned_weights.csv", index=False
     )
-    weights.stack().rename("weight").reset_index().query(
-        "abs(weight) > 1e-15"
-    ).to_csv(output / "execution_aligned_weights.csv", index=False)
     return report
 
 
@@ -268,11 +253,7 @@ def main() -> None:
     runtime = Path("runtime")
     specific_path = runtime / "return_target_specific_contracts.csv"
     continuous_path = runtime / "broad_daily_universe.csv"
-    missing = [
-        str(path)
-        for path in (specific_path, continuous_path)
-        if not path.exists()
-    ]
+    missing = [str(path) for path in (specific_path, continuous_path) if not path.exists()]
     if missing:
         raise SystemExit(f"execution-aligned L4 inputs missing: {missing}")
     report = evaluate(

@@ -14,6 +14,7 @@ No threshold is fit from backtest results. The 5% daily-loss, 30% hard drawdown,
 available-cash, 2x gross and 35-lot gates remain authoritative downstream. This module is
 research-only and is not imported by live runtime wiring.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable

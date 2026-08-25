@@ -7,6 +7,7 @@ open interest increased during the session, and exposes that direction to the ne
 target session. The overlay may suppress only new risk or same-sign increases. Reductions,
 exits and reversals remain authoritative and unsupported products are unchanged.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -57,15 +58,12 @@ def build_daily_price_oi_flow(raw: pd.DataFrame) -> pd.DataFrame:
 
     frame["date"] = frame["datetime"].dt.normalize()
     frame.sort_values(["date", "product", "symbol", "datetime"], inplace=True)
-    contract = (
-        frame.groupby(["date", "product", "symbol"], as_index=False, sort=False)
-        .agg(
-            first_open=("open", "first"),
-            last_close=("close", "last"),
-            first_hold=("hold", "first"),
-            last_hold=("hold", "last"),
-            total_volume=("volume", "sum"),
-        )
+    contract = frame.groupby(["date", "product", "symbol"], as_index=False, sort=False).agg(
+        first_open=("open", "first"),
+        last_close=("close", "last"),
+        first_hold=("hold", "first"),
+        last_hold=("hold", "last"),
+        total_volume=("volume", "sum"),
     )
     contract.sort_values(
         ["date", "product", "last_hold", "total_volume", "symbol"],
@@ -78,10 +76,7 @@ def build_daily_price_oi_flow(raw: pd.DataFrame) -> pd.DataFrame:
     direction = np.sign(intraday_values)
     direction[~np.isfinite(intraday_values)] = 0.0
     direction[np.abs(intraday_values) <= 1e-15] = 0.0
-    direction[
-        dominant["last_hold"].to_numpy(float)
-        <= dominant["first_hold"].to_numpy(float)
-    ] = 0.0
+    direction[dominant["last_hold"].to_numpy(float) <= dominant["first_hold"].to_numpy(float)] = 0.0
     dominant["flow"] = direction
     result = dominant.pivot(index="date", columns="product", values="flow").sort_index()
     result.index = pd.DatetimeIndex(result.index).normalize()
@@ -131,9 +126,8 @@ def apply_oi_confirmation_to_weights(
             prior = float(previous[product])
             final = target
             if product in supported:
-                same_direction_increase = (
-                    abs(target) > abs(prior) + 1e-15
-                    and (abs(prior) <= 1e-15 or np.sign(target) == np.sign(prior))
+                same_direction_increase = abs(target) > abs(prior) + 1e-15 and (
+                    abs(prior) <= 1e-15 or np.sign(target) == np.sign(prior)
                 )
                 if same_direction_increase:
                     evidence = float(flow.at[day, product])

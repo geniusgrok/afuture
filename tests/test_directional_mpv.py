@@ -1,6 +1,6 @@
-from datetime import date
 import inspect
 import math
+from datetime import date
 
 import pandas as pd
 import pytest

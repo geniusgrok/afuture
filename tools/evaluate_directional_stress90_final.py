@@ -8,13 +8,14 @@ drawdown reserve uses the full completed causal account path.
 
 This is an offline Production evidence entrypoint, not live runtime wiring.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
-from typing import Iterable
+from collections.abc import Iterable
+from pathlib import Path
 
 import pandas as pd
 
@@ -27,6 +28,7 @@ if str(ROOT) not in sys.path:
 
 import evaluate_directional_production_mechanics as mechanics
 import evaluate_directional_stress80_final as stress80
+
 from afuture.directional_acceptance import ProductionMechanicsConfig
 from afuture.directional_concentration_freeze import (
     ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance,
@@ -77,15 +79,9 @@ def evaluate_window(
     if window not in mechanics.WINDOWS:
         raise ValueError(f"unsupported window: {window}")
     margin_proxy = (
-        mechanics.BASE_MARGIN_PROXY
-        if scenario == "base"
-        else mechanics.STRESS_MARGIN_PROXY
+        mechanics.BASE_MARGIN_PROXY if scenario == "base" else mechanics.STRESS_MARGIN_PROXY
     )
-    cost_bps = (
-        mechanics.BASE_COST_BPS
-        if scenario == "base"
-        else mechanics.STRESS_COST_BPS
-    )
+    cost_bps = mechanics.BASE_COST_BPS if scenario == "base" else mechanics.STRESS_COST_BPS
     start, end = mechanics.WINDOWS[window]
     simulator = ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
         ProductionMechanicsConfig(

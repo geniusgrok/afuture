@@ -7,8 +7,8 @@ promotion after train/validation/OOS testing.
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import akshare as ak
 import pandas as pd
@@ -20,8 +20,20 @@ END = pd.Timestamp("2026-08-20 23:59:59")
 # calendar-spread use case. Monthly metals are deliberately excluded here because their
 # contract lifecycle differs and would require a separate selector policy.
 KEY_MONTH_PRODUCTS = (
-    "M", "C", "P", "A", "Y", "I", "PP", "EG",  # DCE
-    "TA", "MA", "FG", "RM", "OI", "SA",          # CZCE
+    "M",
+    "C",
+    "P",
+    "A",
+    "Y",
+    "I",
+    "PP",
+    "EG",  # DCE
+    "TA",
+    "MA",
+    "FG",
+    "RM",
+    "OI",
+    "SA",  # CZCE
 )
 KEY_MONTH_CONTRACTS = ("2409", "2501", "2505", "2509", "2601", "2605", "2609", "2701")
 RB_CONTRACTS = ("2410", "2501", "2505", "2510", "2601", "2605", "2610", "2701")
@@ -33,7 +45,9 @@ def product_of(symbol: str) -> str:
 
 
 def symbols() -> list[str]:
-    result = [f"{product}{contract}" for product in KEY_MONTH_PRODUCTS for contract in KEY_MONTH_CONTRACTS]
+    result = [
+        f"{product}{contract}" for product in KEY_MONTH_PRODUCTS for contract in KEY_MONTH_CONTRACTS
+    ]
     result.extend(f"RB{contract}" for contract in RB_CONTRACTS)
     return result
 

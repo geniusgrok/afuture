@@ -1,10 +1,10 @@
 """Causal product selection from the directional strategy's own realized Alpha efficiency."""
+
 from __future__ import annotations
 
 from math import ceil
 
 import pandas as pd
-
 
 MAX_ABS_DAILY_RETURN = 0.20
 ALPHA_EFFICIENCY_CORE_SHARE = 0.75
@@ -76,16 +76,12 @@ def apply_alpha_efficiency_overlay(
         keep = set(ordered.index[:keep_count])
         lower = [product for product in evidence.index if product not in keep]
         if lower:
-            result.loc[raw.index[position], lower] = (
-                row.loc[lower] * ALPHA_EFFICIENCY_CORE_SHARE
-            )
+            result.loc[raw.index[position], lower] = row.loc[lower] * ALPHA_EFFICIENCY_CORE_SHARE
 
     if bool((result.abs() > raw.abs() + 1e-12).any().any()):
         raise AssertionError("alpha-efficiency selector increased product risk")
     if bool(((result * raw) < -1e-12).any().any()):
         raise AssertionError("alpha-efficiency selector flipped product direction")
-    if bool(
-        (result.abs().sum(axis=1) > raw.abs().sum(axis=1) + 1e-12).any()
-    ):
+    if bool((result.abs().sum(axis=1) > raw.abs().sum(axis=1) + 1e-12).any()):
         raise AssertionError("alpha-efficiency selector increased portfolio gross")
     return result

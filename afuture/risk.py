@@ -20,7 +20,6 @@ from .models import (
     Tick,
 )
 
-
 _CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -84,39 +83,26 @@ class RiskManager:
     def restore_high_watermark(self, equity: float) -> None:
         """从持久化状态恢复权益高水位，防止重启绕过总回撤限制。"""
         if equity > 0:
-            self._high_watermark = max(
-                self._high_watermark or 0.0, equity
-            )
+            self._high_watermark = max(self._high_watermark or 0.0, equity)
 
     def set_day_start_equity(self, equity: float, trading_day: str) -> None:
         if equity <= 0:
             raise ValueError("equity must be positive")
         self._day_start_equity = equity
         self._trading_day = trading_day
-        self._high_watermark = max(
-            self._high_watermark or equity, equity
-        )
+        self._high_watermark = max(self._high_watermark or equity, equity)
 
     def check_account(self, account: AccountSnapshot) -> RiskDecision:
         """检查日亏损、总回撤、保证金和现金储备。"""
         if account.equity <= 0:
             return RiskDecision(False, "equity is not positive")
-        if (
-            self._day_start_equity is None
-            or self._trading_day != account.trading_day
-        ):
+        if self._day_start_equity is None or self._trading_day != account.trading_day:
             self.set_day_start_equity(account.equity, account.trading_day)
 
         assert self._day_start_equity is not None
-        self._high_watermark = max(
-            self._high_watermark or account.equity, account.equity
-        )
-        daily_loss = max(
-            0.0, self._day_start_equity - account.equity
-        ) / self._day_start_equity
-        drawdown = max(
-            0.0, self._high_watermark - account.equity
-        ) / self._high_watermark
+        self._high_watermark = max(self._high_watermark or account.equity, account.equity)
+        daily_loss = max(0.0, self._day_start_equity - account.equity) / self._day_start_equity
+        drawdown = max(0.0, self._high_watermark - account.equity) / self._high_watermark
         margin_ratio = account.margin / account.equity
         available_ratio = account.available / account.equity
 
@@ -140,9 +126,7 @@ class RiskManager:
             return RiskDecision(False, "missing quotes")
         now = now or datetime.now(timezone.utc)
         if len({tick.trading_day for tick in ticks}) != 1:
-            return RiskDecision(
-                False, "quotes belong to different trading days"
-            )
+            return RiskDecision(False, "quotes belong to different trading days")
         timestamps: list[datetime] = []
         for tick in ticks:
             try:
@@ -151,9 +135,7 @@ class RiskManager:
                 return RiskDecision(False, f"invalid quote: {exc}")
             timestamp = tick.timestamp.astimezone(timezone.utc)
             timestamps.append(timestamp)
-            age = (
-                now.astimezone(timezone.utc) - timestamp
-            ).total_seconds()
+            age = (now.astimezone(timezone.utc) - timestamp).total_seconds()
             if age < -2:
                 return RiskDecision(False, "quote timestamp is in the future")
             if age > self.config.max_quote_age_seconds:
@@ -181,9 +163,7 @@ class RiskManager:
             expiry = datetime.fromisoformat(raw).date()
             days = (expiry - local_date).days
             if days <= self.config.expiry_blackout_days:
-                return RiskDecision(
-                    False, "contract is inside expiry blackout window"
-                )
+                return RiskDecision(False, "contract is inside expiry blackout window")
         return RiskDecision(True)
 
     def check_market_entry(
@@ -205,23 +185,17 @@ class RiskManager:
             return RiskDecision(False, "requested volume is not positive")
 
         timestamp = max(near.timestamp, far.timestamp)
-        if pair.session_windows and not self._inside_sessions(
-            timestamp, pair.session_windows
-        ):
+        if pair.session_windows and not self._inside_sessions(timestamp, pair.session_windows):
             return RiskDecision(False, "outside configured trading session")
         if pair.session_windows and not self._inside_open_close_buffer(
             timestamp, pair.session_windows
         ):
-            return RiskDecision(
-                False, "inside session open/close safety window"
-            )
+            return RiskDecision(False, "inside session open/close safety window")
 
         for tick in (near, far):
             spec = (specs or {}).get(tick.symbol)
             price_tick = spec.price_tick if spec else 1.0
-            width_ticks = (
-                tick.ask_price - tick.bid_price
-            ) / price_tick
+            width_ticks = (tick.ask_price - tick.bid_price) / price_tick
             if width_ticks > self.config.max_bid_ask_ticks:
                 return RiskDecision(False, "bid/ask spread too wide")
 
@@ -244,21 +218,13 @@ class RiskManager:
             spec = (specs or {}).get(tick.symbol)
             price_tick = spec.price_tick if spec else 1.0
             if side is OrderSide.BUY and tick.limit_up > 0:
-                distance = (
-                    tick.limit_up - tick.ask_price
-                ) / price_tick
+                distance = (tick.limit_up - tick.ask_price) / price_tick
                 if distance < self.config.limit_distance_ticks:
-                    return RiskDecision(
-                        False, "buy leg is too close to upper limit"
-                    )
+                    return RiskDecision(False, "buy leg is too close to upper limit")
             if side is OrderSide.SELL and tick.limit_down > 0:
-                distance = (
-                    tick.bid_price - tick.limit_down
-                ) / price_tick
+                distance = (tick.bid_price - tick.limit_down) / price_tick
                 if distance < self.config.limit_distance_ticks:
-                    return RiskDecision(
-                        False, "sell leg is too close to lower limit"
-                    )
+                    return RiskDecision(False, "sell leg is too close to lower limit")
         return RiskDecision(True)
 
     def check_contract_entry(
@@ -276,13 +242,9 @@ class RiskManager:
         quote_decision = self.check_quotes([tick], tick.timestamp)
         if not quote_decision.allowed:
             return quote_decision
-        if session_windows and not self._inside_sessions(
-            tick.timestamp, session_windows
-        ):
+        if session_windows and not self._inside_sessions(tick.timestamp, session_windows):
             return RiskDecision(False, "outside configured trading session")
-        if session_windows and not self._inside_open_close_buffer(
-            tick.timestamp, session_windows
-        ):
+        if session_windows and not self._inside_open_close_buffer(tick.timestamp, session_windows):
             return RiskDecision(False, "inside session open/close safety window")
 
         width_ticks = (tick.ask_price - tick.bid_price) / spec.price_tick
@@ -367,37 +329,22 @@ class RiskManager:
                 requested_by_symbol.get(order.symbol, 0) + order.volume
             )
             total_volume = (
-                current_contract_volumes.get(order.symbol, 0)
-                + requested_by_symbol[order.symbol]
+                current_contract_volumes.get(order.symbol, 0) + requested_by_symbol[order.symbol]
             )
             if total_volume > self.config.max_contract_volume:
                 return RiskDecision(False, "contract volume limit reached")
             spec = specs.get(order.symbol)
             if spec is None:
-                return RiskDecision(
-                    False, f"missing contract spec: {order.symbol}"
-                )
-            rate = (
-                spec.margin_rate_long
-                if order.side is OrderSide.BUY
-                else spec.margin_rate_short
-            )
-            estimated_margin += (
-                order.price * spec.multiplier * rate * order.volume
-            )
+                return RiskDecision(False, f"missing contract spec: {order.symbol}")
+            rate = spec.margin_rate_long if order.side is OrderSide.BUY else spec.margin_rate_short
+            estimated_margin += order.price * spec.multiplier * rate * order.volume
 
         estimated_margin *= self.config.margin_estimate_buffer
         post_margin = account.margin + estimated_margin
         if post_margin / account.equity > self.config.max_margin_ratio:
-            return RiskDecision(
-                False, "combined margin ratio would exceed limit"
-            )
-        if (
-            account.equity - post_margin
-        ) / account.equity < self.config.min_available_ratio:
-            return RiskDecision(
-                False, "combined cash reserve would fall below limit"
-            )
+            return RiskDecision(False, "combined margin ratio would exceed limit")
+        if (account.equity - post_margin) / account.equity < self.config.min_available_ratio:
+            return RiskDecision(False, "combined cash reserve would fall below limit")
         return RiskDecision(True)
 
     def check_open_batch(
@@ -425,16 +372,12 @@ class RiskManager:
             return True
         return self._inside_sessions(timestamp, pair.session_windows)
 
-    def _inside_sessions(
-        self, timestamp: datetime, windows: tuple[str, ...]
-    ) -> bool:
+    def _inside_sessions(self, timestamp: datetime, windows: tuple[str, ...]) -> bool:
         local = self._china_timestamp(timestamp)
         now = local.timetz().replace(tzinfo=None)
         return any(self._inside_window(now, raw) for raw in windows)
 
-    def _inside_open_close_buffer(
-        self, timestamp: datetime, windows: tuple[str, ...]
-    ) -> bool:
+    def _inside_open_close_buffer(self, timestamp: datetime, windows: tuple[str, ...]) -> bool:
         local = self._china_timestamp(timestamp)
         now_minutes = local.hour * 60 + local.minute
         for raw in windows:

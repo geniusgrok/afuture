@@ -1,9 +1,9 @@
 """结构化交易审计日志。"""
 
+import json
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
-import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,9 +23,7 @@ class AuditJournal:
     ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         row = {
-            "timestamp": (
-                timestamp or datetime.now(timezone.utc)
-            ).isoformat(),
+            "timestamp": (timestamp or datetime.now(timezone.utc)).isoformat(),
             "event_type": event_type,
             "payload": _to_jsonable(payload),
         }
@@ -50,10 +48,7 @@ def _to_jsonable(value: object) -> object:
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, dict):
-        return {
-            str(key): _to_jsonable(item)
-            for key, item in value.items()
-        }
+        return {str(key): _to_jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_to_jsonable(item) for item in value]
     return value

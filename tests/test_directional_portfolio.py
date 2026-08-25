@@ -2,18 +2,18 @@ from datetime import datetime, timezone
 
 import pytest
 
+from afuture.directional import (
+    DirectionalConfig,
+    DirectionalContractSelector,
+    build_rebalance_plan,
+    build_target_lots,
+)
 from afuture.models import (
     AccountSnapshot,
     ContractInfo,
     ContractPosition,
     ContractSpec,
     Tick,
-)
-from afuture.directional import (
-    DirectionalConfig,
-    DirectionalContractSelector,
-    build_target_lots,
-    build_rebalance_plan,
 )
 
 
@@ -36,9 +36,7 @@ def _tick(symbol: str, oi: float, *, price: float = 100.0, volume: float = 10000
 
 
 def test_directional_config_caps_gross_and_is_account_exclusive():
-    config = DirectionalConfig(
-        enabled=True, products=("A", "M"), max_gross_leverage=2.0
-    )
+    config = DirectionalConfig(enabled=True, products=("A", "M"), max_gross_leverage=2.0)
     config.validate()
     assert config.account_exclusive is True
     with pytest.raises(ValueError, match="gross leverage"):

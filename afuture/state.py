@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
-import json
 from math import isfinite
-import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -74,34 +74,22 @@ class StateStore:
         required = {"schema_version", "sequence", "state", "checksum"}
         missing = sorted(required.difference(raw))
         if missing:
-            raise StateIntegrityError(
-                "state envelope missing fields: " + ", ".join(missing)
-            )
+            raise StateIntegrityError("state envelope missing fields: " + ", ".join(missing))
         schema_version = raw["schema_version"]
         if (
             isinstance(schema_version, bool)
             or not isinstance(schema_version, int)
             or schema_version <= 0
         ):
-            raise StateIntegrityError(
-                "state schema version must be a positive integer"
-            )
+            raise StateIntegrityError("state schema version must be a positive integer")
         if schema_version > SCHEMA_VERSION:
-            raise StateIntegrityError(
-                "state schema version is newer than this program"
-            )
+            raise StateIntegrityError("state schema version is newer than this program")
         sequence = raw["sequence"]
-        if (
-            isinstance(sequence, bool)
-            or not isinstance(sequence, int)
-            or sequence <= 0
-        ):
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
             raise StateIntegrityError("state sequence must be a positive integer")
         state_payload = raw["state"]
         if not isinstance(state_payload, dict):
-            raise StateIntegrityError(
-                "state payload must be a JSON object"
-            )
+            raise StateIntegrityError("state payload must be a JSON object")
         expected = self._checksum(schema_version, sequence, state_payload)
         if expected != raw.get("checksum"):
             raise StateIntegrityError("state checksum mismatch")
@@ -142,9 +130,7 @@ class StateStore:
                 or not isinstance(value, (int, float))
                 or not isfinite(value)
             ):
-                raise StateIntegrityError(
-                    f"state field {name} must be finite number"
-                )
+                raise StateIntegrityError(f"state field {name} must be finite number")
         for name in list_fields.intersection(payload):
             if not isinstance(payload[name], list):
                 raise StateIntegrityError(f"state field {name} must be a list")
@@ -154,16 +140,12 @@ class StateStore:
 
         positions = payload.get("positions", [])
         if any(not isinstance(item, dict) for item in positions):
-            raise StateIntegrityError(
-                "state field positions must contain only objects"
-            )
+            raise StateIntegrityError("state field positions must contain only objects")
         for item in positions:
             try:
                 position = ContractPosition(**item)
             except (TypeError, ValueError) as exc:
-                raise StateIntegrityError(
-                    "invalid persisted position"
-                ) from exc
+                raise StateIntegrityError("invalid persisted position") from exc
             if not isinstance(position.symbol, str) or not isinstance(
                 position.exchange,
                 str,
@@ -176,23 +158,17 @@ class StateStore:
                 position.short_yesterday,
             )
             if any(
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < 0
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
                 for value in buckets
             ):
                 raise StateIntegrityError("invalid persisted position")
         for name in object_fields:
             values = payload.get(name, {})
             if any(not isinstance(value, dict) for value in values.values()):
-                raise StateIntegrityError(
-                    f"state field {name} values must be objects"
-                )
+                raise StateIntegrityError(f"state field {name} values must be objects")
         recent_returns = payload.get("recent_daily_returns", [])
         if any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not isfinite(value)
+            isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value)
             for value in recent_returns
         ):
             raise StateIntegrityError(
@@ -203,9 +179,7 @@ class StateStore:
             raise StateIntegrityError("state field runtime_mode is unsupported")
 
         allowed = RuntimeState.__dataclass_fields__
-        return RuntimeState(
-            **{key: value for key, value in payload.items() if key in allowed}
-        )
+        return RuntimeState(**{key: value for key, value in payload.items() if key in allowed})
 
     def save(self, state: RuntimeState) -> None:
         sequence = 1
@@ -259,6 +233,8 @@ class StateStore:
     def _checksum(schema_version: int, sequence: int, state: dict) -> str:
         payload = json.dumps(
             {"schema_version": schema_version, "sequence": sequence, "state": state},
-            sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
         ).encode("utf-8")
         return sha256(payload).hexdigest()

@@ -5,6 +5,7 @@ orders may avoid one extra price tick only when the currently displayed opposite
 L1 depth covers the complete requested volume; otherwise the legacy aggressive price is
 retained. This helper never changes volume, order type, risk authority, or order count.
 """
+
 from __future__ import annotations
 
 from .models import ContractSpec, OrderSide, Tick

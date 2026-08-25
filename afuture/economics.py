@@ -86,15 +86,15 @@ def estimate_net_edge(
     ):
         open_fee = calculate_commission(spec, Offset.OPEN, price, volume)
         close_fee = calculate_commission(spec, Offset.CLOSE, price, volume)
-        close_today_fee = calculate_commission(
-            spec, Offset.CLOSE_TODAY, price, volume
-        )
+        close_today_fee = calculate_commission(spec, Offset.CLOSE_TODAY, price, volume)
         # 平今费用可能显著高于普通平仓，往返估算取更保守的一项。
         commission += open_fee + max(close_fee, close_today_fee)
 
-    slippage = 2.0 * max(0, slippage_ticks) * volume * (
-        near_spec.price_tick * near_spec.multiplier
-        + far_spec.price_tick * far_spec.multiplier
+    slippage = (
+        2.0
+        * max(0, slippage_ticks)
+        * volume
+        * (near_spec.price_tick * near_spec.multiplier + far_spec.price_tick * far_spec.multiplier)
     )
     transaction_cost = (commission + slippage) * cost_multiplier
     buffer_cost = max(0.0, legging_buffer) * cost_multiplier

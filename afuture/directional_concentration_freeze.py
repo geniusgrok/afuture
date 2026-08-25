@@ -1,10 +1,11 @@
 """Offline Production-evaluator adapter for causal leadership-state freezing."""
+
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from math import isfinite
 from statistics import median
-from typing import Iterable, Mapping
 
 import pandas as pd
 
@@ -38,9 +39,7 @@ class ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
         completed_concentrations: Iterable[float] = (),
     ) -> None:
         super().__init__(config)
-        self._completed_concentrations = [
-            float(value) for value in completed_concentrations
-        ]
+        self._completed_concentrations = [float(value) for value in completed_concentrations]
         if any(
             not isfinite(value) or not 0.0 < value <= 1.0
             for value in self._completed_concentrations
@@ -60,8 +59,7 @@ class ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
             self.concentration_freeze_triggered = False
             return
         self.concentration_freeze_triggered = bool(
-            self._completed_concentrations
-            and current <= median(self._completed_concentrations)
+            self._completed_concentrations and current <= median(self._completed_concentrations)
         )
         self._completed_concentrations.append(current)
 
@@ -101,8 +99,7 @@ class ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
         )
 
         product_for_symbol = {
-            str(symbol): str(product).upper()
-            for product, symbol in selected_symbols.items()
+            str(symbol): str(product).upper() for product, symbol in selected_symbols.items()
         }
         final_notional = 0.0
         for symbol, volume in frozen.items():

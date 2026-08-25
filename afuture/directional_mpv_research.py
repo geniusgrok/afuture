@@ -3,11 +3,12 @@
 This module is intentionally outside live runtime. It may aggregate already-observed audit
 events, but it never consumes ex-post counterfactual labels.
 """
+
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import isfinite
-from typing import Mapping
 
 import pandas as pd
 
@@ -45,20 +46,14 @@ def optimize_with_causal_mpv(
         events=observed_events,
         pnl_actions=("intraday",),
     )
-    total_support = (
-        float(evidence["lot_segment_exposure"].sum())
-        if not evidence.empty
-        else 0.0
-    )
+    total_support = float(evidence["lot_segment_exposure"].sum()) if not evidence.empty else 0.0
     products = sorted({str(value).upper() for value in symbol_products.values()})
     estimates = {
         product: estimate_causal_product_value(evidence=evidence, product=product)
         for product in products
     }
     reference = {
-        str(symbol): int(volume)
-        for symbol, volume in reference_lots.items()
-        if int(volume)
+        str(symbol): int(volume) for symbol, volume in reference_lots.items() if int(volume)
     }
     if total_support <= 0.0:
         fallback = IntegerOptimizationResult(
@@ -73,14 +68,9 @@ def optimize_with_causal_mpv(
             evidence=evidence,
         )
 
-    current = {
-        str(symbol): int(volume)
-        for symbol, volume in current_lots.items()
-        if int(volume)
-    }
+    current = {str(symbol): int(volume) for symbol, volume in current_lots.items() if int(volume)}
     product_by_symbol = {
-        str(symbol): str(product).upper()
-        for symbol, product in symbol_products.items()
+        str(symbol): str(product).upper() for symbol, product in symbol_products.items()
     }
 
     def objective(target: Mapping[str, int]) -> float:
@@ -90,20 +80,13 @@ def optimize_with_causal_mpv(
             estimate = estimates[product]
             if estimate.insufficient_evidence:
                 return float("nan")
-            gross_alpha += (
-                abs(int(volume))
-                * estimate.expected_gross_alpha_per_lot_segment
-            )
+            gross_alpha += abs(int(volume)) * estimate.expected_gross_alpha_per_lot_segment
         turnover_cost = 0.0
         for symbol in set(current) | set(target):
             delta = int(target.get(symbol, 0)) - int(current.get(symbol, 0))
             if not delta:
                 continue
-            turnover_cost += (
-                abs(delta)
-                * float(lot_notionals[symbol])
-                * float(cost_rate)
-            )
+            turnover_cost += abs(delta) * float(lot_notionals[symbol]) * float(cost_rate)
         return float(gross_alpha - turnover_cost)
 
     optimization = optimize_integer_targets(

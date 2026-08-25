@@ -17,9 +17,7 @@ def validate_contract_metadata(
     for symbol, local in configured.items():
         remote = live.get(symbol)
         if remote is None:
-            return RiskDecision(
-                False, f"missing live contract metadata: {symbol}"
-            )
+            return RiskDecision(False, f"missing live contract metadata: {symbol}")
         if local.exchange != remote.exchange:
             return RiskDecision(False, f"exchange mismatch: {symbol}")
         if abs(local.multiplier - remote.multiplier) > tolerance:
@@ -37,10 +35,7 @@ def validate_contract_metadata(
             )
 
         for name in local.fee.__dataclass_fields__:
-            if (
-                getattr(local.fee, name) + tolerance
-                < getattr(remote.fee, name)
-            ):
+            if getattr(local.fee, name) + tolerance < getattr(remote.fee, name):
                 return RiskDecision(
                     False,
                     f"configured fee understates live fee: {symbol}/{name}",

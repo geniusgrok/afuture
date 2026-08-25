@@ -4,9 +4,10 @@ This module is deliberately not imported by live runtime wiring. It subclasses t
 validated margin-aware acceptance simulator so Broker/RiskManager-equivalent mechanics,
 reduction-first sequencing, and hard gates remain unchanged during research.
 """
+
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 import pandas as pd
 
@@ -39,13 +40,9 @@ class MPVDirectionalProductionAcceptance(MarginAwareDirectionalProductionAccepta
         return [dict(row) for row in frame.to_dict(orient="records")]
 
     def simulate(self, raw, weights, *, cost_bps: float, prepared=None):
-        index = pd.DatetimeIndex(
-            pd.to_datetime(getattr(weights, "index", []), errors="coerce")
-        )
+        index = pd.DatetimeIndex(pd.to_datetime(getattr(weights, "index", []), errors="coerce"))
         valid = index[~index.isna()]
-        self._mpv_observed_event_rows = (
-            self._seed_rows_before(valid.min()) if len(valid) else []
-        )
+        self._mpv_observed_event_rows = self._seed_rows_before(valid.min()) if len(valid) else []
         self._mpv_cost_rate = float(cost_bps) / 10000.0
         self.last_mpv_optimization = None
         return super().simulate(raw, weights, cost_bps=cost_bps, prepared=prepared)
@@ -139,8 +136,7 @@ class MPVDirectionalProductionAcceptance(MarginAwareDirectionalProductionAccepta
         def gross(lots: Mapping[str, int]) -> float:
             return float(
                 sum(
-                    abs(int(volume)) * lot_notionals[str(symbol)]
-                    for symbol, volume in lots.items()
+                    abs(int(volume)) * lot_notionals[str(symbol)] for symbol, volume in lots.items()
                 )
             )
 

@@ -1,4 +1,5 @@
 """Production adapter for the frozen execution-aligned directional policy."""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,20 +20,64 @@ from .directional_data_validation import (
     validate_finite_columns,
 )
 from .directional_runtime import (
+    _CHINA_TZ,
     DirectionalActionResult,
     DirectionalPortfolioManager,
-    _CHINA_TZ,
 )
 from .execution_aligned_policy import ExecutionAlignedAggressivePolicy
 from .models import ContractInfo
 
-
 FROZEN_PRODUCTS = (
-    "A", "AG", "AL", "AP", "AU", "B", "BC", "BU", "C", "CF", "CJ", "CS",
-    "CU", "EB", "EG", "FG", "FU", "HC", "I", "J", "JM", "L", "LH", "LU",
-    "M", "MA", "NI", "NR", "OI", "P", "PB", "PF", "PG", "PK", "PP", "RB",
-    "RM", "RU", "SA", "SF", "SM", "SN", "SP", "SR", "SS", "TA", "UR", "V",
-    "Y", "ZN",
+    "A",
+    "AG",
+    "AL",
+    "AP",
+    "AU",
+    "B",
+    "BC",
+    "BU",
+    "C",
+    "CF",
+    "CJ",
+    "CS",
+    "CU",
+    "EB",
+    "EG",
+    "FG",
+    "FU",
+    "HC",
+    "I",
+    "J",
+    "JM",
+    "L",
+    "LH",
+    "LU",
+    "M",
+    "MA",
+    "NI",
+    "NR",
+    "OI",
+    "P",
+    "PB",
+    "PF",
+    "PG",
+    "PK",
+    "PP",
+    "RB",
+    "RM",
+    "RU",
+    "SA",
+    "SF",
+    "SM",
+    "SN",
+    "SP",
+    "SR",
+    "SS",
+    "TA",
+    "UR",
+    "V",
+    "Y",
+    "ZN",
 )
 
 
@@ -81,13 +126,8 @@ class SinaContinuousOHLCProvider:
         unique = tuple(dict.fromkeys(item.upper() for item in products))
         frames: dict[str, pd.DataFrame] = {}
         errors: list[str] = []
-        with ThreadPoolExecutor(
-            max_workers=min(self.max_workers, max(len(unique), 1))
-        ) as executor:
-            futures = {
-                executor.submit(self._load_one, product): product
-                for product in unique
-            }
+        with ThreadPoolExecutor(max_workers=min(self.max_workers, max(len(unique), 1))) as executor:
+            futures = {executor.submit(self._load_one, product): product for product in unique}
             for future in as_completed(futures):
                 product = futures[future]
                 try:
@@ -95,9 +135,7 @@ class SinaContinuousOHLCProvider:
                 except Exception as exc:
                     errors.append(f"{product}: {type(exc).__name__}: {exc}")
         if errors:
-            raise RuntimeError(
-                "directional signal refresh failed: " + "; ".join(sorted(errors))
-            )
+            raise RuntimeError("directional signal refresh failed: " + "; ".join(sorted(errors)))
         open_prices = pd.concat(
             [frames[product]["open"].rename(product) for product in unique], axis=1
         ).sort_index()
@@ -229,12 +267,8 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         current_trading_date = self._current_ctp_trading_date()
         if current_trading_date is None:
             return
-        close_index = pd.DatetimeIndex(
-            pd.to_datetime(raw.close.index, errors="coerce")
-        ).dropna()
-        open_index = pd.DatetimeIndex(
-            pd.to_datetime(raw.open.index, errors="coerce")
-        ).dropna()
+        close_index = pd.DatetimeIndex(pd.to_datetime(raw.close.index, errors="coerce")).dropna()
+        open_index = pd.DatetimeIndex(pd.to_datetime(raw.open.index, errors="coerce")).dropna()
         common = close_index.intersection(open_index)
         completed = common[common.normalize() < pd.Timestamp(current_trading_date)]
         if completed.empty:
@@ -260,16 +294,12 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
                 "directional history does not cover required signal trading day "
                 f"{required_signal_day.isoformat()}; latest={latest_day.isoformat()}"
             )
-        latest = pd.Timestamp(history.close.index[-1]).to_pydatetime().replace(
-            tzinfo=_CHINA_TZ
-        )
+        latest = pd.Timestamp(history.close.index[-1]).to_pydatetime().replace(tzinfo=_CHINA_TZ)
         age_hours = (local - latest).total_seconds() / 3600.0
         if age_hours < -1:
             raise RuntimeError("directional signal history is from the future")
         if age_hours > self.config.signal_max_age_hours:
-            raise RuntimeError(
-                f"directional signal history is stale by {age_hours:.1f}h"
-            )
+            raise RuntimeError(f"directional signal history is stale by {age_hours:.1f}h")
 
     def _load_signal(
         self,
@@ -279,17 +309,14 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         local = self._local(now)
         max_date = required_signal_day or local.date()
         refresh = (
-            self._execution_signal_history is None
-            or self._signal_refresh_date != local.date()
+            self._execution_signal_history is None or self._signal_refresh_date != local.date()
         )
         if refresh:
             provider = self.signal_provider
             if provider is None:
                 raise RuntimeError("execution-aligned signal provider is not configured")
             try:
-                raw = provider.load(
-                    tuple(item.upper() for item in self.config.products)
-                )
+                raw = provider.load(tuple(item.upper() for item in self.config.products))
             except Exception:
                 if self._execution_signal_history is None:
                     raise
@@ -299,13 +326,9 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
                 )
             else:
                 if not isinstance(raw, ExecutionAlignedSignalHistory):
-                    raise RuntimeError(
-                        "execution-aligned signal provider must return OHLC history"
-                    )
+                    raise RuntimeError("execution-aligned signal provider must return OHLC history")
                 self._validate_activity_signal_alignment(raw, required_signal_day)
-                self._execution_signal_history = self._normalize_history(
-                    raw, max_date=max_date
-                )
+                self._execution_signal_history = self._normalize_history(raw, max_date=max_date)
             self._signal_refresh_date = local.date()
 
         history = self._execution_signal_history
@@ -316,9 +339,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         self._execution_signal_history = history
         return ExecutionAlignedSignalHistory(history.open.copy(), history.close.copy())
 
-    def _next_target_weights(
-        self, history: ExecutionAlignedSignalHistory
-    ) -> dict[str, float]:
+    def _next_target_weights(self, history: ExecutionAlignedSignalHistory) -> dict[str, float]:
         close = history.close
         open_prices = history.open
         last = pd.Timestamp(close.index[-1])
@@ -333,9 +354,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         )
         gross = sum(abs(float(value)) for value in weights.values())
         if gross > self.config.max_gross_leverage + 1e-10:
-            raise RuntimeError(
-                f"directional signal exceeds configured gross leverage: {gross:.6f}"
-            )
+            raise RuntimeError(f"directional signal exceeds configured gross leverage: {gross:.6f}")
         return {str(key).upper(): float(value) for key, value in weights.items()}
 
     def _completed_returns(self) -> tuple[float, ...]:
@@ -417,13 +436,10 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         try:
             specs = self._ensure_specs(symbols)
         except Exception as exc:
-            return DirectionalActionResult(
-                "reject", f"directional metadata unavailable: {exc}"
-            )
+            return DirectionalActionResult("reject", f"directional metadata unavailable: {exc}")
 
         product_ticks = {
-            product: self._ticks[selected[product].symbol]
-            for product in available_products
+            product: self._ticks[selected[product].symbol] for product in available_products
         }
         account = self.broker.get_account()
         target_lots = build_margin_aware_target_lots(
@@ -440,7 +456,9 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             max_daily_loss_ratio=self.risk_manager.config.max_daily_loss_ratio,
             margin_estimate_buffer=self.risk_manager.config.margin_estimate_buffer,
             completed_returns=self._completed_returns(),
-            current_lots={position.symbol: position.net_volume for position in positions if not position.empty},
+            current_lots={
+                position.symbol: position.net_volume for position in positions if not position.empty
+            },
         )
 
         symbol_product = {item.symbol: item.product.upper() for item in self._catalog}
@@ -504,17 +522,12 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
 
     def flatten(self, now: datetime) -> DirectionalActionResult:
         positions = self.broker.get_positions()
-        if any(
-            position.long_total > 0 and position.short_total > 0
-            for position in positions
-        ):
+        if any(position.long_total > 0 and position.short_total > 0 for position in positions):
             # Hedged gross exposure cannot be represented by the net-lot quality schema.
             # Delegate the abnormal safety path to the base gross-position flattener.
             return super().flatten(now)
         if self.broker.get_active_orders():
-            return DirectionalActionResult(
-                "wait", "active orders must settle before flatten"
-            )
+            return DirectionalActionResult("wait", "active orders must settle before flatten")
         self._finalize_quality_cycle_if_settled(now)
         plan = build_rebalance_plan(positions, {})
         if not plan.reductions:

@@ -13,12 +13,14 @@ from enum import Enum
 
 class OrderSide(str, Enum):
     """报单买卖方向。"""
+
     BUY = "BUY"
     SELL = "SELL"
 
 
 class Offset(str, Enum):
     """开平仓方向。"""
+
     OPEN = "OPEN"
     CLOSE = "CLOSE"
     CLOSE_TODAY = "CLOSE_TODAY"
@@ -27,6 +29,7 @@ class Offset(str, Enum):
 
 class OrderType(str, Enum):
     """订单类型。"""
+
     LIMIT = "LIMIT"
     FAK = "FAK"
     FOK = "FOK"
@@ -34,6 +37,7 @@ class OrderType(str, Enum):
 
 class OrderStatus(str, Enum):
     """统一订单状态。"""
+
     SUBMITTING = "SUBMITTING"
     NOT_TRADED = "NOT_TRADED"
     PART_TRADED = "PART_TRADED"
@@ -44,6 +48,7 @@ class OrderStatus(str, Enum):
 
 class SignalAction(str, Enum):
     """套利策略输出。"""
+
     LONG_SPREAD = "LONG_SPREAD"
     SHORT_SPREAD = "SHORT_SPREAD"
     EXIT = "EXIT"
@@ -53,6 +58,7 @@ class SignalAction(str, Enum):
 
 class RuntimeMode(str, Enum):
     """生产状态机状态。"""
+
     RUNNING = "RUNNING"
     REDUCE_ONLY = "REDUCE_ONLY"
     HALTED = "HALTED"
@@ -61,6 +67,7 @@ class RuntimeMode(str, Enum):
 @dataclass(frozen=True)
 class FeeSpec:
     """手续费模型，同时支持按手和按成交额收费。"""
+
     open_fixed: float = 0.0
     open_rate: float = 0.0
     close_fixed: float = 0.0
@@ -72,6 +79,7 @@ class FeeSpec:
 @dataclass(frozen=True)
 class ContractSpec:
     """研究、回放和事前风控所需的合约参数。"""
+
     symbol: str
     exchange: str
     multiplier: float
@@ -88,6 +96,7 @@ class ContractInfo:
     ``listing`` 仅用于历史研究重建“当日真实可见目录”；实盘 CTP 本身只返回已挂牌
     合约，因此该字段可以为空，不会把研究逻辑扩散成第二套生产 Universe。
     """
+
     symbol: str
     exchange: str
     product: str
@@ -102,6 +111,7 @@ class PairConfig:
     ``volume`` 是允许的最大手数；实际开仓手数由风险预算、波动和流动性共同决定。
     相对价值扩展默认关闭，因此旧配置继续使用绝对价差和原有入场逻辑。
     """
+
     pair_id: str
     near_symbol: str
     far_symbol: str
@@ -135,6 +145,7 @@ class PairConfig:
 @dataclass(frozen=True)
 class Tick:
     """统一一档行情。时间戳必须带时区。"""
+
     symbol: str
     exchange: str
     timestamp: datetime
@@ -172,6 +183,7 @@ class Tick:
 @dataclass(frozen=True)
 class SpreadSignal:
     """策略信号只表达目标，不直接操作交易账户。"""
+
     pair_id: str
     action: SignalAction
     zscore: float
@@ -185,6 +197,7 @@ class SpreadSignal:
 @dataclass(frozen=True)
 class OrderRequest:
     """统一下单请求。reference 用于跟踪套利组合。"""
+
     symbol: str
     exchange: str
     side: OrderSide
@@ -198,6 +211,7 @@ class OrderRequest:
 @dataclass
 class Order:
     """统一订单状态。"""
+
     order_id: str
     request: OrderRequest
     status: OrderStatus = OrderStatus.SUBMITTING
@@ -217,6 +231,7 @@ class Order:
 @dataclass(frozen=True)
 class Trade:
     """成交记录。"""
+
     trade_id: str
     order_id: str
     symbol: str
@@ -232,6 +247,7 @@ class Trade:
 @dataclass
 class ContractPosition:
     """按今昨仓拆分的合约持仓。"""
+
     symbol: str
     exchange: str
     long_today: int = 0
@@ -261,6 +277,7 @@ class ContractPosition:
 @dataclass(frozen=True)
 class AccountSnapshot:
     """统一账户快照。"""
+
     balance: float
     equity: float
     available: float
@@ -273,6 +290,7 @@ class AccountSnapshot:
 @dataclass(frozen=True)
 class RiskDecision:
     """风险规则判断结果。"""
+
     allowed: bool
     reason: str = ""
 
@@ -280,6 +298,7 @@ class RiskDecision:
 @dataclass(frozen=True)
 class ExecutionResult:
     """一次套利组合执行结果。"""
+
     accepted: bool
     order_ids: tuple[str, ...] = ()
     reason: str = ""
@@ -289,5 +308,6 @@ class ExecutionResult:
 @dataclass(frozen=True)
 class BrokerEvent:
     """柜台向交易引擎投递的统一事件。"""
+
     event_type: str
     payload: object

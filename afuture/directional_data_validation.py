@@ -22,17 +22,14 @@ def validate_daily_index(frame: pd.DataFrame, *, name: str) -> None:
     if bool(invalid.any()):
         position = int(np.flatnonzero(np.asarray(invalid))[0])
         raise ValueError(
-            f"{name} has invalid date at index position {position}: "
-            f"{frame.index[position]!r}"
+            f"{name} has invalid date at index position {position}: {frame.index[position]!r}"
         )
     index = pd.DatetimeIndex(parsed)
     daily = index.normalize()
     duplicate = daily.duplicated(keep=False)
     if bool(duplicate.any()):
         day = daily[duplicate][0]
-        raise ValueError(
-            f"{name} has duplicate daily date: {day.date().isoformat()}"
-        )
+        raise ValueError(f"{name} has duplicate daily date: {day.date().isoformat()}")
     if not daily.is_monotonic_increasing:
         raise ValueError(f"{name} dates must be monotonic increasing")
 
@@ -57,8 +54,7 @@ def validate_finite_columns(
         if not bool(finite.all()):
             position = int(np.flatnonzero(~finite)[0])
             raise ValueError(
-                f"{name} column {column} must be finite; "
-                f"invalid row={frame.index[position]!r}"
+                f"{name} column {column} must be finite; invalid row={frame.index[position]!r}"
             )
         if column in positive_columns:
             invalid = numeric <= 0
@@ -85,9 +81,5 @@ def validate_unique_keys(
     duplicate = frame.duplicated(list(keys), keep=False)
     if bool(duplicate.any()):
         row = frame.loc[duplicate, list(keys)].iloc[0]
-        rendered = ", ".join(
-            f"{column}={row[column]!r}" for column in keys
-        )
-        raise ValueError(
-            f"{name} has duplicate {'/'.join(keys)} observation: {rendered}"
-        )
+        rendered = ", ".join(f"{column}={row[column]!r}" for column in keys)
+        raise ValueError(f"{name} has duplicate {'/'.join(keys)} observation: {rendered}")

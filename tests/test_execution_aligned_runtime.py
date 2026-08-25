@@ -1,5 +1,5 @@
-from datetime import date, datetime, timezone
 import sys
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pandas as pd
@@ -7,9 +7,9 @@ import pytest
 
 from afuture.directional import DirectionalConfig
 from afuture.execution_aligned_runtime import (
+    FROZEN_PRODUCTS,
     ExecutionAlignedDirectionalPortfolioManager,
     ExecutionAlignedSignalHistory,
-    FROZEN_PRODUCTS,
     SinaContinuousOHLCProvider,
 )
 from afuture.models import (
@@ -22,7 +22,6 @@ from afuture.models import (
     Tick,
 )
 from afuture.risk import RiskConfig, RiskManager
-
 
 NOW = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)
 
@@ -80,9 +79,7 @@ class _Broker:
 
 class _FlattenBroker(_Broker):
     def __init__(self):
-        self.positions = [
-            ContractPosition("A2609", "DCE", long_today=3, short_today=3)
-        ]
+        self.positions = [ContractPosition("A2609", "DCE", long_today=3, short_today=3)]
         self.orders = []
 
     def get_positions(self):
@@ -231,9 +228,7 @@ def test_sina_provider_rejects_duplicate_daily_rows(
             "close": [101.0, 201.0],
         }
     )
-    fake_akshare = SimpleNamespace(
-        futures_zh_daily_sina=lambda symbol: source
-    )
+    fake_akshare = SimpleNamespace(futures_zh_daily_sina=lambda symbol: source)
     monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
 
     with pytest.raises(ValueError, match="duplicate daily date"):

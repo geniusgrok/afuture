@@ -59,8 +59,8 @@ def test_expiry_blackout_uses_asia_shanghai_calendar_date():
         expiry_near="2026-08-22",
         expiry_far="2026-09-22",
     )
-    decision = RiskManager(
-        RiskConfig(expiry_blackout_days=0)
-    ).check_pair_calendar(pair, timestamp, opening=True)
+    decision = RiskManager(RiskConfig(expiry_blackout_days=0)).check_pair_calendar(
+        pair, timestamp, opening=True
+    )
     assert not decision.allowed
     assert "expiry blackout" in decision.reason

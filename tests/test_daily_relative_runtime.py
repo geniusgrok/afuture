@@ -39,15 +39,9 @@ def test_daily_auto_history_survives_restart_through_bounded_sample_store(
     store = MarketSampleStore(tmp_path / "samples", max_samples=24)
     manager = AutoPairManager(config, sample_store=store)
     manager.prepare_catalog(catalog, date(2026, 8, 21))
-    manager.observe(
-        tick("m2609", datetime(2026, 8, 21, 6, 56, tzinfo=timezone.utc), 3100)
-    )
-    manager.observe(
-        tick("m2701", datetime(2026, 8, 21, 6, 56, tzinfo=timezone.utc), 3000)
-    )
-    manager.observe(
-        tick("m2609", datetime(2026, 8, 21, 6, 59, tzinfo=timezone.utc), 3110)
-    )
+    manager.observe(tick("m2609", datetime(2026, 8, 21, 6, 56, tzinfo=timezone.utc), 3100))
+    manager.observe(tick("m2701", datetime(2026, 8, 21, 6, 56, tzinfo=timezone.utc), 3000))
+    manager.observe(tick("m2609", datetime(2026, 8, 21, 6, 59, tzinfo=timezone.utc), 3110))
     manager.close()
 
     restored = AutoPairManager(config, sample_store=store)

@@ -2,8 +2,6 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
-
 from afuture.auto import AutoConfig, AutoPairManager, AutoPairSelector
 from afuture.broker.ctp import CtpBroker, CtpCredentials
 from afuture.broker.sim import SimBroker
@@ -13,15 +11,18 @@ from afuture.risk import RiskConfig, RiskManager
 from afuture.scanner import SpreadScanner
 from afuture.state import StateStore
 
-
 _CHINA_TZ = timezone(timedelta(hours=8))
 
 
-def contract(symbol: str, expiry: str, *, product: str = "m", exchange: str = "DCE") -> ContractInfo:
+def contract(
+    symbol: str, expiry: str, *, product: str = "m", exchange: str = "DCE"
+) -> ContractInfo:
     return ContractInfo(symbol=symbol, exchange=exchange, product=product, expiry=expiry)
 
 
-def tick(symbol: str, when: datetime, bid: float, ask: float, *, volume: float = 20000, oi: float = 80000) -> Tick:
+def tick(
+    symbol: str, when: datetime, bid: float, ask: float, *, volume: float = 20000, oi: float = 80000
+) -> Tick:
     return Tick(
         symbol=symbol,
         exchange="DCE",
@@ -94,7 +95,9 @@ def test_scanner_pairs_asynchronous_ticks_with_small_time_skew():
     base = datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc)
     rows: list[Tick] = []
     for i, spread in enumerate([10, 11, 10, 20]):
-        rows.append(tick("m2609", base + timedelta(minutes=i), 3000 + spread - 0.5, 3000 + spread + 0.5))
+        rows.append(
+            tick("m2609", base + timedelta(minutes=i), 3000 + spread - 0.5, 3000 + spread + 0.5)
+        )
         rows.append(tick("m2701", base + timedelta(minutes=i, milliseconds=600), 2999.5, 3000.5))
     candidate = SpreadScanner(max_sync_seconds=2.0).scan_pair(pair, rows, specs())
     assert candidate is not None
@@ -137,9 +140,13 @@ def test_engine_auto_discovers_pair_and_persists_it(tmp_path: Path):
     engine.start()
     base = datetime(2026, 8, 21, 9, 0, tzinfo=_CHINA_TZ)
     for i, spread in enumerate([10, 11, 10, 25]):
-        broker.publish_tick(tick("m2609", base + timedelta(minutes=i), 3000 + spread - 0.5, 3000 + spread + 0.5))
+        broker.publish_tick(
+            tick("m2609", base + timedelta(minutes=i), 3000 + spread - 0.5, 3000 + spread + 0.5)
+        )
         engine.run_once()
-        broker.publish_tick(tick("m2701", base + timedelta(minutes=i, milliseconds=500), 2999.5, 3000.5))
+        broker.publish_tick(
+            tick("m2701", base + timedelta(minutes=i, milliseconds=500), 2999.5, 3000.5)
+        )
         engine.run_once()
     assert engine.pairs
     # 被自动选中的候选必须进入原有策略/风控/执行链，而不是只停留在候选列表。
@@ -194,7 +201,7 @@ def test_config_loads_auto_mode_without_static_pairs(tmp_path: Path):
 
     path = tmp_path / "auto.toml"
     path.write_text(
-        '''
+        """
 [system]
 mode = "replay"
 initial_capital = 500000
@@ -230,7 +237,7 @@ entry_z = 2.0
 exit_z = 0.5
 stop_z = 4.0
 session_windows = ["09:00-11:30"]
-''',
+""",
         encoding="utf-8",
     )
     loaded = load_config(path)
@@ -255,9 +262,13 @@ def test_auto_pair_retires_after_position_is_flat_and_signal_edge_disappears(tmp
     engine.start()
     base = datetime(2026, 8, 21, 9, 0, tzinfo=_CHINA_TZ)
     for i, spread in enumerate([10, 11, 10, 25, 10, 10]):
-        broker.publish_tick(tick("m2609", base + timedelta(minutes=i), 3000 + spread - 0.5, 3000 + spread + 0.5))
+        broker.publish_tick(
+            tick("m2609", base + timedelta(minutes=i), 3000 + spread - 0.5, 3000 + spread + 0.5)
+        )
         engine.run_once()
-        broker.publish_tick(tick("m2701", base + timedelta(minutes=i, milliseconds=500), 2999.5, 3000.5))
+        broker.publish_tick(
+            tick("m2701", base + timedelta(minutes=i, milliseconds=500), 2999.5, 3000.5)
+        )
         engine.run_once()
         engine.run_once()
     assert broker.get_positions() == []
@@ -292,7 +303,7 @@ def test_live_auto_config_does_not_require_static_contracts_or_pairs(tmp_path: P
         monkeypatch.setenv(key, value)
     path = tmp_path / "live-auto.toml"
     path.write_text(
-        '''
+        """
 [system]
 mode = "live"
 initial_capital = 500000
@@ -308,7 +319,7 @@ products = ["m", "rb"]
 exchanges = ["DCE", "SHFE"]
 max_active_pairs = 2
 session_windows = ["09:00-10:15", "10:30-11:30", "13:30-15:00"]
-''',
+""",
         encoding="utf-8",
     )
     config = load_config(path)
@@ -344,7 +355,9 @@ def test_replay_uses_same_auto_selection_lifecycle(tmp_path: Path):
     ]
     for i, spread in enumerate([10, 11, 10, 25, 10, 10]):
         stamp = (base + timedelta(minutes=i)).isoformat()
-        rows.append(f"{stamp},m2609,DCE,{3000+spread-0.5},{3000+spread+0.5},{3000+spread},50,50,20260821,20000,80000")
+        rows.append(
+            f"{stamp},m2609,DCE,{3000 + spread - 0.5},{3000 + spread + 0.5},{3000 + spread},50,50,20260821,20000,80000"
+        )
         rows.append(f"{stamp},m2701,DCE,2999.5,3000.5,3000,50,50,20260821,22000,90000")
     data.write_text("\n".join(rows) + "\n", encoding="utf-8")
     account = run_replay(config, data)
@@ -437,10 +450,16 @@ def test_auto_manager_queries_ctp_rates_only_after_statistical_prefilter():
     broker.start()
     manager.bootstrap(broker, date(2026, 8, 21), {})
     base = datetime(2026, 8, 21, 9, tzinfo=timezone.utc)
-    for i, (m_spread, y_spread) in enumerate(zip([10, 11, 10, 10], [10, 11, 10, 25])):
+    for i, (m_spread, y_spread) in enumerate(zip([10, 11, 10, 10], [10, 11, 10, 25], strict=True)):
         for symbol, spread in (("m2609", m_spread), ("y2609", y_spread)):
-            manager.observe(tick(symbol, base + timedelta(minutes=i), 3000 + spread - 0.5, 3000 + spread + 0.5))
-        manager.observe(tick("m2701", base + timedelta(minutes=i, milliseconds=500), 2999.5, 3000.5))
-        manager.observe(tick("y2701", base + timedelta(minutes=i, milliseconds=500), 2999.5, 3000.5))
+            manager.observe(
+                tick(symbol, base + timedelta(minutes=i), 3000 + spread - 0.5, 3000 + spread + 0.5)
+            )
+        manager.observe(
+            tick("m2701", base + timedelta(minutes=i, milliseconds=500), 2999.5, 3000.5)
+        )
+        manager.observe(
+            tick("y2701", base + timedelta(minutes=i, milliseconds=500), 2999.5, 3000.5)
+        )
     manager.select(broker, now=base + timedelta(minutes=4), protected_pair_ids=set())
     assert set(broker.queried) == {"y2609", "y2701"}

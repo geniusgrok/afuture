@@ -3,9 +3,10 @@
 ``feature_*`` values use only completed history strictly before an event date.
 ``label_*`` values may use future sessions and must never enter production decisions.
 """
+
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import pandas as pd
 
@@ -128,7 +129,9 @@ def label_directional_entry_exit_events(
     event["symbol"] = event["symbol"].astype(str).str.upper()
     event = event[event["kind"].astype(str) == "trade"].copy()
     event["event_role"] = event.apply(_role, axis=1)
-    event = event[event["event_role"] != ""].sort_values("date", kind="stable").reset_index(drop=True)
+    event = (
+        event[event["event_role"] != ""].sort_values("date", kind="stable").reset_index(drop=True)
+    )
     if event.empty:
         return event
 
@@ -154,12 +157,16 @@ def label_directional_entry_exit_events(
         previous_exit = last_exit.get((product, side), -1)
         since_exit = pos - previous_exit if pos >= 0 and previous_exit >= 0 else -1
         row["feature_sessions_since_same_side_exit"] = int(since_exit)
-        row["feature_is_rapid_reentry"] = bool(role == "entry" and 0 <= since_exit <= rapid_reentry_sessions)
+        row["feature_is_rapid_reentry"] = bool(
+            role == "entry" and 0 <= since_exit <= rapid_reentry_sessions
+        )
 
         previous_entry = last_entry.get((product, side), -1)
         since_entry = pos - previous_entry if pos >= 0 and previous_entry >= 0 else -1
         row["feature_sessions_since_same_side_entry"] = int(since_entry if role == "exit" else -1)
-        row["feature_is_short_hold_exit"] = bool(role == "exit" and 0 <= since_entry <= rapid_reentry_sessions)
+        row["feature_is_short_hold_exit"] = bool(
+            role == "exit" and 0 <= since_entry <= rapid_reentry_sessions
+        )
         row["feature_round_trip_cost"] = round_trip
         row.update(
             _forward_labels(
@@ -187,13 +194,19 @@ def label_directional_entry_exit_events(
         pos = position.get(day, -1)
         if role == "entry":
             later = labeled.iloc[i + 1 :]
-            later = later[(later["product"] == product) & (later["side"] == side) & (later["event_role"] == "exit")]
+            later = later[
+                (later["product"] == product)
+                & (later["side"] == side)
+                & (later["event_role"] == "exit")
+            ]
             if not later.empty and pos >= 0:
                 exit_pos = position.get(pd.Timestamp(later.iloc[0]["date"]).normalize(), -1)
                 if exit_pos >= pos:
                     labeled.loc[i, "label_holding_sessions_to_exit"] = int(exit_pos - pos)
             labeled.loc[i, ["label_same_side_reentry_delay_sessions"]] = -1
-            labeled.loc[i, ["label_rapid_same_side_reentry_within_3", "label_genuine_reversal_within_1"]] = False
+            labeled.loc[
+                i, ["label_rapid_same_side_reentry_within_3", "label_genuine_reversal_within_1"]
+            ] = False
             continue
 
         later = labeled.iloc[i + 1 :]
@@ -211,7 +224,9 @@ def label_directional_entry_exit_events(
             if same_delay >= 0 and (opposite_one or delay > rapid_reentry_sessions):
                 break
         labeled.loc[i, "label_same_side_reentry_delay_sessions"] = same_delay
-        labeled.loc[i, "label_rapid_same_side_reentry_within_3"] = bool(0 <= same_delay <= rapid_reentry_sessions)
+        labeled.loc[i, "label_rapid_same_side_reentry_within_3"] = bool(
+            0 <= same_delay <= rapid_reentry_sessions
+        )
         labeled.loc[i, "label_genuine_reversal_within_1"] = opposite_one
 
     h5 = 5 if 5 in horizons else max(int(x) for x in horizons)
@@ -240,18 +255,40 @@ def _horizons(frame: pd.DataFrame, horizons: Iterable[int]) -> dict:
     for raw in horizons:
         h = int(raw)
         available = frame[frame[f"label_available_h{h}"].astype(bool)].copy()
-        turnover = float(available["turnover_notional"].astype(float).sum()) if not available.empty else 0.0
-        net = available[f"label_net_return_h{h}"].astype(float) if not available.empty else pd.Series(dtype=float)
+        turnover = (
+            float(available["turnover_notional"].astype(float).sum())
+            if not available.empty
+            else 0.0
+        )
+        net = (
+            available[f"label_net_return_h{h}"].astype(float)
+            if not available.empty
+            else pd.Series(dtype=float)
+        )
         out[str(h)] = {
             "available_count": int(len(available)),
             "turnover_notional": turnover,
-            "mean_gross_return": float(available[f"label_gross_return_h{h}"].astype(float).mean()) if not available.empty else 0.0,
+            "mean_gross_return": float(available[f"label_gross_return_h{h}"].astype(float).mean())
+            if not available.empty
+            else 0.0,
             "mean_net_return": float(net.mean()) if not net.empty else 0.0,
             "median_net_return": float(net.median()) if not net.empty else 0.0,
-            "turnover_weighted_net_return": float((net * available["turnover_notional"].astype(float)).sum() / turnover) if turnover > 0 else 0.0,
-            "win_rate_after_cost": float(available[f"label_winner_after_cost_h{h}"].astype(bool).mean()) if not available.empty else 0.0,
-            "mean_mfe": float(available[f"label_mfe_h{h}"].astype(float).mean()) if not available.empty else 0.0,
-            "mean_mae": float(available[f"label_mae_h{h}"].astype(float).mean()) if not available.empty else 0.0,
+            "turnover_weighted_net_return": float(
+                (net * available["turnover_notional"].astype(float)).sum() / turnover
+            )
+            if turnover > 0
+            else 0.0,
+            "win_rate_after_cost": float(
+                available[f"label_winner_after_cost_h{h}"].astype(bool).mean()
+            )
+            if not available.empty
+            else 0.0,
+            "mean_mfe": float(available[f"label_mfe_h{h}"].astype(float).mean())
+            if not available.empty
+            else 0.0,
+            "mean_mae": float(available[f"label_mae_h{h}"].astype(float).mean())
+            if not available.empty
+            else 0.0,
         }
     return out
 
@@ -263,7 +300,9 @@ def _quality(frame: pd.DataFrame, horizons: Iterable[int]) -> dict:
         holding = values[values >= 0]
     return {
         "count": int(len(frame)),
-        "turnover_notional": float(frame["turnover_notional"].astype(float).sum()) if not frame.empty else 0.0,
+        "turnover_notional": float(frame["turnover_notional"].astype(float).sum())
+        if not frame.empty
+        else 0.0,
         "average_holding_sessions": float(holding.mean()) if not holding.empty else 0.0,
         "horizons": _horizons(frame, horizons),
     }
@@ -275,7 +314,9 @@ def _flag(frame: pd.DataFrame, column: str) -> dict:
     selected = frame[frame[column].map(lambda x: bool(x) if pd.notna(x) else False)]
     return {
         "count": int(len(selected)),
-        "turnover_notional": float(selected["turnover_notional"].astype(float).sum()) if not selected.empty else 0.0,
+        "turnover_notional": float(selected["turnover_notional"].astype(float).sum())
+        if not selected.empty
+        else 0.0,
     }
 
 
@@ -290,7 +331,10 @@ def summarize_entry_exit_quality(
         return {"entries": empty, "exits": empty, "meta_cause_reliably_reconstructable": False}
 
     frame = labeled.copy()
-    entries, exits = frame[frame["event_role"] == "entry"].copy(), frame[frame["event_role"] == "exit"].copy()
+    entries, exits = (
+        frame[frame["event_role"] == "entry"].copy(),
+        frame[frame["event_role"] == "exit"].copy(),
+    )
     rapid_mask = entries["feature_is_rapid_reentry"].fillna(False).astype(bool)
     trend = entries["feature_trend_alignment_20"].astype(float)
     cost = entries["feature_round_trip_cost"].astype(float)
@@ -304,7 +348,9 @@ def summarize_entry_exit_quality(
         "trailing_20_edge_below_round_trip_cost": _quality(entries[trend <= cost], horizons),
     }
     h5 = 5 if 5 in horizons else max(int(x) for x in horizons)
-    entry["future_only_labels"] = {f"false_breakout_h{h5}": _flag(entries, f"label_false_breakout_entry_h{h5}")}
+    entry["future_only_labels"] = {
+        f"false_breakout_h{h5}": _flag(entries, f"label_false_breakout_entry_h{h5}")
+    }
 
     age = exits["feature_sessions_since_same_side_entry"].astype(float)
     exit_trend = exits["feature_trend_alignment_20"].astype(float)
@@ -327,6 +373,8 @@ def summarize_entry_exit_quality(
     return {
         "entries": entry,
         "exits": exit_summary,
-        "meta_cause_reliably_reconstructable": bool(frame["label_meta_cause_reliably_reconstructable"].fillna(False).astype(bool).all()),
+        "meta_cause_reliably_reconstructable": bool(
+            frame["label_meta_cause_reliably_reconstructable"].fillna(False).astype(bool).all()
+        ),
         "future_labels_are_production_inputs": False,
     }

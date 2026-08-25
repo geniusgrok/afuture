@@ -42,17 +42,13 @@ def calculate_performance(
     sharpe = 0.0
     if len(returns) >= 2:
         mean_return = sum(returns) / len(returns)
-        variance = sum(
-            (value - mean_return) ** 2 for value in returns
-        ) / (len(returns) - 1)
+        variance = sum((value - mean_return) ** 2 for value in returns) / (len(returns) - 1)
         if variance > 0:
             sharpe = mean_return / sqrt(variance) * sqrt(252.0)
 
     annualized_return = 0.0
     if values and final_equity > 0:
-        annualized_return = (
-            final_equity / initial_capital
-        ) ** (252.0 / len(values)) - 1.0
+        annualized_return = (final_equity / initial_capital) ** (252.0 / len(values)) - 1.0
 
     return {
         "initial_capital": initial_capital,

@@ -19,7 +19,6 @@ from afuture.models import (
 )
 from afuture.risk import RiskConfig, RiskManager
 
-
 NOW = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)  # 21:01 China
 
 
@@ -71,9 +70,7 @@ class _ExecutionProvider:
         close = pd.DataFrame(
             {product: range(100, 280) for product in products}, index=dates, dtype=float
         )
-        self.history = ExecutionAlignedSignalHistory(
-            close.shift(1).fillna(close.iloc[0]), close
-        )
+        self.history = ExecutionAlignedSignalHistory(close.shift(1).fillna(close.iloc[0]), close)
 
     def load(self, products):
         return self.history
@@ -99,10 +96,7 @@ class _Broker:
         if include_m:
             self.catalog.append(ContractInfo("M2609", "DCE", "M", "2026-09-15"))
         symbols = [item.symbol for item in self.catalog]
-        self.specs = {
-            symbol: ContractSpec(symbol, "DCE", 10, 1, 0.1, 0.1)
-            for symbol in symbols
-        }
+        self.specs = {symbol: ContractSpec(symbol, "DCE", 10, 1, 0.1, 0.1) for symbol in symbols}
         self.positions = [ContractPosition("A2609", "DCE", long_today=2)]
         self.orders = []
         self.active_orders = []
@@ -340,9 +334,7 @@ def test_manager_flatten_only_emits_reducing_fak_orders():
 
 def test_manager_flatten_closes_both_sides_when_same_contract_is_hedged():
     broker = _Broker()
-    broker.positions = [
-        ContractPosition("A2609", "DCE", long_today=3, short_today=3)
-    ]
+    broker.positions = [ContractPosition("A2609", "DCE", long_today=3, short_today=3)]
     manager = _manager(broker)
     manager.bootstrap(NOW)
     manager.observe(broker.ticks["A2609"])

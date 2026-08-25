@@ -3,7 +3,7 @@ from pathlib import Path
 
 from afuture.broker.sim import SimBroker
 from afuture.engine import TradingEngine
-from afuture.models import ContractSpec, FeeSpec, Offset, Trade, OrderSide
+from afuture.models import ContractSpec, FeeSpec, Offset, OrderSide, Trade
 from afuture.risk import RiskManager
 from afuture.state import StateStore
 
