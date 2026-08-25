@@ -602,15 +602,15 @@ Publish the checkpoint.
 **Interfaces:**
 - Produces the final validated candidate and complete audit report.
 
-- [ ] **Step 1: Perform a bounded adversarial review**
+- [x] **Step 1: Perform a bounded adversarial review**
 
 Review the final diff and current paths for P0/P1 issues in accounting, fill timing, realized/unrealized PnL, margin, gross/net exposure, reject/partial-fill/cancel, HALT, restart, duplicate events, causal shifts, split isolation, timestamp/session boundaries, and non-finite values. Record each finding as fixed with evidence, not applicable with reason, or a genuine limitation. Do not start P2/P3 refactoring.
 
-- [ ] **Step 2: Obtain and verify frozen evidence inputs**
+- [x] **Step 2: Obtain and verify frozen evidence inputs**
 
 Download the fixed PR #24/#25 GitHub workflow artifacts, record artifact IDs and digests, and place only reproducible runtime inputs under ignored `runtime/` paths. Do not commit large generated datasets.
 
-- [ ] **Step 3: Run the final static, package, CLI, and full test gates once**
+- [x] **Step 3: Run the final static, package, CLI, and full test gates once**
 
 ```bash
 .venv/bin/ruff check .
@@ -626,11 +626,11 @@ Download the fixed PR #24/#25 GitHub workflow artifacts, record artifact IDs and
 
 Expected: every command succeeds and the complete pytest count is at least the inherited 323 tests plus new regressions.
 
-- [ ] **Step 4: Run the complete frozen economic evidence once**
+- [x] **Step 4: Run the complete frozen economic evidence once**
 
 Run the repository's fixed Stress-80 and Stress-90 evaluators against their verified artifacts. Compare annualized return, drawdown, gross peak, rejects, HALT, costs, turnover, and net-alpha efficiency with the design-spec table. Any material difference blocks acceptance until attributed to environment, numerical tolerance, or an explicitly documented bug fix.
 
-- [ ] **Step 5: Write the final report**
+- [x] **Step 5: Write the final report**
 
 Include only evidenced content under:
 
@@ -649,7 +649,7 @@ Known Limitations
 
 For every behavior-changing bug fix, give the failing scenario, invariant, regression test, corrected behavior, and matrix impact.
 
-- [ ] **Step 6: Review repository hygiene**
+- [x] **Step 6: Review repository hygiene**
 
 ```bash
 git diff origin/main...HEAD --check
@@ -660,7 +660,7 @@ rg -n "except Exception:\s*(pass)?$" afuture
 
 Classify legitimate CLI output and contextual boundary catches; remove debug artifacts and temporary parameters. Ensure only the final report is uncommitted.
 
-- [ ] **Step 7: Apply the verification-before-completion gate**
+- [x] **Step 7: Apply the verification-before-completion gate**
 
 Re-run only a failed command or its affected subsystem after a fix. Repeat the complete validation only if the fix changes shared behavior or invalidates earlier evidence.
 

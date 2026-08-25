@@ -11,6 +11,7 @@ This index classifies every repository Markdown file exactly once. “Current au
 - [`docs/documentation-index.md`](documentation-index.md) — this authority map.
 - [`docs/live-trading.md`](live-trading.md) — CTP, Shadow, halt and recovery runbook.
 - [`docs/production-checklist.md`](production-checklist.md) — real-capital release gate.
+- [`docs/refactoring/industrial-refactoring-report-20260825.md`](refactoring/industrial-refactoring-report-20260825.md) — final engineering, correctness and validation report.
 
 ## Validated research/evidence record
 
