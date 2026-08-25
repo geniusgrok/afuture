@@ -14,6 +14,13 @@ from math import log
 from zoneinfo import ZoneInfo
 
 from .auto_runtime import MetadataPrefetcher
+from .config_validation import (
+    require_bool,
+    require_finite_number,
+    require_integer,
+    require_string,
+    require_string_sequence,
+)
 from .models import ContractInfo, ContractSpec, PairConfig, Tick
 from .sample_store import MarketSampleStore
 from .scanner import SpreadScanner
@@ -69,6 +76,49 @@ class AutoConfig:
     )
 
     def validate(self) -> None:
+        require_bool(self.enabled, "auto.enabled")
+        require_bool(self.confirm_entry, "auto.confirm_entry")
+        for field_name in ("products", "exchanges", "session_windows"):
+            require_string_sequence(getattr(self, field_name), f"auto.{field_name}")
+        for field_name in (
+            "signal_transform",
+            "daily_sample_window",
+        ):
+            require_string(getattr(self, field_name), f"auto.{field_name}")
+        for field_name in (
+            "max_active_pairs",
+            "max_pairs_per_product",
+            "max_contracts_per_product",
+            "min_days_to_expiry",
+            "lookback",
+            "max_pair_volume",
+            "sample_seconds",
+            "max_holding_samples",
+            "entry_trend_window",
+            "slippage_ticks",
+        ):
+            require_integer(getattr(self, field_name), f"auto.{field_name}")
+        for field_name in (
+            "scan_interval_seconds",
+            "max_sync_seconds",
+            "entry_z",
+            "exit_z",
+            "stop_z",
+            "structural_mean_shift_z",
+            "structural_vol_ratio",
+            "legging_buffer",
+            "confirmation_retrace_z",
+            "min_confirmed_entry_z",
+            "max_entry_z_slope",
+            "min_volume",
+            "min_open_interest",
+            "min_liquidity_score",
+            "min_stationarity_score",
+            "max_half_life",
+            "min_net_edge",
+            "metadata_timeout_seconds",
+        ):
+            require_finite_number(getattr(self, field_name), f"auto.{field_name}")
         if not self.enabled:
             return
         if not self.products or not self.exchanges:

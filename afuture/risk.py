@@ -8,6 +8,7 @@ from datetime import datetime, time, timezone
 from math import floor, isfinite
 from zoneinfo import ZoneInfo
 
+from .config_validation import require_finite_number, require_integer
 from .models import (
     AccountSnapshot,
     ContractSpec,
@@ -45,6 +46,52 @@ class RiskConfig:
     risk_sigma_multiplier: float = 2.0
     open_cooldown_minutes: int = 0
     close_blackout_minutes: int = 0
+
+    def validate(self) -> None:
+        for field_name, value in self.__dict__.items():
+            require_finite_number(value, f"risk.{field_name}")
+        for field_name in (
+            "max_open_pairs",
+            "max_contract_volume",
+            "expiry_blackout_days",
+            "max_orders_per_minute",
+            "open_cooldown_minutes",
+            "close_blackout_minutes",
+        ):
+            require_integer(getattr(self, field_name), f"risk.{field_name}")
+        ratios = (
+            self.max_margin_ratio,
+            self.max_daily_loss_ratio,
+            self.max_total_drawdown_ratio,
+            self.min_available_ratio,
+            self.risk_budget_ratio,
+        )
+        if any(value <= 0 or value >= 1 for value in ratios):
+            raise ValueError("risk ratios must be between 0 and 1")
+        if self.margin_estimate_buffer < 1:
+            raise ValueError("margin_estimate_buffer must be at least 1")
+        if self.min_depth_multiple < 1:
+            raise ValueError("min_depth_multiple must be at least 1")
+        if self.risk_sigma_multiplier < 1:
+            raise ValueError("risk_sigma_multiplier must be at least 1")
+        if self.max_open_pairs <= 0 or self.max_contract_volume <= 0:
+            raise ValueError("position limits must be positive")
+        if self.max_quote_age_seconds <= 0:
+            raise ValueError("max_quote_age_seconds must be positive")
+        if self.max_leg_skew_seconds <= 0:
+            raise ValueError("max_leg_skew_seconds must be positive")
+        if self.max_orders_per_minute <= 0:
+            raise ValueError("max_orders_per_minute must be positive")
+        if self.expiry_blackout_days < 0:
+            raise ValueError("expiry_blackout_days cannot be negative")
+        if self.max_bid_ask_ticks <= 0:
+            raise ValueError("max_bid_ask_ticks must be positive")
+        if self.limit_distance_ticks < 0:
+            raise ValueError("limit_distance_ticks cannot be negative")
+        if self.open_cooldown_minutes < 0:
+            raise ValueError("open_cooldown_minutes cannot be negative")
+        if self.close_blackout_minutes < 0:
+            raise ValueError("close_blackout_minutes cannot be negative")
 
 
 class OrderRateLimiter:
@@ -418,36 +465,4 @@ class RiskManager:
         return now >= start or now <= end
 
     def _validate_config(self) -> None:
-        ratios = (
-            self.config.max_margin_ratio,
-            self.config.max_daily_loss_ratio,
-            self.config.max_total_drawdown_ratio,
-            self.config.min_available_ratio,
-            self.config.risk_budget_ratio,
-        )
-        if any(value <= 0 or value >= 1 for value in ratios):
-            raise ValueError("risk ratios must be between 0 and 1")
-        if self.config.margin_estimate_buffer < 1:
-            raise ValueError("margin_estimate_buffer must be at least 1")
-        if self.config.min_depth_multiple < 1:
-            raise ValueError("min_depth_multiple must be at least 1")
-        if self.config.risk_sigma_multiplier < 1:
-            raise ValueError("risk_sigma_multiplier must be at least 1")
-        if self.config.max_open_pairs <= 0 or self.config.max_contract_volume <= 0:
-            raise ValueError("position limits must be positive")
-        if self.config.max_quote_age_seconds <= 0:
-            raise ValueError("max_quote_age_seconds must be positive")
-        if self.config.max_leg_skew_seconds <= 0:
-            raise ValueError("max_leg_skew_seconds must be positive")
-        if self.config.max_orders_per_minute <= 0:
-            raise ValueError("max_orders_per_minute must be positive")
-        if self.config.expiry_blackout_days < 0:
-            raise ValueError("expiry_blackout_days cannot be negative")
-        if self.config.max_bid_ask_ticks <= 0:
-            raise ValueError("max_bid_ask_ticks must be positive")
-        if self.config.limit_distance_ticks < 0:
-            raise ValueError("limit_distance_ticks cannot be negative")
-        if self.config.open_cooldown_minutes < 0:
-            raise ValueError("open_cooldown_minutes cannot be negative")
-        if self.config.close_blackout_minutes < 0:
-            raise ValueError("close_blackout_minutes cannot be negative")
+        self.config.validate()

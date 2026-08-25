@@ -14,6 +14,13 @@ from datetime import date
 from math import floor
 from statistics import stdev
 
+from .config_validation import (
+    require_bool,
+    require_finite_number,
+    require_integer,
+    require_string,
+    require_string_sequence,
+)
 from .directional_efficiency import stabilize_one_lot_increases
 from .models import (
     AccountSnapshot,
@@ -41,6 +48,20 @@ class DirectionalConfig:
     account_exclusive: bool = True
 
     def validate(self) -> None:
+        require_bool(self.enabled, "directional.enabled")
+        require_bool(self.account_exclusive, "directional.account_exclusive")
+        for field_name in ("products", "exchanges"):
+            require_string_sequence(getattr(self, field_name), f"directional.{field_name}")
+        require_string(self.rebalance_window, "directional.rebalance_window")
+        for field_name in ("min_days_to_expiry", "max_contract_volume"):
+            require_integer(getattr(self, field_name), f"directional.{field_name}")
+        for field_name in (
+            "max_gross_leverage",
+            "min_volume",
+            "min_open_interest",
+            "signal_max_age_hours",
+        ):
+            require_finite_number(getattr(self, field_name), f"directional.{field_name}")
         if not self.enabled:
             return
         if not self.products:

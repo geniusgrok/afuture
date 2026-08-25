@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any, cast
 
 try:
     import tomllib
@@ -14,6 +16,15 @@ except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
 from .auto import AutoConfig
+from .config_validation import (
+    require_bool,
+    require_finite_number,
+    require_integer,
+    require_keys,
+    require_mapping,
+    require_string,
+    require_string_sequence,
+)
 from .directional import DirectionalConfig
 from .models import ContractInfo, ContractSpec, FeeSpec, PairConfig
 from .risk import RiskConfig
@@ -59,27 +70,46 @@ def load_config(
     只有完全本地、只读的运维检查可以跳过凭证注入；地址、模式、策略与风险配置
     仍照常校验，且返回的 ``ctp`` 为 ``None``，不能被误用于连接柜台。
     """
-    data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
-    system = data.get("system", {})
-    mode = str(system.get("mode", "replay")).lower()
+    data = require_mapping(tomllib.loads(Path(path).read_text(encoding="utf-8")), "config")
+    require_keys(
+        data,
+        {
+            "system",
+            "risk",
+            "contracts",
+            "pairs",
+            "auto",
+            "directional",
+            "ctp",
+            "execution",
+            "paths",
+            "alert",
+        },
+        "config",
+    )
+    system = _section(data, "system", {"mode", "initial_capital"})
+    mode = require_string(system.get("mode", "replay"), "system.mode").lower()
     if mode not in {"replay", "live"}:
         raise ValueError("system.mode must be replay or live")
 
-    initial_capital = float(system.get("initial_capital", 500000))
+    initial_capital = require_finite_number(
+        system.get("initial_capital", 500000), "system.initial_capital"
+    )
     if initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
 
-    risk_raw = data.get("risk", {})
-    risk = RiskConfig(
-        **{key: value for key, value in risk_raw.items() if key in RiskConfig.__dataclass_fields__}
-    )
+    risk_raw = _section(data, "risk", set(RiskConfig.__dataclass_fields__))
+    risk = RiskConfig(**cast(Any, risk_raw))
+    risk.validate()
 
-    contract_rows = data.get("contracts", [])
+    contract_rows = _rows(data.get("contracts", []), "contracts")
     contracts = _load_contracts(contract_rows)
     contract_catalog = _load_contract_catalog(contract_rows)
-    pairs = _load_pairs(data.get("pairs", []), contracts, mode)
-    auto = _load_auto(data.get("auto", {}), mode)
-    directional = _load_directional(data.get("directional", {}))
+    pairs = _load_pairs(_rows(data.get("pairs", []), "pairs"), contracts, mode)
+    auto = _load_auto(_section(data, "auto", set(AutoConfig.__dataclass_fields__)), mode)
+    directional = _load_directional(
+        _section(data, "directional", set(DirectionalConfig.__dataclass_fields__))
+    )
     if directional.enabled and (pairs or auto.enabled):
         raise ValueError(
             "directional mode is account-exclusive and cannot run with static pairs or auto"
@@ -87,7 +117,11 @@ def load_config(
     if mode == "replay" and auto.enabled and not contract_catalog:
         raise ValueError("replay auto mode requires contract product/expiry metadata")
     ctp = _load_ctp(
-        data.get("ctp", {}),
+        _section(
+            data,
+            "ctp",
+            {"td_address", "md_address", "environment"},
+        ),
         mode,
         require_credentials=require_ctp_credentials,
     )
@@ -96,13 +130,35 @@ def load_config(
             "live mode requires static pairs, auto.enabled=true, or directional.enabled=true"
         )
 
-    execution = data.get("execution", {})
-    slippage_ticks = int(execution.get("slippage_ticks", 1))
-    aggressive_ticks = int(execution.get("aggressive_ticks", 1))
-    legging_timeout_seconds = float(execution.get("legging_timeout_seconds", 2.0))
-    latency_ticks = int(execution.get("latency_ticks", 0))
-    market_impact_ticks = int(execution.get("market_impact_ticks", 0))
-    metadata_timeout_seconds = float(execution.get("metadata_timeout_seconds", 10.0))
+    execution = _section(
+        data,
+        "execution",
+        {
+            "slippage_ticks",
+            "aggressive_ticks",
+            "auto_flatten_imbalance",
+            "legging_timeout_seconds",
+            "conservative_simulation",
+            "latency_ticks",
+            "market_impact_ticks",
+            "require_live_metadata",
+            "metadata_timeout_seconds",
+        },
+    )
+    slippage_ticks = require_integer(execution.get("slippage_ticks", 1), "execution.slippage_ticks")
+    aggressive_ticks = require_integer(
+        execution.get("aggressive_ticks", 1), "execution.aggressive_ticks"
+    )
+    legging_timeout_seconds = require_finite_number(
+        execution.get("legging_timeout_seconds", 2.0), "execution.legging_timeout_seconds"
+    )
+    latency_ticks = require_integer(execution.get("latency_ticks", 0), "execution.latency_ticks")
+    market_impact_ticks = require_integer(
+        execution.get("market_impact_ticks", 0), "execution.market_impact_ticks"
+    )
+    metadata_timeout_seconds = require_finite_number(
+        execution.get("metadata_timeout_seconds", 10.0), "execution.metadata_timeout_seconds"
+    )
     if any(
         value < 0
         for value in (
@@ -117,8 +173,8 @@ def load_config(
     if metadata_timeout_seconds <= 0:
         raise ValueError("execution metadata_timeout_seconds must be positive")
 
-    paths = data.get("paths", {})
-    alert = data.get("alert", {})
+    paths = _section(data, "paths", {"state", "log", "report", "journal", "alert"})
+    alert = _section(data, "alert", {"webhook"})
     return AppConfig(
         mode=mode,
         initial_capital=initial_capital,
@@ -128,42 +184,150 @@ def load_config(
         ctp=ctp,
         slippage_ticks=slippage_ticks,
         aggressive_ticks=aggressive_ticks,
-        auto_flatten_imbalance=bool(execution.get("auto_flatten_imbalance", True)),
+        auto_flatten_imbalance=require_bool(
+            execution.get("auto_flatten_imbalance", True), "execution.auto_flatten_imbalance"
+        ),
         legging_timeout_seconds=legging_timeout_seconds,
-        conservative_simulation=bool(execution.get("conservative_simulation", False)),
+        conservative_simulation=require_bool(
+            execution.get("conservative_simulation", False), "execution.conservative_simulation"
+        ),
         latency_ticks=latency_ticks,
         market_impact_ticks=market_impact_ticks,
-        require_live_metadata=bool(execution.get("require_live_metadata", mode == "live")),
+        require_live_metadata=require_bool(
+            execution.get("require_live_metadata", mode == "live"), "execution.require_live_metadata"
+        ),
         metadata_timeout_seconds=metadata_timeout_seconds,
-        state_path=str(paths.get("state", "runtime/state.json")),
-        log_path=str(paths.get("log", "runtime/afuture.log")),
-        report_path=str(paths.get("report", "runtime/report.json")),
-        journal_path=str(paths.get("journal", "runtime/audit.jsonl")),
-        alert_path=str(paths.get("alert", "runtime/alerts.jsonl")),
-        alert_webhook=str(alert.get("webhook", "")),
+        state_path=require_string(paths.get("state", "runtime/state.json"), "paths.state"),
+        log_path=require_string(paths.get("log", "runtime/afuture.log"), "paths.log"),
+        report_path=require_string(paths.get("report", "runtime/report.json"), "paths.report"),
+        journal_path=require_string(paths.get("journal", "runtime/audit.jsonl"), "paths.journal"),
+        alert_path=require_string(paths.get("alert", "runtime/alerts.jsonl"), "paths.alert"),
+        alert_webhook=require_string(alert.get("webhook", ""), "alert.webhook"),
         auto=auto,
         directional=directional,
         contract_catalog=contract_catalog,
     )
 
 
-def _load_contracts(rows: list[dict]) -> dict[str, ContractSpec]:
+def _section(
+    data: Mapping[str, object], name: str, allowed: set[str]
+) -> Mapping[str, object]:
+    raw = require_mapping(data.get(name, {}), name)
+    require_keys(raw, allowed, name)
+    return raw
+
+
+def _rows(value: object, name: str) -> list[Mapping[str, object]]:
+    if type(value) is not list:
+        raise ValueError(f"{name} must be an array of tables")
+    return [require_mapping(row, f"{name}[{index}]") for index, row in enumerate(value)]
+
+
+def _contract_row(source: Mapping[str, object], index: int) -> dict[str, object]:
+    raw = dict(source)
+    section = f"contracts[{index}]"
+    require_keys(
+        raw,
+        {
+            "symbol",
+            "exchange",
+            "product",
+            "expiry",
+            "listing",
+            "multiplier",
+            "price_tick",
+            "margin_rate_long",
+            "margin_rate_short",
+            "fee",
+        },
+        section,
+    )
+    for field_name in ("symbol", "exchange", "product", "expiry", "listing"):
+        if field_name in raw:
+            require_string(raw[field_name], f"{section}.{field_name}")
+    for field_name in (
+        "multiplier",
+        "price_tick",
+        "margin_rate_long",
+        "margin_rate_short",
+    ):
+        if field_name in raw:
+            require_finite_number(raw[field_name], f"{section}.{field_name}")
+    fee = require_mapping(raw.get("fee", {}), f"{section}.fee")
+    require_keys(fee, set(FeeSpec.__dataclass_fields__), f"{section}.fee")
+    for field_name, value in fee.items():
+        require_finite_number(value, f"{section}.fee.{field_name}")
+    return raw
+
+
+def _pair_row(source: Mapping[str, object], index: int) -> dict[str, object]:
+    raw = dict(source)
+    section = f"pairs[{index}]"
+    require_keys(raw, set(PairConfig.__dataclass_fields__), section)
+    for field_name in (
+        "pair_id",
+        "near_symbol",
+        "far_symbol",
+        "exchange",
+        "expiry_near",
+        "expiry_far",
+        "risk_group",
+        "signal_transform",
+        "daily_sample_window",
+    ):
+        if field_name in raw:
+            require_string(raw[field_name], f"{section}.{field_name}")
+    for field_name in (
+        "volume",
+        "lookback",
+        "sample_seconds",
+        "max_holding_samples",
+        "entry_trend_window",
+    ):
+        if field_name in raw:
+            require_integer(raw[field_name], f"{section}.{field_name}")
+    for field_name in (
+        "entry_z",
+        "exit_z",
+        "stop_z",
+        "structural_mean_shift_z",
+        "structural_vol_ratio",
+        "min_net_edge",
+        "legging_buffer",
+        "confirmation_retrace_z",
+        "min_confirmed_entry_z",
+        "max_entry_z_slope",
+        "min_stationarity_score",
+        "max_half_life",
+    ):
+        if field_name in raw:
+            require_finite_number(raw[field_name], f"{section}.{field_name}")
+    if "confirm_entry" in raw:
+        require_bool(raw["confirm_entry"], f"{section}.confirm_entry")
+    return raw
+
+
+def _load_contracts(rows: list[Mapping[str, object]]) -> dict[str, ContractSpec]:
     contracts: dict[str, ContractSpec] = {}
-    for raw in rows:
+    for index, source in enumerate(rows):
+        raw = _contract_row(source, index)
         fee = FeeSpec(
             **{
-                key: float(value)
-                for key, value in raw.get("fee", {}).items()
-                if key in FeeSpec.__dataclass_fields__
+                key: require_finite_number(value, f"contracts[{index}].fee.{key}")
+                for key, value in require_mapping(raw.get("fee", {}), f"contracts[{index}].fee").items()
             }
         )
         spec = ContractSpec(
-            symbol=str(raw["symbol"]),
-            exchange=str(raw["exchange"]).upper(),
-            multiplier=float(raw["multiplier"]),
-            price_tick=float(raw["price_tick"]),
-            margin_rate_long=float(raw["margin_rate_long"]),
-            margin_rate_short=float(raw["margin_rate_short"]),
+            symbol=require_string(raw["symbol"], f"contracts[{index}].symbol"),
+            exchange=require_string(raw["exchange"], f"contracts[{index}].exchange").upper(),
+            multiplier=require_finite_number(raw["multiplier"], f"contracts[{index}].multiplier"),
+            price_tick=require_finite_number(raw["price_tick"], f"contracts[{index}].price_tick"),
+            margin_rate_long=require_finite_number(
+                raw["margin_rate_long"], f"contracts[{index}].margin_rate_long"
+            ),
+            margin_rate_short=require_finite_number(
+                raw["margin_rate_short"], f"contracts[{index}].margin_rate_short"
+            ),
             fee=fee,
         )
         if not spec.symbol or spec.symbol in contracts:
@@ -178,25 +342,26 @@ def _load_contracts(rows: list[dict]) -> dict[str, ContractSpec]:
     return contracts
 
 
-def _load_contract_catalog(rows: list[dict]) -> list[ContractInfo]:
+def _load_contract_catalog(rows: list[Mapping[str, object]]) -> list[ContractInfo]:
     """从研究配置提取自动回放所需的品种、挂牌边界和到期日。"""
     result: list[ContractInfo] = []
-    for raw in rows:
-        expiry = str(raw.get("expiry", "")).strip()
+    for index, source in enumerate(rows):
+        raw = _contract_row(source, index)
+        expiry = require_string(raw.get("expiry", ""), f"contracts[{index}].expiry").strip()
         if not expiry:
             continue
         date.fromisoformat(expiry)
-        listing = str(raw.get("listing", "")).strip()
+        listing = require_string(raw.get("listing", ""), f"contracts[{index}].listing").strip()
         if listing:
             date.fromisoformat(listing)
-        symbol = str(raw["symbol"])
-        product = str(raw.get("product", "")).strip()
+        symbol = require_string(raw["symbol"], f"contracts[{index}].symbol")
+        product = require_string(raw.get("product", ""), f"contracts[{index}].product").strip()
         if not product:
             product = _contract_root(symbol)
         result.append(
             ContractInfo(
                 symbol=symbol,
-                exchange=str(raw["exchange"]).upper(),
+                exchange=require_string(raw["exchange"], f"contracts[{index}].exchange").upper(),
                 product=product,
                 expiry=expiry,
                 listing=listing,
@@ -206,17 +371,19 @@ def _load_contract_catalog(rows: list[dict]) -> list[ContractInfo]:
 
 
 def _load_pairs(
-    rows: list[dict], contracts: dict[str, ContractSpec], mode: str
+    rows: list[Mapping[str, object]], contracts: dict[str, ContractSpec], mode: str
 ) -> list[PairConfig]:
     pairs: list[PairConfig] = []
     pair_ids: set[str] = set()
     used_symbols: set[str] = set()
 
-    for source in rows:
-        raw = dict(source)
+    for index, source in enumerate(rows):
+        raw = _pair_row(source, index)
         if "session_windows" in raw:
-            raw["session_windows"] = tuple(raw["session_windows"])
-        pair = PairConfig(**raw)
+            raw["session_windows"] = require_string_sequence(
+                raw["session_windows"], f"pairs[{index}].session_windows"
+            )
+        pair = PairConfig(**cast(Any, raw))
 
         if not pair.pair_id or pair.pair_id in pair_ids:
             raise ValueError(f"duplicate or empty pair_id: {pair.pair_id}")
@@ -277,15 +444,13 @@ def _validate_session_window(pair_id: str, raw: str) -> None:
         raise ValueError(f"pair {pair_id} session window cannot be zero length")
 
 
-def _load_auto(raw: dict, mode: str) -> AutoConfig:
+def _load_auto(raw: Mapping[str, object], mode: str) -> AutoConfig:
     """读取自动发现配置；实盘启用时必须显式给出交易时段。"""
     values = dict(raw)
     for name in ("products", "exchanges", "session_windows"):
         if name in values:
-            values[name] = tuple(str(item) for item in values[name])
-    auto = AutoConfig(
-        **{key: value for key, value in values.items() if key in AutoConfig.__dataclass_fields__}
-    )
+            values[name] = require_string_sequence(values[name], f"auto.{name}")
+    auto = AutoConfig(**cast(Any, values))
     auto.validate()
     if auto.enabled:
         for window in auto.session_windows:
@@ -295,32 +460,26 @@ def _load_auto(raw: dict, mode: str) -> AutoConfig:
     return auto
 
 
-def _load_directional(raw: dict) -> DirectionalConfig:
+def _load_directional(raw: Mapping[str, object]) -> DirectionalConfig:
     values = dict(raw)
     for name in ("products", "exchanges"):
         if name in values:
-            values[name] = tuple(str(item) for item in values[name])
-    config = DirectionalConfig(
-        **{
-            key: value
-            for key, value in values.items()
-            if key in DirectionalConfig.__dataclass_fields__
-        }
-    )
+            values[name] = require_string_sequence(values[name], f"directional.{name}")
+    config = DirectionalConfig(**cast(Any, values))
     config.validate()
     return config
 
 
-def _load_ctp(raw: dict, mode: str, *, require_credentials: bool = True):
-    if mode != "live":
-        return None
-    td_address = str(raw.get("td_address", "")).strip()
-    md_address = str(raw.get("md_address", "")).strip()
-    if not td_address or not md_address:
-        raise ValueError("ctp td_address and md_address are required")
-    environment = str(raw.get("environment", "test")).lower()
+def _load_ctp(raw: Mapping[str, object], mode: str, *, require_credentials: bool = True):
+    td_address = require_string(raw.get("td_address", ""), "ctp.td_address").strip()
+    md_address = require_string(raw.get("md_address", ""), "ctp.md_address").strip()
+    environment = require_string(raw.get("environment", "test"), "ctp.environment").lower()
     if environment not in {"test", "production"}:
         raise ValueError("ctp.environment must be test or production")
+    if mode != "live":
+        return None
+    if not td_address or not md_address:
+        raise ValueError("ctp td_address and md_address are required")
     if not require_credentials:
         return None
 
