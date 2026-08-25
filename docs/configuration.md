@@ -78,7 +78,7 @@ CTP 凭证不进入 TOML：
 | `paths.alert` | `runtime/alerts.jsonl` | 本地告警事件。 |
 | `alert.webhook` | 空 | 可选告警 Webhook；不要在 URL 中嵌入不必要的敏感参数。 |
 
-相对路径以启动命令的当前目录为基准。生产环境应确保目录可写、磁盘空间充足且日志轮转正常。
+相对路径以启动命令的当前目录为基准。生产环境应确保目录可写、磁盘空间充足且日志轮转正常。Directional 启用时还会在 `paths.state` 同一目录派生两个不可单独配置的市场证据文件：`directional_activity.json` 保存完整日和进行中流动性观察，`directional_ohlc_cache.json` 保存最后一份已验证的连续合约开盘/收盘历史。两者都不属于账户、订单、成交或持仓状态。
 
 ## 5. 固定跨期组合
 
@@ -203,6 +203,6 @@ CTP 凭证不进入 TOML：
 - 回放从 `config/afuture.example.toml` 或 `config/afuture.auto-replay.example.toml` 开始；CTP 测试从对应 live 示例复制，不直接编辑仓库示例。
 - 修改手续费、合约乘数、保证金、滑点、杠杆、风控阈值、信号参数或交易窗口会改变经济行为，应重新运行受影响回测和验收。
 - 路径、日志和无行为影响的说明性修改只需运行配置、文档和相关运维测试。
-- 未识别的风险、Auto 或 Directional 配置键目前可能被忽略，`afuture validate` 不保证发现所有拼写错误；修改后既要运行校验，也要与本文字段名逐项核对。
+- 所有可执行配置节和手续费子项都拒绝未知键；布尔值必须是真正的 TOML boolean，整数不能经有损浮点转换，所有经济数值必须有限。`afuture validate` 失败时应修正配置，不得通过字符串强转、`nan` 或忽略拼写错误继续运行。
 
 策略语义见 [`strategies.md`](strategies.md)，输入字段见 [`data-formats.md`](data-formats.md)，上线操作见 [`live-trading.md`](live-trading.md)。

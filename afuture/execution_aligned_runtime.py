@@ -19,6 +19,12 @@ from .directional_data_validation import (
     validate_daily_index,
     validate_finite_columns,
 )
+from .directional_ohlc_cache import (
+    DirectionalOHLCCacheEntry,
+    DirectionalOHLCCacheStore,
+    canonicalize_ohlc_frames,
+    require_unchanged_overlap,
+)
 from .directional_runtime import (
     _CHINA_TZ,
     DirectionalActionResult,
@@ -159,6 +165,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         signal_provider=None,
         policy=None,
         activity_store_path: str | Path | None = None,
+        ohlc_cache_path: str | Path | None = None,
         activity_tracker: DirectionalActivityTracker | None = None,
         completed_returns_provider=None,
         **kwargs,
@@ -179,6 +186,10 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             **kwargs,
         )
         self._execution_signal_history: ExecutionAlignedSignalHistory | None = None
+        self._signal_products = tuple(str(item).upper() for item in config.products)
+        self._ohlc_cache = (
+            DirectionalOHLCCacheStore(ohlc_cache_path) if ohlc_cache_path is not None else None
+        )
         self.activity_tracker: DirectionalActivityTracker | None
         if activity_tracker is not None:
             self.activity_tracker = activity_tracker
@@ -190,6 +201,11 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             self.activity_tracker = None
         self.completed_returns_provider = completed_returns_provider
         self._catalog_by_symbol: dict[str, ContractInfo] = {}
+
+    @property
+    def signal_cache_path(self) -> Path | None:
+        """Return the configured market-evidence path without reading or fetching data."""
+        return self._ohlc_cache.path if self._ohlc_cache is not None else None
 
     def bootstrap(self, now: datetime) -> None:
         super().bootstrap(now)
@@ -203,39 +219,70 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         if contract is not None:
             self.activity_tracker.observe(tick, contract)
 
-    @staticmethod
-    def _normalize_frame(frame: pd.DataFrame, max_date: date) -> pd.DataFrame:
+    def _ordered_provider_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
         result = frame.copy()
-        result.index = pd.to_datetime(result.index, errors="coerce")
-        validate_daily_index(result, name="execution-aligned signal history")
-        result = result.sort_index()
         result.columns = [str(item).upper() for item in result.columns]
-        result = result.loc[result.index.normalize() <= pd.Timestamp(max_date)]
-        for column in result.columns:
-            observed = result[[column]].dropna()
-            if not observed.empty:
-                validate_finite_columns(
-                    observed,
-                    (column,),
-                    name="execution-aligned signal history",
-                    positive=(column,),
-                )
-        return result.dropna(how="all")
+        if result.columns.has_duplicates:
+            raise RuntimeError("execution-aligned signal history has duplicate products")
+        if set(result.columns) != set(self._signal_products):
+            raise RuntimeError(
+                "execution-aligned signal history product set does not match configuration"
+            )
+        return result.reindex(columns=self._signal_products)
 
-    def _normalize_history(
+    def _canonicalize_history(
         self,
         history: ExecutionAlignedSignalHistory,
         *,
+        latest_allowed_date: date,
+    ) -> ExecutionAlignedSignalHistory:
+        open_prices, close = canonicalize_ohlc_frames(
+            self._signal_products,
+            self._ordered_provider_frame(history.open),
+            self._ordered_provider_frame(history.close),
+            name="execution-aligned signal history",
+        )
+        latest_provider_day = pd.Timestamp(close.index[-1]).date()
+        if latest_provider_day > latest_allowed_date:
+            raise RuntimeError(
+                "directional signal history is from the future beyond authoritative planning day "
+                f"{latest_allowed_date.isoformat()}: latest={latest_provider_day.isoformat()}"
+            )
+        return ExecutionAlignedSignalHistory(open_prices, close)
+
+    @staticmethod
+    def _history_through(
+        history: ExecutionAlignedSignalHistory,
         max_date: date,
     ) -> ExecutionAlignedSignalHistory:
-        close = self._normalize_frame(history.close, max_date)
-        open_prices = self._normalize_frame(history.open, max_date)
-        common = close.index.intersection(open_prices.index)
-        close = close.reindex(common)
-        open_prices = open_prices.reindex(index=common, columns=close.columns)
+        keep = history.close.index <= pd.Timestamp(max_date)
+        close = history.close.loc[keep]
+        open_prices = history.open.loc[keep]
         if len(close) < 140:
             raise RuntimeError("directional signal history is shorter than 140 days")
         return ExecutionAlignedSignalHistory(open_prices, close)
+
+    @staticmethod
+    def _history_from_cache(entry: DirectionalOHLCCacheEntry) -> ExecutionAlignedSignalHistory:
+        return ExecutionAlignedSignalHistory(entry.open.copy(), entry.close.copy())
+
+    def _validated_cache_fallback(
+        self,
+        entry: DirectionalOHLCCacheEntry,
+        *,
+        local: datetime,
+        max_date: date,
+        latest_allowed_date: date,
+        required_signal_day: date | None,
+    ) -> ExecutionAlignedSignalHistory:
+        full_history = self._canonicalize_history(
+            self._history_from_cache(entry),
+            latest_allowed_date=latest_allowed_date,
+        )
+        self._validate_activity_signal_alignment(full_history, required_signal_day)
+        history = self._history_through(full_history, max_date)
+        self._validate_signal_history(history, local, required_signal_day)
+        return history
 
     def _current_ctp_trading_date(self) -> date | None:
         if self.activity_tracker is None:
@@ -252,6 +299,20 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         """Prefer the CTP trading day, especially for the cross-calendar-date night session."""
         return self._current_ctp_trading_date() or self._local(now).date()
 
+    def _latest_allowed_signal_date(
+        self,
+        now: datetime,
+        required_signal_day: date | None,
+    ) -> date:
+        current_trading_date = self._current_ctp_trading_date()
+        if current_trading_date is not None:
+            return current_trading_date
+        if self.activity_tracker is not None:
+            if required_signal_day is None:
+                raise RuntimeError("completed directional activity is unavailable")
+            return required_signal_day
+        return self._local(now).date()
+
     def _validate_activity_signal_alignment(
         self,
         raw: ExecutionAlignedSignalHistory,
@@ -267,10 +328,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         current_trading_date = self._current_ctp_trading_date()
         if current_trading_date is None:
             return
-        close_index = pd.DatetimeIndex(pd.to_datetime(raw.close.index, errors="coerce")).dropna()
-        open_index = pd.DatetimeIndex(pd.to_datetime(raw.open.index, errors="coerce")).dropna()
-        common = close_index.intersection(open_index)
-        completed = common[common.normalize() < pd.Timestamp(current_trading_date)]
+        completed = raw.close.index[raw.close.index < pd.Timestamp(current_trading_date)]
         if completed.empty:
             return
         latest_completed = pd.Timestamp(completed.max()).date()
@@ -309,7 +367,8 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         required_signal_day: date | None = None,
     ) -> ExecutionAlignedSignalHistory:
         local = self._local(now)
-        max_date = required_signal_day or local.date()
+        latest_allowed_date = self._latest_allowed_signal_date(now, required_signal_day)
+        max_date = required_signal_day or latest_allowed_date
         refresh = (
             self._execution_signal_history is None or self._signal_refresh_date != local.date()
         )
@@ -317,26 +376,65 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             provider = self.signal_provider
             if provider is None:
                 raise RuntimeError("execution-aligned signal provider is not configured")
+            cached_entry: DirectionalOHLCCacheEntry | None = None
+            cache_error: Exception | None = None
+            if self._ohlc_cache is not None:
+                try:
+                    cached_entry = self._ohlc_cache.load(self._signal_products)
+                except Exception as exc:
+                    cache_error = exc
             try:
                 raw = provider.load(tuple(item.upper() for item in self.config.products))
-            except Exception:
-                if self._execution_signal_history is None:
-                    raise
-                self._execution_signal_history = self._normalize_history(
-                    self._execution_signal_history,
-                    max_date=max_date,
-                )
-            else:
                 if not isinstance(raw, ExecutionAlignedSignalHistory):
                     raise RuntimeError("execution-aligned signal provider must return OHLC history")
-                self._validate_activity_signal_alignment(raw, required_signal_day)
-                self._execution_signal_history = self._normalize_history(raw, max_date=max_date)
+                full_history = self._canonicalize_history(
+                    raw,
+                    latest_allowed_date=latest_allowed_date,
+                )
+                self._validate_activity_signal_alignment(full_history, required_signal_day)
+                candidate = self._history_through(full_history, max_date)
+                self._validate_signal_history(candidate, local, required_signal_day)
+                if cache_error is not None:
+                    raise cache_error
+                if cached_entry is not None:
+                    require_unchanged_overlap(cached_entry, candidate.open, candidate.close)
+                if self._ohlc_cache is not None and required_signal_day is not None:
+                    cached_entry = self._ohlc_cache.save(
+                        self._signal_products,
+                        candidate.open,
+                        candidate.close,
+                    )
+                    candidate = self._history_from_cache(cached_entry)
+                self._execution_signal_history = candidate
+            except Exception as provider_error:
+                if cache_error is not None:
+                    raise cache_error from provider_error
+                if cached_entry is not None:
+                    self._execution_signal_history = self._validated_cache_fallback(
+                        cached_entry,
+                        local=local,
+                        max_date=max_date,
+                        latest_allowed_date=latest_allowed_date,
+                        required_signal_day=required_signal_day,
+                    )
+                elif self._ohlc_cache is None and self._execution_signal_history is not None:
+                    full_history = self._canonicalize_history(
+                        self._execution_signal_history,
+                        latest_allowed_date=latest_allowed_date,
+                    )
+                    self._execution_signal_history = self._history_through(full_history, max_date)
+                else:
+                    raise
             self._signal_refresh_date = local.date()
 
         history = self._execution_signal_history
         if history is None:
             raise RuntimeError("execution-aligned signal history is unavailable")
-        history = self._normalize_history(history, max_date=max_date)
+        full_history = self._canonicalize_history(
+            history,
+            latest_allowed_date=latest_allowed_date,
+        )
+        history = self._history_through(full_history, max_date)
         self._validate_signal_history(history, local, required_signal_day)
         self._execution_signal_history = history
         return ExecutionAlignedSignalHistory(history.open.copy(), history.close.copy())

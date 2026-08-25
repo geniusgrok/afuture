@@ -14,6 +14,11 @@ from .directional_activity import (
     select_contracts_from_activity,
     validate_directional_activity_snapshot,
 )
+from .directional_ohlc_cache import (
+    OHLC_CACHE_SCHEMA_VERSION,
+    DirectionalOHLCCacheIntegrityError,
+    DirectionalOHLCCacheStore,
+)
 from .metadata import validate_contract_metadata
 from .models import AccountSnapshot, ContractInfo, ContractPosition, ContractSpec, RuntimeMode
 from .reconcile import compare_positions
@@ -95,6 +100,52 @@ def _symlink_components(path: Path) -> list[Path]:
     return [candidate for candidate in (path, *path.parents) if candidate.is_symlink()]
 
 
+def _add_directional_ohlc_cache_status(report: OperationalReport, config) -> None:
+    path = Path(config.state_path).with_name("directional_ohlc_cache.json")
+    facts: dict[str, object] = {
+        "path": str(path),
+        "present": path.exists(),
+        "valid": None,
+    }
+    if not config.directional.enabled:
+        report.add(
+            "directional_ohlc_cache_integrity",
+            True,
+            "directional strategy is disabled",
+        )
+        report.facts["directional_ohlc_cache"] = facts
+        return
+    products = tuple(str(item).upper() for item in config.directional.products)
+    try:
+        entry = DirectionalOHLCCacheStore(path).load(products)
+    except (OSError, DirectionalOHLCCacheIntegrityError) as exc:
+        facts.update(valid=False, error=str(exc))
+        report.add("directional_ohlc_cache_integrity", False, str(exc))
+    else:
+        if entry is None:
+            report.add(
+                "directional_ohlc_cache_integrity",
+                True,
+                "directional OHLC cache is not initialized",
+            )
+        else:
+            facts.update(
+                valid=True,
+                schema_version=OHLC_CACHE_SCHEMA_VERSION,
+                content_digest=entry.content_digest,
+                latest_date=entry.latest_date.isoformat(),
+                products=list(entry.products),
+                product_count=len(entry.products),
+                row_count=entry.row_count,
+            )
+            report.add(
+                "directional_ohlc_cache_integrity",
+                True,
+                f"verified directional OHLC cache through {entry.latest_date.isoformat()}",
+            )
+    report.facts["directional_ohlc_cache"] = facts
+
+
 def build_local_status(
     config,
     *,
@@ -122,6 +173,8 @@ def build_local_status(
         report.add("state_integrity", True, "no current state file")
         report.facts["state"] = {"present": False, "valid": None}
 
+    _add_directional_ohlc_cache_status(report, config)
+
     previous: dict[str, object] = {
         "path": str(store.previous_path),
         "present": store.previous_path.exists(),
@@ -145,6 +198,7 @@ def build_local_status(
         "report": Path(config.report_path),
         "audit": Path(config.journal_path),
         "alert": Path(config.alert_path),
+        "directional_ohlc_cache": Path(config.state_path).with_name("directional_ohlc_cache.json"),
     }
     report.facts["paths"] = {name: _path_facts(path) for name, path in paths.items()}
     ancestors = {_existing_ancestor(path.parent) for path in paths.values()}
@@ -382,6 +436,7 @@ def build_doctor_report(
 
     activity_detail = "directional strategy is disabled"
     activity_ready = True
+    snapshot = None
     if config.directional.enabled:
         activity_path = Path(config.state_path).with_name("directional_activity.json")
         try:
@@ -427,6 +482,45 @@ def build_doctor_report(
                         + ", ".join(missing_products or sorted(configured_products))
                     )
     report.add("directional_activity_ready", activity_ready, activity_detail)
+
+    cache_required_ready = True
+    cache_required_detail = "directional strategy is disabled"
+    if config.directional.enabled:
+        if snapshot is None:
+            cache_required_ready = False
+            cache_required_detail = "completed directional activity day is unavailable"
+        else:
+            products = tuple(str(item).upper() for item in config.directional.products)
+            cache_path = Path(config.state_path).with_name("directional_ohlc_cache.json")
+            try:
+                cache_entry = DirectionalOHLCCacheStore(cache_path).load(products)
+            except (OSError, DirectionalOHLCCacheIntegrityError) as exc:
+                cache_required_ready = False
+                cache_required_detail = f"invalid directional OHLC cache: {exc}"
+            else:
+                required_day = snapshot.trading_date
+                covered_dates = (
+                    {pd_timestamp.date() for pd_timestamp in cache_entry.close.index}
+                    if cache_entry
+                    else set()
+                )
+                cache_required_ready = required_day in covered_dates
+                cache_required_detail = (
+                    f"directional OHLC cache covers required completed day "
+                    f"{required_day.isoformat()}"
+                    if cache_required_ready
+                    else "directional OHLC cache does not cover required completed day "
+                    f"{required_day.isoformat()}"
+                )
+                cache_facts = report.facts.get("directional_ohlc_cache")
+                if isinstance(cache_facts, dict):
+                    cache_facts["required_date"] = required_day.isoformat()
+                    cache_facts["required_date_covered"] = cache_required_ready
+    report.add(
+        "directional_ohlc_cache_required_day",
+        cache_required_ready,
+        cache_required_detail,
+    )
 
     broker_margin_ratio = account.margin / account.equity if account.equity > 0 else None
     report.facts["broker"] = {

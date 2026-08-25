@@ -128,9 +128,7 @@ def test_ctp_critical_event_precedes_coalesced_tick_flood() -> None:
     broker._trading_day = "20260825"
     for index in range(500):
         broker._on_tick(SimpleNamespace(data=raw_tick(price=70_000 + index)))
-    broker._on_account(
-        SimpleNamespace(data=SimpleNamespace(balance=500_000, available=400_000))
-    )
+    broker._on_account(SimpleNamespace(data=SimpleNamespace(balance=500_000, available=400_000)))
 
     events = broker.poll_events()
 
@@ -151,7 +149,9 @@ def test_ctp_poll_is_bounded_and_coalesces_latest_tick_per_contract() -> None:
     counters = broker.delivery_counters()
 
     assert len(first) == 2
-    assert [(event.payload.symbol, event.payload.exchange, event.payload.last_price) for event in first] == [
+    assert [
+        (event.payload.symbol, event.payload.exchange, event.payload.last_price) for event in first
+    ] == [
         ("same", "DCE", 101),
         ("same", "SHFE", 200),
     ]
@@ -515,7 +515,9 @@ def test_ctp_trade_idempotency_includes_exchange() -> None:
     events = broker.poll_events()
     positions = sorted(broker.get_positions(), key=lambda position: position.exchange)
     assert [event.event_type for event in events] == ["trade", "trade"]
-    assert [(position.symbol, position.exchange, position.long_today) for position in positions] == [
+    assert [
+        (position.symbol, position.exchange, position.long_today) for position in positions
+    ] == [
         ("same", "DCE", 1),
         ("same", "SHFE", 1),
     ]
@@ -538,7 +540,9 @@ def test_ctp_position_snapshot_keeps_same_symbol_on_distinct_exchanges() -> None
     broker._handle_position_snapshot(raw_positions)
 
     positions = sorted(broker.get_positions(), key=lambda position: position.exchange)
-    assert [(position.symbol, position.exchange, position.long_price) for position in positions] == [
+    assert [
+        (position.symbol, position.exchange, position.long_price) for position in positions
+    ] == [
         ("same", "DCE", 100.0),
         ("same", "SHFE", 200.0),
     ]

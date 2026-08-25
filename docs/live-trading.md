@@ -48,6 +48,10 @@ AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 
 并在命令行显式传入 `--confirm-live`。
 
+### 3.1 原生 CTP 目标机门
+
+`vnpy_ctp` 含与操作系统、CPU 和 Python ABI 相关的原生扩展。普通 CI 和非目标开发机只验证 adapter 逻辑与测试替身，不能证明目标机能导入原生模块、登录实际前置或按真实顺序收到回调。部署前必须在最终目标机的同一 Python 环境安装 `.[live]`，至少完成 import、`status`、无报单 `doctor`、连续 Shadow、断线重连和完整订单生命周期验证；未完成时不能把 CI 绿色当成 CTP 可用证据。
+
 ## 4. 启动前检查
 
 ### 4.1 本地只读状态
@@ -59,6 +63,7 @@ afuture status --config config/afuture.directional-live.example.toml
 `status` 不初始化日志、不连接 CTP、不修改文件，也不需要 CTP 用户名、密码和 Broker ID。它检查：
 
 - 当前状态文件和上一版本证据的完整性；
+- Directional OHLC 缓存的 schema、按配置顺序的完整品种 manifest、内容 digest、envelope checksum、最新日期和行数；
 - 停机开关、运行状态和持仓摘要；
 - 审计、告警文件大小；
 - 运行路径是否可写、可访问；
@@ -80,7 +85,8 @@ afuture doctor --config config/afuture.directional-live.example.toml --confirm-l
 - 合约目录、乘数、最小变动价位、保证金和手续费；
 - 本地预期持仓与柜台持仓；
 - 停机开关、运行状态和持久化安全门；
-- 方向组合需要的上一完整交易日流动性证据。
+- 方向组合需要的上一完整交易日流动性证据；
+- 已验证 Directional OHLC 缓存是否精确覆盖该完整交易日。
 
 任一检查失败都返回 2，输出中的 `orders_sent` 必须为 0。方向组合新部署要先观察一个完整交易日，形成流动性快照后才可能通过。
 
@@ -131,7 +137,7 @@ Shadow 和测试柜台必须比较模型保证金与柜台实际冻结保证金�
 
 系统不能在开盘后使用当前交易日尚未完成的累计成交量和持仓量重新选择主力合约。
 
-`DirectionalActivityTracker` 按柜台交易日记录每个允许合约最后可见的成交量和持仓量。交易日从 D 推进时：
+`DirectionalActivityTracker` 按柜台交易日记录每个允许合约最后可见的成交量和持仓量。每次最新观察发生实质变化时，`completed` 和 `in_progress` 一起以 schema、checksum 和原子替换写入；午间或进程重启会继续同一 `in_progress` 日，不会丢失已观察合约。交易日从 D 推进时：
 
 ```text
 D 日最终成交量和持仓量
@@ -145,9 +151,13 @@ D+1 实时行情仍用于价格、盘口、涨跌停、保证金和下单，但�
 
 新部署没有完整快照时不新增风险；重启后的快照落后于已确认的价格历史时同样拒绝新增风险。
 
-## 8. 信号新鲜度和仓位收缩
+旧版本仅保存 completed snapshot、没有当前 envelope/checksum 的 `directional_activity.json` 不是可迁移证据。不要手工补 schema 或 checksum；保存原文件用于诊断，移走不兼容文件后用 Shadow 重新观察一个完整柜台交易日，直到 `status` 和 `doctor` 都通过。
 
-方向组合的价格历史必须覆盖流动性快照对应的交易日。长期停更或时间戳落在未来都会失败关闭。
+## 8. 信号缓存、新鲜度和仓位收缩
+
+方向组合的价格历史必须覆盖流动性快照对应的交易日。通过验证的 provider 数据以紧凑 JSON 原子写到 state 同目录的 `directional_ohlc_cache.json`：manifest 固定 schema 和配置品种顺序，content 使用一个共享日期索引以及开盘/收盘矩阵，并同时保存 content SHA-256 与整个 envelope SHA-256。缓存只属于市场输入证据，不保存策略目标、账户、订单、成交或持仓。
+
+刷新时先验证现有缓存。新的 provider 历史必须在任何转换前使用无时区自然日午夜索引，开盘/收盘日期完全相同且唯一递增，全部正有限值可无损规范成 `float64`；不同输入 dtype 表示同一数值时不会被误判为修订。与缓存重叠的每个规范值必须完全一致。provider 可带权威当前交易日的未完成行，但任何更远日期都失败关闭，当前行也必须通过数值检查；缓存只落盘 required completed day 及以前的重新解码表示。只有首次没有缓存，或重叠未变化时，provider 才是新权威并原子替换缓存。provider 中断、返回非法数据或静默改写历史时，只能使用已经验证且覆盖 `completed_activity_snapshot.trading_day` 的旧缓存；缓存缺失、过期、被篡改、schema/shape/品种不符时失败关闭。长期停更或时间戳落在未来也失败关闭，不向前填充、不自动采用修订值。
 
 预先固定的信号组合必须同时通过标准成本和压力成本验证，运行期间不能重新拟合历史参数。
 
@@ -163,6 +173,10 @@ D+1 实时行情仍用于价格、盘口、涨跌停、保证金和下单，但�
 ```
 
 当前交易日尚未完成的盈亏不能影响当前目标。该规则只能降低风险。
+
+## 8.1 CTP 事件投递观测
+
+CTP 的 order、trade、position、account 和 error 回调进入关键 FIFO；Tick 按 `(symbol, exchange)` 合并成尚未投递的最新值。每轮默认最多投递 100 条并优先关键 FIFO，避免 Tick 洪峰饿死成交与账户真相。运维诊断可读取 `delivery_counters()` 的 enqueued/received/coalesced/delivered/backlog 计数；`ticks_coalesced` 上升表示旧的未消费 Tick 被更新值替换，不代表成交丢失。持续增长的 `critical_backlog` 必须视为运行容量问题，停止扩大风险并在目标机定位回调/消费延迟。
 
 ## 9. 先减仓、后开仓
 

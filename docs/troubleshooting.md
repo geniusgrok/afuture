@@ -24,8 +24,13 @@
 | `doctor` 报持仓对账失败 | 今昨仓、多空、合约或交易所不一致，或有手工/其他程序交易 | 以柜台完整持仓为准查明差异。未解释差异前保持 `HALTED`，不要只比较净仓。 |
 | 合约参数或目录检查失败 | 乘数、最小变动价位、保证金、手续费缺失或与静态配置冲突 | 从柜台和结算资料核对；不要猜测保证金或沿用过期静态参数开仓。 |
 | 方向组合没有流动性快照 | 新部署、没有跨过完整交易日、状态文件缺失或快照身份不一致 | 连续运行 Shadow 至少一个完整柜台交易日；核对品种、合约、交易所和到期日覆盖。 |
-| 方向信号被判为过期 | 价格历史未覆盖快照交易日、数据提供方停更、时间戳在未来 | 核对最新完整交易日和时区；恢复数据后重新预检。不能用向前填充或修改系统时间绕过。 |
+| `directional_activity.json` schema/checksum 失败 | 文件来自旧版裸 completed 格式、被手工修改、截断或含无效 identity/数值 | 保存诊断副本；不要补写 checksum。移走不兼容文件后连续 Shadow 一个完整柜台交易日，重建 `completed` + `in_progress` envelope。 |
+| Directional OHLC cache integrity 失败 | `directional_ohlc_cache.json` 被截断/篡改，schema、品种、日期、shape、正有限值、content digest 或 envelope checksum 不符 | 停止相关 runtime，保留 `status` 输出并把损坏文件明确移动到只读诊断位置；不要重签名或从研究文件拼接。确认 provider 已修复后，在原路径确实不存在 cache 的状态下启动一次，让首次可信结果 bootstrap 新文件，再运行 `status`/`doctor`。只修复 provider 不会覆盖仍留在原路径的损坏 cache。 |
+| provider 历史修订被拒绝 | 新数据与已验证缓存的重叠开盘/收盘值不同 | 同时保留 cache、provider 原始响应、digest 和日期范围，向数据源确认修订原因。运行时只可继续使用仍覆盖 required day 的旧缓存，不能自动接受修订。 |
+| 方向信号被判为过期 | 价格历史/已验证缓存未覆盖快照交易日、数据提供方停更、时间戳在未来 | 核对 `status` 的 cache latest date/digest 和 `doctor` required date；恢复数据后重新预检。不能用向前填充或修改系统时间绕过。 |
 | 行情被判为 stale 或两腿不同步 | CTP 断线、单腿停更、时间戳时区错误或跨腿延迟过大 | 检查行情连接和两腿最新时间；恢复完整新行情前不增加风险。 |
+| CTP live extra 无法导入或只在开发机通过 | `vnpy_ctp` 原生扩展与目标机 OS/CPU/Python ABI 不匹配，或目标机未安装 `.[live]` | 在最终部署机的同一虚拟环境重新安装并执行 import、无报单 doctor、Shadow 和重连验证；测试替身通过不能替代。 |
+| 关键事件积压持续上升 | callback 消费不足、目标机阻塞，或单轮 100 条上限下关键事件产生率持续过高 | 读取 `delivery_counters()`，区分 `critical_backlog` 与正常 `ticks_coalesced`；停止新增风险并定位消费延迟。不要把 Tick 合并误判为成交丢失。 |
 | 进入 `REDUCE_ONLY` | 单日熔断、实际总敞口超限、数据/执行证据不足但仍有风险 | 只允许系统或人工安全减仓；等待成交确认并重新读取真实持仓，不能手工改状态为 `RUNNING`。 |
 | 进入 `HALTED` | 总回撤、保证金、可用资金、非正权益、对账、状态或基础设施硬失败 | 保持停机，定位首个硬失败。交易日切换不会自动清除这些原因。 |
 | 保证金开仓被拒绝 | 目标超过保证金/可用资金门，缺少每手保证金，或保守缓冲后无容量 | 核对账户权益、各方向保证金率、价格、乘数和缓冲。接受缩量或不开仓，不降低硬门追求目标收益。 |
@@ -34,7 +39,7 @@
 
 ## 3. CTP 断线与重连
 
-断线后不要假定本地的最后状态仍然最新。重连必须重新取得：
+断线后不要假定本地的最后状态仍然最新。原生 CTP 当前交易日必须重新来自交易 API `getTradingDay()`；缺少 gateway、td_api、getter 或合法 `YYYYMMDD` 时保持失败关闭，不能使用本机自然日期或上次缓存值。重连必须重新取得：
 
 - 当前柜台交易日；
 - 新的账户快照；
@@ -67,7 +72,9 @@ afuture recover-state \
 
 - 错误命令、退出码和完整错误文本；
 - 发生时间、柜台交易日和运行模式；
-- 状态文件及 `.prev` 的副本；
+- 状态文件及 `.prev`、`directional_activity.json`、`directional_ohlc_cache.json` 的副本；
+- OHLC cache 的 content digest、latest date、required date 和 provider 原始响应日期范围；
+- `delivery_counters()` 快照；
 - 对应的日志、审计和告警片段；
 - CTP 账户、完整持仓、活动委托和成交查询结果；
 - 使用的配置文件摘要，但不包含密码、认证码或完整 Webhook 密钥。

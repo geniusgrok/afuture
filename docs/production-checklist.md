@@ -52,7 +52,8 @@
 - [ ] 挂牌日、到期日和距到期 20 天过滤正确。
 - [ ] 已持有合约的保留条件和挑战合约的成交量/持仓量双重优势与离线重建一致；没有已持有合约时按持仓量、成交量、到期日和合约代码依次排序。
 - [ ] 新部署没有上一完整交易日快照时不会新增风险。
-- [ ] 重启后能恢复最近一份完整快照。
+- [ ] 日内重启后能恢复 `in_progress` 和最近一份 `completed`；不会漏掉重启前已观察的合约。
+- [ ] 旧版无 schema/checksum 的裸 activity 文件已保留诊断副本并通过完整交易日 Shadow 重建，没有手工伪造迁移。
 - [ ] 流动性快照落后于最新完整信号交易日时拒绝增加风险。
 
 ## E. 信号日期、策略状态和仓位收缩
@@ -61,7 +62,12 @@
 - [ ] 最新完整价格历史覆盖 `completed_activity_snapshot.trading_day`。
 - [ ] 周末和节假日按所需柜台交易日处理。
 - [ ] 普通交易日缺少完整日线时，即使未超过小时上限也拒绝增加风险。
-- [ ] 数据提供方临时失败但缓存已经覆盖所需交易日时可以继续。
+- [ ] `directional_ohlc_cache.json` 的 schema、固定 50 品种顺序、共享日期索引、开盘/收盘 shape、正有限值、content digest 和 envelope checksum 全部通过。
+- [ ] provider 的开盘/收盘索引在转换前均为无时区自然日午夜且完全一致；没有 aware/naive 混用、非午夜时间或越过权威当前交易日的行。
+- [ ] provider 的全部允许行都已验证为正有限值并可无损表示为 `float64`；首次保存、重启和等值 dtype 变化使用相同规范表示。
+- [ ] 新 provider 历史与已验证缓存重叠的每个开盘/收盘值完全一致；静默历史修订不会覆盖 last-known-good。
+- [ ] 数据提供方临时失败但已验证缓存仍覆盖所需 completed activity day 时可以继续。
+- [ ] 缓存缺失、损坏或不覆盖 required day 时，空账户拒绝新增风险，有风险账户进入收缩路径。
 - [ ] 所需信号缺失且账户为空时不新增风险。
 - [ ] 所需信号或流动性快照缺失且仍有风险时进入 `REDUCE_ONLY`。
 - [ ] 元组合仍使用固定的 96 个模板、11 日回看、每 3 日选择最多 3 个模板。
@@ -114,6 +120,9 @@
 
 - [ ] `afuture status` 当前 state、previous evidence、路径和磁盘检查全部通过。
 - [ ] `afuture doctor --confirm-live` 的新快照、账户交易日、保证金、可用资金、单日亏损、总回撤、活动委托、合约目录、合约参数、停机开关、运行状态、持久化安全门、持仓对账和流动性检查全部通过，且 `orders_sent=0`。
+- [ ] `status` 显示 Directional OHLC cache 的 ordered products manifest、verified digest/latest date/shape，`doctor` 显示 required activity day 已覆盖；两个命令都不抓取外部 OHLC。
+- [ ] 最终目标机的 `vnpy_ctp` 原生扩展在同一 Python/OS/CPU ABI 下可导入，并完成真实前置登录、无报单 doctor、Shadow 与断线重连；通用 CI 替身不作为该项证据。
+- [ ] Tick 洪峰下关键 FIFO 仍优先投递；`delivery_counters()` 的 critical backlog 不持续增长，tick coalescing 与默认 100 条 poll 上限符合容量预期。
 - [ ] 单方向 FAK 开仓：对手一档深度覆盖整笔手数时使用当前最优对手价，否则使用原有保守主动价。
 - [ ] 覆盖 FAK 未成交、部分成交和拒单；基于深度的开仓优化不得改变减仓价格、订单数量或硬风控权限。
 - [ ] 平仓与平今/平昨。
@@ -133,7 +142,9 @@
 
 - [ ] 每次第二次及后续 state save 产生 `<state>.prev`，内容是上一份通过 checksum 的 envelope。
 - [ ] 损坏 current state 时程序返回失败，绝不自动采用 `.prev`。
-- [ ] 当前状态非 UTF-8、包含重复持仓合约，或柜台与本地持仓交易所不一致时拒绝继续运行。
+- [ ] 当前状态非 UTF-8、包含重复 `(symbol, exchange)` 持仓身份，或柜台与本地持仓交易所不一致时拒绝继续运行；同代码跨交易所不会碰撞。
+- [ ] 成交幂等键使用 `(trading_day, exchange, trade_id)`；迁移期旧 `(trading_day, trade_id)` 仍能阻止重放，且不会被错误地当成新成交再次入账。
+- [ ] CTP 当前交易日确实来自交易 API `getTradingDay()`；缺少 gateway/td_api/getter/合法值时失败关闭，不回退本机自然日。
 - [ ] audit/alert JSONL 到达 20 MiB 后在完整记录边界轮转，最多保留 14 份备份。
 
 - [ ] 正常退出前 StateStore 已保存最新 expected positions。

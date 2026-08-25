@@ -72,9 +72,7 @@ def _validate_trading_day(value: object) -> str:
     try:
         parsed = datetime.strptime(value, "%Y%m%d").strftime("%Y%m%d")
     except ValueError as exc:
-        raise DirectionalActivityIntegrityError(
-            "invalid directional activity trading day"
-        ) from exc
+        raise DirectionalActivityIntegrityError("invalid directional activity trading day") from exc
     if parsed != value:
         raise DirectionalActivityIntegrityError("invalid directional activity trading day")
     return value
@@ -103,8 +101,7 @@ def validate_directional_activity_snapshot(snapshot: DirectionalActivitySnapshot
             for value in (item.symbol, item.exchange, item.product, item.trading_day)
         ):
             raise DirectionalActivityIntegrityError(
-                "directional activity identity fields must be non-empty strings: "
-                f"{symbol}"
+                f"directional activity identity fields must be non-empty strings: {symbol}"
             )
         if item.trading_day != trading_day:
             raise DirectionalActivityIntegrityError(
@@ -156,15 +153,11 @@ class DirectionalActivityStore:
         try:
             text = self.path.read_bytes().decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise DirectionalActivityIntegrityError(
-                "invalid directional activity UTF-8"
-            ) from exc
+            raise DirectionalActivityIntegrityError("invalid directional activity UTF-8") from exc
         try:
             raw = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
         except json.JSONDecodeError as exc:
-            raise DirectionalActivityIntegrityError(
-                "invalid directional activity JSON"
-            ) from exc
+            raise DirectionalActivityIntegrityError("invalid directional activity JSON") from exc
         if not isinstance(raw, dict):
             raise DirectionalActivityIntegrityError(
                 "directional activity envelope must be a JSON object"
@@ -308,9 +301,7 @@ class DirectionalActivityTracker:
         self._current_trading_day = (
             state.in_progress.trading_day if state.in_progress is not None else ""
         )
-        self._current = (
-            dict(state.in_progress.contracts) if state.in_progress is not None else {}
-        )
+        self._current = dict(state.in_progress.contracts) if state.in_progress is not None else {}
 
     @property
     def current_trading_day(self) -> str:
@@ -337,9 +328,7 @@ class DirectionalActivityTracker:
         tick.validate()
         _validate_trading_day(trading_day)
         if tick.symbol != contract.symbol or tick.exchange.upper() != contract.exchange.upper():
-            raise DirectionalActivityIntegrityError(
-                "tick and contract activity identity mismatch"
-            )
+            raise DirectionalActivityIntegrityError("tick and contract activity identity mismatch")
         if not contract.product:
             raise DirectionalActivityIntegrityError("contract activity product is missing")
         activity = ContractActivity(
@@ -378,8 +367,7 @@ class DirectionalActivityTracker:
             and activity != previous
         ):
             raise DirectionalActivityIntegrityError(
-                "observation conflicts at the latest activity timestamp: "
-                f"{tick.symbol}"
+                f"observation conflicts at the latest activity timestamp: {tick.symbol}"
             )
         if self._current.get(tick.symbol) == activity:
             return

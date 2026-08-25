@@ -577,7 +577,9 @@ class CtpBroker(Broker):
             )
             tick.validate()
         except Exception as exc:
-            self._enqueue_critical(BrokerEvent("broker_error", f"CTP tick conversion failed: {exc}"))
+            self._enqueue_critical(
+                BrokerEvent("broker_error", f"CTP tick conversion failed: {exc}")
+            )
             return
         self._enqueue_tick(tick)
 

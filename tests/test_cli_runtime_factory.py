@@ -46,6 +46,9 @@ def test_cli_engine_builder_routes_directional_mode_through_exact_execution_alig
     )
     assert isinstance(engine, DirectionalTradingEngine)
     assert type(engine.directional_manager) is ExecutionAlignedDirectionalPortfolioManager
+    assert engine.directional_manager.signal_cache_path == (
+        tmp_path / "directional_ohlc_cache.json"
+    )
 
 
 def test_cli_engine_builder_preserves_plain_trading_engine_when_directional_disabled(tmp_path):

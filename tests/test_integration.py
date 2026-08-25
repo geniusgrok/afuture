@@ -404,7 +404,9 @@ def test_trade_identity_and_expected_positions_include_exchange(tmp_path: Path):
         "20260821:DCE:SHARED-T1",
         "20260821:SHFE:SHARED-T1",
     ]
-    assert [(position.symbol, position.exchange, position.long_today) for position in positions] == [
+    assert [
+        (position.symbol, position.exchange, position.long_today) for position in positions
+    ] == [
         ("same", "DCE", 1),
         ("same", "SHFE", 1),
     ]

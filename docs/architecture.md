@@ -17,6 +17,7 @@
 | `PositionBook` | 根据 Broker 成交维护本地持仓镜像 |
 | `RiskManager` | 执行账户限制、只减仓状态和硬停机 |
 | `StateStore` | 保存带版本、序号和校验和的重启证据 |
+| Directional activity / OHLC sidecars | 保存带 schema、digest/checksum 的市场输入证据；不拥有账户或策略状态 |
 | `TradingEngine` | 编排事件顺序、对账、持久化和运行观测 |
 
 策略、研究工具和命令行都不能直接修改真实持仓，也不能绕过 Broker 成交和 `RiskManager`。
@@ -54,7 +55,10 @@ CTP 合约目录和行情
 ## 4. 方向组合主链路
 
 ```text
-已完成交易日的品种价格
+provider 的已完成交易日品种价格
+→ 校验品种、日期、开盘/收盘和有限正值
+→ 与已验证 OHLC 缓存的重叠历史逐值一致
+→ 原子更新市场输入缓存；provider 故障时只允许合格缓存回退
 → 生成品种目标权重
 
 上一完整交易日的成交量和持仓量
@@ -71,7 +75,7 @@ CTP 合约目录和行情
 → 保存状态、审计和执行质量
 ```
 
-`DirectionalPortfolioManager` 不维护第二套账户。信号数据暂时不可用时，只有已缓存数据覆盖必需交易日才能继续；已有风险但证据不足时进入风险收缩，空账户则拒绝新增仓位。
+`DirectionalPortfolioManager` 不维护第二套账户。`directional_ohlc_cache.json` 也只保存共享日期向量、开盘/收盘矩阵、品种 manifest、内容 SHA-256 和 envelope SHA-256，不保存目标或仓位。provider 的开盘/收盘索引必须在任何转换前都是无时区的自然日午夜、完全对齐、唯一且递增；数值必须能无损规范成 `float64`。新的 provider 结果只有在与已验证缓存重叠的全部规范值完全不变时才可成为权威；静默历史修订被丢弃。provider 暂时不可用时，只有 schema、品种、索引、正有限值、digest/checksum 和必需完整交易日都通过的缓存才能继续；已有风险但证据不足时进入风险收缩，空账户则拒绝新增仓位。
 
 ## 5. 离线账户验证
 
@@ -102,7 +106,7 @@ CTP 合约目录和行情
 - 提交订单请求不改变持仓；只有 Broker 成交事件可以改变持仓；
 - 撤单、拒单和未成交不改变持仓、现金或盈亏；
 - 部分成交只按实际成交量记账，重试不能产生重复成交；
-- CTP 和引擎分别按“交易日 + 成交编号”去重，重连和重启不能重复入账；
+- CTP 和引擎分别按 `(trading_day, exchange, trade_id)` 去重，重连和重启不能重复入账；旧状态中的 `(trading_day, trade_id)` 在迁移期仍能拦截 replay，随后由交易日淘汰边界自然退出；
 - 反转必须先平旧方向再开新方向；
 - 上期所和能源中心的平今、平昨独立校验，不能跨今昨仓借量；
 - 手续费、滑点、名义价值、保证金和敞口必须使用明确的合约乘数和单位；
@@ -110,6 +114,10 @@ CTP 合约目录和行情
 - 数量必须能无损转换成整数；非法标识、NaN 和无穷值在进入风控和记账前拒绝；
 - 本地和柜台持仓按“合约 + 交易所”对账，重复记录或交易所不一致必须失败关闭；
 - 流动性快照的合约、品种和交易所必须与合约目录一致。
+
+CTP callback 不再共享一个可被 Tick 洪峰填满的混合队列。关键 order/trade/position/account/error 进入 FIFO；Tick 按 `(symbol, exchange)` 只保存尚未投递的最新值。`poll_events()` 每轮按可配置上限（默认 100）先投递关键 FIFO，再投递合并后的 Tick。`delivery_counters()` 暴露 critical/tick 的接收、合并、投递和 backlog 计数。持仓 mirror 与 position snapshot 另有串行锁，确保 snapshot 和成交事件顺序对应同一份 `(symbol, exchange)` 真相。
+
+原生 CTP 的当前交易日来自交易 API `getTradingDay()`。已启动 adapter 缺少 gateway、td_api、getter 或合法 `YYYYMMDD` 时失败关闭，不使用本机自然日期或旧交易日猜测。只有不实现该接口的兼容测试 Broker 才可使用已验证的 `AccountSnapshot.trading_day`。
 
 ## 8. 风险状态
 
@@ -133,6 +141,8 @@ RUNNING 或 REDUCE_ONLY
 
 启动时，系统把柜台账户、完整持仓和活动委托与本地预期状态对比。今昨仓、多空方向、合约身份和关键风险标记全部一致后，才能标记为已对账。
 
+Directional 流动性 sidecar 同时持久化 `completed` 与 `in_progress`，因此日内重启继续已有观察；损坏或旧版裸 completed 文件不自动迁移，必须重新观察完整柜台交易日。OHLC sidecar 是另一份独立市场证据，provider 刷新和回退都要重新验证，不得复制成账户状态或绕过 required-day 门。
+
 状态文件的 JSON、版本、正序号、校验和、持仓数量、均价或成交去重历史不可信时：
 
 - `load` 拒绝加载；
@@ -144,8 +154,9 @@ RUNNING 或 REDUCE_ONLY
 
 ## 10. 可观测性
 
-- `status`：不连接 Broker，只读检查当前和上一份状态、证据文件、路径和磁盘；
-- `doctor`：连接 CTP 取得新快照，检查账户、风险比率、交易日、活动委托、合约参数、持仓对账和流动性证据，全程不发送订单；
+- `status`：不连接 Broker，只读检查当前和上一份状态、Directional OHLC cache 的 readiness/digest/date、路径和磁盘；
+- `doctor`：连接 CTP 取得新快照，检查账户、风险比率、权威交易日、活动委托、合约参数、持仓对账、流动性证据和 OHLC required-day coverage，全程不发送订单；
+- CTP `delivery_counters()`：报告关键事件与 Tick 的接收、合并、投递和 backlog，不拥有流控或交易权限；
 - `AuditJournal`：记录信号、订单、成交、风险和恢复事件；
 - `AlertManager`：向本地文件和可选 webhook 发送告警；
 - `ExecutionQualityRecorder`：记录计划与实际成交、滑点、手续费、延迟、部分成交和换手；
@@ -155,4 +166,4 @@ RUNNING 或 REDUCE_ONLY
 
 ## 11. 非目标
 
-当前不需要数据库、消息队列、Web 服务、微服务或第二套账户状态机。研究数据不会直接成为实盘数据源。架构变化必须由已经复现的正确性、容量或维护问题驱动；下一批高价值证据来自新发生数据、多日 Shadow、测试柜台和小资金，而不是扩大同一历史上的参数搜索。
+当前不需要数据库、消息队列、Web 服务、微服务或第二套账户状态机。研究数据不会直接成为实盘数据源。`vnpy_ctp` 的原生扩展、目标机 ABI、实际登录和 callback 顺序不能由通用 CI/测试替身证明，必须在最终部署机完成 import、doctor、Shadow、重连和订单生命周期门。架构变化必须由已经复现的正确性、容量或维护问题驱动；下一批高价值证据来自新发生数据、多日 Shadow、测试柜台和小资金，而不是扩大同一历史上的参数搜索。

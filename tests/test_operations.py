@@ -4,6 +4,9 @@ from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
+import pytest
+
 import afuture.operations as operations
 from afuture.directional import DirectionalConfig
 from afuture.directional_activity import (
@@ -11,6 +14,7 @@ from afuture.directional_activity import (
     DirectionalActivitySnapshot,
     DirectionalActivityStore,
 )
+from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
 from afuture.models import (
     AccountSnapshot,
     ContractInfo,
@@ -62,6 +66,48 @@ def _resign_activity(envelope: dict) -> None:
         separators=(",", ":"),
     ).encode("utf-8")
     envelope["checksum"] = sha256(encoded).hexdigest()
+
+
+def _write_ohlc_cache(tmp_path: Path, *, end: str = "2026-08-24") -> str:
+    dates = pd.date_range(end=end, periods=140, freq="B")
+    close = pd.DataFrame({"M": range(100, 240)}, index=dates, dtype=float)
+    open_prices = close.shift(1).fillna(close.iloc[0])
+    entry = DirectionalOHLCCacheStore(tmp_path / "directional_ohlc_cache.json").save(
+        ("M",),
+        open_prices,
+        close,
+    )
+    return entry.content_digest
+
+
+def _resign_ohlc_cache(envelope: dict) -> None:
+    content = envelope["content"]
+    envelope["content_digest"] = sha256(
+        json.dumps(content, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    unsigned = {key: value for key, value in envelope.items() if key != "checksum"}
+    envelope["checksum"] = sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _write_completed_activity(tmp_path: Path) -> None:
+    DirectionalActivityStore(tmp_path / "directional_activity.json").save(
+        DirectionalActivitySnapshot(
+            "20260824",
+            {
+                "m2609": ContractActivity(
+                    "m2609",
+                    "DCE",
+                    "M",
+                    "20260824",
+                    10_000,
+                    20_000,
+                    datetime(2026, 8, 24, tzinfo=timezone.utc),
+                )
+            },
+        )
+    )
 
 
 def test_local_status_reports_current_and_previous_verified_state(tmp_path: Path) -> None:
@@ -165,6 +211,83 @@ def test_local_status_requires_searchable_ancestors_and_writable_report(
     assert not report.passed
     assert "ancestor is not writable/searchable" in detail
     assert "write target is not writable" in detail
+
+
+def test_local_status_surfaces_verified_directional_ohlc_cache_metadata(tmp_path: Path) -> None:
+    config = _config(tmp_path, directional=True)
+    digest = _write_ohlc_cache(tmp_path)
+
+    report = build_local_status(config, min_free_bytes=1)
+
+    assert _checks(report)["directional_ohlc_cache_integrity"]
+    assert report.facts["directional_ohlc_cache"] == {
+        "path": str(tmp_path / "directional_ohlc_cache.json"),
+        "present": True,
+        "valid": True,
+        "schema_version": 1,
+        "content_digest": digest,
+        "latest_date": "2026-08-24",
+        "products": ["M"],
+        "product_count": 1,
+        "row_count": 140,
+    }
+
+
+def test_local_status_fails_closed_on_tampered_directional_ohlc_cache(tmp_path: Path) -> None:
+    config = _config(tmp_path, directional=True)
+    _write_ohlc_cache(tmp_path)
+    cache_path = tmp_path / "directional_ohlc_cache.json"
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    envelope["content"]["close"][0][0] += 1.0
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    report = build_local_status(config, min_free_bytes=1)
+
+    assert not _checks(report)["directional_ohlc_cache_integrity"]
+    assert report.facts["directional_ohlc_cache"]["valid"] is False
+    assert "digest mismatch" in report.facts["directional_ohlc_cache"]["error"]
+
+
+@pytest.mark.parametrize(
+    ("field", "malformed"),
+    [("date", "0001-01-01"), ("value", 10**1000)],
+)
+def test_status_and_doctor_fail_closed_on_cache_range_corruption(
+    tmp_path: Path,
+    field: str,
+    malformed: object,
+) -> None:
+    config = _config(tmp_path, directional=True)
+    _write_completed_activity(tmp_path)
+    _write_ohlc_cache(tmp_path)
+    cache_path = tmp_path / "directional_ohlc_cache.json"
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    if field == "date":
+        envelope["content"]["dates"][0] = malformed
+    else:
+        envelope["content"]["close"][0][0] = malformed
+    _resign_ohlc_cache(envelope)
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    status = build_local_status(config, min_free_bytes=1)
+    doctor = build_doctor_report(
+        config,
+        broker_ready=True,
+        fresh_snapshot=True,
+        trading_day="20260825",
+        account=_account(),
+        positions=[],
+        active_order_count=0,
+        catalog=_catalog(),
+        requested_symbols=["m2609"],
+        metadata=config.contracts,
+        min_free_bytes=1,
+    )
+
+    assert not _checks(status)["directional_ohlc_cache_integrity"]
+    assert status.facts["directional_ohlc_cache"]["valid"] is False
+    assert not _checks(doctor)["directional_ohlc_cache_integrity"]
+    assert not _checks(doctor)["directional_ohlc_cache_required_day"]
 
 
 def test_doctor_passes_verified_flat_preflight(tmp_path: Path) -> None:
@@ -306,6 +429,64 @@ def test_doctor_requires_completed_directional_activity_evidence(tmp_path: Path)
     )
 
     assert not _checks(report)["directional_activity_ready"]
+
+
+def test_doctor_requires_ohlc_cache_to_cover_completed_activity_day(tmp_path: Path) -> None:
+    config = _config(tmp_path, directional=True)
+    DirectionalActivityStore(tmp_path / "directional_activity.json").save(
+        DirectionalActivitySnapshot(
+            "20260824",
+            {
+                "m2609": ContractActivity(
+                    "m2609",
+                    "DCE",
+                    "M",
+                    "20260824",
+                    10_000,
+                    20_000,
+                    datetime(2026, 8, 24, tzinfo=timezone.utc),
+                )
+            },
+        )
+    )
+    _write_ohlc_cache(tmp_path, end="2026-08-21")
+
+    expired = build_doctor_report(
+        config,
+        broker_ready=True,
+        fresh_snapshot=True,
+        trading_day="20260825",
+        account=_account(),
+        positions=[],
+        active_order_count=0,
+        catalog=_catalog(),
+        requested_symbols=["m2609"],
+        metadata=config.contracts,
+        min_free_bytes=1,
+    )
+
+    check = next(
+        item for item in expired.checks if item.name == "directional_ohlc_cache_required_day"
+    )
+    assert not check.passed
+    assert "2026-08-24" in check.detail
+
+    _write_ohlc_cache(tmp_path, end="2026-08-24")
+    ready = build_doctor_report(
+        config,
+        broker_ready=True,
+        fresh_snapshot=True,
+        trading_day="20260825",
+        account=_account(),
+        positions=[],
+        active_order_count=0,
+        catalog=_catalog(),
+        requested_symbols=["m2609"],
+        metadata=config.contracts,
+        min_free_bytes=1,
+    )
+
+    assert _checks(ready)["directional_ohlc_cache_required_day"]
 
 
 def test_doctor_requires_activity_and_catalog_coverage_for_configured_products(

@@ -194,7 +194,8 @@ def load_config(
         latency_ticks=latency_ticks,
         market_impact_ticks=market_impact_ticks,
         require_live_metadata=require_bool(
-            execution.get("require_live_metadata", mode == "live"), "execution.require_live_metadata"
+            execution.get("require_live_metadata", mode == "live"),
+            "execution.require_live_metadata",
         ),
         metadata_timeout_seconds=metadata_timeout_seconds,
         state_path=require_string(paths.get("state", "runtime/state.json"), "paths.state"),
@@ -209,9 +210,7 @@ def load_config(
     )
 
 
-def _section(
-    data: Mapping[str, object], name: str, allowed: set[str]
-) -> Mapping[str, object]:
+def _section(data: Mapping[str, object], name: str, allowed: set[str]) -> Mapping[str, object]:
     raw = require_mapping(data.get(name, {}), name)
     require_keys(raw, allowed, name)
     return raw
@@ -314,7 +313,9 @@ def _load_contracts(rows: list[Mapping[str, object]]) -> dict[str, ContractSpec]
         fee = FeeSpec(
             **{
                 key: require_finite_number(value, f"contracts[{index}].fee.{key}")
-                for key, value in require_mapping(raw.get("fee", {}), f"contracts[{index}].fee").items()
+                for key, value in require_mapping(
+                    raw.get("fee", {}), f"contracts[{index}].fee"
+                ).items()
             }
         )
         spec = ContractSpec(

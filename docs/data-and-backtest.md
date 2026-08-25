@@ -53,11 +53,13 @@ D 日已选合约的收盘到 D+1 开盘盈亏
 
 ## 4. 交易日、时段和时区
 
-生产 Tick 必须包含时区。中国期货夜盘的自然日期和柜台交易日不能混用。
+生产 Tick 必须包含时区。中国期货夜盘的自然日期和柜台交易日不能混用。已启动的 CTP adapter 只接受交易 API 的 `getTradingDay()` 结果；网关、交易 API、getter 或合法 `YYYYMMDD` 值缺失时失败关闭，不能退回本机自然日期或旧缓存日期。
 
-`DirectionalActivityTracker` 只在 `Tick.trading_day` 推进时冻结前一完整交易日的流动性快照。周末、节假日和夜盘都依赖柜台交易日证据，不能根据自然日小时差猜测数据是否最新。
+`DirectionalActivityTracker` 每次有实质变化的最新观察都原子写入带 schema 和 checksum 的 `directional_activity.json`，同时保存 `completed` 和 `in_progress`。重启会恢复进行中观察，只在权威 `Tick.trading_day` 推进时冻结前一完整交易日。旧版无 envelope/checksum、只有 completed 的活动文件不自动迁移；必须保留诊断副本并重新观察一个完整柜台交易日。周末、节假日和夜盘都依赖柜台交易日证据，不能根据自然日小时差猜测数据是否最新。
 
 方向组合要求价格历史覆盖流动性快照对应的交易日。第一次启动尚未形成完整快照时，系统不增加方向风险。
+
+生产连续合约历史在任何时区/日期归一化前，就必须使用无时区、自然日午夜、唯一递增且开盘/收盘完全一致的索引；每个正有限数值必须可无损表示为 `float64`。runtime 先校验 provider 返回的全部允许行：不得晚于权威 CTP 当前交易日；没有 tracker 时不得晚于本地计划日。允许存在尚未完成的当前交易日行，但只把 required completed day 及以前的规范值原子写入 `directional_ohlc_cache.json`，首次调用和重启都使用重新解码的同一 `float64` 表示。文件使用一个共享日期向量、行优先开盘/收盘矩阵、内容 SHA-256 和整个 envelope SHA-256；它只保存市场输入证据。新的 provider 结果只有在与已验证缓存的全部重叠规范值逐值不变时才可替换缓存。重叠历史被静默修订、缓存被篡改、schema/品种/形状不符，或缓存没有所需完整交易日时，都不接受该输入；provider 中断只能回退到仍满足同一所需交易日/新鲜度契约的已验证缓存。
 
 ## 5. 回放和撮合
 
@@ -74,6 +76,8 @@ D 日已选合约的收盘到 D+1 开盘盈亏
 - 减仓未确认前不允许开仓；
 - 活动委托、拒单、撤单、部分成交和重试不产生重复成交；
 - 只减仓和硬停机期间不增加风险。
+
+实盘 CTP 回调的投递与回放的简单事件列表不同：order、trade、position、account 和 error 进入关键 FIFO；Tick 按 `(symbol, exchange)` 只保留尚未投递的最新一条。每次 `poll_events()` 默认最多返回 100 条并先清空关键事件，因此 Tick 洪峰不能把成交或账户事件排在无限旧 Tick 之后。`delivery_counters()` 提供 `critical_enqueued`、`ticks_received`、`ticks_coalesced`、两类 delivered 和两类 backlog，用于判断合并率和积压；合并只减少尚未消费的旧 Tick，不改变成交真相。
 
 ## 6. 研究窗口
 

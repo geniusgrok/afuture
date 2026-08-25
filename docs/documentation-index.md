@@ -58,6 +58,7 @@
 - [`docs/archive/development/plans/2026-08-24-directional-microstructure-cost-alpha.md`](archive/development/plans/2026-08-24-directional-microstructure-cost-alpha.md)
 - [`docs/archive/development/plans/2026-08-24-opportunity-driven-directional-v2.md`](archive/development/plans/2026-08-24-opportunity-driven-directional-v2.md)
 - [`docs/archive/development/plans/2026-08-25-industrial-refactoring.md`](archive/development/plans/2026-08-25-industrial-refactoring.md)
+- [`docs/archive/development/plans/2026-08-25-p0-p1-runtime-hardening.md`](archive/development/plans/2026-08-25-p0-p1-runtime-hardening.md)
 - [`docs/archive/development/plans/2026-08-25-solo-operations-hardening.md`](archive/development/plans/2026-08-25-solo-operations-hardening.md)
 - [`docs/archive/development/specs/2026-08-21-auto-arbitrage-hardening-design.md`](archive/development/specs/2026-08-21-auto-arbitrage-hardening-design.md)
 - [`docs/archive/development/specs/2026-08-22-directional-production-reality-design.md`](archive/development/specs/2026-08-22-directional-production-reality-design.md)

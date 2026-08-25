@@ -13,9 +13,7 @@ from afuture.risk import RiskConfig, RiskManager
         ("max_open_pairs", 1.5),
     ],
 )
-def test_risk_manager_rejects_non_finite_and_lossy_configuration(
-    field: str, value: float
-) -> None:
+def test_risk_manager_rejects_non_finite_and_lossy_configuration(field: str, value: float) -> None:
     """Removing strict RiskConfig validation must make this test fail."""
     with pytest.raises(ValueError):
         RiskManager(RiskConfig(**{field: value}))
