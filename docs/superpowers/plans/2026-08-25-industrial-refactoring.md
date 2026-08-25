@@ -664,7 +664,7 @@ Classify legitimate CLI output and contextual boundary catches; remove debug art
 
 Re-run only a failed command or its affected subsystem after a fix. Repeat the complete validation only if the fix changes shared behavior or invalidates earlier evidence.
 
-- [ ] **Step 8: Commit and publish Checkpoint E**
+- [x] **Step 8: Commit and publish Checkpoint E**
 
 ```bash
 git add docs/refactoring/industrial-refactoring-report-20260825.md
