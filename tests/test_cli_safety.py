@@ -83,7 +83,7 @@ def test_adopt_recovery_state_keeps_kill_switch_and_requires_fresh_metadata(tmp_
         metadata_verified=True,
     )
     account = AccountSnapshot(500000, 500000, 400000, 100000, 0, 0, "20260820")
-    positions = [ContractPosition("m2609", "DCE", long_yesterday=1)]
+    positions = [ContractPosition("m2609", "DCE", long_yesterday=1, long_price=3000.0)]
 
     adopt_recovery_state(store, state, account, positions)
 

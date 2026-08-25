@@ -187,3 +187,56 @@ def test_position_book_rejects_negative_initial_bucket(
 ) -> None:
     with pytest.raises(ValueError, match="position buckets cannot be negative"):
         PositionBook([position])
+
+
+@pytest.mark.parametrize("volume", [True, 1.5])
+def test_trade_rejects_non_integer_volume_without_mutation(volume: object) -> None:
+    book = PositionBook()
+    trade = make_trade(side=OrderSide.BUY, offset=Offset.OPEN)
+    object.__setattr__(trade, "volume", volume)
+
+    with pytest.raises(ValueError, match="positive integer"):
+        book.apply_trade(trade)
+
+    assert book.all() == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("side", "BUY", "side"),
+        ("offset", "OPEN", "offset"),
+        ("symbol", "", "symbol"),
+        ("exchange", "", "exchange"),
+    ],
+)
+def test_trade_rejects_invalid_domain_identity_without_mutation(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    book = PositionBook()
+    trade = make_trade(side=OrderSide.BUY, offset=Offset.OPEN)
+    object.__setattr__(trade, field, value)
+
+    with pytest.raises(ValueError, match=message):
+        book.apply_trade(trade)
+
+    assert book.all() == []
+
+
+@pytest.mark.parametrize(
+    "position",
+    [
+        ContractPosition("", "SHFE"),
+        ContractPosition("cu2609", ""),
+        ContractPosition("cu2609", "SHFE", long_today=1, long_price=0.0),
+        ContractPosition("cu2609", "SHFE", short_today=1, short_price=float("nan")),
+        ContractPosition("cu2609", "SHFE", long_price=-1.0),
+    ],
+)
+def test_position_book_rejects_invalid_identity_or_valuation(
+    position: ContractPosition,
+) -> None:
+    with pytest.raises(ValueError):
+        PositionBook([position])

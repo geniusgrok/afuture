@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime
 from math import isfinite
@@ -75,6 +76,7 @@ class CtpBroker(Broker):
     """把 VeighNa CTP 对象转换为 afuture 内部模型。"""
 
     gateway_name = "CTP"
+    _MAX_SEEN_TRADE_KEYS = 10_000
 
     def __init__(
         self, credentials: CtpCredentials, *, snapshot_stale_seconds: float = 20.0
@@ -98,6 +100,8 @@ class CtpBroker(Broker):
         self._last_account_monotonic = 0.0
         self._last_position_snapshot_monotonic = 0.0
         self._contract_catalog: dict[str, ContractInfo] = {}
+        self._seen_trade_keys: set[str] = set()
+        self._seen_trade_order: deque[str] = deque()
 
     def _load_runtime(self) -> dict[str, Any]:
         """延迟加载实盘依赖，并扩展完整持仓快照和费率查询回调。"""
@@ -538,6 +542,7 @@ class CtpBroker(Broker):
                 price,
                 raw.datetime or datetime.now(ZoneInfo("Asia/Shanghai")),
             )
+            trade.validate()
         except (AttributeError, TypeError, ValueError) as exc:
             self._events.put(
                 BrokerEvent(
@@ -546,6 +551,14 @@ class CtpBroker(Broker):
                 )
             )
             return
+        trade_key = f"{self.get_trading_day()}:{trade.trade_id}"
+        if trade_key in self._seen_trade_keys:
+            return
+        self._seen_trade_keys.add(trade_key)
+        self._seen_trade_order.append(trade_key)
+        if len(self._seen_trade_order) > self._MAX_SEEN_TRADE_KEYS:
+            expired = self._seen_trade_order.popleft()
+            self._seen_trade_keys.discard(expired)
         try:
             book = PositionBook(self.get_positions())
             book.apply_trade(trade)
@@ -555,7 +568,12 @@ class CtpBroker(Broker):
         self._events.put(BrokerEvent("trade", trade))
 
     def _on_account(self, event) -> None:
-        self._last_account = self._convert_account(event.data)
+        try:
+            account = self._convert_account(event.data)
+        except (AttributeError, TypeError, ValueError) as exc:
+            self._events.put(BrokerEvent("account_error", f"CTP account conversion failed: {exc}"))
+            return
+        self._last_account = account
         self._account_event_generation += 1
         self._last_account_monotonic = monotonic()
         self._events.put(BrokerEvent("account", self._last_account))
@@ -564,25 +582,34 @@ class CtpBroker(Broker):
         combined: dict[str, ContractPosition] = {}
         try:
             for raw in raw_positions:
-                volume = int(raw.volume)
-                yesterday = int(raw.yd_volume)
-                if volume < 0 or yesterday < 0 or yesterday > volume:
+                volume = self._exact_integer(raw.volume, "position volume", positive=True)
+                yesterday = self._exact_integer(
+                    raw.yd_volume,
+                    "yesterday position volume",
+                    positive=False,
+                )
+                if yesterday > volume:
                     raise ValueError(f"invalid CTP position volume for {raw.symbol}")
                 today = volume - yesterday
-                position = combined.setdefault(
-                    raw.symbol, ContractPosition(raw.symbol, raw.exchange.value)
-                )
-                direction_value = getattr(raw.direction, "name", str(raw.direction)).upper()
-                if "LONG" in direction_value:
+                symbol = str(raw.symbol).strip()
+                exchange = str(raw.exchange.value).strip()
+                if not symbol or not exchange:
+                    raise ValueError("CTP position identity is empty")
+                price = float(raw.price)
+                if not isfinite(price) or price <= 0:
+                    raise ValueError(f"invalid CTP position price for {symbol}")
+                position = combined.setdefault(symbol, ContractPosition(symbol, exchange))
+                side = self._direction_to_side(raw.direction)
+                if side is OrderSide.BUY:
                     position.long_today += today
                     position.long_yesterday += yesterday
-                    position.long_price = float(raw.price)
-                elif "SHORT" in direction_value:
+                    position.long_price = price
+                else:
                     position.short_today += today
                     position.short_yesterday += yesterday
-                    position.short_price = float(raw.price)
-                else:
-                    raise ValueError(f"unsupported CTP position direction: {direction_value}")
+                    position.short_price = price
+            for position in combined.values():
+                position.validate()
         except Exception as exc:
             self._events.put(BrokerEvent("broker_error", str(exc)))
             return
@@ -598,19 +625,28 @@ class CtpBroker(Broker):
         available = float(raw.available)
         # VeighNa AccountData 不暴露 CurrMargin，用权益与可用资金差额作为保守代理。
         margin = max(0.0, balance - available)
-        return AccountSnapshot(
+        account = AccountSnapshot(
             balance, balance, available, margin, 0.0, 0.0, self.get_trading_day()
         )
+        account.validate()
+        return account
 
     def _convert_order(self, raw) -> Order:
+        volume = self._exact_integer(raw.volume, "order volume", positive=True)
+        traded = self._exact_integer(raw.traded, "order traded", positive=False)
+        if traded > volume:
+            raise ValueError("CTP order traded volume exceeds order volume")
+        price = float(raw.price)
+        if not isfinite(price) or price <= 0:
+            raise ValueError(f"invalid CTP order price: {raw.price!r}")
         reference = getattr(raw, "reference", "") or self._order_references.get(raw.vt_orderid, "")
         request = OrderRequest(
             raw.symbol,
             raw.exchange.value,
             self._direction_to_side(raw.direction),
             self._offset_to_model(raw.offset),
-            int(raw.volume),
-            float(raw.price),
+            volume,
+            price,
             self._type_to_model(raw.type),
             reference,
         )
@@ -618,9 +654,24 @@ class CtpBroker(Broker):
             raw.vt_orderid,
             request,
             self._status_to_model(raw.status),
-            int(raw.traded),
-            float(raw.price),
+            traded,
+            price,
         )
+
+    @staticmethod
+    def _exact_integer(value: Any, field: str, *, positive: bool) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"invalid CTP {field}: {value!r}")
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid CTP {field}: {value!r}") from exc
+        if not isfinite(numeric) or not numeric.is_integer():
+            raise ValueError(f"invalid CTP {field}: {value!r}")
+        integer = int(numeric)
+        if integer < 0 or (positive and integer <= 0):
+            raise ValueError(f"invalid CTP {field}: {value!r}")
+        return integer
 
     @staticmethod
     def _enum_name(value: object, field: str) -> str:

@@ -97,7 +97,7 @@ class _Broker:
             self.catalog.append(ContractInfo("M2609", "DCE", "M", "2026-09-15"))
         symbols = [item.symbol for item in self.catalog]
         self.specs = {symbol: ContractSpec(symbol, "DCE", 10, 1, 0.1, 0.1) for symbol in symbols}
-        self.positions = [ContractPosition("A2609", "DCE", long_today=2)]
+        self.positions = [ContractPosition("A2609", "DCE", long_today=2, long_price=100.0)]
         self.orders = []
         self.active_orders = []
         self.subscriptions = []
@@ -230,7 +230,7 @@ def test_manager_subscribes_universe_and_reduces_before_opening_new_main_contrac
 
 def test_manager_realized_gross_guard_only_reduces_after_actual_two_x_breach():
     broker = _Broker()
-    broker.positions = [ContractPosition("A2609", "DCE", long_today=250)]
+    broker.positions = [ContractPosition("A2609", "DCE", long_today=250, long_price=100.0)]
     manager = _manager(broker)
     manager.bootstrap(NOW)
     manager.observe(broker.ticks["A2609"])
@@ -249,7 +249,7 @@ def test_manager_realized_gross_guard_only_reduces_after_actual_two_x_breach():
 
 def test_manager_realized_gross_guard_does_not_preemptively_haircut_two_x():
     broker = _Broker()
-    broker.positions = [ContractPosition("A2609", "DCE", long_today=200)]
+    broker.positions = [ContractPosition("A2609", "DCE", long_today=200, long_price=100.0)]
     manager = _manager(broker)
     manager.bootstrap(NOW)
     manager.observe(broker.ticks["A2609"])
@@ -262,7 +262,7 @@ def test_manager_realized_gross_guard_does_not_preemptively_haircut_two_x():
 
 def test_manager_realized_gross_guard_waits_for_active_orders_instead_of_duplicating_reductions():
     broker = _Broker()
-    broker.positions = [ContractPosition("A2609", "DCE", long_today=250)]
+    broker.positions = [ContractPosition("A2609", "DCE", long_today=250, long_price=100.0)]
     broker.active_orders = [object()]
     manager = _manager(broker)
     manager.bootstrap(NOW)
@@ -290,8 +290,8 @@ def test_missing_new_target_cannot_block_unrelated_reduction():
 def test_missing_target_with_existing_same_product_freezes_it_while_reducing_other_risk():
     broker = _Broker(include_m=True)
     broker.positions = [
-        ContractPosition("A2609", "DCE", long_today=2),
-        ContractPosition("M2609", "DCE", long_today=3),
+        ContractPosition("A2609", "DCE", long_today=2, long_price=100.0),
+        ContractPosition("M2609", "DCE", long_today=3, long_price=100.0),
     ]
     broker.ticks.pop("M2609")
     manager = _execution_manager(broker, products=("A", "M"), weights={"M": 1.0})
@@ -334,7 +334,16 @@ def test_manager_flatten_only_emits_reducing_fak_orders():
 
 def test_manager_flatten_closes_both_sides_when_same_contract_is_hedged():
     broker = _Broker()
-    broker.positions = [ContractPosition("A2609", "DCE", long_today=3, short_today=3)]
+    broker.positions = [
+        ContractPosition(
+            "A2609",
+            "DCE",
+            long_today=3,
+            short_today=3,
+            long_price=100.0,
+            short_price=100.0,
+        )
+    ]
     manager = _manager(broker)
     manager.bootstrap(NOW)
     manager.observe(broker.ticks["A2609"])

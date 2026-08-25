@@ -13,6 +13,7 @@ from tempfile import NamedTemporaryFile
 from .models import ContractPosition, RuntimeMode
 
 SCHEMA_VERSION = 2
+MAX_RECENT_TRADE_IDS = 10_000
 
 
 @dataclass
@@ -31,6 +32,7 @@ class RuntimeState:
     metadata_verified: bool = False
     last_order_id: str = ""
     last_trade_id: str = ""
+    recent_trade_ids: list[str] = field(default_factory=list)
     recent_daily_returns: list[float] = field(default_factory=list)
     directional_daily_circuit_day: str = ""
     last_account_equity: float = 0.0
@@ -114,7 +116,7 @@ class StateStore:
             "equity_high_watermark",
             "last_account_equity",
         }
-        list_fields = {"positions", "recent_daily_returns"}
+        list_fields = {"positions", "recent_daily_returns", "recent_trade_ids"}
         object_fields = {"strategy_states", "auto_pairs"}
 
         for name in bool_fields.intersection(payload):
@@ -144,24 +146,9 @@ class StateStore:
         for item in positions:
             try:
                 position = ContractPosition(**item)
+                position.validate()
             except (TypeError, ValueError) as exc:
                 raise StateIntegrityError("invalid persisted position") from exc
-            if not isinstance(position.symbol, str) or not isinstance(
-                position.exchange,
-                str,
-            ):
-                raise StateIntegrityError("invalid persisted position")
-            buckets = (
-                position.long_today,
-                position.long_yesterday,
-                position.short_today,
-                position.short_yesterday,
-            )
-            if any(
-                isinstance(value, bool) or not isinstance(value, int) or value < 0
-                for value in buckets
-            ):
-                raise StateIntegrityError("invalid persisted position")
         for name in object_fields:
             values = payload.get(name, {})
             if any(not isinstance(value, dict) for value in values.values()):
@@ -173,6 +160,15 @@ class StateStore:
         ):
             raise StateIntegrityError(
                 "state field recent_daily_returns must contain finite numbers"
+            )
+        recent_trade_ids = payload.get("recent_trade_ids", [])
+        if (
+            len(recent_trade_ids) > MAX_RECENT_TRADE_IDS
+            or any(not isinstance(value, str) or not value for value in recent_trade_ids)
+            or len(set(recent_trade_ids)) != len(recent_trade_ids)
+        ):
+            raise StateIntegrityError(
+                "state field recent_trade_ids must contain unique non-empty strings within limit"
             )
         runtime_mode = payload.get("runtime_mode", RuntimeMode.RUNNING.value)
         if runtime_mode not in {item.value for item in RuntimeMode}:

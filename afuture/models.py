@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from math import isfinite
 
 
 class OrderSide(str, Enum):
@@ -164,16 +165,22 @@ class Tick:
         """拒绝会导致错误成交或风险估计的异常行情。"""
         if self.timestamp.tzinfo is None:
             raise ValueError("tick timestamp must be timezone-aware")
-        if self.bid_price <= 0 or self.ask_price <= 0:
-            raise ValueError("bid/ask price must be positive")
+        prices = (self.bid_price, self.ask_price, self.last_price)
+        if any(not isfinite(value) or value <= 0 for value in prices):
+            raise ValueError("bid/ask/last price must be finite and positive")
         if self.ask_price < self.bid_price:
             raise ValueError("ask price cannot be below bid price")
-        if self.bid_volume <= 0 or self.ask_volume <= 0:
-            raise ValueError("quote volume must be positive")
+        quote_volumes = (self.bid_volume, self.ask_volume)
+        if any(not isfinite(value) or value <= 0 for value in quote_volumes):
+            raise ValueError("quote volume must be finite and positive")
+        limits = (self.limit_up, self.limit_down)
+        if any(not isfinite(value) or value < 0 for value in limits):
+            raise ValueError("daily price limits must be finite and non-negative")
         if self.limit_up and self.limit_down and self.limit_up <= self.limit_down:
             raise ValueError("daily price limits are invalid")
-        if self.volume < 0 or self.open_interest < 0:
-            raise ValueError("volume/open_interest cannot be negative")
+        activity = (self.volume, self.open_interest)
+        if any(not isfinite(value) or value < 0 for value in activity):
+            raise ValueError("volume/open_interest must be finite and non-negative")
 
     @property
     def mid_price(self) -> float:
@@ -243,6 +250,34 @@ class Trade:
     timestamp: datetime
     commission: float = 0.0
 
+    def validate(self) -> None:
+        """Validate broker-fill identity and economic values before any book mutation."""
+        for field_name, value in (
+            ("trade_id", self.trade_id),
+            ("order_id", self.order_id),
+            ("symbol", self.symbol),
+            ("exchange", self.exchange),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"trade {field_name} must be a non-empty string")
+        if not isinstance(self.side, OrderSide):
+            raise ValueError("trade side must be an OrderSide")
+        if not isinstance(self.offset, Offset):
+            raise ValueError("trade offset must be an Offset")
+        if isinstance(self.volume, bool) or not isinstance(self.volume, int) or self.volume <= 0:
+            raise ValueError("trade volume must be a positive integer")
+        if not isinstance(self.price, (int, float)) or not isfinite(self.price) or self.price <= 0:
+            raise ValueError("trade price must be finite and positive")
+        if self.timestamp.tzinfo is None:
+            raise ValueError("trade timestamp must be timezone-aware")
+        if (
+            isinstance(self.commission, bool)
+            or not isinstance(self.commission, (int, float))
+            or not isfinite(self.commission)
+            or self.commission < 0
+        ):
+            raise ValueError("trade commission must be finite and non-negative")
+
 
 @dataclass
 class ContractPosition:
@@ -273,6 +308,36 @@ class ContractPosition:
     def empty(self) -> bool:
         return self.long_total == 0 and self.short_total == 0
 
+    def validate(self) -> None:
+        """Validate restart and broker position truth before it enters accounting."""
+        if not isinstance(self.symbol, str) or not self.symbol.strip():
+            raise ValueError("position symbol must be a non-empty string")
+        if not isinstance(self.exchange, str) or not self.exchange.strip():
+            raise ValueError("position exchange must be a non-empty string")
+        buckets = (
+            self.long_today,
+            self.long_yesterday,
+            self.short_today,
+            self.short_yesterday,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in buckets
+        ):
+            raise ValueError("position buckets cannot be negative and must be integers")
+        for side, price, volume in (
+            ("long", self.long_price, self.long_total),
+            ("short", self.short_price, self.short_total),
+        ):
+            if (
+                isinstance(price, bool)
+                or not isinstance(price, (int, float))
+                or not isfinite(price)
+                or price < 0
+            ):
+                raise ValueError(f"position {side} price must be finite and non-negative")
+            if volume > 0 and price <= 0:
+                raise ValueError(f"open {side} position price must be positive")
+
 
 @dataclass(frozen=True)
 class AccountSnapshot:
@@ -285,6 +350,28 @@ class AccountSnapshot:
     realized_pnl: float
     unrealized_pnl: float
     trading_day: str
+
+    def validate(self) -> None:
+        """Reject account values that could bypass ratio-based risk comparisons."""
+        values = {
+            "balance": self.balance,
+            "equity": self.equity,
+            "available": self.available,
+            "margin": self.margin,
+            "realized_pnl": self.realized_pnl,
+            "unrealized_pnl": self.unrealized_pnl,
+        }
+        for name, value in values.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+            ):
+                raise ValueError(f"account {name} must be finite")
+        if self.balance <= 0 or self.equity <= 0:
+            raise ValueError("account balance/equity must be positive")
+        if self.available < 0 or self.margin < 0:
+            raise ValueError("account available/margin must be non-negative")
 
 
 @dataclass(frozen=True)

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from time import monotonic
 from zoneinfo import ZoneInfo
@@ -32,10 +33,11 @@ from .position import PositionBook
 from .quality import ExecutionQualityRecorder
 from .reconcile import compare_positions
 from .risk import RiskManager
-from .state import RuntimeState, StateStore
+from .state import MAX_RECENT_TRADE_IDS, RuntimeState, StateStore
 from .strategy import CalendarSpreadStrategy
 
 _CHINA_TZ = ZoneInfo("Asia/Shanghai")
+logger = logging.getLogger(__name__)
 
 
 class TradingEngine:
@@ -84,6 +86,7 @@ class TradingEngine:
 
         self.quotes: dict[str, Tick] = {}
         self.state = RuntimeState()
+        self._recent_trade_id_set: set[str] = set()
         self.halted = False
         self.auto_flatten_imbalance = auto_flatten_imbalance
         self.legging_timeout_seconds = max(0.0, legging_timeout_seconds)
@@ -111,6 +114,7 @@ class TradingEngine:
     def start(self) -> None:
         """加载持久化状态、启动柜台并订阅所有套利腿。"""
         self.state = self.state_store.load()
+        self._recent_trade_id_set = set(self.state.recent_trade_ids)
         self.risk_manager.restore_high_watermark(self.state.equity_high_watermark)
         self.halted = self.state.kill_switch
 
@@ -141,6 +145,12 @@ class TradingEngine:
                 return
 
         account = self.broker.get_account()
+        try:
+            account.validate()
+        except (TypeError, ValueError) as exc:
+            self._initialized = True
+            self.emergency_stop(f"invalid account snapshot: {exc}")
+            return
         self._advance_trading_day(account)
         self._health_ready_since = monotonic()
         self.risk_manager.set_day_start_equity(
@@ -354,6 +364,9 @@ class TradingEngine:
             if event.event_type == "position_snapshot":
                 self._reconcile_runtime_snapshot(event.payload)
                 continue
+            if event.event_type == "account_error":
+                self.emergency_stop(f"invalid account snapshot: {event.payload}")
+                continue
             if event.event_type == "broker_error":
                 self.emergency_stop(f"broker error: {event.payload}")
                 continue
@@ -371,21 +384,58 @@ class TradingEngine:
             self._reduce_only_cycle()
         self._cleanup_retired_auto_pairs()
 
-    def _handle_trade_event(self, trade) -> None:
-        self._record("trade", trade)
-        if not isinstance(trade, Trade) or not self.broker.owns_order(trade.order_id):
+    def _handle_trade_event(self, trade) -> bool:
+        if not isinstance(trade, Trade):
+            self._record("trade", trade)
             self.emergency_stop("unrecognized trade detected; possible external account activity")
-            return
+            return False
+        try:
+            trade.validate()
+            trading_day = self._synchronize_trading_day_for_trade()
+            identity = self._trade_identity(trade, trading_day)
+        except (AttributeError, TypeError, ValueError) as exc:
+            self.emergency_stop(f"invalid trade event: {exc}")
+            return False
+        if identity in self._recent_trade_id_set:
+            return False
+        if not self.broker.owns_order(trade.order_id):
+            self._record("trade", trade)
+            self.emergency_stop("unrecognized trade detected; possible external account activity")
+            return False
+
+        self._recent_trade_id_set.add(identity)
+        self.state.recent_trade_ids.append(identity)
+        if len(self.state.recent_trade_ids) > MAX_RECENT_TRADE_IDS:
+            expired = self.state.recent_trade_ids.pop(0)
+            self._recent_trade_id_set.discard(expired)
         self.state.last_trade_id = trade.trade_id
-        self._capture_quality_trade(trade)
         try:
             self._apply_expected_trade(trade)
         except Exception as exc:
             self.emergency_stop(f"expected position update failed: {exc}")
-            return
+            return False
+        self._record("trade", trade)
+        self._capture_quality_trade(trade)
         self._finalize_quality_if_flat(trade)
         self._audit_pair_balance()
         self._cleanup_retired_auto_pairs()
+        return True
+
+    def _synchronize_trading_day_for_trade(self) -> str:
+        """Roll persisted state before applying the first fill reported for a new broker day."""
+        account = self.broker.get_account()
+        account.validate()
+        trading_day = str(self.broker.get_trading_day() or account.trading_day or "")
+        if not trading_day:
+            raise ValueError("broker trading day is unavailable")
+        if str(account.trading_day or "") != trading_day:
+            account = replace(account, trading_day=trading_day)
+        self._advance_trading_day(account)
+        return trading_day
+
+    @staticmethod
+    def _trade_identity(trade: Trade, trading_day: str) -> str:
+        return f"{trading_day}:{trade.trade_id}"
 
     def _handle_order_event(self, order) -> None:
         self._record("order", order)
@@ -400,6 +450,11 @@ class TradingEngine:
         self._audit_pair_balance()
 
     def _handle_account_event(self, account) -> None:
+        try:
+            account.validate()
+        except (AttributeError, TypeError, ValueError) as exc:
+            self.emergency_stop(f"invalid account snapshot: {exc}")
+            return
         previous_day = self._metadata_trading_day
         self._advance_trading_day(account)
         current_day = str(account.trading_day or "")
@@ -678,6 +733,13 @@ class TradingEngine:
             book.roll_trading_day()
             self.state.positions = [asdict(position) for position in book.all()]
             self._sync_strategy_positions(book.all())
+            # A trade callback may be the first authoritative event for the new day.
+            # Preserve identities already assigned to that day while dropping prior-day fills.
+            prefix = f"{new_day}:"
+            self.state.recent_trade_ids = [
+                identity for identity in self.state.recent_trade_ids if identity.startswith(prefix)
+            ]
+            self._recent_trade_id_set = set(self.state.recent_trade_ids)
 
         if self.state.day_start_equity <= 0 or (new_day and new_day != old_day):
             self.state.day_start_equity = account.equity
@@ -976,9 +1038,10 @@ class TradingEngine:
             }
         try:
             account = self.broker.get_account()
+            account.validate()
             self._advance_trading_day(account)
             self.risk_manager.check_account(account)
             self.state.equity_high_watermark = self.risk_manager.high_watermark
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("account refresh during state persistence failed: %s", exc)
         self.state_store.save(self.state)

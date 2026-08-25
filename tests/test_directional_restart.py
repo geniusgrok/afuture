@@ -96,7 +96,7 @@ def _engine(tmp_path: Path, stored, remote):
 
 
 def test_directional_restart_reconciles_matching_broker_position(tmp_path):
-    position = ContractPosition("A2609", "DCE", long_yesterday=2)
+    position = ContractPosition("A2609", "DCE", long_yesterday=2, long_price=100.0)
     _, engine = _engine(tmp_path, [position], [position])
     assert engine.reconcile_startup() is True
     assert engine.state.reconciled is True
@@ -104,8 +104,8 @@ def test_directional_restart_reconciles_matching_broker_position(tmp_path):
 
 
 def test_directional_restart_mismatch_fails_closed(tmp_path):
-    stored = ContractPosition("A2609", "DCE", long_yesterday=2)
-    remote = ContractPosition("A2609", "DCE", long_yesterday=1)
+    stored = ContractPosition("A2609", "DCE", long_yesterday=2, long_price=100.0)
+    remote = ContractPosition("A2609", "DCE", long_yesterday=1, long_price=100.0)
     _, engine = _engine(tmp_path, [stored], [remote])
     assert engine.reconcile_startup() is False
     assert engine.halted is True

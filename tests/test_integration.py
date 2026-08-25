@@ -7,6 +7,7 @@ from afuture.broker.sim import SimBroker
 from afuture.engine import TradingEngine
 from afuture.execution import PairExecutor
 from afuture.models import (
+    AccountSnapshot,
     BrokerEvent,
     ContractPosition,
     ContractSpec,
@@ -96,9 +97,15 @@ def test_engine_enters_reduce_only_then_halts_after_risk_removed(tmp_path: Path)
     specs = setup_specs()
     pair = PairConfig("p", "m2609", "m2701", "DCE", 2)
     broker = SimBroker(500000, specs)
-    broker.position_book = PositionBook([ContractPosition("m2609", "DCE", long_today=1)])
+    broker.position_book = PositionBook(
+        [ContractPosition("m2609", "DCE", long_today=1, long_price=3000)]
+    )
     store = StateStore(tmp_path / "state.json")
-    store.save(RuntimeState(positions=[asdict(ContractPosition("m2609", "DCE", long_today=1))]))
+    store.save(
+        RuntimeState(
+            positions=[asdict(ContractPosition("m2609", "DCE", long_today=1, long_price=3000))]
+        )
+    )
     engine = TradingEngine(
         broker, [pair], specs, RiskManager(RiskConfig()), store, legging_timeout_seconds=0
     )
@@ -117,9 +124,15 @@ def test_auto_flatten_false_does_not_send_repair_orders(tmp_path: Path):
     specs = setup_specs()
     pair = PairConfig("p", "m2609", "m2701", "DCE", 2)
     broker = SimBroker(500000, specs)
-    broker.position_book = PositionBook([ContractPosition("m2609", "DCE", long_today=1)])
+    broker.position_book = PositionBook(
+        [ContractPosition("m2609", "DCE", long_today=1, long_price=3000)]
+    )
     store = StateStore(tmp_path / "state.json")
-    store.save(RuntimeState(positions=[asdict(ContractPosition("m2609", "DCE", long_today=1))]))
+    store.save(
+        RuntimeState(
+            positions=[asdict(ContractPosition("m2609", "DCE", long_today=1, long_price=3000))]
+        )
+    )
     engine = TradingEngine(
         broker,
         [pair],
@@ -198,6 +211,57 @@ def test_metadata_failure_cannot_be_cleared_by_position_reconcile(tmp_path: Path
     assert not engine.clear_kill_switch_after_reconcile()
 
 
+def test_engine_start_fails_closed_on_invalid_account_snapshot(tmp_path: Path):
+    specs = setup_specs()
+
+    class InvalidAccountBroker(SimBroker):
+        def get_account(self):
+            return AccountSnapshot(
+                500000,
+                float("nan"),
+                400000,
+                100000,
+                0,
+                0,
+                "20260821",
+            )
+
+    broker = InvalidAccountBroker(500000, specs)
+    engine = TradingEngine(
+        broker,
+        [],
+        specs,
+        RiskManager(RiskConfig()),
+        StateStore(tmp_path / "s.json"),
+    )
+
+    engine.start()
+
+    assert engine.halted
+    assert "invalid account snapshot" in engine.state.kill_reason
+
+
+def test_account_event_is_validated_before_runtime_state_mutation(tmp_path: Path):
+    specs = setup_specs()
+    broker = SimBroker(500000, specs)
+    store = StateStore(tmp_path / "s.json")
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    engine.start()
+    before_day = engine.state.trading_day
+    broker._events.append(
+        BrokerEvent(
+            "account",
+            AccountSnapshot(500000, float("nan"), 400000, 100000, 0, 0, "20990101"),
+        )
+    )
+
+    engine.run_once()
+
+    assert engine.halted
+    assert engine.state.trading_day == before_day
+    assert "invalid account snapshot" in engine.state.kill_reason
+
+
 def test_unknown_trade_halts_without_adopting_position_and_persists_ids(tmp_path: Path):
     specs = setup_specs()
 
@@ -237,6 +301,101 @@ def test_known_order_and_trade_ids_are_persisted(tmp_path: Path):
     engine.run_once()
     state = store.load()
     assert state.last_order_id == oid and state.last_trade_id.startswith("SIM-T-")
+
+
+def test_duplicate_trade_callback_is_ignored_before_position_side_effects(tmp_path: Path):
+    specs = setup_specs()
+    broker = SimBroker(500000, specs)
+    store = StateStore(tmp_path / "s.json")
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    engine.start()
+    broker.publish_tick(tick("m2609", 3000, 3001))
+    broker.send_order(OrderRequest("m2609", "DCE", OrderSide.BUY, Offset.OPEN, 1, 3001))
+    engine.run_once()
+    trade = broker.get_trades()[0]
+    before = store.load().positions
+
+    broker._events.append(BrokerEvent("trade", trade))
+    engine.run_once()
+
+    state = store.load()
+    assert state.positions == before
+    assert state.recent_trade_ids == [f"20260821:{trade.trade_id}"]
+
+
+def test_duplicate_trade_callback_is_ignored_after_restart(tmp_path: Path):
+    specs = setup_specs()
+    broker = SimBroker(500000, specs)
+    store = StateStore(tmp_path / "s.json")
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    engine.start()
+    broker.publish_tick(tick("m2609", 3000, 3001))
+    broker.send_order(OrderRequest("m2609", "DCE", OrderSide.BUY, Offset.OPEN, 1, 3001))
+    engine.run_once()
+    trade = broker.get_trades()[0]
+    before = store.load().positions
+
+    restarted = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    restarted.start()
+    broker.owns_order = lambda _order_id: False
+    broker._events.append(BrokerEvent("trade", trade))
+    restarted.run_once()
+
+    state = store.load()
+    assert state.positions == before
+    assert state.recent_trade_ids == [f"20260821:{trade.trade_id}"]
+    assert not restarted.halted
+
+
+def test_new_day_trade_rolls_state_before_fill_and_remains_idempotent(tmp_path: Path):
+    specs = setup_specs()
+    broker = SimBroker(500000, specs)
+    broker._trading_day = "20260821"
+    store = StateStore(tmp_path / "s.json")
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    engine.start()
+
+    broker._trading_day = "20260822"
+    broker.owns_order = lambda _order_id: True
+    trade = Trade(
+        "NEW-DAY-T1",
+        "KNOWN-O1",
+        "m2609",
+        "DCE",
+        OrderSide.BUY,
+        Offset.OPEN,
+        1,
+        3001.0,
+        datetime(2026, 8, 22, 1, tzinfo=timezone.utc),
+    )
+    broker._events.append(BrokerEvent("trade", trade))
+    engine.run_once()
+
+    state = store.load()
+    assert state.trading_day == "20260822"
+    assert state.positions[0]["long_today"] == 1
+    assert state.positions[0]["long_yesterday"] == 0
+    assert state.recent_trade_ids == ["20260822:NEW-DAY-T1"]
+
+    broker._events.extend(
+        [
+            BrokerEvent("trade", trade),
+            BrokerEvent("account", broker.get_account()),
+            BrokerEvent("trade", trade),
+        ]
+    )
+    engine.run_once()
+    assert store.load().positions == state.positions
+
+    restarted = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    restarted.start()
+    broker.owns_order = lambda _order_id: False
+    broker._events.append(BrokerEvent("trade", trade))
+    restarted.run_once()
+    final_state = store.load()
+    assert final_state.positions == state.positions
+    assert final_state.recent_trade_ids == ["20260822:NEW-DAY-T1"]
+    assert not restarted.halted
 
 
 def test_critical_alert_is_emitted_on_halt(tmp_path: Path):

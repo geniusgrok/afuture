@@ -100,6 +100,60 @@ def test_ctp_account_margin_proxy_and_position_snapshot():
     assert broker.poll_events()[0].event_type == "position_snapshot"
 
 
+@pytest.mark.parametrize("field", ["balance", "available"])
+def test_ctp_account_callback_rejects_non_finite_truth_without_mutation(field: str) -> None:
+    broker = CtpBroker(credentials())
+    broker._trading_day = "20260821"
+    broker._last_account = broker._convert_account(
+        SimpleNamespace(balance=500000, available=350000)
+    )
+    before = broker._last_account
+    raw = SimpleNamespace(balance=500000, available=350000)
+    setattr(raw, field, float("nan"))
+
+    broker._on_account(SimpleNamespace(data=raw))
+
+    events = broker.poll_events()
+    assert [event.event_type for event in events] == ["account_error"]
+    assert broker._last_account == before
+    assert broker._account_event_generation == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("direction", SimpleNamespace(name="NOT_LONG")),
+        ("volume", 1.5),
+        ("volume", True),
+        ("yd_volume", 1.5),
+        ("price", float("nan")),
+    ],
+)
+def test_ctp_position_snapshot_rejects_invalid_truth_without_mutation(
+    field: str,
+    value: object,
+) -> None:
+    broker = CtpBroker(credentials())
+    broker._positions = {"m2609": ContractPosition("m2609", "DCE", long_today=1, long_price=3000.0)}
+    before = broker.get_positions()
+    raw = SimpleNamespace(
+        symbol="m2609",
+        exchange=SimpleNamespace(value="DCE"),
+        direction=SimpleNamespace(name="LONG"),
+        volume=2,
+        yd_volume=1,
+        price=3000.0,
+    )
+    setattr(raw, field, value)
+
+    broker._handle_position_snapshot([raw])
+
+    events = broker.poll_events()
+    assert [event.event_type for event in events] == ["broker_error"]
+    assert broker.get_positions() == before
+    assert broker._position_snapshot_generation == 0
+
+
 def test_ctp_snapshot_generation_order_ownership_and_health():
     broker = CtpBroker(credentials(), snapshot_stale_seconds=20)
     broker._last_account = object()
@@ -196,6 +250,29 @@ def test_ctp_order_conversion_preserves_supported_status(
     assert order.request.order_type is OrderType.LIMIT
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("volume", 0),
+        ("volume", 1.5),
+        ("volume", True),
+        ("traded", -1),
+        ("traded", 3),
+        ("price", float("nan")),
+    ],
+)
+def test_ctp_order_conversion_rejects_invalid_economic_value(
+    field: str,
+    value: object,
+) -> None:
+    broker, status = conversion_broker()
+    raw = raw_order(status.NOTTRADED)
+    setattr(raw, field, value)
+
+    with pytest.raises(ValueError, match=field):
+        broker._convert_order(raw)
+
+
 def raw_trade(*, direction: str = "LONG", offset: str = "OPEN") -> SimpleNamespace:
     return SimpleNamespace(
         vt_tradeid="CTP.T1",
@@ -263,6 +340,18 @@ def test_ctp_trade_handler_preserves_supported_trade_and_position_mirror() -> No
     trade = events[0].payload
     assert trade.side is OrderSide.BUY
     assert trade.offset is Offset.OPEN
+    assert broker.get_positions()[0].long_today == 1
+
+
+def test_ctp_trade_callback_is_idempotent_within_session() -> None:
+    broker = CtpBroker(credentials())
+    event = SimpleNamespace(data=raw_trade())
+
+    broker._on_trade(event)
+    broker._on_trade(event)
+
+    events = broker.poll_events()
+    assert [event.event_type for event in events] == ["trade"]
     assert broker.get_positions()[0].long_today == 1
 
 

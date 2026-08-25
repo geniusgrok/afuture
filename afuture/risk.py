@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
-from math import floor
+from math import floor, isfinite
 from zoneinfo import ZoneInfo
 
 from .models import (
@@ -82,20 +82,22 @@ class RiskManager:
 
     def restore_high_watermark(self, equity: float) -> None:
         """从持久化状态恢复权益高水位，防止重启绕过总回撤限制。"""
-        if equity > 0:
+        if isfinite(equity) and equity > 0:
             self._high_watermark = max(self._high_watermark or 0.0, equity)
 
     def set_day_start_equity(self, equity: float, trading_day: str) -> None:
-        if equity <= 0:
-            raise ValueError("equity must be positive")
+        if not isfinite(equity) or equity <= 0:
+            raise ValueError("equity must be finite and positive")
         self._day_start_equity = equity
         self._trading_day = trading_day
         self._high_watermark = max(self._high_watermark or equity, equity)
 
     def check_account(self, account: AccountSnapshot) -> RiskDecision:
         """检查日亏损、总回撤、保证金和现金储备。"""
-        if account.equity <= 0:
-            return RiskDecision(False, "equity is not positive")
+        try:
+            account.validate()
+        except (TypeError, ValueError) as exc:
+            return RiskDecision(False, f"invalid account snapshot: {exc}")
         if self._day_start_equity is None or self._trading_day != account.trading_day:
             self.set_day_start_equity(account.equity, account.trading_day)
 

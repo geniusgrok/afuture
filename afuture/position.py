@@ -1,7 +1,6 @@
 """持仓簿和交易所平今/平昨拆单规则。"""
 
 from dataclasses import replace
-from math import isfinite
 
 from .models import ContractPosition, Offset, OrderRequest, OrderSide, Trade
 
@@ -38,10 +37,7 @@ class PositionBook:
 
     def apply_trade(self, trade: Trade) -> float:
         """应用成交并返回价格点口径的已实现盈亏。"""
-        if trade.volume <= 0:
-            raise ValueError("trade volume must be positive")
-        if not isfinite(trade.price) or trade.price <= 0:
-            raise ValueError("trade price must be finite and positive")
+        trade.validate()
         position = self.get(trade.symbol, trade.exchange)
 
         if trade.offset is Offset.OPEN:
@@ -65,14 +61,7 @@ class PositionBook:
 
     @staticmethod
     def _validate_position(position: ContractPosition) -> None:
-        buckets = (
-            position.long_today,
-            position.long_yesterday,
-            position.short_today,
-            position.short_yesterday,
-        )
-        if any(volume < 0 for volume in buckets):
-            raise ValueError("position buckets cannot be negative")
+        position.validate()
 
     @staticmethod
     def _validate_close_volume(
@@ -134,8 +123,14 @@ class PositionBook:
         reference: str = "",
     ) -> list[OrderRequest]:
         """按交易所规则把目标平仓拆成合法的子订单。"""
-        if volume <= 0:
-            raise ValueError("close volume must be positive")
+        if isinstance(volume, bool) or not isinstance(volume, int) or volume <= 0:
+            raise ValueError("close volume must be a positive integer")
+        if not isinstance(side, OrderSide):
+            raise ValueError("close side must be an OrderSide")
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError("close symbol must be a non-empty string")
+        if not isinstance(exchange, str) or not exchange.strip():
+            raise ValueError("close exchange must be a non-empty string")
         position = self.get(symbol, exchange)
         if side is OrderSide.SELL:
             today = position.long_today

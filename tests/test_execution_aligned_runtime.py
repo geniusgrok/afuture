@@ -79,7 +79,16 @@ class _Broker:
 
 class _FlattenBroker(_Broker):
     def __init__(self):
-        self.positions = [ContractPosition("A2609", "DCE", long_today=3, short_today=3)]
+        self.positions = [
+            ContractPosition(
+                "A2609",
+                "DCE",
+                long_today=3,
+                short_today=3,
+                long_price=100.0,
+                short_price=100.0,
+            )
+        ]
         self.orders = []
 
     def get_positions(self):

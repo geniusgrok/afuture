@@ -107,10 +107,12 @@ frozen historical inputs
 - 提交 request 不改变持仓；只有 Broker trade/fill event 改变；
 - reject/cancel 不改变 position、cash 或 realized PnL；
 - partial fill 只按实际成交量记账，retry 不能重复成交；
+- CTP 与 TradingEngine 分别用有界 `trading_day:trade_id` 集合阻止同一回报重复镜像；引擎集合随 state 持久化以覆盖重启 replay，首个新日成交先推进交易日，换日只淘汰旧日 ID；
 - reversal 是 close 后 open，不是绕过 execution 的净仓赋值；
 - SHFE/INE close-today 与 close-yesterday 独立校验，不能跨 bucket 借量；
 - commission/slippage、notional、margin、gross/net exposure 使用明确 multiplier 与单位；
-- 无法识别的 CTP direction/offset/type/status 产生 `broker_error`，不映射成猜测的经济事件。
+- 无法识别的 CTP direction/offset/type/status 产生 `broker_error`，不映射成猜测的经济事件；账户转换失败产生 `account_error`，使 Directional 在仍有风险时先进入 `REDUCE_ONLY`。
+- CTP order/position 数量必须是无损整数，position direction 必须是精确 enum；tick、account、metadata、position average price 的 NaN/inf 或非法符号在进入风险/会计前拒绝。
 
 ## 8. 风险状态机
 
@@ -138,7 +140,7 @@ Broker account + complete positions + active orders
 ↔ RuntimeState expected positions / event IDs / risk markers
 ```
 
-启动只有在今昨、多空、合约与关键状态完全一致时 reconciled。State envelope 的 JSON、schema、positive sequence、checksum 或 payload 不可信时：
+启动只有在今昨、多空、合约与关键状态完全一致时 reconciled。State envelope 的 JSON、schema、positive sequence、checksum、持仓数量/均价或成交去重历史不可信时：
 
 - `load` fail-closed；
 - `save` 不允许把损坏目标覆盖成 sequence 1；

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from afuture.broker.sim import SimBroker
 from afuture.calibration import ParameterCalibrator
 from afuture.economics import estimate_net_edge, executable_spreads
 from afuture.health.monitor import HealthMonitor
+from afuture.metadata import validate_contract_metadata
 from afuture.models import (
     AccountSnapshot,
     ContractSpec,
@@ -61,6 +63,91 @@ def specs(fee=False):
         "m2609": ContractSpec("m2609", "DCE", 10, 1, 0.1, 0.1, fs),
         "m2701": ContractSpec("m2701", "DCE", 10, 1, 0.1, 0.1, fs),
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("bid_price", float("nan")),
+        ("ask_price", float("inf")),
+        ("last_price", 0.0),
+        ("last_price", float("nan")),
+        ("bid_volume", float("inf")),
+        ("ask_volume", float("nan")),
+        ("limit_up", float("inf")),
+        ("limit_down", -1.0),
+        ("volume", float("nan")),
+        ("open_interest", float("inf")),
+    ],
+)
+def test_tick_validation_rejects_non_finite_or_invalid_market_values(
+    field: str,
+    value: float,
+) -> None:
+    damaged = replace(tick("m2609", 3000, 3001), **{field: value})
+
+    with pytest.raises(ValueError):
+        damaged.validate()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("balance", float("nan")),
+        ("equity", float("inf")),
+        ("available", -1.0),
+        ("margin", float("nan")),
+        ("realized_pnl", float("inf")),
+        ("unrealized_pnl", float("nan")),
+    ],
+)
+def test_account_risk_rejects_invalid_economic_truth(field: str, value: float) -> None:
+    account = AccountSnapshot(500000, 500000, 450000, 50000, 0, 0, "20260821")
+
+    decision = RiskManager().check_account(replace(account, **{field: value}))
+
+    assert not decision.allowed
+    assert "invalid account snapshot" in decision.reason
+
+
+@pytest.mark.parametrize(
+    ("side", "field", "value"),
+    [
+        ("local", "multiplier", float("nan")),
+        ("remote", "price_tick", float("inf")),
+        ("local", "margin_rate_long", 0.0),
+        ("remote", "margin_rate_short", float("nan")),
+    ],
+)
+def test_metadata_gate_rejects_invalid_contract_economics(
+    side: str,
+    field: str,
+    value: float,
+) -> None:
+    valid = ContractSpec("m2609", "DCE", 10, 1, 0.1, 0.1)
+    local = valid
+    remote = valid
+    if side == "local":
+        local = replace(valid, **{field: value})
+    else:
+        remote = replace(valid, **{field: value})
+
+    decision = validate_contract_metadata({"m2609": local}, {"m2609": remote})
+
+    assert not decision.allowed
+    assert "invalid" in decision.reason
+
+
+@pytest.mark.parametrize("side", ["local", "remote"])
+def test_metadata_gate_rejects_non_finite_or_negative_fees(side: str) -> None:
+    valid = ContractSpec("m2609", "DCE", 10, 1, 0.1, 0.1)
+    invalid = replace(valid, fee=FeeSpec(open_rate=float("nan")))
+    local, remote = (invalid, valid) if side == "local" else (valid, invalid)
+
+    decision = validate_contract_metadata({"m2609": local}, {"m2609": remote})
+
+    assert not decision.allowed
+    assert "invalid" in decision.reason
 
 
 def test_executable_spreads_are_directional():

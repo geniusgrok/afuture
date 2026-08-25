@@ -144,8 +144,27 @@ def test_load_rejects_invalid_runtime_state_field_types(
     "positions",
     [
         [{"symbol": "cu2609"}],
+        [{"symbol": "", "exchange": "SHFE"}],
+        [{"symbol": "cu2609", "exchange": ""}],
         [{"symbol": "cu2609", "exchange": "SHFE", "long_today": -1}],
         [{"symbol": "cu2609", "exchange": "SHFE", "short_today": "1"}],
+        [
+            {
+                "symbol": "cu2609",
+                "exchange": "SHFE",
+                "long_today": 1,
+                "long_price": 0.0,
+            }
+        ],
+        [
+            {
+                "symbol": "cu2609",
+                "exchange": "SHFE",
+                "short_today": 1,
+                "short_price": float("nan"),
+            }
+        ],
+        [{"symbol": "cu2609", "exchange": "SHFE", "long_price": -1.0}],
     ],
 )
 def test_load_rejects_invalid_position_payload(
@@ -156,6 +175,21 @@ def test_load_rejects_invalid_position_payload(
     write_envelope(path, state={"positions": positions})
 
     with pytest.raises(StateIntegrityError, match="invalid persisted position"):
+        StateStore(path).load()
+
+
+@pytest.mark.parametrize(
+    "recent_trade_ids",
+    [[""], [1], ["20260825:T1", "20260825:T1"]],
+)
+def test_load_rejects_invalid_recent_trade_id_history(
+    tmp_path: Path,
+    recent_trade_ids: list[object],
+) -> None:
+    path = tmp_path / "state.json"
+    write_envelope(path, state={"recent_trade_ids": recent_trade_ids})
+
+    with pytest.raises(StateIntegrityError, match="recent_trade_ids"):
         StateStore(path).load()
 
 

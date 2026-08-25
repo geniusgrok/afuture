@@ -125,8 +125,10 @@ class DirectionalTradingEngine(TradingEngine):
             account = self.broker.get_account()
         except Exception as exc:
             return f"daily circuit hard-risk classification failed: {exc}"
-        if account.equity <= 0:
-            return "equity is not positive"
+        try:
+            account.validate()
+        except (TypeError, ValueError) as exc:
+            return f"invalid account snapshot: {exc}"
 
         high_watermark = max(
             float(self.risk_manager.high_watermark or 0.0),
@@ -164,7 +166,7 @@ class DirectionalTradingEngine(TradingEngine):
             self.state.directional_daily_circuit_day = ""
 
         if (
-            reason in _ACCOUNT_RISK_REASONS
+            (reason in _ACCOUNT_RISK_REASONS or reason.startswith("invalid account snapshot:"))
             and hasattr(self, "directional_manager")
             and self.directional_manager.has_risk()
         ):
@@ -247,15 +249,16 @@ class DirectionalTradingEngine(TradingEngine):
             return
         super()._capture_quality_trade(trade)
 
-    def _handle_trade_event(self, trade) -> None:
+    def _handle_trade_event(self, trade) -> bool:
         expected = (
             self.directional_manager.directional_order_expectation(trade.order_id)
             if isinstance(trade, Trade)
             else None
         )
-        super()._handle_trade_event(trade)
-        if expected is not None and not self.halted:
+        processed = super()._handle_trade_event(trade)
+        if expected is not None and processed and not self.halted:
             self.directional_manager._finalize_quality_cycle_if_settled(self._reference_now())
+        return processed
 
     def _handle_order_event(self, order) -> None:
         super()._handle_order_event(order)
