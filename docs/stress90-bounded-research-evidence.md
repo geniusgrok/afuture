@@ -1,23 +1,25 @@
-# Stress90 Bounded Research Evidence
+# 压力研究过程与失败证据（历史代号 Stress-90）
 
-## Authority and baseline
+> 阅读说明：本文记录有界研究过程、使用次数和被拒绝路线。`Stress-90` 的数字表示预先设定的压力情景年化收益目标，不表示压力参数。原始研究字段保留英文以便与输出文件核对；术语定义见 [`glossary.md`](glossary.md)。
+
+## 基线
 
 - Base commit: `b4207abb50aca1e39d5ebba3affc04765857251a`.
 - Production checkpoint: Stress80 final candidate; live runtime wiring unchanged.
 - Candidate weight SHA256: `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`.
 - Exact pre-research Stress reproduction: annualized `80.067891%`, DD `-29.727688%`, turnover `337,934,465`, cost `506,901.6975`, net alpha `1,047,283.3025`, efficiency `30.990722 bps`, gross peak `1.683773x`, no HALT and zero margin rejects.
 
-## Bounded counters
+## 有界研究次数
 
 - Major hypothesis families used: `2 / 3`.
 - Production quick candidates used: `2 / 6`.
 - Final full matrices used: `1 / 2`.
 
-## Locked inherited negative evidence
+## 不再重复尝试的失败路线
 
 PR #21/#23 and the inherited evidence lock candidate-owned MPV, generic/no-trade suppress-only, generic integer tracking/floor/ceil/lot feasibility, exact hard-feasible margin, turnover-first survivor allocation, all-DCE OI/freeze, OI-selective freeze, raw member flow, standalone Price×OI×Volume/session portfolios, naive curve/basis and Candidate A/B product selection. None was retuned.
 
-## P0 Production attribution
+## 最高优先级的收益来源归因
 
 Behavior-neutral independent Stress account paths reconcile `initial equity + gross PnL - exact cost = final equity`:
 
@@ -29,7 +31,7 @@ Behavior-neutral independent Stress account paths reconcile `initial equity + gr
 
 The prior failure is gross expectancy, not mainly cost: entry plus increase gross is `-87,910` in prior1 and `-62,105` in prior2, versus `+1,416,250` recent. Recent increases alone contribute `+726,912.95` net, so generic turnover suppression would delete valid alpha. Recent AG and FU net alpha totals more than the portfolio because other products subtract value, identifying product leadership without authorizing product selection. Fixed holding cutoffs are not stable across windows. Capacity losses are material, but inherited generic integer/margin experiments already failed and were not reopened.
 
-## Family 1 — full-path drawdown-reserve correctness
+## 假设一：完整收益路径下的回撤预留
 
 The inherited simulator kept only the last two completed returns, so its documented running-high-watermark 25% reserve triggered on zero days. Full causal history would have triggered on `162`, `170` and `32` decision days in prior1, prior2 and full_recent. The zero-degree-of-freedom correctness candidate kept `25% = 30% hard DD - 5% daily-loss reserve`, froze only entry/same-side increase, and left every hard gate unchanged.
 
@@ -43,7 +45,7 @@ The inherited simulator kept only the last two completed returns, so its documen
 
 The full_recent account reaches the reserve and then permits reductions/exits while blocking recovery re-entry. The response self-extinguishes and fails both headline and efficiency gates. No threshold rescue was attempted. The winner below fixes the reserve definition without changing its measured path because every winner DD stays above the 25% boundary.
 
-## P1 causal regime attribution
+## 重要市场状态归因
 
 Causal labels used only current targets, prices completed before the decision day, the already-fixed 20-session horizon, zero/sign/unanimity boundaries, or a strictly prior expanding median. Appended future data and current-day close shocks cannot alter an earlier label. Market-trend sign, signal/trend alignment, exact directional unanimity and realized-volatility state did not isolate a stable positive prior regime.
 
@@ -58,7 +60,7 @@ Target-weight HHI relative to its strictly prior expanding median produced one s
 | full_recent | above prior median | 1,447,945.00 | 120,484.58 | 1,327,460.42 | 80,323,055 |
 | full_recent | not above prior median | -50,825.00 | 123,958.46 | -174,783.46 | 82,638,970 |
 
-## Family 2 — causal expanding-median leadership freeze
+## 假设二：基于历史中位数的新增风险冻结
 
 - **Economic rationale:** diffuse leadership loses after 15bp in all diagnostic windows, while concentrated recent leadership preserves the main alpha engine.
 - **Causal inputs:** absolute current causal target weights and earlier target HHI only. No realized candidate PnL, holdings outcome or future data.
@@ -80,6 +82,6 @@ Quick evidence:
 
 The frozen quick gate passes with no reasons. Stress full_recent improves by `32.032162` percentage points, DD by `15.160474` points, turnover by `131,096,315`, net alpha by `571,739.47`, and efficiency by `47.284141 bps`. Both prior windows become positive and stop HALTing. The ideal `>=90%` target is met, so no third hypothesis family or extra quick candidate was run.
 
-## Disposition
+## 结论
 
 The clean seven-window matrix reproduces the quick values exactly and the assembled frozen gate passes with no reasons. The remaining work is permanent-tree review/CI and merge identity verification; no second matrix or further hypothesis is authorized.

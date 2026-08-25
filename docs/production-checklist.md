@@ -1,38 +1,23 @@
 # 生产上线检查表
 
-这是**真实资金门**，不是代码完成清单。历史回测、production-mechanics proxy 和 GitHub CI 都不能代替真实 L1、测试柜台和未来未见数据。
+本表用于判断系统是否具备投入真实资金的证据，不等同于“代码可以启动”。术语和风险状态定义见 [`glossary.md`](glossary.md)。
 
-当前代码级状态：previous-day activity、trading-day signal gate、stale activity fail-closed、reduction-first、margin-aware target sizing、daily circuit、completed-return governor、realized-gross hard guard、gross-position flatten、restart reconciliation、directional execution-quality 和 production-mechanics acceptance 均已实现。
+历史回放、离线账户模拟和持续集成只能证明代码及固定输入下的行为，不能替代真实盘口、测试柜台和新发生数据。以下未完成项全部通过前，不应扩大真实资金。
 
-当前最高级别经济证据是 PR #25 的离线 Stress-90 production-research checkpoint：Base full_recent **156.881655% 年化 / 15.708467% 最大回撤 / 1.983123x gross peak**；Stress full_recent **112.100053% 年化 / 14.567214% 最大回撤 / 1.670510x gross peak / 0 margin rejects / no HALT**。Train、validation、OOS、prior1、prior2 也为正且无 HALT。
+## A. 已完成的离线机械验证
 
-这满足冻结的研究 promotion gate，但 **PR #25 明确没有接入 live runtime**。它不缩短 Shadow、测试柜台、小资金和未来未见数据门，也不是未来收益承诺。
-
-## A. 历史与账户机械证据
-
-- [x] specific-contract 不使用 continuous roll jump 作为收益。
-- [x] t→t+1 收益来自 t 日已选择同一具体合约。
-- [x] 20 天交割黑窗。
-- [x] signal target gross ≤2x。
-- [x] Float Base 5bp 年化 107.4623%。
-- [x] `pristine_final_oos=false` 与历史选择偏差明确记录。
-- [x] Production L3 使用 frozen multipliers / integer lots / max contract volume 35。
-- [x] Production L3 使用 margin/cash/daily-loss/high-watermark hard gates。
-- [x] Production L3 使用 causal completed-return governor：-2% daily loss / 3% two-day sample vol → 25%。
-- [x] Production L3 使用 actual realized-gross hard ceiling 2.0x。
-- [x] Production L3 使用 adaptive margin-aware target sizing：无历史/平静基线约 30% equity，completed shock 高于 3% 时只继续收缩，35% hard margin gate 不变。
-- [x] Production L3 输出 turnover attribution，并验证每个 bucket 求和等于总 turnover。
-- [x] completed-activity 选约保留仍 eligible 的 incumbent；challenger 只有 OI 和 volume 同时更高才切换。
-- [x] margin-fitted 同方向 `+1 lot` 增仓可在 incumbent 仍满足 soft margin / 2x gross 时保持不动；减仓与风险动作不被抑制。
-- [x] **Stress-90 Base full_recent 年化：156.881655%。**
-- [x] **Stress-90 Stress full_recent 年化：112.100053%。**
-- [x] **Stress-90 Stress 最大回撤 ≤30%：14.567214%。**
-- [x] **Stress-90 Stress realized gross ≤2x：1.670510x。**
-- [x] **Stress-90 全部七个矩阵行无 HALT、0 margin rejects。**
-- [x] PR #25 Python 3.10/3.13 主 CI run `32798895640` 通过。
-- [x] PR #25 不改变 live runtime wiring 的边界已记录。
+- [x] 连续合约换月跳空不计入收益。
+- [x] D 到 D+1 的收益来自 D 日已经选定的同一具体合约。
+- [x] 距到期不足 20 天的合约不能新增风险。
+- [x] 目标和实际总敞口均受 2 倍权益硬限制。
+- [x] 账户模拟使用整数手数、固定合约乘数、手续费、保证金、可用资金、单日亏损和权益高水位。
+- [x] 减仓先于开仓，成交驱动持仓和资金记账。
+- [x] 标准与压力情景的账户模拟均未触发保证金拒绝或硬停机。
+- [x] 样本外区间已经被观察，不再标记为纯净样本外。
+- [x] 当前离线研究候选没有自动接入实盘。
+- [x] 完整输入、分段结果和失败路线已保存在 [`stress90-final-evidence.md`](stress90-final-evidence.md)。
 - [ ] 新发生、此前未参与任何选择/调参的未来数据持续验证。
-- [ ] 未来显著恶化时优先降低/关闭风险，不在同一历史上无限追参。
+- [ ] 未来显著恶化时优先降低或关闭风险，不在同一历史上无限调参。
 
 ## B. 当前生产风险门认知
 
@@ -57,7 +42,7 @@
 - [ ] `rebalance_window` 经过测试柜台验证。
 - [ ] margin / available / daily-loss / DD 已按真实承受能力确认。
 
-## D. Previous-day activity snapshot
+## D. 上一完整交易日的流动性快照
 
 - [ ] CTP catalog 覆盖冻结 50 品种。
 - [ ] 连续观察至少一个完整 trading day，生成 `directional_activity.json`。
@@ -70,7 +55,7 @@
 - [ ] 重启后能恢复最近 completed snapshot。
 - [ ] completed activity 比最新完整 signal day 陈旧时 fail-closed。
 
-## E. Signal / meta / governor
+## E. 信号日期、策略状态和仓位收缩
 
 - [ ] 50 品种 continuous OHLC 在 Shadow 中连续多日成功。
 - [ ] 最新 OHLC 覆盖 `completed_activity_snapshot.trading_day`。
@@ -85,7 +70,7 @@
 - [ ] 当前 session PnL 不会前视进入 governor。
 - [ ] -2% loss / 3% two-day volatility 的 25% defensive scaling 在 Shadow 可解释。
 
-## F. Margin-aware sizing / reduction-first / gross guard
+## F. 保证金约束、先减后开和总敞口限制
 
 - [ ] live target 使用 Broker side-specific margin rate、mid、multiplier、buffer 计算逐手 margin。
 - [ ] 当前 35%/25%/5% 配置下平静 target margin share 约为 30%，completed shock 高于 3% 时能因果收缩。
@@ -103,7 +88,7 @@
 - [ ] 同一合约同时有 long/short 毛仓时 flatten 两边都能平，不因 net=0 漏风险。
 - [ ] reduction FAK 未成交/partial 后下一 cycle 以 Broker 真实持仓重算。
 
-## G. Daily circuit / hard halt
+## G. 单日风控熔断和硬停机
 
 - [ ] 5% daily-loss 触发当日 flatten 并禁止重新加风险。
 - [ ] 同一 trading day 不自动恢复。
@@ -144,7 +129,7 @@
 - [ ] query/order 流控不过载。
 - [ ] Broker margin/commission 与 metadata/结算单一致。
 
-## J. Restart / state truth
+## J. 重启和状态真相
 
 - [ ] 每次第二次及后续 state save 产生 `<state>.prev`，内容是上一份通过 checksum 的 envelope。
 - [ ] 损坏 current state 时程序返回失败，绝不自动采用 `.prev`。
@@ -202,14 +187,12 @@
 - [ ] 实盘回撤符合风险预算。
 - [ ] 已重新评估 15bp/高 margin Stress 与真实执行差异。
 
-Stress-90 的 156.881655% Base 与 112.100053% Stress 都是**已观察历史 proxy**。这些数字不改变 live 风险权限，也不是未来收益承诺。
+离线研究指标不能改变实盘风险权限，也不是未来收益承诺。
 
-## O. 研究晋级与 live 激活边界
+## O. 离线研究和实盘启用边界
 
-- [x] Stress-80 checkpoint 可精确回归：Stress 80.067891%、DD 29.727688%、0 rejects、无 HALT。
-- [x] Stress-90 bounded promotion gate 通过：Stress 112.100053%、DD 14.567214%、0 rejects、无 HALT。
-- [x] 研究没有放宽 2x gross、35% margin、25% available、5% daily loss、30% drawdown 或 35 lots。
-- [x] 失败路线和 standalone reserve collapse 保留为负证据，没有 rescue tuning。
-- [x] Stress-90 没有接入 live runtime。
-- [ ] 若将 Stress-90 策略接入 live，必须有独立设计、warmup/restart/stale-data/session/roll/live-offline-equivalence 测试和重新审批。
+- [x] 离线压力研究没有放宽 2 倍总敞口、35% 保证金、25% 可用资金、5% 单日亏损、30% 总回撤或 35 手限制。
+- [x] 失败路线保留在证据文档，没有通过事后调整参数挽救。
+- [x] 当前离线研究候选没有接入实盘。
+- [ ] 若把离线候选接入实盘，必须有独立设计，并验证启动预热、重启、陈旧数据、交易时段、换月和线上线下一致性。
 - [ ] 不以离线年化通过为由跳过 Shadow、测试柜台、小资金或未来新数据。

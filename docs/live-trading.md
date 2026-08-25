@@ -1,27 +1,34 @@
-# 实盘、Shadow、停机与恢复
+# 实盘、影子运行、停机与恢复
 
-## 1. 正式模式与证据边界
+本文是 CTP 运行手册。Shadow（影子运行）使用实时 CTP 信息，但订单、成交、持仓和资金全部由本地模拟 Broker 维护，绝不向柜台发送委托。术语和公式见 [`glossary.md`](glossary.md)。
 
-`afuture` 支持两种账户互斥模式：Calendar Spread / Auto 与 Execution-Aligned Directional。两者共用 Broker、`RiskManager`、Kill Switch、`REDUCE_ONLY`、StateStore、启动对账和审计链。
+## 1. 适用范围
 
-Directional 必须区分 live wiring 与离线 checkpoint：PR #25 Stress-90 的 Base 156.881655% / Stress 112.100053% 是固定输入 production-research proxy，全部矩阵行无 HALT、0 margin rejects，但**没有接入 live runtime**。Live 仍使用本文件描述的 Execution-Aligned Directional runtime、Broker/RiskManager 权限和账户 hard gates。历史结果不能作为真实资金收益承诺，也不能跳过本运行手册。
+`afuture` 支持两种账户互斥模式：
+
+- 跨期价差：固定组合或自动选择相邻月份合约；
+- 方向组合：根据已完成数据生成品种目标。
+
+两种模式共用 Broker、账户风控、停机开关、只减仓状态、状态存储、启动对账和审计链。
+
+当前离线压力研究候选没有接入实盘。离线高收益不能替代真实行情、测试柜台、未来数据和小资金验证。
 
 ## 2. 推荐上线顺序
 
 ```text
-固定历史 L3/L4
-→ 多交易日 CTP Shadow
-→ CTP doctor
-→ 测试柜台 FAK/partial/reject/reconnect/margin sizing/gross guard
+固定历史回放和压力验证
+→ 连续多个交易日 CTP Shadow
+→ CTP 无报单预检
+→ 测试柜台验证订单、部分成交、拒单、重连和保证金
 → 极小真实仓位
-→ execution-quality / 结算单核对
-→ 新发生未来数据
+→ 核对执行质量和结算单
+→ 用新发生数据复核
 → 再决定是否扩大风险
 ```
 
-不再围绕同一两年历史继续追更高收益数字。
+不能通过继续调整同一历史数据来替代这些步骤。
 
-## 3. 凭证
+## 3. 凭证和实盘确认
 
 CTP 凭证只从环境变量读取：
 
@@ -33,212 +40,202 @@ AFUTURE_CTP_APP_ID
 AFUTURE_CTP_AUTH_CODE
 ```
 
-真实生产还要求：
+真实生产还必须设置：
 
 ```text
 AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 ```
 
-以及 `--confirm-live`。
+并在命令行显式传入 `--confirm-live`。
 
-## 3.1 本地状态与 CTP 预检
+## 4. 启动前检查
 
-先运行完全本地、只读的状态检查：
+### 4.1 本地只读状态
 
 ```bash
 afuture status --config config/afuture.directional-live.example.toml
 ```
 
-它不会初始化日志、连接 CTP 或修改文件，也不要求注入 CTP 用户名、密码和 Broker ID。报告包含当前 checksum state、显式 `state.json.prev`、Kill Switch/runtime mode、持仓摘要、audit/alert 大小、路径可写性和最少 100 MiB 磁盘余量。当前 state 不可信时返回 2；`.prev` 只用于人工诊断，不能自动恢复或绕过 `recover-state`。
+`status` 不初始化日志、不连接 CTP、不修改文件，也不需要 CTP 用户名、密码和 Broker ID。它检查：
 
-设置 `AFUTURE_LIVE_ACK` 后运行无报单 CTP gate：
+- 当前状态文件和上一版本证据的完整性；
+- 停机开关、运行状态和持仓摘要；
+- 审计、告警文件大小；
+- 运行路径是否可写、可访问；
+- 磁盘是否至少剩余 100 MiB。
+
+当前状态损坏时命令返回 2。`state.json.prev` 只供人工诊断，不能自动恢复，也不能绕过 `recover-state`。
+
+### 4.2 CTP 无报单预检
 
 ```bash
 afuture doctor --config config/afuture.directional-live.example.toml --confirm-live
 ```
 
-`doctor` 等待新的账户事件和完整持仓快照，随后检查账户数值、broker/account trading day、margin/available/daily-loss/drawdown 限制、活动委托、catalog、抽样 live metadata、本地期望持仓对账、Kill Switch、runtime mode、上次持久化安全门和 Directional completed activity。Directional activity 复用正式选约的 product/exchange、expiry、volume/OI 门；activity 的 symbol、product、exchange 必须与 catalog 同一条 identity 完全一致，且配置内每个 product 都必须有合格 catalog/activity 覆盖。任一无关、身份冲突或低流动性快照都不能冒充 ready。JSON 中任一 `checks[].passed=false` 都使进程返回 2；报告中的 `orders_sent` 固定为 0。Directional 新部署必须先观察一个完整 trading day 生成 activity evidence，预检才会通过。
+`doctor` 连接 CTP 并等待新的账户事件和完整持仓快照，但没有报单入口。它检查：
 
-## 4. Directional 冻结配置
+- 登录、交易日和快照是否最新；
+- 账户数值、保证金、可用资金、单日亏损和总回撤；
+- 活动委托；
+- 合约目录、乘数、最小变动价位、保证金和手续费；
+- 本地预期持仓与柜台持仓；
+- 停机开关、运行状态和持久化安全门；
+- 方向组合需要的上一完整交易日流动性证据。
 
-使用 `config/afuture.directional-live.example.toml` 作为 test/Shadow 起点：
+任一检查失败都返回 2，输出中的 `orders_sent` 必须为 0。方向组合新部署要先观察一个完整交易日，形成流动性快照后才可能通过。
 
-- 冻结 50 品种 / 96 templates；
-- meta lookback 11 / rebalance 3 / active 3；
-- meta：5bp Base 与 15bp Stress evidence 都存活后按 Base score 排名；
-- gross target 上限 2.0x；
-- directional 单合约上限 35 手；
-- 20 天 expiry filter；
-- `20:55-09:10` 跨午夜 rebalance window；
-- max margin 35%；
-- min available 25%；
-- daily loss 5%；
-- total drawdown 30%；
-- fresh quote / depth / limit / order-rate 硬门。
+## 5. 方向组合示例配置
 
-## 5. Margin-aware target sizing
+`config/afuture.directional-live.example.toml` 只适合作为测试和 Shadow 起点：
 
-Signal gross 仍可到 2.0x，但目标手数在开仓前先使用 Broker live `ContractSpec` 做 margin feasibility sizing：
+| 项目 | 当前示例值 |
+| --- | ---: |
+| 配置品种数 | 50 |
+| 预先固定的信号组合数 | 96 |
+| 目标和实际总敞口上限 | 2.0 倍权益 |
+| 单合约手数上限 | 35 |
+| 距到期日最短天数 | 20 |
+| 保证金占权益上限 | 35% |
+| 可用资金占权益下限 | 25% |
+| 单日亏损限制 | 5% |
+| 总回撤限制 | 30% |
 
-```text
-hard_share = min(max_margin_ratio, 1 - min_available_ratio)
-conservative = max(0, hard_share - max_daily_loss_ratio)
-shock = clamp(max(3%, abs(latest completed return), two-day sample volatility), 3%, 5%)
-soft_target_share = min(conservative, conservative * (1 - max(0, shock - 3%)))
-```
+此外还启用行情新鲜度、盘口深度、涨跌停距离和订单频率限制。示例值不是对所有账户都安全，必须按真实资金、合约和承受能力确认。
 
-当前配置的无历史/平静基线为 `35% - 5% = 30% equity`；completed shock 高于 3% 时 soft target 进一步收缩。
+## 6. 保证金约束下的目标手数
 
-这不是把 hard gate 改成 30%。语义是：
-
-1. 正常 target 不主动贴着 35% hard margin boundary；
-2. 多头使用 `margin_rate_long`，空头使用 `margin_rate_short`；
-3. 结合当前 mid、multiplier、`margin_estimate_buffer=1.25` 计算逐手 margin；
-4. integer fitter 只向下缩手数，缺少可信 margin evidence 时 fail-closed；
-5. 生成 openings 后，原 `RiskManager.check_open_orders()` 仍重新检查 35% max margin 和 25% min available，并拥有最终否决权。
-6. margin fitting 后若只是同方向 `+1 lot` 增仓，且当前持仓本身仍在 soft margin 与 2x gross 内，可保持 incumbent lot；减仓、反转、换月、daily circuit 与 gross guard 不受该 no-trade 规则抑制。
-
-Shadow/test 必须对比 modeled target margin 与 Broker 实际冻结保证金；真实逐品种/逐日 margin 与历史 12%/15% proxy 不同是预期情况。
-
-## 6. Previous-day activity snapshot
-
-生产不在开盘后用当前交易日累计 OI/volume 重新挑主力。
-
-`DirectionalActivityTracker` 按 CTP `Tick.trading_day` 记录每个允许合约最后可见 activity。trading day 从 D 推进时：
+品种目标总敞口可以达到 2 倍权益，但开仓前必须使用 CTP 返回的合约参数计算每手保证金，并把目标只向下缩减：
 
 ```text
-D 日最终 volume/OI
-→ DirectionalActivitySnapshot
-→ 原子保存 directional_activity.json
-→ D+1 选约只读 completed snapshot
+硬保证金份额 = min(最大保证金比例, 1 - 最小可用资金比例)
+保守份额 = max(0, 硬保证金份额 - 单日亏损限制)
+近期冲击 = 3% 到 5% 之间的：
+           max(3%, 最近完整日收益绝对值, 两日收益样本波动)
+正常目标份额 = min(保守份额,
+                   保守份额 × (1 - max(0, 近期冲击 - 3%)))
 ```
 
-D+1 当前 Tick 仍用于 fresh quote、bid/ask、depth、limit、价格、margin sizing 和下单，但不能改变 D 已冻结 activity evidence。已有持仓合约若仍 eligible，会继续作为 incumbent；只有另一个合约在 D 日 completed OI **和** volume 两项都严格更高时才换月，expiry/listing/activity 失效则立即按确定性排名切换。
+当前示例配置在历史不足或市场平静时以约 30% 权益为正常目标；近期冲击高于 3% 时只会继续收缩。
 
-新部署无 completed snapshot 时不新增风险；重启 snapshot 若落后于已确认完整 OHLC day，也 fail-closed。
+执行规则：
 
-## 7. Signal-day freshness 与 meta
+1. 多头使用多头保证金率，空头使用空头保证金率；
+2. 使用当前中间价、合约乘数和 `margin_estimate_buffer=1.25` 计算每手保证金；
+3. 整数手数拟合只能减少目标，缺少可信保证金数据时拒绝开仓；
+4. 生成开仓单后，账户风控再次检查 35% 保证金和 25% 可用资金限制，并拥有最终否决权；
+5. 减仓、反转、换月、单日熔断和总敞口减仓不受减少换手规则抑制。
+
+Shadow 和测试柜台必须比较模型保证金与柜台实际冻结保证金。历史固定比例与真实逐品种、逐日保证金不同是预期现象。
+
+## 7. 上一完整交易日的流动性快照
+
+系统不能在开盘后使用当前交易日尚未完成的累计成交量和持仓量重新选择主力合约。
+
+`DirectionalActivityTracker` 按柜台交易日记录每个允许合约最后可见的成交量和持仓量。交易日从 D 推进时：
 
 ```text
-required_signal_day = completed activity day
-continuous OHLC latest day >= required_signal_day
+D 日最终成交量和持仓量
+→ 保存为 directional_activity.json
+→ D+1 选约只读这份完整快照
 ```
 
-`signal_max_age_hours` 只做第二层长期停更/未来 timestamp 保护。
+D+1 实时行情仍用于价格、盘口、涨跌停、保证金和下单，但不能改变 D 日已经冻结的流动性证据。
 
-Meta 只使用已完成 continuous open→close evidence：模板必须同时在 5bp Base 和 15bp Stress 成本端点存活，然后按 Base score 排名。Stress 是 robustness filter，不是用已观察历史做 50/50 收益最大化。
+已有持仓合约只要仍然符合挂牌、到期和流动性条件就优先保留。只有新合约的持仓量和成交量都严格更高时才换月。快照中的合约、品种和交易所必须与合约目录一致。
 
-## 8. Completed-return governor
+新部署没有完整快照时不新增风险；重启后的快照落后于已确认的价格历史时同样拒绝新增风险。
 
-Directional engine 只保存**已完成交易日账户收益**：
+## 8. 信号新鲜度和仓位收缩
+
+方向组合的价格历史必须覆盖流动性快照对应的交易日。长期停更或时间戳落在未来都会失败关闭。
+
+预先固定的信号组合必须同时通过标准成本和压力成本验证，运行期间不能重新拟合历史参数。
+
+引擎只使用已经完成交易日的账户收益决定下一目标：
 
 ```text
-latest completed daily return <= -2%
-OR two-day sample volatility >= 3%
-→ next target scale = 25%
-else
-→ 100%
+最近完整日收益 <= -2%
+或者两日收益样本波动 >= 3%
+→ 下一目标缩小到原来的 25%
+
+否则
+→ 保持 100%
 ```
 
-当前交易日 PnL 不参与当前目标。Governor 只能降风险。
+当前交易日尚未完成的盈亏不能影响当前目标。该规则只能降低风险。
 
-## 9. Realized-gross hard guard
+## 9. 先减仓、后开仓
 
-1. signal target 必须 `<=2.0x`；
-2. manager 读取 Broker 真实仓位、实时 quote、contract multiplier 和 account equity；
-3. 每个 tick 检查 marked gross；
-4. actual gross `>2.0x` 时只发送 reduction-only FAK；
-5. active reduction order 未结算时不重复发送；
-6. 无法安全计算/执行且仍有风险时进入 fail-closed `REDUCE_ONLY`。
+每个行情事件都根据柜台真实持仓重新计算总名义敞口：
 
-Margin sizing 与 gross guard 不能互相替代：一个约束保证金需求，一个约束实际名义风险。
+1. 目标和实际总敞口都不得超过账户权益的 2 倍；
+2. 实际总敞口超限时只发送减仓 FAK；
+3. 已有减仓委托未结束时不重复发送；
+4. 无法安全计算或执行且账户仍有风险时进入只减仓状态；
+5. 某个新目标缺少合格合约或最新行情时，只禁止该产品新增风险，不能阻塞其他必要减仓；
+6. 所有减仓经 Broker 确认后，下一轮才允许开仓。
 
-## 10. 合约不可用与 reduction-first
+同一合约同时存在多头和空头毛仓时，系统分别生成平仓单，不能因为净仓为零而漏掉风险。
 
-某个新目标产品没有 eligible contract/fresh quote 时不整体阻塞组合减仓：
+正常开仓只有在对手一档深度覆盖整笔数量时才使用当前最优对手价，否则使用更保守的价格。这个优化不改变强制减仓价格和风险权限。
 
-1. 读取 Broker positions；
-2. 计算目标；
-3. target=0、反转、超额风险等 reductions 先执行；
-4. 缺失新目标只禁止对应产品新增/换月；
-5. reductions 经 Broker 确认后的下一 cycle 才允许 openings。
-6. 正常 opening 只有在当前对手一档显示深度覆盖整笔 requested volume 时，FAK limit 使用 best opposite quote；否则保持原 aggressive tick。该规则不用于 reduction。
-
-同一合约如果同时存在多空毛仓，flatten 按 long/short 毛仓分别生成平仓单，不能因为净仓为 0 判断“已经 flat”。
-
-## 11. Shadow
+## 10. Shadow 影子运行
 
 ```bash
 afuture shadow --config config/afuture.directional-live.example.toml --duration-seconds 3600
 ```
 
-Directional Shadow 使用真实 CTP catalog/tick/trading day/metadata 和正式 signal/activity/risk 逻辑；账户/订单/成交/持仓由本地 SimBroker 维护，不调用真实 CTP `send_order()`。
+Shadow 使用真实 CTP 合约目录、行情、交易日和合约参数，以及正式策略和风控逻辑；账户、订单、成交和持仓由本地 `SimBroker` 维护。
 
-必须重点记录：
+至少记录并复核：
 
-- signal gross / margin-fitted target / actual gross；
-- modeled per-lot margin vs Broker metadata；
-- margin sizing 缩手事件及剩余 headroom；
-- gross guard 触发及 reduction 后 actual gross；
-- target lots vs actual lots；
-- margin ratio / available ratio；
-- daily loss / high-watermark drawdown；
-- completed-return governor scale；
-- daily circuit 与次日恢复；
-- planned vs realized turnover；
-- median/p95 slippage、commission、partial/reject；
-- 主力切换是否与 previous-day activity 一致。
+- 目标总敞口、保证金缩减后的目标和实际总敞口；
+- 模型每手保证金与 CTP 合约参数；
+- 目标手数与实际手数；
+- 保证金比例、可用资金、单日亏损和高水位回撤；
+- 计划与实际换手；
+- 滑点中位数和 95 分位数、手续费、部分成交和拒单；
+- 主力合约切换是否符合上一完整交易日的流动性证据。
 
-## 12. Doctor
+## 11. 单日熔断、硬停机和恢复
 
-```bash
-afuture doctor --config config/afuture.directional-live.example.toml --confirm-live
-```
-
-Doctor 只检查登录、account/position snapshot、catalog、multiplier、price tick、margin、commission metadata，不包含真实报单入口。
-
-## 13. Daily circuit 与 hard halt
-
-5% daily-loss 是同 trading-day circuit：
+单日亏损达到 5% 时：
 
 ```text
-RUNNING
-→ daily-loss breach
-→ REDUCE_ONLY / flatten
-→ 当日不重新承担风险
-→ 后续 CTP trading day 安全检查
-→ RUNNING
+正常运行
+→ 进入只减仓并退出风险
+→ 当日不重新开仓
+→ 下一柜台交易日重新完成安全检查
+→ 恢复正常运行
 ```
 
-恢复必须满足 Broker ready、无 active order、无残余 directional risk、metadata verified、账户 hard gates 通过、startup reconciliation 通过。
+总回撤、保证金、可用资金、非正权益、合约参数、持仓对账或基础设施异常属于硬停机或人工处理路径，不能在下一交易日自动恢复。
 
-以下仍是 hard/manual halt：total drawdown、margin ratio、available cash、nonpositive equity、metadata/reconciliation/infrastructure failure。
+恢复正常运行前必须满足：
 
-## 14. 启动对账与 execution quality
+- Broker 已就绪；
+- 没有活动委托；
+- 没有未处理的方向风险；
+- 合约参数已经验证；
+- 账户限制全部通过；
+- 启动对账通过。
 
-Directional 不持久化第二份策略仓位。重启必须以 Broker 完整 account/positions 为真相并与 StateStore 对账；任何 mismatch 都 fail-closed。
+`recover-state` 只是人工恢复入口，不能跳过停机原因和柜台对账。
 
-`ExecutionQualityRecorder` 的 directional 证据包括：
+## 12. 启动对账与执行质量
 
-- rebalance：signal/activity day、target、planned turnover；
-- fill：Broker callback 的 fill/slippage/commission；
-- cycle：realized turnover、tracking error、latency、partial/reject。
+方向组合不持久化第二份策略持仓。重启时以 Broker 完整账户和持仓为真相，与 `StateStore` 中的预期状态核对；任何差异都失败关闭。
 
-持续检查 `quality-report.directional`。
+`ExecutionQualityRecorder` 记录：
 
-## 15. Production research 的边界
+- 调仓：信号日期、流动性日期、目标和计划换手；
+- 成交：实际价格、滑点、手续费、延迟、部分成交和拒单；
+- 周期：实际换手、目标偏差和剩余风险。
 
-当前固定历史 checkpoint：
+使用 `afuture quality-report` 持续汇总这些证据，并与结算单核对。
 
-```text
-Base full_recent    156.881655% annualized / 15.708467% DD / no HALT
-Stress full_recent  112.100053% annualized / 14.567214% DD / no HALT
-```
+## 13. 离线研究与实盘边界
 
-Stress-90 已通过冻结 promotion gate，但仍是离线 proxy，不是未来收益下限，也不是 live activation。
+当前离线压力研究结果来自固定历史输入和确定性账户模拟。它没有覆盖多年完整盘口排队、柜台限流、断线、逐日保证金、实际结算费率和极端行情冲击，也没有接入实盘策略。
 
-仍缺多年历史真实 L1 bid/ask/depth/queue、partial/reject、CTP 流控、逐日 Broker margin schedule、真实结算手续费和 market impact。因此下一步应取得真实 Shadow/test/small-capital/new-data 证据，而不是继续拟合同一历史。
-
-## 16. Research checkpoint 对实盘行为的影响
-
-**PR #25 没有改变 live economic behavior。** Stress-90 的 causal leadership response、60m candidate 与 research CSV artifacts 没有连接到 live runtime。实盘仍以 Broker/CTP 为唯一账户、订单、成交、持仓真相；reduction-first、5% daily circuit、hard/manual halt、35% margin、25% available、30% total DD、35 lots、target/realized gross <=2x 全部不变。
+完整离线结果见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。真实资金上线条件以 [`production-checklist.md`](production-checklist.md) 为准，不能用历史指标代替。
