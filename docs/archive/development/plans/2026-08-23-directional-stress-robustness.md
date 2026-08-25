@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10/3.13, pandas, NumPy, pytest, GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-08-23-directional-stress-robustness-design.md`
+**Spec:** `docs/archive/development/specs/2026-08-23-directional-stress-robustness-design.md`
 
 ## Global Constraints
 
@@ -98,8 +98,8 @@
 
 **Files:**
 - Update: `README.md`
-- Update: `docs/return-target-100-evidence.md`
-- Update: `docs/directional-production-mechanics-evidence.md`
+- Update: `docs/archive/evidence/return-target-100-evidence.md`
+- Update: `docs/archive/evidence/directional-production-mechanics-evidence.md`
 - Update other directional production docs only where semantics changed.
 - Restore: `.github/workflows/ci.yml`
 - Delete: `.github/workflows/stress-robustness-targeted.yml`

@@ -74,6 +74,26 @@ def test_previous_completed_activity_controls_contract_selection_not_current_tic
     assert selected["A"].symbol == "A2609"
 
 
+def test_contract_selection_rejects_activity_identity_that_conflicts_with_catalog():
+    snapshot = _snapshot(old_volume=20_000, old_oi=50_000, new_volume=0, new_oi=0)
+    inconsistent = snapshot.contracts["A2609"]
+    snapshot.contracts["A2609"] = ContractActivity(
+        inconsistent.symbol,
+        "SHFE",
+        "RB",
+        inconsistent.trading_day,
+        inconsistent.volume,
+        inconsistent.open_interest,
+        inconsistent.timestamp,
+    )
+
+    selected = select_contracts_from_activity(
+        _config(), list(_catalog().values()), snapshot, date(2026, 8, 25)
+    )
+
+    assert selected == {}
+
+
 def _snapshot(*, old_volume: float, old_oi: float, new_volume: float, new_oi: float):
     timestamp = datetime(2026, 8, 21, 7, 0, tzinfo=timezone.utc)
     return DirectionalActivitySnapshot(

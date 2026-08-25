@@ -56,14 +56,36 @@ class StateStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
+    @property
+    def previous_path(self) -> Path:
+        """Return the explicit last-known-good evidence path.
+
+        The runtime never falls back to this file automatically. Operators may inspect
+        it when diagnosing a corrupt or accidentally replaced current state.
+        """
+        return self.path.with_name(f"{self.path.name}.prev")
+
     def load(self) -> RuntimeState:
         if not self.path.exists():
             return RuntimeState()
-        return self._read_verified().state
+        return self._read_verified(self.path).state
 
-    def _read_verified(self) -> _DecodedState:
+    def load_previous(self) -> RuntimeState | None:
+        """Load the verified previous state without changing current-state semantics."""
+        if not self.previous_path.exists():
+            return None
+        return self._read_verified(self.previous_path).state
+
+    def _read_verified(self, path: Path) -> _DecodedState:
+        return self._decode_verified(path.read_bytes())
+
+    def _decode_verified(self, payload: bytes) -> _DecodedState:
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise StateIntegrityError("invalid state UTF-8") from exc
+        try:
+            raw = json.loads(text)
         except json.JSONDecodeError as exc:
             raise StateIntegrityError("invalid state JSON") from exc
         if not isinstance(raw, dict):
@@ -149,6 +171,9 @@ class StateStore:
                 position.validate()
             except (TypeError, ValueError) as exc:
                 raise StateIntegrityError("invalid persisted position") from exc
+        position_symbols = [str(item["symbol"]) for item in positions]
+        if len(position_symbols) != len(set(position_symbols)):
+            raise StateIntegrityError("state field positions contains duplicate symbols")
         for name in object_fields:
             values = payload.get(name, {})
             if any(not isinstance(value, dict) for value in values.values()):
@@ -179,10 +204,12 @@ class StateStore:
 
     def save(self, state: RuntimeState) -> None:
         sequence = 1
+        previous_bytes: bytes | None = None
         if self.path.exists():
             # A corrupt target is incident evidence, not an empty state.  Verify it
             # before creating a replacement so sequence history cannot silently reset.
-            sequence = self._read_verified().sequence + 1
+            previous_bytes = self.path.read_bytes()
+            sequence = self._decode_verified(previous_bytes).sequence + 1
         state_payload = asdict(state)
         self._state_from_payload(state_payload)
         envelope = {
@@ -191,27 +218,33 @@ class StateStore:
             "state": state_payload,
         }
         envelope["checksum"] = self._checksum(SCHEMA_VERSION, sequence, state_payload)
+        encoded = json.dumps(
+            envelope,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if previous_bytes is not None:
+            # Preserve only state that has just passed envelope/checksum validation.
+            # Backup failure aborts before replacing the authoritative current state.
+            self._atomic_replace(self.previous_path, previous_bytes)
+        self._atomic_replace(self.path, encoded)
+
+    @staticmethod
+    def _atomic_replace(target: Path, payload: bytes) -> None:
         temp_path: Path | None = None
         try:
             with NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                dir=self.path.parent,
+                "wb",
+                dir=target.parent,
                 delete=False,
             ) as handle:
                 temp_path = Path(handle.name)
-                handle.write(
-                    json.dumps(
-                        envelope,
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                    )
-                )
+                handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            temp_path.replace(self.path)
+            temp_path.replace(target)
         finally:
             if temp_path is not None and temp_path.exists():
                 temp_path.unlink()

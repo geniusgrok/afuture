@@ -9,7 +9,7 @@
 
 ## 当前基线与证据边界
 
-本轮工程治理继承 `main` merge `482455dc57bc6a134f45232e290b4a49c3f7073d`，即 [PR #25](https://github.com/ychenracing/afuture/pull/25) 的 Stress-90 研究 checkpoint；它继续包含 [PR #24](https://github.com/ychenracing/afuture/pull/24) Stress-80 checkpoint `b4207abb50aca1e39d5ebba3affc04765857251a`。
+当前工程基线继承 [PR #26](https://github.com/ychenracing/afuture/pull/26) 的工业重构 merge `34fd0210b914b847ed10ecadead53b62015a32af`。研究 checkpoint 与工程基线分开记录：当前 production-research checkpoint 仍是 [PR #25](https://github.com/ychenracing/afuture/pull/25) 的 Stress-90 merge `482455dc57bc6a134f45232e290b4a49c3f7073d`，并继续包含 [PR #24](https://github.com/ychenracing/afuture/pull/24) Stress-80 checkpoint `b4207abb50aca1e39d5ebba3affc04765857251a`。
 
 Stress-90 是固定输入、离线 production-mechanics evaluator 的验证结果，**没有接入 live runtime**。PR #25 的 Python 3.10/3.13 主 CI 已在 run `32798895640` 通过。
 
@@ -63,14 +63,17 @@ Stress-80/90 研究模块建立在同一 deterministic account evaluator 上，�
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev]" -c constraints/core-dev.txt
 ```
 
 连接 CTP 与 AKShare：
 
 ```bash
-python -m pip install -e ".[live,dev]"
+python -m pip install -e ".[live,dev]" \
+  -c constraints/core-dev.txt -c constraints/live.txt
 ```
+
+`pyproject.toml` 声明支持范围；`constraints/core-dev.txt` 固定 Python 3.10–3.13 的 core/dev 直接依赖，`constraints/live.txt` 固定 CTP/AKShare 直接依赖。CTP 含平台原生 wheel，目标交易机仍必须单独验证安装和柜台兼容性，不能把跨平台 constraints 当成二进制可用证明。
 
 ## 配置
 
@@ -115,8 +118,11 @@ afuture accept --config config/afuture.example.toml --data examples/research_tic
 afuture accept-auto --config config/afuture.auto-replay.example.toml --data examples/research_ticks.csv
 afuture data-check --config config/afuture.auto-replay.example.toml --data examples/research_ticks.csv
 
-# CTP 只读检查与 Shadow
-afuture doctor --config config/afuture.directional-live.example.toml
+# 本地只读状态；不初始化日志、不连接 CTP
+afuture status --config config/afuture.directional-live.example.toml
+
+# CTP 无报单预检与 Shadow（还需要 AFUTURE_LIVE_ACK）
+afuture doctor --config config/afuture.directional-live.example.toml --confirm-live
 afuture shadow --config config/afuture.directional-live.example.toml --duration-seconds 3600
 
 # 实盘入口；必须先完成 production checklist
@@ -128,6 +134,8 @@ afuture recover-state --help
 # 执行质量
 afuture quality-report --config config/afuture.directional-live.example.toml --output runtime/execution_quality_report.json
 ```
+
+`status` 只读当前 state、显式 `.prev` 证据、运行文件大小和磁盘/路径条件；即使 live 配置尚未注入 CTP 凭证也可运行。当前 state 损坏时返回 2，但绝不自动采用 `.prev`。`doctor` 在 fresh CTP snapshot 后逐项检查账户数值与 margin/available/daily-loss/drawdown 限制、交易日、活动委托、元数据、持仓对账、Kill Switch、runtime mode、持久化安全门和 Directional completed activity；任一安全门失败返回 2，且不会报单。
 
 `recover-state` 是人工核验后的 fail-closed 恢复入口，不是绕过对账或 Kill Switch 的快捷方式。运行手册见 [`docs/live-trading.md`](docs/live-trading.md)。
 
@@ -147,12 +155,14 @@ python -m compileall -q afuture
 
 - 未知 CTP direction/offset/type/status 拒绝转换，不猜默认经济语义；
 - live tick、账户、合约元数据或持仓快照含 NaN/inf、非整数手数、空标识或无效均价时 fail-closed；
+- 持仓 identity 同时包含 symbol/exchange；重复 symbol 或 exchange 不一致不能被 dict 覆盖后误判为已对账；
 - reject、cancel 或未成交订单不得修改持仓；partial fill 只按实际成交更新；
 - trade callback 以 `trading_day:trade_id` 去重；首个新交易日成交先触发换日再入账，持久化集合换日时只淘汰旧日 ID，重连/重启不得重复入账；
 - SHFE/INE `CLOSE_TODAY` 与 `CLOSE_YESTERDAY` 不能跨 bucket 借量；
 - reductions 在 openings 前完成；`REDUCE_ONLY`、daily circuit 和 HALT 不得增加风险；
 - cash、realized/unrealized PnL、commission、margin、gross/net exposure 使用明确 multiplier 和单位；
-- state checksum/schema/sequence、持仓数量/均价或去重历史不可信时禁止 load，也禁止覆盖原文件；
+- state checksum/schema/sequence、持仓数量/均价或去重历史不可信时禁止 load，也禁止覆盖原文件；每次成功推进前把上一份已验证 envelope 原样保存为 `.prev`，但运行时永不自动回退；
+- audit/alert JSONL 在完整记录边界按 20 MiB 轮转，保留 14 份备份；单条编码后超过上限的记录拒绝写入，轮转失败不允许静默丢证据；
 - Directional hard authority 保持 target/realized gross `<=2x`、margin `<=35%`、available `>=25%`、daily-loss `5%`、total drawdown `30%`、单合约 `<=35` 手；
 - 研究日索引重复、非单调、NaN/inf、非正必需价格均 fail-closed；
 - train/validation/OOS 独立模拟；`full_recent` 是汇总窗口，会与这些子窗口重叠，不能被描述成独立 holdout。
@@ -167,11 +177,11 @@ python -m compileall -q afuture
 | `risk.py`, `portfolio_risk.py` | 账户硬门与组合风险 |
 | `execution.py`, `directional_execution.py` | 订单计划、双腿与价格选择 |
 | `broker/` | Sim / Shadow / CTP 适配 |
-| `position.py`, `state.py` | 持仓不变量与持久化完整性 |
+| `position.py`, `state.py` | 持仓不变量、持久化完整性与显式 previous evidence |
 | `engine.py`, `directional_engine.py` | 事件顺序、状态机与运行编排 |
 | `research.py`, `directional_acceptance.py` | Walk-forward、Stress、deterministic account proxy |
-| `quality.py`, `journal.py`, `report.py` | 执行证据、审计与报告 |
-| `cli.py`, `runtime_factory.py` | 命令入口与 runtime 组装 |
+| `quality.py`, `journal.py`, `jsonl.py`, `report.py` | 执行证据、有界审计与报告 |
+| `operations.py`, `cli.py`, `runtime_factory.py` | 运维预检、命令入口与 runtime 组装 |
 
 ## 文档
 
@@ -182,3 +192,5 @@ python -m compileall -q afuture
 - [`docs/production-checklist.md`](docs/production-checklist.md)：真实资金门；
 - [`docs/stress90-final-evidence.md`](docs/stress90-final-evidence.md)：当前 production research checkpoint；
 - [`docs/refactoring/architecture-audit-20260825.md`](docs/refactoring/architecture-audit-20260825.md)：工业重构审计与严重度记录。
+- [`docs/archive/evidence/`](docs/archive/evidence/)：已过期或被替代的研究证据；不描述当前系统行为。
+- [`docs/archive/development/`](docs/archive/development/)：历史设计与实施记录；不作为运行契约。

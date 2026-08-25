@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10/3.13, pandas, numpy, AKShare/Sina via GitHub Actions, existing afuture execution/risk stack.
 
-**Spec:** `docs/superpowers/specs/2026-08-22-return-target-100-design.md`
+**Spec:** `docs/archive/development/specs/2026-08-22-return-target-100-design.md`
 
 ## Global Constraints
 
@@ -353,7 +353,7 @@ Commit only if L4 passed; otherwise skip Task 5 behavior changes.
 **Files:**
 - Modify: `README.md`
 - Modify: `docs/data-and-backtest.md`
-- Modify: `docs/research-final-evidence.md`
+- Modify: `docs/archive/evidence/research-final-evidence.md`
 - Add: `docs/return-target-100-results.md`
 
 - [ ] **Step 1: Update docs with exact measured result**

@@ -181,4 +181,4 @@ python -m compileall -q afuture
 success
 ```
 
-The design and implementation plan are stored under `docs/superpowers/`. Checkpoint B begins with regression tests for position, persistence, CTP conversion and duplicate causal data before implementation changes.
+The design and implementation plan are stored under `docs/archive/development/`. Checkpoint B begins with regression tests for position, persistence, CTP conversion and duplicate causal data before implementation changes.

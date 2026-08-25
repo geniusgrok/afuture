@@ -178,6 +178,20 @@ def test_load_rejects_invalid_position_payload(
         StateStore(path).load()
 
 
+def test_load_rejects_duplicate_position_symbols(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    position = {
+        "symbol": "m2609",
+        "exchange": "DCE",
+        "long_today": 1,
+        "long_price": 3000,
+    }
+    write_envelope(path, state={"positions": [position, dict(position)]})
+
+    with pytest.raises(StateIntegrityError, match="duplicate symbols"):
+        StateStore(path).load()
+
+
 @pytest.mark.parametrize(
     "recent_trade_ids",
     [[""], [1], ["20260825:T1", "20260825:T1"]],
@@ -213,6 +227,73 @@ def test_save_increments_only_verified_sequence(tmp_path: Path) -> None:
     raw = json.loads(store.path.read_text(encoding="utf-8"))
     assert raw["sequence"] == 2
     assert store.load().trading_day == "20260826"
+
+
+def test_save_retains_exact_previous_verified_state(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.json")
+    store.save(RuntimeState(trading_day="20260825", last_order_id="order-1"))
+    original = store.path.read_bytes()
+
+    store.save(RuntimeState(trading_day="20260826", last_order_id="order-2"))
+
+    assert store.previous_path.read_bytes() == original
+    previous = store.load_previous()
+    assert previous is not None
+    assert previous.trading_day == "20260825"
+    assert previous.last_order_id == "order-1"
+    assert store.load().last_order_id == "order-2"
+
+
+def test_load_never_falls_back_to_valid_previous_state(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.json")
+    store.save(RuntimeState(trading_day="20260825"))
+    store.save(RuntimeState(trading_day="20260826"))
+    store.path.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(StateIntegrityError, match="invalid state JSON"):
+        store.load()
+
+    previous = store.load_previous()
+    assert previous is not None
+    assert previous.trading_day == "20260825"
+
+
+def test_save_verifies_the_exact_bytes_retained_as_previous(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = StateStore(tmp_path / "state.json")
+    store.save(RuntimeState(trading_day="20260825"))
+    original = store.path.read_bytes()
+    real_read_bytes = Path.read_bytes
+
+    def inject_unverified_bytes(path: Path) -> bytes:
+        if path == store.path:
+            return b"{broken"
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", inject_unverified_bytes)
+
+    with pytest.raises(StateIntegrityError, match="invalid state JSON"):
+        store.save(RuntimeState(trading_day="20260826"))
+
+    monkeypatch.undo()
+    assert store.path.read_bytes() == original
+    assert not store.previous_path.exists()
+
+
+def test_load_wraps_invalid_utf8_as_state_integrity_error(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.write_bytes(b"\xff\xfe")
+
+    with pytest.raises(StateIntegrityError, match="invalid state UTF-8"):
+        StateStore(path).load()
+
+
+def test_load_previous_returns_none_when_no_verified_backup_exists(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.json")
+
+    assert store.load_previous() is None
 
 
 def test_save_migrates_valid_legacy_state(tmp_path: Path) -> None:

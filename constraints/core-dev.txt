@@ -1,0 +1,8 @@
+# Exact direct-dependency baseline for Python 3.10-3.13 engineering checks.
+# Platform-specific transitive wheels remain the resolver's responsibility.
+numpy==2.2.6
+pandas==2.2.3
+mypy==1.20.2
+pytest==9.1.1
+ruff==0.16.4
+tomli==2.4.0; python_version < "3.11"

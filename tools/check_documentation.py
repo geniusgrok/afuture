@@ -8,7 +8,7 @@ from pathlib import Path
 
 from afuture.cli import build_parser
 
-CURRENT_BASELINE = "482455dc57bc6a134f45232e290b4a49c3f7073d"
+CURRENT_RESEARCH_BASELINE = "482455dc57bc6a134f45232e290b4a49c3f7073d"
 REPOSITORY_PATH_PREFIXES = (
     ".github/",
     "afuture/",
@@ -123,7 +123,9 @@ def check_repository(root: Path) -> list[str]:
             markdown,
             # Plans/specifications intentionally preserve proposed or later-deleted
             # paths. Operational authority and evidence must reference real paths.
-            check_backticks="docs/superpowers/" not in markdown.relative_to(root).as_posix(),
+            check_backticks=(
+                "docs/archive/development/" not in markdown.relative_to(root).as_posix()
+            ),
         )
     ]
 
@@ -152,7 +154,7 @@ def check_repository(root: Path) -> list[str]:
         errors.append(f"README.md: unknown documented CLI subcommand: {command}")
 
     for historical in _historical_markdown(root, index):
-        if CURRENT_BASELINE in historical.read_text(encoding="utf-8"):
+        if CURRENT_RESEARCH_BASELINE in historical.read_text(encoding="utf-8"):
             errors.append(
                 f"{historical.relative_to(root)}: current baseline SHA appears in historical record"
             )

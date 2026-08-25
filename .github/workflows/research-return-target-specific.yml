@@ -23,7 +23,9 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install akshare pandas numpy
+      - run: >-
+          python -m pip install akshare pandas numpy
+          -c constraints/core-dev.txt -c constraints/live.txt
       - name: Verify execution timing and roll-safe causality
         run: |
           python tools/test_return_target_specific.py

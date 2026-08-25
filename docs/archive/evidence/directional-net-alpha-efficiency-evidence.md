@@ -1,6 +1,6 @@
 # Directional Net-Alpha Efficiency Evidence
 
-> **Historical record.** Preserved for research lineage and negative evidence. It does not describe the current Stress-90 checkpoint or live activation; see [`documentation-index.md`](documentation-index.md).
+> **Historical record.** Preserved for research lineage and negative evidence. It does not describe the current Stress-90 checkpoint or live activation; see [`documentation-index.md`](../../documentation-index.md).
 
 This document accumulates fixed evidence for the post-PR #14 net-alpha research phase. It is updated only with reproducible observations. Future-label diagnostics are never production inputs.
 

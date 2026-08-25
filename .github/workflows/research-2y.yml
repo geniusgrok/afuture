@@ -21,7 +21,9 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install akshare pandas
+      - run: >-
+          python -m pip install akshare pandas
+          -c constraints/core-dev.txt -c constraints/live.txt
       - name: Fetch recent two-year 60-minute universe
         run: python tools/fetch_two_year_60m_universe.py
       - name: Fetch independent prior two-year 60-minute universe

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10/3.13, pandas/numpy, pytest, GitHub Actions, AKShare/Sina research data, existing afuture Broker/RiskManager/StateStore.
 
-**Spec:** `docs/superpowers/specs/2026-08-22-directional-production-reality-design.md`
+**Spec:** `docs/archive/development/specs/2026-08-22-directional-production-reality-design.md`
 
 ## Global Constraints
 
@@ -139,7 +139,7 @@
 - Modify: `docs/data-and-backtest.md`
 - Modify: `docs/live-trading.md`
 - Modify: `docs/production-checklist.md`
-- Modify: `docs/return-target-100-evidence.md`
+- Modify: `docs/archive/evidence/return-target-100-evidence.md`
 
 **Interfaces:**
 - `ExecutionAlignedAggressivePolicy` is the only production directional policy.

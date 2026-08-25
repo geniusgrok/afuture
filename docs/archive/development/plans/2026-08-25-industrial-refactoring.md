@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10–3.13, dataclasses, pandas, NumPy, pytest, Ruff, MyPy, GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-08-25-industrial-refactoring-design.md`
+**Spec:** `docs/archive/development/specs/2026-08-25-industrial-refactoring-design.md`
 
 ## Global Constraints
 
@@ -42,7 +42,7 @@
 
 **Files:**
 - Create: `docs/refactoring/architecture-audit-20260825.md`
-- Modify: `docs/superpowers/plans/2026-08-25-industrial-refactoring.md`
+- Modify: `docs/archive/development/plans/2026-08-25-industrial-refactoring.md`
 
 **Interfaces:**
 - Consumes: repository at baseline `482455dc57bc6a134f45232e290b4a49c3f7073d`.
@@ -92,7 +92,7 @@ Expected: current baseline tests pass; the separate minimal reproductions in the
 - [x] **Step 5: Commit and publish Checkpoint A**
 
 ```bash
-git add docs/refactoring/architecture-audit-20260825.md docs/superpowers/plans/2026-08-25-industrial-refactoring.md
+git add docs/refactoring/architecture-audit-20260825.md docs/archive/development/plans/2026-08-25-industrial-refactoring.md
 git commit -m "docs: record industrial architecture audit"
 ```
 

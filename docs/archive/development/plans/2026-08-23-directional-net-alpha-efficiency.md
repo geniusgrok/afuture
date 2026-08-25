@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10/3.13, pandas, numpy, pytest, deterministic fixed artifacts, GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-08-23-directional-net-alpha-efficiency-design.md`
+**Spec:** `docs/archive/development/specs/2026-08-23-directional-net-alpha-efficiency-design.md`
 
 ## Global Constraints
 
@@ -109,7 +109,7 @@ All hard risk values and production truth/causality rules from the spec are mand
 
 **Files:**
 - Update README and required docs from the user specification.
-- Add: `docs/directional-net-alpha-efficiency-evidence.md`
+- Add: `docs/archive/evidence/directional-net-alpha-efficiency-evidence.md`
 - Remove temporary source/research workflows and restore standard `ci.yml`.
 
 - [ ] Produce Before/After table and answer all 20 required evidence questions.
@@ -120,4 +120,4 @@ All hard risk values and production truth/causality rules from the spec are mand
 
 ## Final disposition
 
-Tasks 1–6 were executed. Task 1 attribution was promoted as behavior-neutral instrumentation. Tasks 2–4 produced negative evidence; Task 5 was correctly skipped because no independent family passed; Task 6 margin candidate failed the fixed Stress screen. Final candidate changes no production Alpha/risk behavior. Detailed evidence: `docs/directional-net-alpha-efficiency-evidence.md`.
+Tasks 1–6 were executed. Task 1 attribution was promoted as behavior-neutral instrumentation. Tasks 2–4 produced negative evidence; Task 5 was correctly skipped because no independent family passed; Task 6 margin candidate failed the fixed Stress screen. Final candidate changes no production Alpha/risk behavior. Detailed evidence: `docs/archive/evidence/directional-net-alpha-efficiency-evidence.md`.

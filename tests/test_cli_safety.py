@@ -12,6 +12,164 @@ from afuture.models import AccountSnapshot, ContractPosition, PairConfig
 from afuture.state import RuntimeState, StateStore
 
 
+def test_status_is_local_read_only_and_does_not_create_log(tmp_path: Path, capsys) -> None:
+    from afuture.cli import main
+
+    config_path = tmp_path / "status.toml"
+    config_path.write_text(
+        """
+[system]
+mode = "replay"
+initial_capital = 500000
+
+[paths]
+state = "{state}"
+log = "{log}"
+report = "{report}"
+journal = "{journal}"
+alert = "{alert}"
+""".format(
+            state=tmp_path / "state.json",
+            log=tmp_path / "afuture.log",
+            report=tmp_path / "report.json",
+            journal=tmp_path / "audit.jsonl",
+            alert=tmp_path / "alerts.jsonl",
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["status", "--config", str(config_path)]) == 0
+    assert '"passed": true' in capsys.readouterr().out
+    assert not (tmp_path / "afuture.log").exists()
+
+
+def test_status_does_not_require_live_ctp_credentials(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.cli import main
+
+    for name in ("AFUTURE_CTP_USER", "AFUTURE_CTP_PASSWORD", "AFUTURE_CTP_BROKER"):
+        monkeypatch.delenv(name, raising=False)
+    config_path = tmp_path / "live-status.toml"
+    config_path.write_text(
+        """
+[system]
+mode = "live"
+initial_capital = 500000
+
+[ctp]
+environment = "test"
+td_address = "tcp://trade.example"
+md_address = "tcp://market.example"
+
+[directional]
+enabled = true
+products = ["M"]
+
+[paths]
+state = "{state}"
+log = "{log}"
+report = "{report}"
+journal = "{journal}"
+alert = "{alert}"
+""".format(
+            state=tmp_path / "state.json",
+            log=tmp_path / "afuture.log",
+            report=tmp_path / "report.json",
+            journal=tmp_path / "audit.jsonl",
+            alert=tmp_path / "alerts.jsonl",
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["status", "--config", str(config_path)]) == 0
+    assert '"passed": true' in capsys.readouterr().out
+
+
+def test_doctor_preflight_never_calls_send_order(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from afuture.auto import AutoConfig
+    from afuture.cli import _run_doctor
+    from afuture.directional import DirectionalConfig
+    from afuture.models import ContractInfo, ContractSpec, FeeSpec
+    from afuture.risk import RiskConfig
+
+    spec = ContractSpec("m2609", "DCE", 10, 1, 0.12, 0.12, FeeSpec(open_fixed=1))
+
+    class FakeBroker:
+        def __init__(self, credentials):
+            self.credentials = credentials
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+        def is_ready(self):
+            return True
+
+        def snapshot_marker(self):
+            return (0, 0)
+
+        def snapshot_ready(self, marker):
+            return True
+
+        def get_account(self):
+            return AccountSnapshot(500_000, 500_000, 440_000, 60_000, 0, 0, "20260825")
+
+        def get_contract_catalog(self):
+            return [ContractInfo("m2609", "DCE", "M", "2026-12-31")]
+
+        def get_trading_day(self):
+            return "20260825"
+
+        def get_live_contract_specs(self, symbols, timeout_seconds):
+            assert symbols == ["m2609"]
+            return {"m2609": spec}
+
+        def get_positions(self):
+            return []
+
+        def get_active_orders(self):
+            return []
+
+        def send_order(self, request):
+            raise AssertionError("doctor must never submit an order")
+
+    monkeypatch.setattr("afuture.broker.ctp.CtpBroker", FakeBroker)
+    config = SimpleNamespace(
+        mode="live",
+        ctp=SimpleNamespace(environment="test"),
+        contracts={"m2609": spec},
+        auto=AutoConfig(),
+        directional=DirectionalConfig(),
+        risk=RiskConfig(max_margin_ratio=0.35, min_available_ratio=0.25),
+        metadata_timeout_seconds=1.0,
+        state_path=str(tmp_path / "state.json"),
+        log_path=str(tmp_path / "afuture.log"),
+        report_path=str(tmp_path / "report.json"),
+        journal_path=str(tmp_path / "audit.jsonl"),
+        alert_path=str(tmp_path / "alerts.jsonl"),
+    )
+    args = SimpleNamespace(
+        confirm_live=False,
+        startup_timeout=0.1,
+        snapshot_wait=0.1,
+        metadata_limit=1,
+    )
+
+    assert _run_doctor(config, args) == 0
+    assert '"orders_sent": 0' in capsys.readouterr().out
+
+
 def test_wait_for_fresh_snapshot_requires_both_generations_to_advance():
     class FakeBroker:
         def __init__(self):

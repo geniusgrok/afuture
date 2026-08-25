@@ -158,6 +158,11 @@ def select_contracts_from_activity(
         activity = snapshot.contracts.get(item.symbol)
         if activity is None or activity.trading_day != snapshot.trading_day:
             continue
+        if (
+            activity.exchange.upper() != item.exchange.upper()
+            or activity.product.upper() != product
+        ):
+            continue
         if activity.volume < config.min_volume or activity.open_interest < config.min_open_interest:
             continue
         candidates.setdefault(product, []).append(

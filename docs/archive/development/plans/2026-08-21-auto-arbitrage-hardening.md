@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10+, pytest, GitHub Actions, VeighNa/vnpy CTP adapter.
 
-**Spec:** `docs/superpowers/specs/2026-08-21-auto-arbitrage-hardening-design.md`
+**Spec:** `docs/archive/development/specs/2026-08-21-auto-arbitrage-hardening-design.md`
 
 ## Global Constraints
 

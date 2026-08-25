@@ -1,6 +1,6 @@
 # Opportunity-Driven Directional V2 研究证据
 
-> **Historical record.** Preserved for bounded research lineage, not current runtime behavior; see [`documentation-index.md`](documentation-index.md).
+> **Historical record.** Preserved for bounded research lineage, not current runtime behavior; see [`documentation-index.md`](../../documentation-index.md).
 
 日期：2026-08-24
 

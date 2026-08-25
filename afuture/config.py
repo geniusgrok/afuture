@@ -49,8 +49,16 @@ class AppConfig:
     contract_catalog: list[ContractInfo] = field(default_factory=list)
 
 
-def load_config(path: str | Path) -> AppConfig:
-    """读取配置并在连接柜台之前拒绝明显危险或自相矛盾的参数。"""
+def load_config(
+    path: str | Path,
+    *,
+    require_ctp_credentials: bool = True,
+) -> AppConfig:
+    """读取配置并在连接柜台之前拒绝明显危险或自相矛盾的参数。
+
+    只有完全本地、只读的运维检查可以跳过凭证注入；地址、模式、策略与风险配置
+    仍照常校验，且返回的 ``ctp`` 为 ``None``，不能被误用于连接柜台。
+    """
     data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     system = data.get("system", {})
     mode = str(system.get("mode", "replay")).lower()
@@ -78,7 +86,11 @@ def load_config(path: str | Path) -> AppConfig:
         )
     if mode == "replay" and auto.enabled and not contract_catalog:
         raise ValueError("replay auto mode requires contract product/expiry metadata")
-    ctp = _load_ctp(data.get("ctp", {}), mode)
+    ctp = _load_ctp(
+        data.get("ctp", {}),
+        mode,
+        require_credentials=require_ctp_credentials,
+    )
     if mode == "live" and not pairs and not auto.enabled and not directional.enabled:
         raise ValueError(
             "live mode requires static pairs, auto.enabled=true, or directional.enabled=true"
@@ -299,9 +311,19 @@ def _load_directional(raw: dict) -> DirectionalConfig:
     return config
 
 
-def _load_ctp(raw: dict, mode: str):
+def _load_ctp(raw: dict, mode: str, *, require_credentials: bool = True):
     if mode != "live":
         return None
+    td_address = str(raw.get("td_address", "")).strip()
+    md_address = str(raw.get("md_address", "")).strip()
+    if not td_address or not md_address:
+        raise ValueError("ctp td_address and md_address are required")
+    environment = str(raw.get("environment", "test")).lower()
+    if environment not in {"test", "production"}:
+        raise ValueError("ctp.environment must be test or production")
+    if not require_credentials:
+        return None
+
     from .broker.ctp import CtpCredentials
 
     required_env = {
@@ -313,14 +335,6 @@ def _load_ctp(raw: dict, mode: str):
     missing = [env_name for name, env_name in required_env.items() if not values[name]]
     if missing:
         raise ValueError(f"missing CTP environment variables: {', '.join(missing)}")
-
-    td_address = str(raw.get("td_address", "")).strip()
-    md_address = str(raw.get("md_address", "")).strip()
-    if not td_address or not md_address:
-        raise ValueError("ctp td_address and md_address are required")
-    environment = str(raw.get("environment", "test")).lower()
-    if environment not in {"test", "production"}:
-        raise ValueError("ctp.environment must be test or production")
 
     return CtpCredentials(
         **values,
