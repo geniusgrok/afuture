@@ -441,7 +441,7 @@ Publish the accumulated position, state, CTP, and data-integrity commits to the 
 - Produces reproducible commands `ruff check .`, `ruff format --check .`, and `mypy afuture`.
 - Preserves runtime public APIs and Python 3.10 compatibility.
 
-- [ ] **Step 1: Add pinned tool ranges and policy**
+- [x] **Step 1: Add pinned tool ranges and policy**
 
 Add to `project.optional-dependencies.dev`:
 
@@ -452,7 +452,7 @@ Add to `project.optional-dependencies.dev`:
 
 Configure Ruff for Python 3.10, 100-character lines, and high-signal rules `E4`, `E7`, `E9`, `F`, `I`, `B`, `UP`; explicitly ignore only rules with a recorded compatibility reason. Configure MyPy with `python_version = "3.10"`, `check_untyped_defs = true`, `warn_unused_ignores = true`, and pragmatic third-party import handling.
 
-- [ ] **Step 2: Capture static failures once**
+- [x] **Step 2: Capture static failures once**
 
 ```bash
 .venv/bin/ruff check .
@@ -462,7 +462,7 @@ Configure Ruff for Python 3.10, 100-character lines, and high-signal rules `E4`,
 
 Classify findings into correctness/type-contract fixes, mechanical formatting/import ordering, dynamic CTP boundary annotations, and low-value strictness. Do not weaken a rule merely to hide a real defect.
 
-- [ ] **Step 3: Fix semantic type and exception findings by cluster**
+- [x] **Step 3: Fix semantic type and exception findings by cluster**
 
 Fix concrete tuple inference in the directional integer optimizer; Optional narrowing in runtime/strategy/auto paths; alert sink protocol typing; CLI variable reuse; and broad/silent exception handling that can hide trading, state, or evidence errors. For dynamic VeighNa objects, isolate `Any` at the adapter boundary rather than spreading it into domain code.
 
@@ -473,7 +473,7 @@ After each cluster run its focused tests plus:
 .venv/bin/mypy <touched-files>
 ```
 
-- [ ] **Step 4: Apply mechanical formatting as an isolated change**
+- [x] **Step 4: Apply mechanical formatting as an isolated change**
 
 Run:
 
@@ -490,7 +490,7 @@ git add afuture tests tools
 git commit -m "style: apply repository Python formatting"
 ```
 
-- [ ] **Step 5: Add fast CI gates**
+- [x] **Step 5: Add fast CI gates**
 
 Before the full test step in `.github/workflows/ci.yml`, add:
 
@@ -503,7 +503,7 @@ Before the full test step in `.github/workflows/ci.yml`, add:
 
 Keep expensive research workflows manual.
 
-- [ ] **Step 6: Run the governed static surface and affected subsystem tests**
+- [x] **Step 6: Run the governed static surface and affected subsystem tests**
 
 ```bash
 .venv/bin/ruff check .
@@ -515,7 +515,7 @@ Keep expensive research workflows manual.
 
 Expected: all pass.
 
-- [ ] **Step 7: Commit and publish Checkpoint C**
+- [x] **Step 7: Commit and publish Checkpoint C**
 
 ```bash
 git add pyproject.toml .github/workflows/ci.yml afuture tests
@@ -542,7 +542,7 @@ Publish the checkpoint.
 - Produces a documentation entry point that separates current runtime authority, research checkpoints, decision/evidence records, and historical material.
 - Preserves evidence numbers and does not imply that Stress-90 is live.
 
-- [ ] **Step 1: Classify every Markdown file**
+- [x] **Step 1: Classify every Markdown file**
 
 In `docs/documentation-index.md`, list each Markdown path exactly once under:
 
@@ -555,23 +555,23 @@ Development specification/plan
 
 Delete only redundant/generated files with no unique evidence. Mark retained historical files at their top rather than rewriting history.
 
-- [ ] **Step 2: Rewrite the README as the authoritative entry point**
+- [x] **Step 2: Rewrite the README as the authoritative entry point**
 
 It must contain: purpose and production-readiness boundary, current baseline SHA/PR, calendar and directional architecture, install, configuration, validation, replay, research/backtest commands, test/static commands, risk invariants, module map, and documentation links. State explicitly that PR #25 Stress-90 is a validated research checkpoint and not live activation.
 
-- [ ] **Step 3: Correct architecture/data/runbook claims**
+- [x] **Step 3: Correct architecture/data/runbook claims**
 
 Replace old statements that Stress-80 remains unmet or that older 109.0636%/28.9559% mechanics are the latest research result. Preserve those values only in a clearly historical context. Update CI status in `docs/stress90-final-evidence.md` with the successful promotion workflow evidence.
 
-- [ ] **Step 4: Align comments with enforced invariants**
+- [x] **Step 4: Align comments with enforced invariants**
 
 Document why close buckets cannot borrow from each other, why corrupt state blocks saving, why unknown CTP values do not get defaults, and why duplicate research dates fail. Remove comments that merely restate syntax or describe pre-fix behavior.
 
-- [ ] **Step 5: Add documentation consistency checks**
+- [x] **Step 5: Add documentation consistency checks**
 
 Add a small test/tool that verifies local Markdown links and backticked repository paths exist, documented CLI subcommands appear in `afuture --help`, and the current SHA/result status blocks occur only in authoritative/evidence contexts. It must exclude external URLs from offline validation.
 
-- [ ] **Step 6: Run documentation and public-contract tests**
+- [x] **Step 6: Run documentation and public-contract tests**
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_naming.py tests/test_config_hardening.py tests/test_cli_runtime_factory.py tests/test_candidate_evidence.py tests/test_evidence_closure.py
@@ -582,7 +582,7 @@ Add a small test/tool that verifies local Markdown links and backticked reposito
 
 Expected: all pass.
 
-- [ ] **Step 7: Commit and publish Checkpoint D**
+- [x] **Step 7: Commit and publish Checkpoint D**
 
 ```bash
 git add README.md docs afuture tests tools pyproject.toml

@@ -624,6 +624,7 @@ class CtpBroker(Broker):
 
     @staticmethod
     def _enum_name(value: object, field: str) -> str:
+        """Return an explicit protocol enum name; never guess an economic default."""
         name = getattr(value, "name", None)
         if not isinstance(name, str) or not name:
             raise ValueError(f"unsupported CTP {field}: {value!r}")

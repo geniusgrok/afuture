@@ -27,6 +27,10 @@ The largest modules are review signals, not automatic split targets:
 
 No import cycle was found. The package does not need a directory-wide Clean Architecture migration. The high-value work is to make boundary contracts explicit and keep research dependencies from flowing into production runtime code.
 
+## Resolution status
+
+The findings below preserve the original reproductions. Checkpoint B fixed both P0s and both P1 correctness defects with regressions; Checkpoint C closed the static/type/alert observability findings; Checkpoint D established Markdown authority and consistency checks. No finding was closed by weakening a risk, data or test invariant.
+
 ## Current end-to-end behavior
 
 ### Calendar-spread path
@@ -71,7 +75,7 @@ Material architecture risks:
 
 ## Severity-ranked correctness inventory
 
-### P0 — Position close-bucket corruption
+### P0 — Position close-bucket corruption — fixed
 
 `PositionBook.apply_trade` checks total long/short volume, then `_consume_long` or `_consume_short` subtracts the requested bucket without checking it. For SHFE/INE offsets, one bucket cannot borrow volume from another.
 
@@ -85,7 +89,7 @@ result:  long_today=-1, long_yesterday=2, long_total=1
 
 Impact: the internal position can become impossible while aggregate volume appears plausible. Downstream reconciliation, close planning, exposure and recovery decisions can then use corrupt state. The fix must reject before mutation and preserve the original position.
 
-### P0 — Unknown CTP values become economic events
+### P0 — Unknown CTP values become economic events — fixed
 
 `_convert_order` and `_on_trade` use default fallbacks. A synthetic order with unknown protocol values currently converts as:
 
@@ -98,7 +102,7 @@ status MYSTERY    -> REJECTED
 
 Impact: an unsupported or newly introduced exchange/gateway value can be represented as a different economically meaningful instruction. This is silent semantic corruption at the broker boundary. Supported values must be explicit; unknown values must produce one contextual `broker_error` and no fabricated order/trade event.
 
-### P1 — Corrupt restart state is silently replaced
+### P1 — Corrupt restart state is silently replaced — fixed
 
 `StateStore.save` catches every exception while reading an existing state, resets `sequence` to one, and atomically replaces the target. A file containing invalid JSON is therefore replaced with a valid new envelope:
 
@@ -110,17 +114,17 @@ result:   sequence=1, corruption_overwritten=true
 
 Impact: restart evidence and sequence history disappear precisely when integrity is uncertain. This contradicts the class contract that checksum failures fail closed. One verified decoder must serve both load and save; a bad target must remain unchanged.
 
-### P1 — Duplicate daily observations are resolved implicitly
+### P1 — Duplicate daily observations are resolved implicitly — fixed
 
 `SinaContinuousOHLCProvider._load_one` calls `drop_duplicates("date", keep="last")`. Two rows for the same date are accepted as one, with the last row winning. The reproduction accepted two conflicting closes, `101` and `201`, and retained `201` without an integrity signal.
 
 Impact: provider ordering—not a declared market-data rule—selects the historical truth. This can contaminate features, acceptance windows and evidence. Duplicate and non-monotonic causal dates must fail closed before sorting or joining.
 
-### P1/P2 — Static type and exception boundaries are incomplete
+### P1/P2 — Static type and exception boundaries are incomplete — fixed
 
 Diagnostic MyPy found concrete inference and Optional errors in integer optimization, dynamic CTP objects, alert sinks, auto/strategy paths and CLI variables. Ruff found broad exception catches and import/format drift. These diagnostics are not all defects; the governed gate will fix semantic contract errors, isolate dynamic `Any` at adapters, and avoid strictness-only boilerplate.
 
-### P2 — Documentation authority is ambiguous
+### P2 — Documentation authority is ambiguous — fixed
 
 `README.md`, `docs/architecture.md`, `docs/data-and-backtest.md` and `docs/production-checklist.md` still present older 109.0636%/28.9559% mechanics or an unmet Stress-80 target as current conclusions. `docs/stress90-final-evidence.md` says permanent CI is pending although PR #25 CI succeeded on Python 3.10 and 3.13.
 
@@ -131,7 +135,7 @@ Impact: a new engineer cannot distinguish the live runtime, the Stress-80 checkp
 The following invariants are already represented in code/tests and remain mandatory during changes:
 
 - Features and activity snapshots use only completed observations available before the decision timestamp.
-- Train, validation, OOS, prior and full-recent windows remain disjoint according to the frozen evaluator definitions.
+- Each matrix row owns independent account state. Train, validation, OOS and prior use frozen slices; `full_recent` deliberately aggregates overlapping subperiods and is not an independent holdout.
 - Reductions execute before openings; rejects do not mutate positions; HALT and reduce-only do not increase risk.
 - Broker fill events, not submitted requests, update positions.
 - Realized/unrealized PnL, cash, equity, commission, turnover, gross exposure and margin use explicit contract multipliers and units.

@@ -1,6 +1,6 @@
 # Industrial Refactoring Design
 
-Status: approved in principle on 2026-08-25; written specification awaiting final review before implementation.
+Status: approved and implemented through Checkpoint D on 2026-08-25; final Checkpoint E remains governed by the implementation plan.
 
 ## 1. Purpose
 

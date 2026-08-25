@@ -1,5 +1,7 @@
 # Research cleanup inventory
 
+> **Historical governance record.** This inventory describes an earlier cleanup boundary. Current document authority is defined in [`documentation-index.md`](documentation-index.md).
+
 Final review removes only experiments that failed their economic promotion gate and were never wired into production behavior.
 
 Removed experimental families:

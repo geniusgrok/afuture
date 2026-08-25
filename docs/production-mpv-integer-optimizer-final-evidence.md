@@ -1,5 +1,7 @@
 # Production MPV / Integer Optimizer / PIT Information Final Evidence
 
+> **Historical record.** Preserved for research lineage and rejected-route evidence; see [`documentation-index.md`](documentation-index.md) for the current checkpoint.
+
 Date: 2026-08-24
 
 ## 1. Final decision

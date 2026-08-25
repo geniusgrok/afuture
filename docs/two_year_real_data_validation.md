@@ -1,5 +1,7 @@
 # 两年真实数据验收：corrected 最终结论
 
+> **Historical record.** Preserved for the corrected earlier validation lineage. Current checkpoint and authority are listed in [`documentation-index.md`](documentation-index.md).
+
 ## 结论
 
 本文件替代早期 run #75 的旧 M/OI 晋级结论。

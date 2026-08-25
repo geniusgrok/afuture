@@ -1,231 +1,159 @@
 # 架构与数据流
 
-## 1. 总体原则
+## 1. 系统边界
 
-`afuture` 支持两种**账户互斥**的正式模式：
+`afuture` 有两条账户互斥的正式运行链：Calendar / Auto 与 Execution-Aligned Directional。它们共享唯一的账户和执行真相：
 
-- `calendar / auto`：同品种相邻月份跨期套利；
-- `directional`：冻结的 50 品种 execution-aligned 方向组合。
+- Broker/CTP：订单、成交、账户与柜台持仓；
+- `PositionBook`：对 Broker fill 的本地确定性镜像；
+- `RiskManager`：账户 hard gate、`REDUCE_ONLY`、daily circuit 与 HALT；
+- `StateStore`：带 schema、sequence、checksum 的重启证据；
+- TradingEngine：事件顺序、对账、持久化与可观测性编排。
 
-两种模式共用唯一的 Broker/TradingEngine 账户真相、`RiskManager`、Kill Switch、`REDUCE_ONLY`、StateStore、Shadow 和审计链。Directional 不创建第二套账户、订单、成交或持仓状态机。
+策略、研究 evaluator 和 CLI 都不能直接赋值真实持仓，也不能绕过 Broker 成交与 RiskManager 权限。
 
-## 2. Calendar / Auto
+## 2. 依赖方向与职责
+
+稳定依赖方向是：
 
 ```text
-CTP Catalog / Tick
+models / config
+→ pure calculations and policies
+→ strategy / risk / execution
+→ runtime orchestration
+→ broker / persistence / CLI / reporting
+```
+
+当前包没有已知 import cycle。动态 VeighNa 类型只停留在 `broker/ctp.py` 适配边界，转换后使用 `models.py` 中的 enum/dataclass。没有为了单一实现引入 Repository/Factory/Service 层；TradingEngine 虽然职责较重，但 event、fill、risk、state 的顺序高度耦合，当前以测试保护的显式编排优先于高风险拆分。
+
+## 3. Calendar / Auto 主链路
+
+```text
+CTP catalog / Tick
 → AutoPairManager
-→ activity / sync / stationarity / half-life / Net Edge
+   point-in-time catalog、front-3、adjacent、activity/sync/liquidity
 → CalendarSpreadStrategy
+   signal history、entry/exit/stop/confirmation
 → PortfolioRisk + RiskManager
 → PairExecutor
+   reductions/openings、双腿 FAK、partial rollback
 → Broker
+→ fill event
+→ PositionBook / account / state / quality
 ```
 
-Auto 只负责候选和开仓资格；已有仓位失去候选资格后继续 managed，但不再 open-eligible，直至退出。
+Auto 只拥有候选与 open-eligible 状态。一个 pair 失去候选资格后，既有仓位仍受 managed 逻辑约束直至退出，不能因扫描结果消失而成为无人管理风险。
 
-## 3. Directional
+## 4. Directional live 主链路
 
 ```text
-连续 OHLC
+已完成产品 OHLC
 → ExecutionAlignedAggressivePolicy
-   96-template / Base-rank + Stress-survival causal meta
-→ 冻结产品权重，target gross <=2x
-→ completed-return governor（只可缩风险）
+→ 产品目标权重（target gross <=2x）
 
-CTP Tick.trading_day
-→ DirectionalActivityTracker
-→ trading day 切换时冻结前一日最终 OI/volume
-→ DirectionalActivityStore
-→ D+1 concrete contract selection；eligible incumbent 保留，除非 challenger 同时拥有更高 OI 与 volume
+已完成交易日 D 的 CTP volume/OI snapshot
+→ D+1 concrete contract selection
 
-Broker positions + D+1 fresh quotes + live ContractSpec
-→ integer target lots，单合约 <=35
-→ adaptive margin-aware target sizing
-→ 同方向 +1 lot 增仓 no-trade（仅当 incumbent 仍满足 soft margin / 2x gross）
-→ reduction-first rebalance
-→ opening depth-aware price（整笔对手一档深度足够时用 best opposite；否则 legacy aggressive）
+Broker positions + fresh D+1 quotes + live ContractSpec
+→ integer target lots（单合约 <=35）
+→ margin-aware downward fitting
+→ deterministic reductions
+→ Broker 确认 reductions 后再 openings
 → RiskManager hard gates
-→ FAK
-→ Broker
-→ 每 tick realized-gross guard（actual gross >2x 只减仓）
+→ FAK → Broker fill truth
+→ realized-gross guard / circuit / HALT
+→ state / audit / execution quality
 ```
 
-### 冻结经济参数
+`DirectionalPortfolioManager` 不维护第二套账户。signal provider 失败时，只有已缓存历史覆盖 required signal day 才可继续；缺失且已有风险时转入风险收缩，账户为空时拒绝新增。
 
-- Universe：50 品种，代码字母序；
-- template pool：96；
-- family：breakout / tsmom / momentum / moving-average / reversal / acceleration；
-- meta lookback = **11**；
-- meta rebalance = **3**；
-- active templates = **3**；
-- Base meta score = `0.25 × annualized + 1.0 × Sharpe`；
-- cost robustness = 5bp Base 与 15bp Stress trailing evidence 均为正后，仍按 Base score 排名；Stress 是生存门，不做 50/50 收益优化；
-- gross target ≤2.0x；
-- max contract volume = 35。
+## 5. Offline production-research evaluator
 
-`execution_aligned_policy.py` 是唯一正式 signal/meta policy；`directional.py` 保留配置、合约/手数、margin fitting、rebalance 和 gross-reduction 原语；`directional_execution.py` 只负责不扩张风险的 opening price 选择；`directional_robustness.py` 只把同一 margin-aware target 语义接到历史 production acceptance，不创建第二套实盘状态机。Reduction 始终沿用原 aggressive FAK。
+`DirectionalProductionAcceptance` 是 deterministic account proxy，负责从冻结目标和历史具体合约数据模拟：
 
-## 4. 因果时间边界
+- previous-close → current-open 既有头寸 PnL；
+- reduction-first 订单序列；
+- integer lots、multiplier、commission、turnover；
+- cash、realized/unrealized PnL、equity；
+- margin、available、gross exposure、reject、daily circuit、HALT；
+- train、validation、OOS、prior 与 full_recent 结果行。
 
-Directional 同时冻结：
+PR #25 Stress-90 在该离线 evaluator 上增加 causal expanding-median HHI leadership freeze，并继承 Stress-80 的 9-product 60m Price × OI confirmation、cost eligibility、survivor reallocation 与 25% drawdown reserve。它没有修改 live runtime wiring。
 
 ```text
-完整交易日 D 的 OHLC
-→ D+1 产品目标
-
-完整交易日 D 的具体合约最终 OI/volume
-→ D+1 具体合约
+frozen historical inputs
+→ causal 60m signal / target construction
+→ Stress-80 target and reserve mechanics
+→ Stress-90 leadership response
+→ independent account simulation per result row
+→ promotion matrix / evidence
 ```
 
-D+1 尚未完成的 volume/OI 不能改变 D 已冻结选约。持久化 activity snapshot 比已确认完成的 signal day 更旧时 fail-closed。
+当前研究 checkpoint 是 `main` merge `482455dc57bc6a134f45232e290b4a49c3f7073d`（PR #25）。Stress full_recent 年化 112.100053%、最大回撤 14.567214%、gross peak 1.670510x、0 margin rejects、无 HALT；这些数字只描述固定历史 proxy。详见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。
 
-Meta 的 Base/Stress cost evidence 和 completed-return governor 也遵守已完成历史边界：当前 session PnL 不参与当前目标。
+## 6. 时间与窗口不变量
 
-## 5. Signal freshness
+- D 日 completed OHLC 只决定 D+1 及以后目标；
+- D 日最终 volume/OI 只决定 D+1 concrete contract；
+- 当前 session PnL 不进入当前目标的 completed-return governor；
+- continuous roll jump 不计入可交易收益；
+- t→t+1 收益来自 t 日已经选择的同一具体合约；
+- validation/OOS simulation 不继承同矩阵其它结果行的账户状态；
+- `full_recent` 是覆盖 train/validation/OOS 等区段的汇总窗口，**不是**与它们不重叠的 holdout；
+- 一旦 OOS 被选择流程观察，文档必须标记 non-pristine。
 
-```text
-required_signal_day = completed_activity_snapshot.trading_day
-latest OHLC day >= required_signal_day
-```
+## 7. Execution 与 accounting 不变量
 
-然后才使用 `signal_max_age_hours` 处理未来 timestamp / 长时间停更。
+- 提交 request 不改变持仓；只有 Broker trade/fill event 改变；
+- reject/cancel 不改变 position、cash 或 realized PnL；
+- partial fill 只按实际成交量记账，retry 不能重复成交；
+- reversal 是 close 后 open，不是绕过 execution 的净仓赋值；
+- SHFE/INE close-today 与 close-yesterday 独立校验，不能跨 bucket 借量；
+- commission/slippage、notional、margin、gross/net exposure 使用明确 multiplier 与单位；
+- 无法识别的 CTP direction/offset/type/status 产生 `broker_error`，不映射成猜测的经济事件。
 
-- provider 失败但 cache 已覆盖 required day：可继续；
-- required day 缺失且已有 risk：`risk_off → REDUCE_ONLY`；
-- required day 缺失且账户为空：拒绝新增；
-- activity snapshot stale：fail-closed；
-- 新启动无 completed snapshot：禁止新增风险。
-
-## 6. Margin-aware target sizing
-
-目标手数先按 signal gross 与 equity 生成，再按预计保证金只向下缩放：
-
-```text
-hard_share = min(max_margin_ratio, 1 - min_available_ratio)
-conservative = max(0, hard_share - max_daily_loss_ratio)
-shock = clamp(max(3%, abs(latest completed return), two-day sample volatility), 3%, 5%)
-soft_target_share = min(conservative, conservative * (1 - max(0, shock - 3%)))
-```
-
-当前 35% margin / 25% available / 5% daily-loss 配置的平静基线为 **30% equity**；completed shock 高于 3% 时只会进一步收缩，35% hard gate 不变。
-
-Live 使用 Broker side-specific `margin_rate_long/short`、当前 mid、multiplier 和 buffer；缺少可信 margin evidence 时 fail-closed。这个 soft target envelope 不改变 35%/25% hard gates，所有 openings 后续仍由 `RiskManager.check_open_orders()` 重新判定。
-
-## 7. Reduction-first 与毛仓 flatten
-
-```text
-Broker 当前持仓
-→ target=0 / 反转 / 超额 / 换月 reductions
-→ reducing FAK
-→ Broker 回报
-→ 下一 cycle 重读真实持仓
-→ 无 reductions 才允许 openings
-```
-
-新目标暂无 eligible contract/fresh quote 时，不新增、不换月；其它确定性 reductions 继续。
-
-异常情况下同一合约可能同时有多仓和空仓。安全 flatten 必须按 `long_total` / `short_total` 毛仓分别平仓，不能因 `net_volume=0` 误判为 flat。
-
-## 8. 风险收缩层级
-
-### Completed-return governor
-
-```text
-latest completed daily return <= -2%
-OR two-day sample volatility >= 3%
-→ next target = 25%
-else
-→ next target = 100%
-```
-
-它永远不能增加原冻结目标。
-
-### Margin-aware target envelope
-
-正常 target margin 当前控制在约 30% equity，为 35% hard margin gate 留出 5 个百分点的 mark-to-market 余量。它不是账户 halt 条件。
-
-### Realized gross guard
-
-不对正常 gross 目标预先乘固定 leverage haircut。目标本身仍必须 `<=2x`；实际 Broker/mark gross 超过 `2x` 时，manager 只生成 reduction-only FAK。无法安全分类/计算/执行时 fail-closed。
-
-Margin、signal target gross 与 actual marked gross 是三个不同维度，不能互相替代。
-
-## 9. Risk state 与 daily circuit
-
-统一状态机不变。Directional 的 5% daily-loss 是同交易日 circuit：
+## 8. 风险状态机
 
 ```text
 RUNNING
-→ daily-loss breach
-→ REDUCE_ONLY / flatten
-→ 当日保持 circuit marker
-→ 后续 CTP trading day 完成安全检查
+→ soft/runtime risk condition
+→ REDUCE_ONLY
+→ reductions / flatten
+→ 完整安全检查
+→ RUNNING
+
+RUNNING or REDUCE_ONLY
+→ hard/manual condition
+→ HALTED
+→ 人工核验、对账和恢复门
 → RUNNING
 ```
 
-恢复要求 Broker ready、无 active order、无 residual directional risk、metadata verified、账户风险通过、启动对账通过。
+Directional hard authority 保持 target/realized gross `<=2x`、margin `<=35%`、available `>=25%`、daily loss `5%`、total drawdown `30%`、单合约 `<=35` 手。Daily-loss 是同 trading-day circuit；total drawdown、margin、cash、non-positive equity、metadata/对账异常属于 hard/manual 路径。任何风险收缩层都只能降低目标。
 
-总回撤、margin、available cash、非正 equity、metadata/对账/基础设施异常仍是 hard/manual halt，不能走 daily-circuit 自动恢复。
-
-## 10. Broker/StateStore 真相与重启
-
-Directional trade callback 先由基础 TradingEngine 更新统一 expected positions；quality callback 只观察。
-
-重启时：
+## 9. State 与恢复
 
 ```text
-RuntimeState.positions
-↔ Broker complete position snapshot
+Broker account + complete positions + active orders
+↔ RuntimeState expected positions / event IDs / risk markers
 ```
 
-逐合约今昨、多空完全一致才 reconciled；任何 mismatch fail-closed。
+启动只有在今昨、多空、合约与关键状态完全一致时 reconciled。State envelope 的 JSON、schema、positive sequence、checksum 或 payload 不可信时：
 
-## 11. Execution quality
+- `load` fail-closed；
+- `save` 不允许把损坏目标覆盖成 sequence 1；
+- 原文件保持不变，供人工诊断；
+- `recover-state` 仍保持 Kill Switch，不能直接恢复交易。
 
-同一 `ExecutionQualityRecorder` 记录：
+## 10. 可观测性
 
-- pair：candidate / decision / round-trip；
-- directional：rebalance / fill / cycle。
+- `AuditJournal`：signal、order、fill、risk、recovery 的 JSONL 证据；
+- `AlertManager`：本地与 webhook 广播；单 sink 故障不阻止风险动作，但记录脱敏 warning；
+- `ExecutionQualityRecorder`：pair round trip 与 directional rebalance/fill/cycle；
+- report：account、position、performance、margin 和质量摘要。
 
-Directional 汇总 realized turnover、commission、median/p95 slippage、tracking error、completion latency、partial/rejected count。真实 fill 只来自 Broker `Trade` callback。
+告警、quality 和 report 都是观测层，不拥有下单或风险权限。
 
-## 12. 经济证据分层
+## 11. 明确非目标
 
-1. **Float-notional specific-contract L4**：Base 5bp 年化 107.4623%、Stress 15bp 年化 58.1372%，selection-biased；
-2. **Production-mechanics L3**：Base 5bp 年化 **109.0636%**、最大回撤 **15.8529%**、actual gross peak **1.998253x**、未永久 HALT；Stress 15bp 年化 **28.9559%**、最大回撤 **28.1152%**、actual gross peak **1.668769x**、474/484 active days、0 margin rejects、未永久 HALT。
-
-Stress 已修复此前的结构性 margin HALT，但没有达到 80%。两个层级都不能替代真实 CTP 新数据。
-
-归档 Float 58.1372% 与当前 PR #14 冻结权重不是同一 lineage；当前权重的 Float 15bp 为 109.3145%。架构文档不把不同 lineage 的收益差异错误归因给 integer lots、margin 或 risk gate。
-
-历史逐日 Broker margin 不可得，因此 Base/Stress 仍是显式 12%/15% margin proxy × 1.25 buffer，不声称是柜台历史真值。
-
-详细证据：[`directional-production-mechanics-evidence.md`](directional-production-mechanics-evidence.md)。
-
-## 13. Shadow 与后续边界
-
-Shadow 市场侧来自真实 CTP catalog/tick/trading day/metadata，账户侧来自本地 SimBroker。必须重点观察：raw target vs margin-fitted target、Broker actual margin、actual gross、gross-guard reductions、daily circuit、realized cost、tracking、partial/reject 和恢复行为。
-
-当前不需要数据库、消息队列、Web 服务、微服务或第二账户状态机。后续新增价值应来自**未来新数据和真实执行证据**，而不是继续扩大同一历史上的参数空间。
-
-
-## 14. Execution-efficiency promotion 结果
-
-最终生产只保留通过固定 L3 的机制：turnover attribution、completed-activity roll hysteresis、`+1 lot` 同方向增仓抑制和 completed-return shock margin contraction。Product replacement、meta hysteresis、same-direction weight hysteresis 均实际实现并验证过，但因为明显损伤 Base/Stress 而回退。最终 full_recent 为 Base **109.0636% / 15.8529% DD**，Stress **28.9559% / 28.1152% DD**，两者 no-HALT；Stress 80% 仍未达到。
-
-## 15. Net-alpha research 后的最终边界
-
-PR #15 没有新增第二 Alpha/账户/风险状态机。`directional_attribution.py` 只读取 production-mechanics 已经决定并执行的事件，`directional_entry_diagnostics.py` 只用于离线研究；live runtime 不导入 future-label 诊断模块。未通过门禁的 net-edge、Alpha-family、33.04% soft-margin 候选均不属于生产架构。
-
-因此生产数据流仍是 `completed history -> frozen 96-template policy -> completed-return governor -> completed-activity contract -> integer/margin-aware lots -> reductions first -> Broker hard gates -> fills/positions truth`。新增审计不会改变 target、order、fill、risk 或 account state。
-
-## 16. Microstructure / lineage research 后的最终边界
-
-本阶段没有把分钟 timing、cost-aware Meta、cost-aware no-trade 或新 curve Alpha 接入 Production。分钟/OI 数据只有约 1,023 条近期 5m 记录，无法满足 prior/train/validation/OOS；no-trade 虽降低 15bp 换手成本，但明显损伤 5bp Base/OOS；同品种 curve family 在 15bp 下跨窗口为负。因此 gross/margin/available/max-lots 也没有放宽。
-
-保留两项行为中性能力：
-
-1. `SimBroker` 的 opt-in realistic L1 Stress，可模拟 depth haircut、partial FAK、latency、size/depth impact、unfilled quantity，并输出 spread/slippage-impact/fill-ratio/latency/cost 归因；默认参数保持原撮合语义。
-2. `directional_lineage.py` + `tools/evaluate_directional_lineage.py` 精确重建 selected template → template-product contribution → aggregate target，并与 Production trade ledger 连接到 realized product position、turnover、cost。多模板共同形成一个整数产品头寸时，turnover/cost 只保留 product-level 真值，不做不可证明的 template 成本分摊。
-
-完整研究与拒绝证据见 [`directional-microstructure-cost-alpha-evidence.md`](directional-microstructure-cost-alpha-evidence.md)。
+当前不需要数据库、消息队列、Web 服务、微服务或第二账户状态机。研究 artifacts 不直接成为 live 数据源。后续架构变化必须由已复现的正确性、容量或维护问题驱动；真实收益与执行可信度的下一批高价值证据来自未来数据、CTP Shadow、测试柜台和小资金，而不是继续扩大同一历史上的参数空间。

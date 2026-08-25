@@ -1,5 +1,7 @@
 # 100% 年化收益目标：最终历史证据
 
+> **Historical record.** Preserved for the original return-target lineage. It is not the current checkpoint or a live-return claim; see [`documentation-index.md`](documentation-index.md).
+
 日期：2026-08-23
 
 ## 1. 最终结论

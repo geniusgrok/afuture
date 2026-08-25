@@ -39,6 +39,9 @@ raw = pd.DataFrame(
     ]
 )
 weights = pd.DataFrame({"A": [0.5]}, index=pd.to_datetime(["2026-08-20"]))
+# The smoke fixture is intentionally outside the frozen production dates. Give it an
+# explicit synthetic window instead of relying on the simulator to accept an empty slice.
+module.WINDOWS = {"full_recent": ("2026-08-20", "2026-08-20")}
 report = module.evaluate_with_weights(raw, weights)
 assert report["selection_frozen"] is True
 assert report["parameter_search"] is False

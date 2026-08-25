@@ -184,6 +184,8 @@ class StateStore:
     def save(self, state: RuntimeState) -> None:
         sequence = 1
         if self.path.exists():
+            # A corrupt target is incident evidence, not an empty state.  Verify it
+            # before creating a replacement so sequence history cannot silently reset.
             sequence = self._read_verified().sequence + 1
         state_payload = asdict(state)
         self._state_from_payload(state_payload)
