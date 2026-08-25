@@ -57,6 +57,12 @@ def _canonical_digest(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def canonical_stress90_digest(payload: object) -> str:
+    """Public canonical digest used by strict Stress-90 state/evidence envelopes."""
+
+    return _canonical_digest(payload)
+
+
 @dataclass(frozen=True)
 class Stress90PolicyDefinition:
     """Immutable economic and hard-risk identity of the Stress-90 policy."""

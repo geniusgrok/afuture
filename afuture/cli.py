@@ -108,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="只读检查本地运行状态、证据文件和磁盘空间")
     status.add_argument("--config", required=True)
 
+    stress90_bootstrap = sub.add_parser(
+        "stress90-bootstrap",
+        help="从五个固定输入重放并创建不可变 Stress-90 seed/state",
+    )
+    stress90_bootstrap.add_argument("--config", required=True)
+    stress90_bootstrap.add_argument("--runtime-dir", required=True)
+    stress90_bootstrap.add_argument("--through", required=True, help="最终 target day（YYYYMMDD）")
+
     recover = sub.add_parser("recover-state", help="人工核验后重建本地期望持仓")
     recover.add_argument("--config", required=True)
     recover.add_argument("--confirm-live", action="store_true")
@@ -639,6 +647,19 @@ def _run_status(config) -> int:
     return 0 if report.passed else 2
 
 
+def _run_stress90_bootstrap(args) -> int:
+    """Run the fixed replay without initializing a broker or requiring CTP secrets."""
+    from .directional_stress90_bootstrap import bootstrap_stress90
+
+    result = bootstrap_stress90(
+        runtime_dir=args.runtime_dir,
+        through_day=args.through,
+        write_artifacts=True,
+    )
+    print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
 def _research_pairs(config, ticks) -> list[PairConfig]:
     """研究命令在 auto 模式下使用与实盘相同的相邻月份生成规则。"""
     if not config.auto.enabled:
@@ -672,10 +693,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(
         args.config,
-        require_ctp_credentials=args.command != "status",
+        require_ctp_credentials=args.command not in {"status", "stress90-bootstrap"},
     )
     if args.command == "status":
         return _run_status(config)
+    if args.command == "stress90-bootstrap":
+        return _run_stress90_bootstrap(args)
     logger = configure_logging(config.log_path)
 
     if args.command == "validate":
