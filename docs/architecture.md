@@ -75,7 +75,7 @@ provider 的已完成交易日品种价格
 → 保存状态、审计和执行质量
 ```
 
-`DirectionalPortfolioManager` 不维护第二套账户。`directional_ohlc_cache.json` 也只保存共享日期向量、开盘/收盘矩阵、品种 manifest、内容 SHA-256 和 envelope SHA-256，不保存目标或仓位。provider 的开盘/收盘索引必须在任何转换前都是无时区的自然日午夜、完全对齐、唯一且递增；数值必须能无损规范成 `float64`。新的 provider 结果只有在与已验证缓存重叠的全部规范值完全不变时才可成为权威；静默历史修订被丢弃。provider 暂时不可用时，只有 schema、品种、索引、正有限值、digest/checksum 和必需完整交易日都通过的缓存才能继续；已有风险但证据不足时进入风险收缩，空账户则拒绝新增仓位。
+`DirectionalPortfolioManager` 不维护第二套账户。`directional_ohlc_cache.json` 也只保存共享日期向量、开盘/收盘矩阵、品种 manifest、内容 SHA-256 和 envelope SHA-256，不保存目标或仓位。provider 的开盘/收盘索引必须在任何转换前都是无时区的自然日午夜、完全对齐、唯一且递增；数值必须能无损规范成 `float64`。新的 provider 结果必须保留缓存中的每个交易日，并且这些日期的规范值完全不变，才可作为向后追加的新权威；删日期或静默修订都会被拒绝。provider 暂时不可用时，只有 schema、品种、索引、正有限值、digest/checksum 和必需完整交易日都通过的缓存才能继续；已有风险但证据不足时进入风险收缩，空账户则拒绝新增仓位。
 
 ## 5. 离线账户验证
 
@@ -106,7 +106,7 @@ provider 的已完成交易日品种价格
 - 提交订单请求不改变持仓；只有 Broker 成交事件可以改变持仓；
 - 撤单、拒单和未成交不改变持仓、现金或盈亏；
 - 部分成交只按实际成交量记账，重试不能产生重复成交；
-- CTP 和引擎分别按 `(trading_day, exchange, trade_id)` 去重，重连和重启不能重复入账；旧状态中的 `(trading_day, trade_id)` 在迁移期仍能拦截 replay，随后由交易日淘汰边界自然退出；
+- CTP 和引擎分别按 `(trading_day, exchange, trade_id)` 去重；引擎、`doctor` 和 `recover-state` 在 adapter 启动前注入已持久的复合 identity，阻止重启 replay 先修改持仓 mirror。旧 `(trading_day, trade_id)` 无法证明交易所，命中时必须停机对账，不能静默吞掉同 ID 的跨交易所新成交；
 - 反转必须先平旧方向再开新方向；
 - 上期所和能源中心的平今、平昨独立校验，不能跨今昨仓借量；
 - 手续费、滑点、名义价值、保证金和敞口必须使用明确的合约乘数和单位；
@@ -115,7 +115,9 @@ provider 的已完成交易日品种价格
 - 本地和柜台持仓按“合约 + 交易所”对账，重复记录或交易所不一致必须失败关闭；
 - 流动性快照的合约、品种和交易所必须与合约目录一致。
 
-CTP callback 不再共享一个可被 Tick 洪峰填满的混合队列。关键 order/trade/position/account/error 进入 FIFO；Tick 按 `(symbol, exchange)` 只保存尚未投递的最新值。`poll_events()` 每轮按可配置上限（默认 100）先投递关键 FIFO，再投递合并后的 Tick。`delivery_counters()` 暴露 critical/tick 的接收、合并、投递和 backlog 计数。持仓 mirror 与 position snapshot 另有串行锁，确保 snapshot 和成交事件顺序对应同一份 `(symbol, exchange)` 真相。
+CTP callback 不再共享一个可被 Tick 洪峰填满的混合队列。关键 order/trade/position/account/error 进入 FIFO；Tick 按 `(symbol, exchange)` 只保存尚未投递的最新值。`poll_events()` 每轮按可配置上限（默认 100）先投递关键 FIFO，再投递合并后的 Tick。`delivery_counters()` 暴露 critical/tick 的接收、合并、投递和 backlog 计数。持仓 mirror 与 position snapshot 另有串行锁，确保 snapshot 和成交事件顺序对应同一份 `(symbol, exchange)` 真相。Directional activity 只在每轮有界事件批次后合并落盘一次，并在交易日切换和正常停机前强制 checkpoint；不在每个 Tick 回调中 `fsync`。
+
+交易日只能向前推进；延迟的旧日 account event 保持原今/昨仓 bucket 并失败关闭。
 
 原生 CTP 的当前交易日来自交易 API `getTradingDay()`。已启动 adapter 缺少 gateway、td_api、getter 或合法 `YYYYMMDD` 时失败关闭，不使用本机自然日期或旧交易日猜测。只有不实现该接口的兼容测试 Broker 才可使用已验证的 `AccountSnapshot.trading_day`。
 

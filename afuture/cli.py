@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
 from dataclasses import asdict
 from datetime import datetime
@@ -154,23 +155,36 @@ def drain_after_halt(
 
 def validate_recovery_positions(pairs: list[PairConfig], positions: list[ContractPosition]) -> None:
     """恢复只接受配置内、双腿等量反向且不超过风险上限的套利持仓。"""
-    allowed_symbols = {symbol for pair in pairs for symbol in (pair.near_symbol, pair.far_symbol)}
+    allowed_identities = {
+        (symbol, pair.exchange) for pair in pairs for symbol in (pair.near_symbol, pair.far_symbol)
+    }
+    by_identity: dict[tuple[str, str], ContractPosition] = {}
+    duplicates: list[tuple[str, str]] = []
+    for position in positions:
+        identity = (position.symbol, position.exchange)
+        if identity in by_identity:
+            duplicates.append(identity)
+        else:
+            by_identity[identity] = position
+    if duplicates:
+        detail = ", ".join(f"{symbol}.{exchange}" for symbol, exchange in sorted(duplicates))
+        raise RuntimeError(f"broker positions contain duplicate identities: {detail}")
+
     unknown = sorted(
-        position.symbol
+        f"{position.symbol}.{position.exchange}"
         for position in positions
-        if not position.empty and position.symbol not in allowed_symbols
+        if not position.empty and (position.symbol, position.exchange) not in allowed_identities
     )
     if unknown:
         raise RuntimeError(f"broker positions are not configured for afuture: {', '.join(unknown)}")
 
-    by_symbol = {position.symbol: position for position in positions if not position.empty}
     for pair in pairs:
-        near = by_symbol.get(pair.near_symbol, ContractPosition(pair.near_symbol, pair.exchange))
-        far = by_symbol.get(pair.far_symbol, ContractPosition(pair.far_symbol, pair.exchange))
+        near_identity = (pair.near_symbol, pair.exchange)
+        far_identity = (pair.far_symbol, pair.exchange)
+        near = by_identity.get(near_identity, ContractPosition(*near_identity))
+        far = by_identity.get(far_identity, ContractPosition(*far_identity))
         if near.empty and far.empty:
             continue
-        if near.exchange != pair.exchange or far.exchange != pair.exchange:
-            raise RuntimeError(f"pair {pair.pair_id} exchange does not match configured exchange")
 
         long_volume = near.long_total if near.short_total == 0 else 0
         long_spread = long_volume > 0 and long_volume == far.short_total and far.long_total == 0
@@ -267,6 +281,38 @@ def _auto_pairs_from_state(state) -> list[PairConfig]:
     return result
 
 
+def _seed_state_aware_ctp_broker(broker, state, *, reject_ambiguous: bool) -> None:
+    """Seed only provable composite fill identities before a direct CTP startup."""
+    qualified: list[str] = []
+    ambiguous: list[str] = []
+    for identity in state.recent_trade_ids if state is not None else []:
+        parts = identity.split(":", 2)
+        if len(parts) != 3:
+            ambiguous.append(identity)
+            continue
+        trading_day, exchange, trade_id = parts
+        try:
+            parsed_day = datetime.strptime(trading_day, "%Y%m%d")
+        except ValueError:
+            ambiguous.append(identity)
+            continue
+        if (
+            parsed_day.strftime("%Y%m%d") != trading_day
+            or not re.fullmatch(r"[A-Z][A-Z0-9]*", exchange)
+            or not trade_id
+        ):
+            ambiguous.append(identity)
+            continue
+        qualified.append(identity)
+
+    if reject_ambiguous and ambiguous:
+        raise RuntimeError(
+            "state recovery contains ambiguous legacy trade identities; "
+            "broker reconciliation is required before adoption"
+        )
+    broker.seed_trade_identities(qualified)
+
+
 def _recover_state(config, args, logger) -> int:
     """强确认后把人工核验的柜台持仓重新锚定为期望状态，但不解除停机。"""
     from .broker.ctp import CtpBroker
@@ -288,6 +334,7 @@ def _recover_state(config, args, logger) -> int:
         raise RuntimeError("state recovery is allowed only while the kill switch is active")
 
     broker = CtpBroker(config.ctp)
+    _seed_state_aware_ctp_broker(broker, state, reject_ambiguous=True)
     broker.start()
     try:
         _wait_until_ready(broker, args.startup_timeout)
@@ -530,7 +577,12 @@ def _run_doctor(config, args) -> int:
     if config.mode != "live" or config.ctp is None:
         raise ValueError("doctor requires system.mode=live")
     _require_production_confirmation(config, args)
+    try:
+        state = StateStore(config.state_path).load()
+    except (OSError, ValueError):
+        state = None
     broker = CtpBroker(config.ctp)
+    _seed_state_aware_ctp_broker(broker, state, reject_ambiguous=False)
     broker.start()
     try:
         _wait_until_ready(broker, args.startup_timeout)

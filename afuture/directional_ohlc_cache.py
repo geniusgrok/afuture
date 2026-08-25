@@ -412,16 +412,17 @@ def require_unchanged_overlap(
     close: pd.DataFrame,
 ) -> None:
     """Reject a provider response that silently revises cached historical values."""
-    common = cached.close.index.intersection(close.index)
-    if common.empty:
+    missing_open = cached.open.index.difference(open_prices.index)
+    missing_close = cached.close.index.difference(close.index)
+    if not missing_open.empty or not missing_close.empty:
         raise DirectionalOHLCCacheIntegrityError(
-            "directional OHLC provider history does not overlap the verified cache"
+            "directional OHLC provider history dropped dates from the verified cache"
         )
     products = list(cached.products)
-    cached_open = cached.open.loc[common, products]
-    cached_close = cached.close.loc[common, products]
-    provider_open = open_prices.loc[common, products]
-    provider_close = close.loc[common, products]
+    cached_open = cached.open.loc[:, products]
+    cached_close = cached.close.loc[:, products]
+    provider_open = open_prices.loc[cached.open.index, products]
+    provider_close = close.loc[cached.close.index, products]
     if not cached_open.equals(provider_open) or not cached_close.equals(provider_close):
         raise DirectionalOHLCCacheIntegrityError(
             "directional OHLC provider revised values overlapping the verified cache"

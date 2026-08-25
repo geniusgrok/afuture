@@ -52,7 +52,7 @@
 - [ ] 挂牌日、到期日和距到期 20 天过滤正确。
 - [ ] 已持有合约的保留条件和挑战合约的成交量/持仓量双重优势与离线重建一致；没有已持有合约时按持仓量、成交量、到期日和合约代码依次排序。
 - [ ] 新部署没有上一完整交易日快照时不会新增风险。
-- [ ] 日内重启后能恢复 `in_progress` 和最近一份 `completed`；不会漏掉重启前已观察的合约。
+- [ ] 日内重启后能恢复最近成功批次 checkpoint 的 `in_progress` 和最近一份 `completed`；交易日切换和正常停机会强制落盘。
 - [ ] 旧版无 schema/checksum 的裸 activity 文件已保留诊断副本并通过完整交易日 Shadow 重建，没有手工伪造迁移。
 - [ ] 流动性快照落后于最新完整信号交易日时拒绝增加风险。
 
@@ -65,7 +65,7 @@
 - [ ] `directional_ohlc_cache.json` 的 schema、固定 50 品种顺序、共享日期索引、开盘/收盘 shape、正有限值、content digest 和 envelope checksum 全部通过。
 - [ ] provider 的开盘/收盘索引在转换前均为无时区自然日午夜且完全一致；没有 aware/naive 混用、非午夜时间或越过权威当前交易日的行。
 - [ ] provider 的全部允许行都已验证为正有限值并可无损表示为 `float64`；首次保存、重启和等值 dtype 变化使用相同规范表示。
-- [ ] 新 provider 历史与已验证缓存重叠的每个开盘/收盘值完全一致；静默历史修订不会覆盖 last-known-good。
+- [ ] 新 provider 历史保留已验证缓存的每个日期，开盘/收盘值完全一致；删日期或静默修订不会覆盖 last-known-good。
 - [ ] 数据提供方临时失败但已验证缓存仍覆盖所需 completed activity day 时可以继续。
 - [ ] 缓存缺失、损坏或不覆盖 required day 时，空账户拒绝新增风险，有风险账户进入收缩路径。
 - [ ] 所需信号缺失且账户为空时不新增风险。
@@ -143,8 +143,9 @@
 - [ ] 每次第二次及后续 state save 产生 `<state>.prev`，内容是上一份通过 checksum 的 envelope。
 - [ ] 损坏 current state 时程序返回失败，绝不自动采用 `.prev`。
 - [ ] 当前状态非 UTF-8、包含重复 `(symbol, exchange)` 持仓身份，或柜台与本地持仓交易所不一致时拒绝继续运行；同代码跨交易所不会碰撞。
-- [ ] 成交幂等键使用 `(trading_day, exchange, trade_id)`；迁移期旧 `(trading_day, trade_id)` 仍能阻止重放，且不会被错误地当成新成交再次入账。
+- [ ] 成交幂等键使用 `(trading_day, exchange, trade_id)` 并在 CTP 启动前恢复；旧 `(trading_day, trade_id)` 命中时显式停机对账，不静默吞掉跨交易所同 ID 新成交。
 - [ ] CTP 当前交易日确实来自交易 API `getTradingDay()`；缺少 gateway/td_api/getter/合法值时失败关闭，不回退本机自然日。
+- [ ] 延迟的较旧 account event 不会让交易日倒退或重分今/昨仓；状态保持不变并失败关闭。
 - [ ] audit/alert JSONL 到达 20 MiB 后在完整记录边界轮转，最多保留 14 份备份。
 
 - [ ] 正常退出前 StateStore 已保存最新 expected positions。

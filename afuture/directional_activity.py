@@ -292,7 +292,12 @@ class DirectionalActivityStore:
 
 
 class DirectionalActivityTracker:
-    """Freeze the last observations from D only when CTP advances to a new trading day."""
+    """Track live activity in memory and explicitly checkpoint durable evidence.
+
+    Restart restores only the last successful checkpoint. A trading-day transition is
+    itself a forced checkpoint so completed-day evidence is never exposed in memory
+    without the same transition being durable.
+    """
 
     def __init__(self, store: DirectionalActivityStore) -> None:
         self.store = store
@@ -302,10 +307,25 @@ class DirectionalActivityTracker:
             state.in_progress.trading_day if state.in_progress is not None else ""
         )
         self._current = dict(state.in_progress.contracts) if state.in_progress is not None else {}
+        self._dirty = False
 
     @property
     def current_trading_day(self) -> str:
         return self._current_trading_day
+
+    def checkpoint(self) -> None:
+        """Durably commit the latest in-memory activity, if it changed."""
+        if not self._dirty:
+            return
+        self.store.save_state(
+            DirectionalActivityState(
+                completed=self.completed_snapshot,
+                in_progress=DirectionalActivitySnapshot(
+                    self._current_trading_day, dict(self._current)
+                ),
+            )
+        )
+        self._dirty = False
 
     def observe(self, tick: Tick, contract: ContractInfo) -> None:
         trading_day = tick.trading_day
@@ -372,23 +392,23 @@ class DirectionalActivityTracker:
         if self._current.get(tick.symbol) == activity:
             return
         if self._current_trading_day and trading_day != self._current_trading_day:
-            if self._current:
-                completed = DirectionalActivitySnapshot(
-                    self._current_trading_day, dict(self._current)
+            completed = DirectionalActivitySnapshot(self._current_trading_day, dict(self._current))
+            next_current = {tick.symbol: activity}
+            self.store.save_state(
+                DirectionalActivityState(
+                    completed=completed,
+                    in_progress=DirectionalActivitySnapshot(trading_day, next_current),
                 )
-                self.completed_snapshot = completed
-            self._current = {}
+            )
+            self.completed_snapshot = completed
+            self._current_trading_day = trading_day
+            self._current = next_current
+            self._dirty = False
+            return
         if trading_day != self._current_trading_day:
             self._current_trading_day = trading_day
         self._current[tick.symbol] = activity
-        self.store.save_state(
-            DirectionalActivityState(
-                completed=self.completed_snapshot,
-                in_progress=DirectionalActivitySnapshot(
-                    self._current_trading_day, dict(self._current)
-                ),
-            )
-        )
+        self._dirty = True
 
 
 def select_contracts_from_activity(

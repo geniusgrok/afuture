@@ -123,6 +123,35 @@ class CtpBroker(Broker):
         self._seen_trade_keys: set[str] = set()
         self._seen_trade_order: deque[str] = deque()
 
+    def seed_trade_identities(self, identities: list[str]) -> None:
+        """Restore durable, exchange-qualified fill identities before callbacks start."""
+        if self._main_engine is not None or self._event_engine is not None:
+            raise RuntimeError("CTP trade identities must be seeded before broker start")
+
+        qualified: list[str] = []
+        for identity in identities:
+            if not isinstance(identity, str):
+                continue
+            parts = identity.split(":", 2)
+            if len(parts) != 3:
+                continue
+            trading_day, exchange, trade_id = parts
+            try:
+                parsed_day = datetime.strptime(trading_day, "%Y%m%d")
+            except ValueError:
+                continue
+            if (
+                parsed_day.strftime("%Y%m%d") != trading_day
+                or not re.fullmatch(r"[A-Z][A-Z0-9]*", exchange)
+                or not trade_id
+            ):
+                continue
+            qualified.append(identity)
+
+        bounded = qualified[-self._MAX_SEEN_TRADE_KEYS :]
+        self._seen_trade_keys = set(bounded)
+        self._seen_trade_order = deque(dict.fromkeys(bounded))
+
     def _load_runtime(self) -> dict[str, Any]:
         """延迟加载实盘依赖，并扩展完整持仓快照和费率查询回调。"""
         if self._runtime is not None:

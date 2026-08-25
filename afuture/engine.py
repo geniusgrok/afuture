@@ -123,12 +123,18 @@ class TradingEngine:
             if saved:
                 strategy.restore_state(saved)
 
+        seed_trade_identities = getattr(self.broker, "seed_trade_identities", None)
+        if callable(seed_trade_identities):
+            seed_trade_identities(self.state.recent_trade_ids)
         self.broker.start()
         for pair in self.pairs.values():
             self.broker.subscribe(pair.near_symbol, pair.exchange)
             self.broker.subscribe(pair.far_symbol, pair.exchange)
 
-        if self.broker.is_ready():
+        defer_empty_historical_day = (
+            self.historical_mode and not self.state.trading_day and not self.state.auto_pairs
+        )
+        if self.broker.is_ready() and not defer_empty_historical_day:
             self.initialize_after_ready()
 
     def initialize_after_ready(self) -> None:
@@ -147,11 +153,11 @@ class TradingEngine:
         account = self.broker.get_account()
         try:
             account.validate()
-        except (TypeError, ValueError) as exc:
+            self._advance_trading_day(account)
+        except (RuntimeError, TypeError, ValueError) as exc:
             self._initialized = True
             self.emergency_stop(f"invalid account snapshot: {exc}")
             return
-        self._advance_trading_day(account)
         self._health_ready_since = monotonic()
         self.risk_manager.set_day_start_equity(
             self.state.day_start_equity or account.equity,
@@ -393,11 +399,16 @@ class TradingEngine:
             trade.validate()
             trading_day = self._synchronize_trading_day_for_trade()
             identity = self._trade_identity(trade, trading_day)
-        except (AttributeError, TypeError, ValueError) as exc:
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             self.emergency_stop(f"invalid trade event: {exc}")
             return False
         legacy_identity = self._legacy_trade_identity(trade, trading_day)
-        if identity in self._recent_trade_id_set or legacy_identity in self._recent_trade_id_set:
+        if identity in self._recent_trade_id_set:
+            return False
+        if legacy_identity in self._recent_trade_id_set:
+            self.emergency_stop(
+                "ambiguous legacy trade identity; broker reconciliation is required"
+            )
             return False
         if not self.broker.owns_order(trade.order_id):
             self._record("trade", trade)
@@ -459,11 +470,11 @@ class TradingEngine:
     def _handle_account_event(self, account) -> None:
         try:
             account.validate()
-        except (AttributeError, TypeError, ValueError) as exc:
+            self._advance_trading_day(account)
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             self.emergency_stop(f"invalid account snapshot: {exc}")
             return
         previous_day = self._metadata_trading_day
-        self._advance_trading_day(account)
         current_day = str(account.trading_day or "")
         if (
             self.require_live_metadata
@@ -738,6 +749,21 @@ class TradingEngine:
     def _advance_trading_day(self, account) -> None:
         new_day = str(account.trading_day or "")
         old_day = str(self.state.trading_day or "")
+        try:
+            new_date = datetime.strptime(new_day, "%Y%m%d").date()
+        except ValueError as exc:
+            raise ValueError("broker trading day must be a valid YYYYMMDD date") from exc
+        if new_date.strftime("%Y%m%d") != new_day:
+            raise ValueError("broker trading day must be a valid YYYYMMDD date")
+        if old_day:
+            try:
+                old_date = datetime.strptime(old_day, "%Y%m%d").date()
+            except ValueError as exc:
+                raise ValueError("persisted trading day must be a valid YYYYMMDD date") from exc
+            if old_date.strftime("%Y%m%d") != old_day:
+                raise ValueError("persisted trading day must be a valid YYYYMMDD date")
+            if new_date < old_date:
+                raise RuntimeError(f"broker trading day moved backward from {old_day} to {new_day}")
         if new_day and old_day and new_day != old_day:
             book = PositionBook(self.state_store.positions_from_state(self.state))
             book.roll_trading_day()
@@ -1059,7 +1085,6 @@ class TradingEngine:
         try:
             account = self.broker.get_account()
             account.validate()
-            self._advance_trading_day(account)
             self.risk_manager.check_account(account)
             self.state.equity_high_watermark = self.risk_manager.high_watermark
         except Exception as exc:

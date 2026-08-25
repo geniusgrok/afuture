@@ -79,6 +79,7 @@ def test_activity_tracker_restores_in_progress_observations_after_midday_restart
     tracker = DirectionalActivityTracker(store)
     tracker.observe(_tick("A2609", "20260821", volume=8000, oi=30000), catalog["A2609"])
     tracker.observe(_tick("A2611", "20260821", volume=12000, oi=20000), catalog["A2611"])
+    tracker.checkpoint()
 
     restored = DirectionalActivityTracker(store)
 
@@ -97,6 +98,25 @@ def test_activity_tracker_restores_in_progress_observations_after_midday_restart
     assert snapshot is not None
     assert set(snapshot.contracts) == {"A2609", "A2611"}
     assert snapshot.contracts["A2609"].open_interest == 30000
+
+
+def test_activity_tracker_restart_sees_only_explicitly_checkpointed_observations(tmp_path):
+    store = DirectionalActivityStore(tmp_path / "directional_activity.json")
+    contract = _catalog()["A2609"]
+    tracker = DirectionalActivityTracker(store)
+
+    tracker.observe(_tick("A2609", "20260821", volume=8000, oi=30000), contract)
+
+    assert tracker.current_trading_day == "20260821"
+    assert not store.path.exists()
+    assert DirectionalActivityTracker(store).current_trading_day == ""
+
+    tracker.checkpoint()
+
+    committed = store.load_state()
+    assert committed.in_progress is not None
+    assert committed.in_progress.contracts["A2609"].volume == 8000
+    assert DirectionalActivityTracker(store).current_trading_day == "20260821"
 
 
 def _completed_payload(envelope: dict) -> dict:
@@ -216,6 +236,7 @@ def test_activity_tracker_rejects_older_contract_observation_without_mutation(tm
         _tick("A2609", "20260821", volume=8000, oi=30000, timestamp=latest),
         contract,
     )
+    tracker.checkpoint()
 
     with pytest.raises(ValueError, match="older than the latest activity"):
         tracker.observe(
@@ -244,6 +265,7 @@ def test_activity_tracker_rejects_older_timestamp_on_forward_trading_day(tmp_pat
         _tick("A2609", "20260824", volume=8000, oi=30000, timestamp=latest),
         contract,
     )
+    tracker.checkpoint()
 
     with pytest.raises(ValueError, match="older than the latest activity"):
         tracker.observe(
@@ -273,6 +295,7 @@ def test_activity_tracker_rejects_conflicting_equal_timestamp_observation(tmp_pa
         _tick("A2609", "20260821", volume=8000, oi=30000, timestamp=timestamp),
         contract,
     )
+    tracker.checkpoint()
 
     with pytest.raises(ValueError, match="conflicts at the latest activity timestamp"):
         tracker.observe(
@@ -290,6 +313,7 @@ def test_activity_tracker_rejects_backward_trading_day_before_mutation(tmp_path)
     tracker = DirectionalActivityTracker(store)
     contract = _catalog()["A2609"]
     tracker.observe(_tick("A2609", "20260825", volume=8000, oi=30000), contract)
+    tracker.checkpoint()
 
     with pytest.raises(ValueError, match="cannot move backward"):
         tracker.observe(_tick("A2609", "20260824", volume=9000, oi=40000), contract)

@@ -85,6 +85,13 @@ class DirectionalTradingEngine(TradingEngine):
 
     def run_once(self) -> None:
         super().run_once()
+        checkpoint = getattr(self.directional_manager, "checkpoint_activity", None)
+        if callable(checkpoint):
+            try:
+                checkpoint()
+            except Exception as exc:
+                self.emergency_stop(f"directional activity checkpoint failed: {exc}")
+                return
         self._initialize_directional_manager()
         if (
             self.halted

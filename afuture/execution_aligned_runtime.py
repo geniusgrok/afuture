@@ -219,6 +219,17 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         if contract is not None:
             self.activity_tracker.observe(tick, contract)
 
+    def close(self) -> None:
+        try:
+            self.checkpoint_activity()
+        finally:
+            super().close()
+
+    def checkpoint_activity(self) -> None:
+        """Durably commit activity after one bounded broker event batch."""
+        if self.activity_tracker is not None:
+            self.activity_tracker.checkpoint()
+
     def _ordered_provider_frame(self, frame: pd.DataFrame) -> pd.DataFrame:
         result = frame.copy()
         result.columns = [str(item).upper() for item in result.columns]

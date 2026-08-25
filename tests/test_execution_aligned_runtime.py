@@ -1,8 +1,9 @@
 import json
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
+from time import monotonic, sleep
 from types import SimpleNamespace
 
 import pandas as pd
@@ -16,6 +17,7 @@ from afuture.directional_activity import (
     DirectionalActivityStore,
     DirectionalActivityTracker,
 )
+from afuture.directional_engine import DirectionalTradingEngine
 from afuture.directional_ohlc_cache import (
     DirectionalOHLCCacheIntegrityError,
     DirectionalOHLCCacheStore,
@@ -28,14 +30,17 @@ from afuture.execution_aligned_runtime import (
 )
 from afuture.models import (
     AccountSnapshot,
+    BrokerEvent,
     ContractInfo,
     ContractPosition,
     ContractSpec,
     Offset,
     OrderType,
+    RuntimeMode,
     Tick,
 )
 from afuture.risk import RiskConfig, RiskManager
+from afuture.state import StateStore
 
 NOW = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)
 
@@ -162,6 +167,297 @@ def _manager(
         activity_tracker=activity_tracker,
         **cache,
     )
+
+
+class _CountingActivityStore(DirectionalActivityStore):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.save_count = 0
+
+    def save_state(self, state) -> None:
+        self.save_count += 1
+        super().save_state(state)
+
+
+def test_execution_aligned_checkpoint_commits_one_hundred_ticks_once(
+    tmp_path: Path,
+) -> None:
+    store = _CountingActivityStore(tmp_path / "directional_activity.json")
+    tracker = DirectionalActivityTracker(store)
+    contract = ContractInfo("A2609", "DCE", "A", "2026-09-15")
+    manager = _manager(activity_tracker=tracker)
+    manager._initialized = True
+
+    for index in range(100):
+        tracker.observe(
+            Tick(
+                symbol="A2609",
+                exchange="DCE",
+                timestamp=NOW + timedelta(seconds=index),
+                bid_price=99.0,
+                ask_price=101.0,
+                last_price=100.0,
+                bid_volume=100.0,
+                ask_volume=100.0,
+                trading_day="20260825",
+                volume=5000.0 + index,
+                open_interest=30000.0,
+            ),
+            contract,
+        )
+
+    manager.checkpoint_activity()
+
+    assert store.save_count == 1
+    committed = store.load_state()
+    assert committed.in_progress is not None
+    assert committed.in_progress.contracts["A2609"].volume == 5099.0
+
+
+def test_execution_aligned_runtime_orderly_close_flushes_latest_activity(
+    tmp_path: Path,
+) -> None:
+    store = DirectionalActivityStore(tmp_path / "directional_activity.json")
+    tracker = DirectionalActivityTracker(store)
+    tracker.observe(
+        Tick(
+            symbol="A2609",
+            exchange="DCE",
+            timestamp=NOW,
+            bid_price=99.0,
+            ask_price=101.0,
+            last_price=100.0,
+            bid_volume=100.0,
+            ask_volume=100.0,
+            trading_day="20260825",
+            volume=5000.0,
+            open_interest=30000.0,
+        ),
+        ContractInfo("A2609", "DCE", "A", "2026-09-15"),
+    )
+
+    _manager(activity_tracker=tracker).close()
+
+    restored = store.load_state()
+    assert restored.in_progress is not None
+    assert restored.in_progress.contracts["A2609"].volume == 5000.0
+
+
+class _LatencyBroker(_Broker):
+    def __init__(self) -> None:
+        self.ready = False
+        self.events: list[BrokerEvent] = []
+        self.fill_enqueued_at: float | None = None
+
+    def start(self) -> None:
+        self.ready = True
+
+    def stop(self) -> None:
+        self.ready = False
+
+    def is_ready(self) -> bool:
+        return self.ready
+
+    def poll_events(self) -> list[BrokerEvent]:
+        events = self.events
+        self.events = []
+        return events
+
+    def health_error(self):
+        return None
+
+    def get_contract_catalog(self):
+        return [ContractInfo("A2609", "DCE", "A", "2026-09-15")]
+
+    def subscribe(self, symbol, exchange) -> None:
+        return None
+
+
+class _SlowFillActivityStore(DirectionalActivityStore):
+    def __init__(self, path: Path, broker: _LatencyBroker, delay_seconds: float) -> None:
+        super().__init__(path)
+        self.broker = broker
+        self.delay_seconds = delay_seconds
+
+    def save_state(self, state) -> None:
+        if self.broker.fill_enqueued_at is None:
+            self.broker.fill_enqueued_at = monotonic()
+            self.broker.events.append(BrokerEvent("trade", object()))
+        sleep(self.delay_seconds)
+        super().save_state(state)
+
+
+class _FillLatencyEngine(DirectionalTradingEngine):
+    fill_handled_at: float | None = None
+
+    def _handle_trade_event(self, trade) -> bool:
+        self.fill_handled_at = monotonic()
+        return True
+
+
+def _activity_lifecycle_engine(
+    tmp_path: Path,
+    store: DirectionalActivityStore,
+) -> tuple[_LatencyBroker, DirectionalTradingEngine]:
+    broker = _LatencyBroker()
+    manager = ExecutionAlignedDirectionalPortfolioManager(
+        DirectionalConfig(enabled=True, products=("A",), exchanges=("DCE",)),
+        broker,
+        RiskManager(RiskConfig()),
+        signal_provider=_Provider(),
+        policy=_Policy(),
+        activity_tracker=DirectionalActivityTracker(store),
+    )
+    engine = DirectionalTradingEngine(
+        broker,
+        [],
+        {},
+        RiskManager(RiskConfig()),
+        StateStore(tmp_path / "state.json"),
+        directional_manager=manager,
+        health_clock=lambda: datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc),
+    )
+    engine.start()
+    return broker, engine
+
+
+@pytest.mark.parametrize(
+    "lifecycle",
+    ["running", "reduce-only", "batch-to-halted"],
+)
+def test_every_directional_broker_batch_checkpoints_activity_for_crash_restart(
+    tmp_path: Path,
+    lifecycle: str,
+) -> None:
+    store = DirectionalActivityStore(tmp_path / "directional_activity.json")
+    broker, engine = _activity_lifecycle_engine(tmp_path, store)
+    tick = Tick(
+        symbol="A2609",
+        exchange="DCE",
+        timestamp=datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc),
+        bid_price=99.0,
+        ask_price=101.0,
+        last_price=100.0,
+        bid_volume=100.0,
+        ask_volume=100.0,
+        trading_day="20260825",
+        volume=5099.0,
+        open_interest=30000.0,
+    )
+    if lifecycle == "reduce-only":
+        engine.state.runtime_mode = RuntimeMode.REDUCE_ONLY.value
+    broker.events = [BrokerEvent("tick", tick)]
+    if lifecycle == "batch-to-halted":
+        broker.events.append(BrokerEvent("broker_error", "injected batch failure"))
+
+    engine.run_once()
+
+    restarted = DirectionalActivityTracker(store)
+    committed = store.load_state()
+    assert restarted.current_trading_day == "20260825"
+    assert committed.in_progress is not None
+    assert committed.in_progress.contracts["A2609"].volume == 5099.0
+
+
+class _FailingActivityStore(DirectionalActivityStore):
+    def save_state(self, state) -> None:
+        raise OSError("injected activity checkpoint failure")
+
+
+def test_post_batch_activity_checkpoint_failure_halts_reduce_only_engine(
+    tmp_path: Path,
+) -> None:
+    store = _FailingActivityStore(tmp_path / "directional_activity.json")
+    broker, engine = _activity_lifecycle_engine(tmp_path, store)
+    engine.state.runtime_mode = RuntimeMode.REDUCE_ONLY.value
+    broker.events = [
+        BrokerEvent(
+            "tick",
+            Tick(
+                symbol="A2609",
+                exchange="DCE",
+                timestamp=datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc),
+                bid_price=99.0,
+                ask_price=101.0,
+                last_price=100.0,
+                bid_volume=100.0,
+                ask_volume=100.0,
+                trading_day="20260825",
+                volume=5000.0,
+                open_interest=30000.0,
+            ),
+        )
+    ]
+
+    engine.run_once()
+
+    assert engine.halted is True
+    assert engine.state.runtime_mode == RuntimeMode.HALTED.value
+    assert engine.state.kill_reason == (
+        "directional activity checkpoint failed: injected activity checkpoint failure"
+    )
+
+
+def test_tick_flood_with_slow_activity_fsync_keeps_critical_fill_within_batch_budget(
+    tmp_path: Path,
+) -> None:
+    checkpoint_delay_seconds = 0.02
+    fill_latency_budget_seconds = 0.25
+    broker = _LatencyBroker()
+    store = _SlowFillActivityStore(
+        tmp_path / "directional_activity.json",
+        broker,
+        checkpoint_delay_seconds,
+    )
+    manager = ExecutionAlignedDirectionalPortfolioManager(
+        DirectionalConfig(enabled=True, products=("A",), exchanges=("DCE",)),
+        broker,
+        RiskManager(RiskConfig()),
+        signal_provider=_Provider(),
+        policy=_Policy(),
+        activity_tracker=DirectionalActivityTracker(store),
+    )
+    outside_rebalance_window = datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc)
+    engine = _FillLatencyEngine(
+        broker,
+        [],
+        {},
+        RiskManager(RiskConfig()),
+        StateStore(tmp_path / "state.json"),
+        directional_manager=manager,
+        health_clock=lambda: outside_rebalance_window,
+    )
+    engine.start()
+    broker.events = [
+        BrokerEvent(
+            "tick",
+            Tick(
+                symbol="A2609",
+                exchange="DCE",
+                timestamp=outside_rebalance_window + timedelta(microseconds=index),
+                bid_price=99.0,
+                ask_price=101.0,
+                last_price=100.0,
+                bid_volume=100.0,
+                ask_volume=100.0,
+                trading_day="20260825",
+                volume=5000.0 + index,
+                open_interest=30000.0,
+            ),
+        )
+        for index in range(100)
+    ]
+
+    engine.run_once()
+    engine.run_once()
+
+    assert broker.fill_enqueued_at is not None
+    assert engine.fill_handled_at is not None
+    assert engine.fill_handled_at - broker.fill_enqueued_at < fill_latency_budget_seconds
+    committed = store.load_state()
+    assert committed.in_progress is not None
+    assert committed.in_progress.contracts["A2609"].volume == 5099.0
+    engine.stop()
 
 
 def _resign_cache(envelope: dict) -> None:
@@ -297,6 +593,47 @@ def test_changed_overlapping_provider_history_falls_back_to_verified_cache(
 
     pd.testing.assert_frame_equal(restored.open, original.open)
     pd.testing.assert_frame_equal(restored.close, original.close)
+
+
+@pytest.mark.parametrize(
+    ("dropped_offset", "case"),
+    [
+        (0, "rolling-window-drop-plus-append"),
+        (20, "interior-drop-plus-append"),
+        (-1, "latest-cached-day-drop-plus-append"),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_provider_cannot_drop_any_cached_date_before_appending_a_new_day(
+    tmp_path: Path,
+    dropped_offset: int,
+    case: str,
+) -> None:
+    cache_path = tmp_path / f"directional_ohlc_cache-{case}.json"
+    provider = _Provider()
+    _manager(provider=provider, cache_path=cache_path)._load_signal(
+        NOW,
+        required_signal_day=date(2026, 8, 21),
+    )
+    last_known_good = cache_path.read_bytes()
+
+    appended_open = provider.history.open.copy()
+    appended_close = provider.history.close.copy()
+    appended_open.loc[pd.Timestamp("2026-08-24"), "A"] = 279.0
+    appended_close.loc[pd.Timestamp("2026-08-24"), "A"] = 280.0
+    dropped_date = provider.history.close.index[dropped_offset]
+    provider.history = ExecutionAlignedSignalHistory(
+        appended_open.drop(index=dropped_date),
+        appended_close.drop(index=dropped_date),
+    )
+
+    with pytest.raises(RuntimeError, match="required signal trading day 2026-08-24"):
+        _manager(provider=provider, cache_path=cache_path)._load_signal(
+            NOW,
+            required_signal_day=date(2026, 8, 24),
+        )
+
+    assert cache_path.read_bytes() == last_known_good
 
 
 def test_ohlc_cache_missing_or_expired_for_required_day_cannot_cover_provider_outage(

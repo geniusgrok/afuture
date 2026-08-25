@@ -1,8 +1,12 @@
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from afuture.broker.ctp import CtpBroker, CtpCredentials
 from afuture.cli import (
+    _recover_state,
     adopt_recovery_state,
     drain_after_halt,
     validate_recovery_positions,
@@ -93,8 +97,6 @@ def test_doctor_preflight_never_calls_send_order(
     capsys,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from types import SimpleNamespace
-
     from afuture.auto import AutoConfig
     from afuture.cli import _run_doctor
     from afuture.directional import DirectionalConfig
@@ -106,9 +108,15 @@ def test_doctor_preflight_never_calls_send_order(
     class FakeBroker:
         def __init__(self, credentials):
             self.credentials = credentials
+            self.seeded_trade_ids = None
 
         def start(self):
+            assert self.seeded_trade_ids == ["20260825:DCE:DOCTOR-T1"]
             return None
+
+        def seed_trade_identities(self, identities):
+            assert self.seeded_trade_ids is None
+            self.seeded_trade_ids = list(identities)
 
         def stop(self):
             return None
@@ -164,6 +172,13 @@ def test_doctor_preflight_never_calls_send_order(
         startup_timeout=0.1,
         snapshot_wait=0.1,
         metadata_limit=1,
+    )
+    StateStore(config.state_path).save(
+        RuntimeState(
+            reconciled=True,
+            metadata_verified=True,
+            recent_trade_ids=["20260825:DCE:DOCTOR-T1"],
+        )
     )
 
     assert _run_doctor(config, args) == 0
@@ -230,6 +245,38 @@ def test_recovery_rejects_unknown_contract():
         validate_recovery_positions([pair], [ContractPosition("rb2610", "SHFE", long_today=1)])
 
 
+@pytest.mark.parametrize(
+    "foreign_first",
+    [True, False],
+    ids=["foreign-before-configured", "foreign-after-configured"],
+)
+def test_recovery_rejects_same_symbol_on_unconfigured_exchange_for_either_broker_order(
+    foreign_first: bool,
+) -> None:
+    pair = PairConfig("m_pair", "m2609", "m2701", "DCE", 3)
+    configured = [
+        ContractPosition("m2609", "DCE", long_today=1),
+        ContractPosition("m2701", "DCE", short_today=1),
+    ]
+    foreign = ContractPosition("m2609", "SHFE", long_today=7)
+    positions = [foreign, *configured] if foreign_first else [*configured, foreign]
+
+    with pytest.raises(RuntimeError, match="not configured"):
+        validate_recovery_positions([pair], positions)
+
+
+def test_recovery_rejects_duplicate_symbol_exchange_position_rows() -> None:
+    pair = PairConfig("m_pair", "m2609", "m2701", "DCE", 3)
+    positions = [
+        ContractPosition("m2609", "DCE", long_today=1),
+        ContractPosition("m2609", "DCE", long_today=1),
+        ContractPosition("m2701", "DCE", short_today=1),
+    ]
+
+    with pytest.raises(RuntimeError, match="duplicate"):
+        validate_recovery_positions([pair], positions)
+
+
 def test_adopt_recovery_state_keeps_kill_switch_and_requires_fresh_metadata(tmp_path: Path):
     store = StateStore(tmp_path / "state.json")
     state = RuntimeState(
@@ -253,6 +300,141 @@ def test_adopt_recovery_state_keeps_kill_switch_and_requires_fresh_metadata(tmp_
     assert saved.day_start_equity == 500000
     assert saved.equity_high_watermark == 520000
     assert store.positions_from_state(saved)[0].long_yesterday == 1
+
+
+def test_recover_state_seeds_fresh_ctp_before_inclusive_snapshot_replay_and_adopts_one_lot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trading_day = "20260825"
+    pair = PairConfig("m_pair", "m2609", "m2701", "DCE", 3)
+    store = StateStore(tmp_path / "state.json")
+    store.save(
+        RuntimeState(
+            kill_switch=True,
+            trading_day=trading_day,
+            positions=[
+                ContractPosition("m2609", "DCE", long_today=1, long_price=3000.0).__dict__,
+                ContractPosition("m2701", "DCE", short_today=1, short_price=2990.0).__dict__,
+            ],
+            recent_trade_ids=[
+                f"{trading_day}:DCE:CTP.NEAR-T1",
+                f"{trading_day}:DCE:CTP.FAR-T1",
+            ],
+        )
+    )
+    broker = CtpBroker(CtpCredentials("user", "secret", "9999", "td", "md", "app", "auth", "test"))
+    broker._last_account = AccountSnapshot(
+        500_000,
+        500_000,
+        500_000,
+        0,
+        0,
+        0,
+        trading_day,
+    )
+
+    def start_with_inclusive_snapshot_and_replays() -> None:
+        broker._trading_day = trading_day
+        broker._positions = {
+            ("m2609", "DCE"): ContractPosition("m2609", "DCE", long_today=1, long_price=3000.0),
+            ("m2701", "DCE"): ContractPosition("m2701", "DCE", short_today=1, short_price=2990.0),
+        }
+        for trade_id, symbol, direction, price in (
+            ("CTP.NEAR-T1", "m2609", "LONG", 3000.0),
+            ("CTP.FAR-T1", "m2701", "SHORT", 2990.0),
+        ):
+            broker._on_trade(
+                SimpleNamespace(
+                    data=SimpleNamespace(
+                        vt_tradeid=trade_id,
+                        vt_orderid=f"CTP.{symbol}",
+                        symbol=symbol,
+                        exchange=SimpleNamespace(value="DCE"),
+                        direction=SimpleNamespace(name=direction),
+                        offset=SimpleNamespace(name="OPEN"),
+                        volume=1,
+                        price=price,
+                        datetime=datetime(2026, 8, 25, 1, tzinfo=timezone.utc),
+                    )
+                )
+            )
+
+    broker.start = start_with_inclusive_snapshot_and_replays
+    broker.is_ready = lambda: True
+    broker.snapshot_marker = lambda: (0, 0)
+    broker.snapshot_ready = lambda _marker: True
+    monkeypatch.setattr("afuture.broker.ctp.CtpBroker", lambda _credentials: broker)
+    monkeypatch.setenv("AFUTURE_RECOVERY_ACK", "I_VERIFIED_CTP_POSITIONS")
+    config = SimpleNamespace(
+        mode="live",
+        ctp=broker.credentials,
+        state_path=str(store.path),
+        pairs=[pair],
+        require_live_metadata=False,
+        contracts={},
+        metadata_timeout_seconds=1.0,
+        journal_path=str(tmp_path / "audit.jsonl"),
+        report_path=str(tmp_path / "report.json"),
+    )
+    args = SimpleNamespace(
+        confirm_live=False,
+        confirm_adopt_state=True,
+        startup_timeout=0.1,
+        snapshot_wait=0.1,
+    )
+
+    result = _recover_state(config, args, SimpleNamespace(warning=lambda *_args: None))
+
+    saved_positions = sorted(
+        store.positions_from_state(store.load()), key=lambda position: position.symbol
+    )
+    assert result == 0
+    assert [
+        (position.symbol, position.long_total, position.short_total) for position in saved_positions
+    ] == [
+        ("m2609", 1, 0),
+        ("m2701", 0, 1),
+    ]
+    assert broker.delivery_counters()["critical_enqueued"] == 0
+
+
+def test_recover_state_refuses_ambiguous_legacy_identity_before_ctp_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = StateStore(tmp_path / "state.json")
+    store.save(
+        RuntimeState(
+            kill_switch=True,
+            trading_day="20260825",
+            recent_trade_ids=["20260825:LEGACY-T1"],
+        )
+    )
+
+    class NeverStartedBroker:
+        def seed_trade_identities(self, _identities):
+            raise AssertionError("ambiguous legacy identities must not be seeded")
+
+        def start(self):
+            raise AssertionError("ambiguous legacy recovery must fail before CTP start")
+
+    monkeypatch.setattr("afuture.broker.ctp.CtpBroker", lambda _credentials: NeverStartedBroker())
+    monkeypatch.setenv("AFUTURE_RECOVERY_ACK", "I_VERIFIED_CTP_POSITIONS")
+    config = SimpleNamespace(
+        mode="live",
+        ctp=SimpleNamespace(environment="test"),
+        state_path=str(store.path),
+    )
+    args = SimpleNamespace(
+        confirm_live=False,
+        confirm_adopt_state=True,
+        startup_timeout=0.1,
+        snapshot_wait=0.1,
+    )
+
+    with pytest.raises(RuntimeError, match="ambiguous legacy trade identities"):
+        _recover_state(config, args, SimpleNamespace(warning=lambda *_args: None))
 
 
 def test_drain_after_halt_waits_until_active_orders_are_gone():

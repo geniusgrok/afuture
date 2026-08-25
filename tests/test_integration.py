@@ -1,8 +1,10 @@
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from afuture.alerts import AlertManager, MemoryAlertSink
+from afuture.broker.ctp import CtpBroker, CtpCredentials
 from afuture.broker.sim import SimBroker
 from afuture.engine import TradingEngine
 from afuture.execution import PairExecutor
@@ -262,6 +264,112 @@ def test_account_event_is_validated_before_runtime_state_mutation(tmp_path: Path
     assert "invalid account snapshot" in engine.state.kill_reason
 
 
+def test_delayed_prior_day_account_event_halts_without_rebucketing_positions(tmp_path: Path):
+    specs = setup_specs()
+    persisted_position = ContractPosition(
+        "m2609",
+        "DCE",
+        long_today=1,
+        long_price=3000.0,
+    )
+    broker = SimBroker(500000, specs)
+    broker._trading_day = "20260825"
+    broker.position_book = PositionBook([persisted_position])
+    store = StateStore(tmp_path / "s.json")
+    store.save(
+        RuntimeState(
+            trading_day="20260825",
+            positions=[asdict(persisted_position)],
+        )
+    )
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    engine.start()
+
+    engine._handle_account_event(AccountSnapshot(500000, 500000, 500000, 0, 0, 0, "20260824"))
+
+    saved = store.load()
+    position = store.positions_from_state(saved)[0]
+    assert engine.halted
+    assert "moved backward" in engine.state.kill_reason
+    assert saved.trading_day == "20260825"
+    assert (position.long_today, position.long_yesterday) == (1, 0)
+
+
+def test_restart_with_persisted_day_ahead_of_broker_halts_without_rebucketing(
+    tmp_path: Path,
+):
+    specs = setup_specs()
+    persisted_position = ContractPosition(
+        "m2609",
+        "DCE",
+        long_today=1,
+        long_price=3000.0,
+    )
+    broker = SimBroker(500000, specs)
+    broker._trading_day = "20260824"
+    broker.position_book = PositionBook([persisted_position])
+    store = StateStore(tmp_path / "s.json")
+    store.save(
+        RuntimeState(
+            trading_day="20260825",
+            positions=[asdict(persisted_position)],
+        )
+    )
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+
+    engine.start()
+
+    saved = store.load()
+    position = store.positions_from_state(saved)[0]
+    assert engine.halted
+    assert "moved backward" in engine.state.kill_reason
+    assert saved.trading_day == "20260825"
+    assert (position.long_today, position.long_yesterday) == (1, 0)
+
+
+def test_prior_and_current_day_account_backlog_halts_without_bucket_bounce(tmp_path: Path):
+    specs = setup_specs()
+    persisted_position = ContractPosition(
+        "m2609",
+        "DCE",
+        long_today=1,
+        long_price=3000.0,
+    )
+    broker = SimBroker(500000, specs)
+    broker._trading_day = "20260825"
+    broker.position_book = PositionBook([persisted_position])
+    store = StateStore(tmp_path / "s.json")
+    store.save(
+        RuntimeState(
+            trading_day="20260825",
+            positions=[asdict(persisted_position)],
+        )
+    )
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    engine.start()
+    broker._events.extend(
+        [
+            BrokerEvent(
+                "account",
+                AccountSnapshot(500000, 500000, 500000, 0, 0, 0, "20260824"),
+            ),
+            BrokerEvent(
+                "account",
+                AccountSnapshot(500000, 500000, 500000, 0, 0, 0, "20260825"),
+            ),
+        ]
+    )
+
+    engine.run_once()
+
+    saved = store.load()
+    position = store.positions_from_state(saved)[0]
+    assert engine.halted
+    assert "moved backward" in engine.state.kill_reason
+    assert saved.trading_day == "20260825"
+    assert (position.long_today, position.long_yesterday) == (1, 0)
+
+
 def test_unknown_trade_halts_without_adopting_position_and_persists_ids(tmp_path: Path):
     specs = setup_specs()
 
@@ -292,6 +400,7 @@ def test_unknown_trade_halts_without_adopting_position_and_persists_ids(tmp_path
 def test_known_order_and_trade_ids_are_persisted(tmp_path: Path):
     specs = setup_specs()
     broker = SimBroker(500000, specs)
+    broker._trading_day = "20260821"
     store = StateStore(tmp_path / "s.json")
     engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
     engine.start()
@@ -306,6 +415,7 @@ def test_known_order_and_trade_ids_are_persisted(tmp_path: Path):
 def test_duplicate_trade_callback_is_ignored_before_position_side_effects(tmp_path: Path):
     specs = setup_specs()
     broker = SimBroker(500000, specs)
+    broker._trading_day = "20260821"
     store = StateStore(tmp_path / "s.json")
     engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
     engine.start()
@@ -326,6 +436,7 @@ def test_duplicate_trade_callback_is_ignored_before_position_side_effects(tmp_pa
 def test_duplicate_trade_callback_is_ignored_after_restart(tmp_path: Path):
     specs = setup_specs()
     broker = SimBroker(500000, specs)
+    broker._trading_day = "20260821"
     store = StateStore(tmp_path / "s.json")
     engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
     engine.start()
@@ -347,7 +458,7 @@ def test_duplicate_trade_callback_is_ignored_after_restart(tmp_path: Path):
     assert not restarted.halted
 
 
-def test_legacy_trade_identity_suppresses_replayed_fill_during_migration(tmp_path: Path):
+def test_unproven_legacy_trade_identity_halts_for_reconciliation(tmp_path: Path):
     specs = setup_specs()
     broker = SimBroker(500000, specs)
     broker._trading_day = "20260821"
@@ -371,9 +482,119 @@ def test_legacy_trade_identity_suppresses_replayed_fill_during_migration(tmp_pat
     handled = engine._handle_trade_event(replay)
 
     assert not handled
-    assert not engine.halted
+    assert engine.halted
+    assert "ambiguous legacy trade identity" in engine.state.kill_reason
     assert store.positions_from_state(store.load()) == []
     assert store.load().recent_trade_ids == ["20260821:LEGACY-T1"]
+
+
+def test_ambiguous_legacy_trade_identity_halts_on_owned_cross_exchange_fill(
+    tmp_path: Path,
+):
+    specs = setup_specs()
+    broker = SimBroker(500000, specs)
+    broker._trading_day = "20260821"
+    store = StateStore(tmp_path / "s.json")
+    persisted_dce_position = ContractPosition(
+        "same",
+        "DCE",
+        long_today=1,
+        long_price=100.0,
+    )
+    store.save(
+        RuntimeState(
+            trading_day="20260821",
+            positions=[asdict(persisted_dce_position)],
+            recent_trade_ids=["20260821:COLLIDE"],
+        )
+    )
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    engine.start()
+    broker.owns_order = lambda _order_id: True
+    shfe_fill = Trade(
+        "COLLIDE",
+        "OWNED-SHFE-O1",
+        "same",
+        "SHFE",
+        OrderSide.BUY,
+        Offset.OPEN,
+        1,
+        200.0,
+        datetime(2026, 8, 21, 1, tzinfo=timezone.utc),
+    )
+
+    handled = engine._handle_trade_event(shfe_fill)
+
+    assert not handled
+    assert engine.halted
+    assert "ambiguous legacy trade identity" in engine.state.kill_reason
+    positions = store.positions_from_state(store.load())
+    assert [(position.symbol, position.exchange) for position in positions] == [("same", "DCE")]
+
+
+def test_engine_seeds_fresh_ctp_before_startup_replay_mutates_position_mirror(
+    tmp_path: Path,
+):
+    trading_day = "20260825"
+    persisted_position = ContractPosition(
+        "cu2609",
+        "SHFE",
+        long_today=1,
+        long_price=70_000.0,
+    )
+    store = StateStore(tmp_path / "s.json")
+    store.save(
+        RuntimeState(
+            trading_day=trading_day,
+            day_start_equity=500_000,
+            positions=[asdict(persisted_position)],
+            recent_trade_ids=[f"{trading_day}:SHFE:CTP.T1"],
+        )
+    )
+    broker = CtpBroker(CtpCredentials("user", "secret", "9999", "td", "md", "app", "auth", "test"))
+    broker._last_account = AccountSnapshot(
+        500_000,
+        500_000,
+        500_000,
+        0,
+        0,
+        0,
+        trading_day,
+    )
+
+    def start_with_inclusive_snapshot_and_replay() -> None:
+        broker._trading_day = trading_day
+        broker._positions = {
+            (persisted_position.symbol, persisted_position.exchange): persisted_position
+        }
+        broker._on_trade(
+            SimpleNamespace(
+                data=SimpleNamespace(
+                    vt_tradeid="CTP.T1",
+                    vt_orderid="CTP.O1",
+                    symbol="cu2609",
+                    exchange=SimpleNamespace(value="SHFE"),
+                    direction=SimpleNamespace(name="LONG"),
+                    offset=SimpleNamespace(name="OPEN"),
+                    volume=1,
+                    price=70_000.0,
+                    datetime=datetime(2026, 8, 25, 1, tzinfo=timezone.utc),
+                )
+            )
+        )
+
+    broker.start = start_with_inclusive_snapshot_and_replay
+    broker.is_ready = lambda: True
+    broker.health_error = lambda: None
+    engine = TradingEngine(broker, [], {}, RiskManager(RiskConfig()), store)
+
+    engine.start()
+    engine.run_once()
+
+    assert broker.get_positions()[0].long_today == 1
+    assert store.positions_from_state(store.load())[0].long_today == 1
+    assert broker.delivery_counters()["critical_enqueued"] == 0
+    assert not engine.halted
 
 
 def test_trade_identity_and_expected_positions_include_exchange(tmp_path: Path):
