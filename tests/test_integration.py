@@ -137,3 +137,18 @@ def test_critical_alert_is_emitted_on_halt(tmp_path: Path):
                            alert_manager=AlertManager([sink]))
     engine.start(); engine.emergency_stop("test")
     assert sink.events and sink.events[-1]["level"] == "CRITICAL"
+
+
+def test_alert_sink_failure_is_observable_without_blocking_other_sinks(caplog):
+    class FailingSink:
+        def send(self, event):
+            raise RuntimeError("webhook unavailable")
+
+    receiving_sink = MemoryAlertSink()
+    manager = AlertManager([FailingSink(), receiving_sink])
+
+    manager.critical("risk halt")
+
+    assert receiving_sink.events[-1]["message"] == "risk halt"
+    assert "FailingSink" in caplog.text
+    assert "RuntimeError" in caplog.text

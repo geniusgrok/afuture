@@ -500,14 +500,16 @@ class TradingEngine:
         # 已存在于未来事件队列但尚未发布。此时不能把“回放采样间隔”误当成实时
         # 柜台 stale quote 并永久停机；每次真正交易前仍由 check_quotes 严格检查
         # quote age / cross-leg skew。实盘则继续用墙钟执行全局 stale 停机。
+        max_quote_age: float
         if self.historical_mode:
             max_quote_age = 0.0
         else:
-            max_quote_age = self._max_quote_age(
+            observed_quote_age = self._max_quote_age(
                 required, reference, quotes_ready
             )
-            if max_quote_age is None:
+            if observed_quote_age is None:
                 return "market quote timestamp is in the future"
+            max_quote_age = observed_quote_age
 
         try:
             self.broker.get_account()

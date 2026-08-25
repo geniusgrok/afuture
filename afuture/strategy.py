@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import time
+from datetime import datetime, time
 from math import exp, inf, log, sqrt
 from zoneinfo import ZoneInfo
 
@@ -44,14 +44,13 @@ class CalendarSpreadStrategy:
         # _history 始终保存策略信号空间；raw history 单独用于人民币风险定仓。
         self._history: deque[float] = deque(maxlen=pair.lookback)
         self._raw_history: deque[float] = deque(maxlen=pair.lookback)
-        self._z_history: deque[float] = deque(
-            maxlen=max(pair.lookback, pair.entry_trend_window * 2)
-        )
+        self._z_history_window = max(pair.lookback, pair.entry_trend_window * 2)
+        self._z_history: deque[float] = deque(maxlen=self._z_history_window)
         self._position = 0
         self._entry_mean = 0.0
         self._entry_std = 0.0
         self._holding_samples = 0
-        self._last_sample_ts = None
+        self._last_sample_ts: datetime | None = None
         self._last_sample_trading_day = ""
         self._armed_direction = 0
         self._armed_extreme = 0.0
@@ -104,7 +103,7 @@ class CalendarSpreadStrategy:
         for value in (raw_values or [])[-self.pair.lookback:]:
             self._raw_history.append(float(value))
         self._z_history.clear()
-        for value in state.get("z_history", [])[-self._z_history.maxlen:]:
+        for value in state.get("z_history", [])[-self._z_history_window:]:
             self._z_history.append(float(value))
 
         self._position = int(state.get("position", 0))
@@ -115,8 +114,6 @@ class CalendarSpreadStrategy:
         self._holding_samples = int(state.get("holding_samples", 0))
         raw_ts = str(state.get("last_sample_ts", ""))
         if raw_ts:
-            from datetime import datetime
-
             self._last_sample_ts = datetime.fromisoformat(raw_ts)
         else:
             self._last_sample_ts = None
@@ -147,12 +144,10 @@ class CalendarSpreadStrategy:
         for value in observed.get("raw_history", [])[-self.pair.lookback:]:
             self._raw_history.append(float(value))
         self._z_history.clear()
-        for value in observed.get("z_history", [])[-self._z_history.maxlen:]:
+        for value in observed.get("z_history", [])[-self._z_history_window:]:
             self._z_history.append(float(value))
         raw_ts = str(observed.get("last_sample_ts", ""))
         if raw_ts:
-            from datetime import datetime
-
             self._last_sample_ts = datetime.fromisoformat(raw_ts)
         else:
             self._last_sample_ts = None

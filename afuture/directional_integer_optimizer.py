@@ -176,7 +176,9 @@ def optimize_integer_targets(
         # A higher-value lot can be blocked by margin/gross capacity even when removing
         # the incumbent lot alone is not beneficial. Evaluate deterministic two-leg
         # swaps only after no positive one-lot move remains.
-        pair_best = None
+        pair_best: tuple[
+            float, str, int, str, int, dict[str, int], float
+        ] | None = None
         symbols_with_moves = [
             (symbol, delta)
             for symbol in sorted(requested)
@@ -211,7 +213,7 @@ def optimize_integer_targets(
                 improvement = value - target_value
                 if improvement <= _EPS:
                     continue
-                item = (
+                pair_item = (
                     improvement,
                     first_symbol,
                     first_delta,
@@ -221,7 +223,7 @@ def optimize_integer_targets(
                     value,
                 )
                 if pair_best is None or improvement > pair_best[0] + _EPS:
-                    pair_best = item
+                    pair_best = pair_item
         if pair_best is None:
             break
         target = pair_best[5]

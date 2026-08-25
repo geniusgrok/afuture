@@ -4,7 +4,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import isfinite
 from statistics import stdev
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Protocol
+
+
+class DirectionalRiskScale(Protocol):
+    """Behavioral contract for causal target scaling policies."""
+
+    def scale(self, completed_returns: Iterable[float]) -> float: ...
 
 
 @dataclass(frozen=True)

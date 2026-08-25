@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import json
 from pathlib import Path
+from typing import Any, cast
 
 
 class AuditJournal:
@@ -39,9 +40,11 @@ class AuditJournal:
             )
 
 
-def _to_jsonable(value):
-    if is_dataclass(value):
-        return _to_jsonable(asdict(value))
+def _to_jsonable(value: object) -> object:
+    # ``is_dataclass`` also returns true for dataclass *types*; audit payloads
+    # contain instances only, and passing a type to asdict is an error.
+    if not isinstance(value, type) and is_dataclass(value):
+        return _to_jsonable(asdict(cast(Any, value)))
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, datetime):

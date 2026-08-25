@@ -25,7 +25,7 @@ from .directional_data_validation import (
     validate_finite_columns,
     validate_unique_keys,
 )
-from .directional_risk import DirectionalRiskGovernor
+from .directional_risk import DirectionalRiskGovernor, DirectionalRiskScale
 
 
 PRODUCT_MULTIPLIERS: dict[str, float] = {
@@ -119,7 +119,7 @@ class DirectionalProductionAcceptance:
     def __init__(self, config: ProductionMechanicsConfig | None = None) -> None:
         self.config = config or ProductionMechanicsConfig()
         self.config.validate()
-        self.risk_governor = DirectionalRiskGovernor()
+        self.risk_governor: DirectionalRiskScale = DirectionalRiskGovernor()
 
     def retain_completed_returns(self, completed_returns: list[float]) -> list[float]:
         """Keep the default governor's exact two-completed-session state."""

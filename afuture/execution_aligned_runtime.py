@@ -24,6 +24,7 @@ from .directional_runtime import (
     _CHINA_TZ,
 )
 from .execution_aligned_policy import ExecutionAlignedAggressivePolicy
+from .models import ContractInfo
 
 
 FROZEN_PRODUCTS = (
@@ -140,6 +141,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             **kwargs,
         )
         self._execution_signal_history: ExecutionAlignedSignalHistory | None = None
+        self.activity_tracker: DirectionalActivityTracker | None
         if activity_tracker is not None:
             self.activity_tracker = activity_tracker
         elif activity_store_path is not None:
@@ -149,7 +151,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         else:
             self.activity_tracker = None
         self.completed_returns_provider = completed_returns_provider
-        self._catalog_by_symbol: dict[str, object] = {}
+        self._catalog_by_symbol: dict[str, ContractInfo] = {}
 
     def bootstrap(self, now: datetime) -> None:
         super().bootstrap(now)
@@ -281,8 +283,11 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
             or self._signal_refresh_date != local.date()
         )
         if refresh:
+            provider = self.signal_provider
+            if provider is None:
+                raise RuntimeError("execution-aligned signal provider is not configured")
             try:
-                raw = self.signal_provider.load(
+                raw = provider.load(
                     tuple(item.upper() for item in self.config.products)
                 )
             except Exception:

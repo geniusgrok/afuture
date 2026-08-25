@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import time
 
-from .alerts import AlertManager, FileAlertSink, WebhookAlertSink
+from .alerts import AlertManager, AlertSink, FileAlertSink, WebhookAlertSink
 from .config import load_config
 from .data import read_ticks
 from .logging_utils import configure_logging
@@ -367,7 +367,7 @@ def _recover_state(config, args, logger) -> int:
 
 
 def _build_alert_manager(config) -> AlertManager:
-    sinks = [FileAlertSink(config.alert_path)]
+    sinks: list[AlertSink] = [FileAlertSink(config.alert_path)]
     if config.alert_webhook:
         sinks.append(WebhookAlertSink(config.alert_webhook))
     return AlertManager(sinks)
@@ -663,8 +663,8 @@ def main(argv: list[str] | None = None) -> int:
             max_sync_seconds=config.auto.max_sync_seconds if config.auto.enabled else 2.0,
         )
         rows = []
-        for pair in _research_pairs(config, ticks):
-            candidate = scanner.scan_pair(pair, ticks, config.contracts)
+        for research_pair in _research_pairs(config, ticks):
+            candidate = scanner.scan_pair(research_pair, ticks, config.contracts)
             if candidate is not None:
                 rows.append(asdict(candidate))
         print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -672,11 +672,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "accept":
         ticks = read_ticks(args.data)
-        pair = next(
+        accepted_pair = next(
             (item for item in _research_pairs(config, ticks) if item.pair_id == args.pair),
             None,
         )
-        if pair is None:
+        if accepted_pair is None:
             raise ValueError(f"unknown pair: {args.pair}")
         research_config = ResearchConfig(
             train_days=args.train_days,
@@ -687,24 +687,24 @@ def main(argv: list[str] | None = None) -> int:
                 args.stress_multipliers
             ),
         )
-        result = WalkForwardRunner(
+        walk_forward_result = WalkForwardRunner(
             config.contracts, config.initial_capital
-        ).run(pair, ticks, research_config)
-        decision = AcceptanceGate().evaluate(result)
+        ).run(accepted_pair, ticks, research_config)
+        acceptance_decision = AcceptanceGate().evaluate(walk_forward_result)
         print(
             json.dumps(
                 {
-                    "accepted": decision.accepted,
-                    "reasons": decision.reasons,
-                    "selected_parameters": result.selected_parameters,
-                    "folds": [asdict(fold) for fold in result.folds],
-                    "stress_results": result.stress_results,
+                    "accepted": acceptance_decision.accepted,
+                    "reasons": acceptance_decision.reasons,
+                    "selected_parameters": walk_forward_result.selected_parameters,
+                    "folds": [asdict(fold) for fold in walk_forward_result.folds],
+                    "stress_results": walk_forward_result.stress_results,
                 },
                 ensure_ascii=False,
                 indent=2,
             )
         )
-        return 0 if decision.accepted else 2
+        return 0 if acceptance_decision.accepted else 2
 
     if args.command == "accept-auto":
         from .auto_acceptance import AutoPortfolioAcceptanceGate
@@ -718,32 +718,32 @@ def main(argv: list[str] | None = None) -> int:
             step_days=args.step_days,
             cost_stress_multipliers=_parse_stress_multipliers(args.stress_multipliers),
         )
-        result = AutoPortfolioRunner(config).run(ticks, research)
-        decision = AutoPortfolioAcceptanceGate().evaluate(result)
+        auto_result = AutoPortfolioRunner(config).run(ticks, research)
+        auto_decision = AutoPortfolioAcceptanceGate().evaluate(auto_result)
         payload = {
-            "accepted": decision.accepted,
-            "reasons": decision.reasons,
-            "gate_metrics": decision.metrics,
-            "selected_parameters": result.selected_parameters,
-            "folds": [asdict(fold) for fold in result.folds],
-            "stress_results": result.stress_results,
-            "robustness": result.robustness,
+            "accepted": auto_decision.accepted,
+            "reasons": auto_decision.reasons,
+            "gate_metrics": auto_decision.metrics,
+            "selected_parameters": auto_result.selected_parameters,
+            "folds": [asdict(fold) for fold in auto_result.folds],
+            "stress_results": auto_result.stress_results,
+            "robustness": auto_result.robustness,
         }
         output = args.output or _runtime_path(config, "auto_acceptance.json")
         _write_json(payload, output)
-        return 0 if decision.accepted else 2
+        return 0 if auto_decision.accepted else 2
 
     if args.command == "data-check":
         from .data_quality import DataQualityAnalyzer
 
         # 保留源文件顺序，才能发现数据供应链中的真实乱序；研究/回放仍按时间排序。
         ticks = read_ticks(args.data, sort_rows=False)
-        result = DataQualityAnalyzer(args.max_gap_seconds).analyze(
+        quality_result = DataQualityAnalyzer(args.max_gap_seconds).analyze(
             ticks, config.contract_catalog, config.auto
         )
         output = args.output or _runtime_path(config, "data_quality.json")
-        _write_json(result.to_dict(), output)
-        return 0 if result.passed else 2
+        _write_json(quality_result.to_dict(), output)
+        return 0 if quality_result.passed else 2
 
     if args.command == "quality-report":
         recorder = _quality_recorder(config, shadow=args.shadow)

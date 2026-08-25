@@ -246,7 +246,7 @@ class AutoPairManager:
             for symbol in (pair.near_symbol, pair.far_symbol):
                 if symbol in self._history:
                     continue
-                history = deque(maxlen=max_history)
+                history: deque[Tick] = deque(maxlen=max_history)
                 if self.sample_store is not None:
                     for row in self.sample_store.load(symbol)[-max_history:]:
                         history.append(row)
@@ -334,7 +334,7 @@ class AutoPairManager:
         }
         for symbol in symbols:
             if symbol not in self._history:
-                history = deque(maxlen=max_history)
+                history: deque[Tick] = deque(maxlen=max_history)
                 if self.sample_store is not None:
                     for row in self.sample_store.load(symbol)[-max_history:]:
                         history.append(row)
@@ -404,7 +404,10 @@ class AutoPairManager:
             if history is None:
                 continue
             history.clear()
-            for item in rows[-history.maxlen :]:
+            maxlen = history.maxlen
+            if maxlen is None:
+                raise RuntimeError("auto sample history must be bounded")
+            for item in rows[-maxlen:]:
                 row = dict(item)
                 row["timestamp"] = datetime.fromisoformat(str(row["timestamp"]))
                 tick = Tick(**row)
@@ -434,8 +437,10 @@ class AutoPairManager:
         scored: list[tuple[PairConfig, float]] = []
         self.last_eligible_ids = set()
         for pair in self.candidate_pairs:
-            near_history = self._history.get(pair.near_symbol, ())
-            far_history = self._history.get(pair.far_symbol, ())
+            near_history = self._history.get(pair.near_symbol)
+            far_history = self._history.get(pair.far_symbol)
+            if near_history is None or far_history is None:
+                continue
             if (
                 len(near_history) < pair.lookback + 1
                 or len(far_history) < pair.lookback + 1

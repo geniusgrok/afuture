@@ -13,7 +13,7 @@ from queue import Empty, Queue
 from threading import Event
 from time import monotonic, sleep
 import re
-from typing import Any
+from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
 
 from .base import Broker
@@ -34,6 +34,13 @@ from ..models import (
     Trade,
 )
 from ..position import PositionBook
+
+
+class _RateWaiter(TypedDict):
+    kind: str
+    event: Event
+    rows: list[dict[str, Any]]
+    error: str
 
 
 @dataclass(frozen=True)
@@ -74,8 +81,10 @@ class CtpBroker(Broker):
         self.credentials = credentials
         self.snapshot_stale_seconds = snapshot_stale_seconds
         self._runtime: dict[str, Any] | None = None
-        self._event_engine = None
-        self._main_engine = None
+        # VeighNa is an optional runtime dependency.  Keep its dynamic objects at
+        # the adapter boundary instead of leaking ``Any`` into domain models.
+        self._event_engine: Any | None = None
+        self._main_engine: Any | None = None
         self._events: Queue[BrokerEvent] = Queue()
         self._order_references: dict[str, str] = {}
         self._last_account: AccountSnapshot | None = None
@@ -106,7 +115,7 @@ class CtpBroker(Broker):
 
             def __init__(self, gateway):
                 super().__init__(gateway)
-                self._afuture_rate_waiters: dict[int, dict[str, Any]] = {}
+                self._afuture_rate_waiters: dict[int, _RateWaiter] = {}
 
             def onRspQryInvestorPosition(self, data, error, reqid, last):
                 error_id = int((error or {}).get("ErrorID", 0))
@@ -390,7 +399,12 @@ class CtpBroker(Broker):
     def _query_rate(self, td_api, kind: str, symbol: str, deadline: float) -> dict:
         reqid = int(getattr(td_api, "reqid", 0)) + 1
         td_api.reqid = reqid
-        waiter = {"kind": kind, "event": Event(), "rows": [], "error": ""}
+        waiter: _RateWaiter = {
+            "kind": kind,
+            "event": Event(),
+            "rows": [],
+            "error": "",
+        }
         td_api._afuture_rate_waiters[reqid] = waiter
         try:
             while True:
@@ -531,7 +545,7 @@ class CtpBroker(Broker):
         self._last_account_monotonic = monotonic()
         self._events.put(BrokerEvent("account", self._last_account))
 
-    def _handle_position_snapshot(self, raw_positions: list[object]) -> None:
+    def _handle_position_snapshot(self, raw_positions: list[Any]) -> None:
         combined: dict[str, ContractPosition] = {}
         try:
             for raw in raw_positions:

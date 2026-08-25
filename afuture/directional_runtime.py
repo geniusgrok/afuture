@@ -7,7 +7,7 @@ is observability-only and never participates in trading decisions.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Mapping, Protocol
 from zoneinfo import ZoneInfo
 
@@ -87,7 +87,7 @@ class DirectionalPortfolioManager:
         self._ticks: dict[str, Tick] = {}
         self._specs: dict[str, ContractSpec] = dict(static_specs or {})
         self._signal_frame: pd.DataFrame | None = None
-        self._signal_refresh_date = None
+        self._signal_refresh_date: date | None = None
         self._initialized = False
 
         self._quality_cycle_seq = 0

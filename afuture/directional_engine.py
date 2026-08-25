@@ -299,12 +299,14 @@ class DirectionalTradingEngine(TradingEngine):
         quotes_ready = required.issubset(self.quotes)
         if not quotes_ready and self._quote_initialization_grace_active():
             return ""
+        max_quote_age: float
         if self.historical_mode:
             max_quote_age = 0.0
         else:
-            max_quote_age = self._max_quote_age(required, reference, quotes_ready)
-            if max_quote_age is None:
+            observed_quote_age = self._max_quote_age(required, reference, quotes_ready)
+            if observed_quote_age is None:
                 return "market quote timestamp is in the future"
+            max_quote_age = observed_quote_age
         try:
             self.broker.get_account()
             account_ready = True

@@ -74,7 +74,7 @@ def reallocate_survivors_lexicographically(
     """Restore gross on survivors with tracking-first, turnover-second allocation."""
     original, approved = _validated_frames(original_weights, approved_weights)
     result = pd.DataFrame(0.0, index=original.index, columns=original.columns)
-    previous = np.zeros(len(original.columns), dtype=float)
+    previous: np.ndarray = np.zeros(len(original.columns), dtype=float)
 
     for timestamp in original.index:
         original_row = original.loc[timestamp].to_numpy(float)

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 from dataclasses import asdict, dataclass, field
 from datetime import date
 
@@ -62,8 +63,8 @@ class DataQualityAnalyzer:
         invalid = 0
         activity_missing = 0
         limit_missing = 0
-        seen: set[tuple[str, object]] = set()
-        last_seen: dict[str, object] = {}
+        seen: set[tuple[str, datetime]] = set()
+        last_seen: dict[str, datetime] = {}
         rows_by_symbol: dict[str, list[Tick]] = defaultdict(list)
         symbols_by_day: dict[str, set[str]] = defaultdict(set)
         samples_by_day: dict[str, int] = defaultdict(int)
