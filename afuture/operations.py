@@ -9,7 +9,11 @@ from datetime import datetime
 from math import isfinite
 from pathlib import Path
 
-from .directional_activity import DirectionalActivityStore, select_contracts_from_activity
+from .directional_activity import (
+    DirectionalActivityStore,
+    select_contracts_from_activity,
+    validate_directional_activity_snapshot,
+)
 from .metadata import validate_contract_metadata
 from .models import AccountSnapshot, ContractInfo, ContractPosition, ContractSpec, RuntimeMode
 from .reconcile import compare_positions
@@ -382,6 +386,8 @@ def build_doctor_report(
         activity_path = Path(config.state_path).with_name("directional_activity.json")
         try:
             snapshot = DirectionalActivityStore(activity_path).load()
+            if snapshot is not None:
+                validate_directional_activity_snapshot(snapshot)
         except (OSError, KeyError, TypeError, ValueError) as exc:
             activity_ready = False
             activity_detail = f"invalid directional activity evidence: {exc}"
@@ -397,18 +403,6 @@ def build_doctor_report(
                     activity_ready = False
                     activity_detail = f"invalid directional activity trading day: {exc}"
                 else:
-                    contracts_valid = all(
-                        symbol == item.symbol
-                        and bool(item.exchange)
-                        and bool(item.product)
-                        and item.trading_day == snapshot.trading_day
-                        and isfinite(item.volume)
-                        and item.volume >= 0
-                        and isfinite(item.open_interest)
-                        and item.open_interest >= 0
-                        and item.timestamp.tzinfo is not None
-                        for symbol, item in snapshot.contracts.items()
-                    )
                     selected = (
                         select_contracts_from_activity(
                             config.directional,
@@ -416,7 +410,7 @@ def build_doctor_report(
                             snapshot,
                             current_day,
                         )
-                        if contracts_valid and activity_day < current_day
+                        if activity_day < current_day
                         else {}
                     )
                     configured_products = {

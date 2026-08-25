@@ -298,6 +298,8 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         age_hours = (local - latest).total_seconds() / 3600.0
         if age_hours < -1:
             raise RuntimeError("directional signal history is from the future")
+        if required_signal_day is not None:
+            return
         if age_hours > self.config.signal_max_age_hours:
             raise RuntimeError(f"directional signal history is stale by {age_hours:.1f}h")
 

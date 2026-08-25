@@ -160,6 +160,41 @@ def test_signal_freshness_uses_completed_trading_day_not_only_hour_age():
         manager._load_signal(NOW, required_signal_day=date(2026, 8, 24))
 
 
+def test_exact_required_completed_day_survives_long_scheduled_closure():
+    provider = _Provider()
+    dates = pd.date_range(end="2026-02-13", periods=180, freq="B")
+    close = pd.DataFrame({"A": range(100, 280)}, index=dates, dtype=float)
+    provider.history = ExecutionAlignedSignalHistory(
+        close.shift(1).fillna(close.iloc[0]),
+        close,
+    )
+    manager = _manager(provider=provider)
+
+    history = manager._load_signal(
+        datetime(2026, 2, 24, 1, 1, tzinfo=timezone.utc),
+        required_signal_day=date(2026, 2, 13),
+    )
+
+    assert history.close.index[-1].date() == date(2026, 2, 13)
+
+
+def test_required_completed_day_still_rejects_future_history():
+    provider = _Provider()
+    dates = pd.date_range(end="2026-02-13", periods=180, freq="B")
+    close = pd.DataFrame({"A": range(100, 280)}, index=dates, dtype=float)
+    provider.history = ExecutionAlignedSignalHistory(
+        close.shift(1).fillna(close.iloc[0]),
+        close,
+    )
+    manager = _manager(provider=provider)
+
+    with pytest.raises(RuntimeError, match="from the future"):
+        manager._load_signal(
+            datetime(2026, 2, 12, 1, 0, tzinfo=timezone.utc),
+            required_signal_day=date(2026, 2, 13),
+        )
+
+
 def test_cached_signal_can_cover_transient_provider_failure_when_required_day_is_present():
     provider = _Provider()
     manager = _manager(provider=provider)

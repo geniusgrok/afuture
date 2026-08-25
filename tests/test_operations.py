@@ -1,4 +1,6 @@
+import json
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -49,6 +51,17 @@ def _catalog() -> list[ContractInfo]:
 
 def _checks(report) -> dict[str, bool]:
     return {item.name: item.passed for item in report.checks}
+
+
+def _resign_activity(envelope: dict) -> None:
+    unsigned = {key: value for key, value in envelope.items() if key != "checksum"}
+    encoded = json.dumps(
+        unsigned,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    envelope["checksum"] = sha256(encoded).hexdigest()
 
 
 def test_local_status_reports_current_and_previous_verified_state(tmp_path: Path) -> None:
@@ -395,6 +408,49 @@ def test_doctor_requires_activity_and_catalog_coverage_for_configured_products(
     assert not _checks(below_threshold)["directional_activity_ready"]
 
 
+def test_doctor_rejects_tampered_directional_activity_envelope(tmp_path: Path) -> None:
+    config = _config(tmp_path, directional=True)
+    activity_path = tmp_path / "directional_activity.json"
+    DirectionalActivityStore(activity_path).save(
+        DirectionalActivitySnapshot(
+            "20260824",
+            {
+                "m2609": ContractActivity(
+                    "m2609",
+                    "DCE",
+                    "M",
+                    "20260824",
+                    10_000,
+                    20_000,
+                    datetime(2026, 8, 24, tzinfo=timezone.utc),
+                )
+            },
+        )
+    )
+    envelope = json.loads(activity_path.read_text(encoding="utf-8"))
+    completed = envelope.get("completed", envelope)
+    completed["contracts"]["m2609"]["open_interest"] = 99_999
+    activity_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    report = build_doctor_report(
+        config,
+        broker_ready=True,
+        fresh_snapshot=True,
+        trading_day="20260825",
+        account=_account(),
+        positions=[],
+        active_order_count=0,
+        catalog=_catalog(),
+        requested_symbols=["m2609"],
+        metadata=config.contracts,
+        min_free_bytes=1,
+    )
+
+    check = next(item for item in report.checks if item.name == "directional_activity_ready")
+    assert not check.passed
+    assert "invalid directional activity evidence" in check.detail
+
+
 def test_doctor_rejects_activity_identity_that_disagrees_with_catalog(tmp_path: Path) -> None:
     config = _config(tmp_path, directional=True)
     DirectionalActivityStore(tmp_path / "directional_activity.json").save(
@@ -442,7 +498,7 @@ def test_doctor_rejects_internally_inconsistent_directional_activity(tmp_path: P
                     "m2609",
                     "DCE",
                     "M",
-                    "20260823",
+                    "20260824",
                     10_000,
                     20_000,
                     datetime(2026, 8, 24, tzinfo=timezone.utc),
@@ -450,6 +506,10 @@ def test_doctor_rejects_internally_inconsistent_directional_activity(tmp_path: P
             },
         )
     )
+    envelope = json.loads(activity_path.read_text(encoding="utf-8"))
+    envelope["completed"]["contracts"]["m2609"]["trading_day"] = "20260823"
+    _resign_activity(envelope)
+    activity_path.write_text(json.dumps(envelope), encoding="utf-8")
 
     report = build_doctor_report(
         config,
