@@ -1,4 +1,4 @@
-"""Research-only cost-aware no-trade filter from the predeclared PR #17 candidate.
+"""Batch adapter for the shared cost-aware no-trade Stress-90 primitive.
 
 The filter is deliberately narrow: it may suppress only new risk and same-direction
 absolute increases. Reductions, exits and reversals are never delayed. A target-session
@@ -13,6 +13,8 @@ from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
+
+from .directional_stress90_policy import _apply_cost_gate_from_trends_row
 
 TREND_LOOKBACK_SESSIONS = 20
 BENEFIT_HORIZON_SESSIONS = 3
@@ -71,35 +73,25 @@ def apply_cost_aware_no_trade(
         if np.isfinite(float(value)) and abs(float(value)) > _EPS
     }
     output = pd.DataFrame(0.0, index=raw.index, columns=raw.columns)
-    hurdle = COST_HURDLE_BPS / 10000.0
-    horizon_scale = BENEFIT_HORIZON_SESSIONS / TREND_LOOKBACK_SESSIONS
-
     for timestamp in raw.index:
-        next_state: dict[str, float] = {}
-        for product in raw.columns:
-            target = float(raw.at[timestamp, product])
-            current = float(state.get(product, 0.0))
-            same_side = (
-                abs(current) > _EPS and abs(target) > _EPS and np.sign(current) == np.sign(target)
+        trends = {
+            product: (
+                float(completed.at[timestamp, product])
+                if np.isfinite(float(completed.at[timestamp, product]))
+                else None
             )
-            increase = (abs(current) <= _EPS and abs(target) > _EPS) or (
-                same_side and abs(target) > abs(current) + _EPS
-            )
-
-            applied = target
-            if increase:
-                trend = float(completed.at[timestamp, product])
-                expected_benefit = (
-                    np.sign(target) * trend * horizon_scale if np.isfinite(trend) else float("nan")
-                )
-                if not np.isfinite(expected_benefit) or expected_benefit <= hurdle + _EPS:
-                    applied = current
-
-            if abs(applied) > _EPS:
-                next_state[product] = float(applied)
-                output.at[timestamp, product] = float(applied)
-
-        state = next_state
+            for product in raw.columns
+        }
+        applied = _apply_cost_gate_from_trends_row(
+            oi_weights=raw.loc[timestamp].to_dict(),
+            prior_approved=state,
+            completed_return_sums=trends,
+            completed_lookback_sessions=TREND_LOOKBACK_SESSIONS,
+            benefit_horizon_sessions=BENEFIT_HORIZON_SESSIONS,
+            cost_hurdle_bps=COST_HURDLE_BPS,
+        )
+        output.loc[timestamp] = pd.Series(applied).reindex(raw.columns)
+        state = {product: value for product, value in applied.items() if abs(value) > _EPS}
 
     if bool((output.abs().sum(axis=1) > MAX_GROSS_LEVERAGE + _EPS).any()):
         raise AssertionError("cost-aware no-trade filter exceeded raw 2x gross cap")

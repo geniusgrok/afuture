@@ -21,7 +21,6 @@ an offline evidence entrypoint and is not imported by live runtime wiring.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -39,16 +38,14 @@ if str(ROOT) not in sys.path:
 import evaluate_directional_60m_oi_confirmation as oi_gate
 import evaluate_directional_production_mechanics as mechanics
 
-from afuture.directional_60m_oi_reversal_confirmation import (
-    apply_oi_confirmation_to_direction_changes,
-)
 from afuture.directional_acceptance import ProductionMechanicsConfig
-from afuture.directional_cost_aware_no_trade import apply_cost_aware_no_trade
 from afuture.directional_drawdown_reserve_freeze import (
     DrawdownReserveFreezeDirectionalProductionAcceptance,
 )
-from afuture.directional_turnover_aware_survivor_reallocation import (
-    reallocate_survivors_lexicographically,
+from afuture.directional_stress90_policy import (
+    STRESS90_POLICY,
+    build_stress90_candidate_path,
+    candidate_weight_digest,
 )
 
 BASELINE_NET_ALPHA_PER_TURNOVER_BPS = 12.2556
@@ -90,20 +87,15 @@ def build_final_candidate_weights(
         target_days=base_weights.index,
         products=base_weights.columns,
     )
-    confirmed = apply_oi_confirmation_to_direction_changes(
-        raw_weights=base_weights,
-        confirming_flow=lagged,
-        supported_products=oi_gate.SUPPORTED_PRODUCTS,
-    )
     close = continuous_close_panel(continuous_raw, list(base_weights.columns))
-    approved = apply_cost_aware_no_trade(
-        weights=confirmed,
-        close_prices=close,
+    path = build_stress90_candidate_path(
+        base_weights=base_weights,
+        completed_close_prices=close,
+        confirming_flow=lagged.reindex(columns=STRESS90_POLICY.oi_products),
     )
-    candidate = reallocate_survivors_lexicographically(
-        original_weights=confirmed,
-        approved_weights=approved,
-    )
+    confirmed = path.oi_confirmed_weights
+    approved = path.cost_approved_weights
+    candidate = path.survivor_weights
     candidate = (
         candidate.reindex(
             index=base_weights.index,
@@ -124,6 +116,10 @@ def build_final_candidate_weights(
     full = candidate.loc[pd.Timestamp("2024-08-21") : pd.Timestamp("2026-08-20")]
     audit = {
         "candidate_weight_sha256": digest,
+        "policy_definition_digest": STRESS90_POLICY.policy_definition_digest,
+        "last_daily_decision_digest": (
+            path.decisions[-1].daily_decision_digest if path.decisions else None
+        ),
         "supported_products": list(oi_gate.SUPPORTED_PRODUCTS),
         "confirmed_turnover_full_path": weight_turnover(confirmed),
         "approved_turnover_full_path": weight_turnover(approved),
@@ -132,17 +128,6 @@ def build_final_candidate_weights(
         "candidate_max_gross": float(candidate.abs().sum(axis=1).max()),
     }
     return candidate, audit
-
-
-def candidate_weight_digest(weights: pd.DataFrame) -> str:
-    """Stable text digest independent of CSV writer defaults."""
-    rows: list[str] = []
-    ordered = weights.sort_index().reindex(sorted(weights.columns), axis=1)
-    for timestamp, row in ordered.iterrows():
-        day = pd.Timestamp(timestamp).date().isoformat()
-        for product, raw_value in row.items():
-            rows.append(f"{day}|{str(product).upper()}|{float(raw_value):.17g}\n")
-    return hashlib.sha256("".join(rows).encode("utf-8")).hexdigest()
 
 
 def weight_turnover(weights: pd.DataFrame) -> float:

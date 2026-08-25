@@ -35,10 +35,8 @@ from afuture.directional_concentration_freeze import (
     target_weight_concentration,
 )
 from afuture.directional_stress90_gate import evaluate_stress90_gate
+from afuture.directional_stress90_policy import EXPECTED_CANDIDATE_WEIGHT_SHA256
 
-EXPECTED_CANDIDATE_WEIGHT_SHA256 = (
-    "8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28"
-)
 EXPECTED_CONSTRAINTS = {
     "target_and_realized_gross_cap": stress80.MAX_GROSS,
     "hard_margin_ratio": stress80.HARD_MARGIN,

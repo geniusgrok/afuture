@@ -1,11 +1,10 @@
-"""Offline Production-evaluator adapter for causal leadership-state freezing."""
+"""Offline acceptance adapter for the shared causal Stress-90 HHI primitives."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from math import isfinite
-from statistics import median
 
 import pandas as pd
 
@@ -14,17 +13,10 @@ from .directional_drawdown_reserve_freeze import (
     FullPathDrawdownReserveFreezeDirectionalProductionAcceptance,
 )
 from .directional_freeze_new_risk import freeze_new_risk_target
-
-
-def target_weight_concentration(weights: Mapping[str, float]) -> float | None:
-    """Return standard HHI of absolute target weights, or None for an inactive target."""
-    magnitudes = [abs(float(value)) for value in weights.values() if float(value) != 0.0]
-    if any(not isfinite(value) for value in magnitudes):
-        raise ValueError("target weights must be finite")
-    gross = sum(magnitudes)
-    if gross <= 0.0:
-        return None
-    return float(sum((value / gross) ** 2 for value in magnitudes))
+from .directional_stress90_policy import advance_concentration_history
+from .directional_stress90_policy import (
+    target_weight_concentration as target_weight_concentration,
+)
 
 
 class ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
@@ -54,14 +46,16 @@ class ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
         product_weights: Mapping[str, float],
     ) -> None:
         del day
-        current = target_weight_concentration(product_weights)
-        if current is None:
-            self.concentration_freeze_triggered = False
-            return
-        self.concentration_freeze_triggered = bool(
-            self._completed_concentrations and current <= median(self._completed_concentrations)
+        (
+            _current,
+            _prior_median,
+            self.concentration_freeze_triggered,
+            updated,
+        ) = advance_concentration_history(
+            self._completed_concentrations,
+            product_weights,
         )
-        self._completed_concentrations.append(current)
+        self._completed_concentrations = list(updated)
 
     def target_lot_stages(
         self,
