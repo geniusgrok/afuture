@@ -135,7 +135,7 @@ afuture recover-state --help
 afuture quality-report --config config/afuture.directional-live.example.toml --output runtime/execution_quality_report.json
 ```
 
-`status` 只读当前 state、显式 `.prev` 证据、运行文件大小和磁盘/路径条件；当前 state 损坏时返回 2，但绝不自动采用 `.prev`。`doctor` 在 fresh CTP snapshot 后逐项检查账户、活动委托、元数据、持仓对账、Kill Switch、runtime mode、持久化安全门和 Directional completed activity；任一安全门失败返回 2，且不会报单。
+`status` 只读当前 state、显式 `.prev` 证据、运行文件大小和磁盘/路径条件；即使 live 配置尚未注入 CTP 凭证也可运行。当前 state 损坏时返回 2，但绝不自动采用 `.prev`。`doctor` 在 fresh CTP snapshot 后逐项检查账户数值与 margin/available/daily-loss/drawdown 限制、交易日、活动委托、元数据、持仓对账、Kill Switch、runtime mode、持久化安全门和 Directional completed activity；任一安全门失败返回 2，且不会报单。
 
 `recover-state` 是人工核验后的 fail-closed 恢复入口，不是绕过对账或 Kill Switch 的快捷方式。运行手册见 [`docs/live-trading.md`](docs/live-trading.md)。
 
@@ -155,13 +155,14 @@ python -m compileall -q afuture
 
 - 未知 CTP direction/offset/type/status 拒绝转换，不猜默认经济语义；
 - live tick、账户、合约元数据或持仓快照含 NaN/inf、非整数手数、空标识或无效均价时 fail-closed；
+- 持仓 identity 同时包含 symbol/exchange；重复 symbol 或 exchange 不一致不能被 dict 覆盖后误判为已对账；
 - reject、cancel 或未成交订单不得修改持仓；partial fill 只按实际成交更新；
 - trade callback 以 `trading_day:trade_id` 去重；首个新交易日成交先触发换日再入账，持久化集合换日时只淘汰旧日 ID，重连/重启不得重复入账；
 - SHFE/INE `CLOSE_TODAY` 与 `CLOSE_YESTERDAY` 不能跨 bucket 借量；
 - reductions 在 openings 前完成；`REDUCE_ONLY`、daily circuit 和 HALT 不得增加风险；
 - cash、realized/unrealized PnL、commission、margin、gross/net exposure 使用明确 multiplier 和单位；
 - state checksum/schema/sequence、持仓数量/均价或去重历史不可信时禁止 load，也禁止覆盖原文件；每次成功推进前把上一份已验证 envelope 原样保存为 `.prev`，但运行时永不自动回退；
-- audit/alert JSONL 在完整记录边界按 20 MiB 轮转，保留 14 份备份；轮转失败不允许静默丢证据；
+- audit/alert JSONL 在完整记录边界按 20 MiB 轮转，保留 14 份备份；单条编码后超过上限的记录拒绝写入，轮转失败不允许静默丢证据；
 - Directional hard authority 保持 target/realized gross `<=2x`、margin `<=35%`、available `>=25%`、daily-loss `5%`、total drawdown `30%`、单合约 `<=35` 手；
 - 研究日索引重复、非单调、NaN/inf、非正必需价格均 fail-closed；
 - train/validation/OOS 独立模拟；`full_recent` 是汇总窗口，会与这些子窗口重叠，不能被描述成独立 holdout。

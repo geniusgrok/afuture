@@ -62,6 +62,7 @@
 - [ ] CTP catalog 覆盖冻结 50 品种。
 - [ ] 连续观察至少一个完整 trading day，生成 `directional_activity.json`。
 - [ ] snapshot volume/OI 等于上一完整交易日最后可见 activity。
+- [ ] `doctor` 复用正式 activity selector，activity 的 symbol/product/exchange 与 catalog identity 一致，且 50 个配置 product 均有通过 expiry/volume/OI 门的覆盖。
 - [ ] 次交易日当前累计 volume/OI 不会改变已冻结主力。
 - [ ] listing/expiry/20 天过滤正确。
 - [ ] incumbent eligibility + challenger OI/volume 双维 dominance 与离线重建一致；无 incumbent 时 OI → volume → expiry → symbol 排序一致。
@@ -127,7 +128,7 @@
 ## I. Doctor / 测试柜台
 
 - [ ] `afuture status` 当前 state、previous evidence、路径和磁盘检查全部通过。
-- [ ] `afuture doctor --confirm-live` 的 fresh snapshot、account、active orders、catalog、metadata、Kill Switch/runtime mode、persisted gates、position reconciliation 和 activity 检查全部通过，且 `orders_sent=0`。
+- [ ] `afuture doctor --confirm-live` 的 fresh snapshot、account/trading day、margin/available/daily-loss/drawdown、active orders、catalog、metadata、Kill Switch/runtime mode、persisted gates、position reconciliation 和 activity 检查全部通过，且 `orders_sent=0`。
 - [ ] 单方向 FAK 开仓；对手一档深度覆盖整笔手数时 opening 使用 best opposite，否则回退 legacy aggressive tick。
 - [ ] FAK 未成交、partial、reject；depth-aware opening 不得改变 reduction aggressive 价格、订单数量或 hard-risk authority。
 - [ ] 平仓与平今/平昨。
@@ -147,6 +148,7 @@
 
 - [ ] 每次第二次及后续 state save 产生 `<state>.prev`，内容是上一份通过 checksum 的 envelope。
 - [ ] 损坏 current state 时程序返回失败，绝不自动采用 `.prev`。
+- [ ] current state 非 UTF-8、重复 position symbol，或柜台/本地 position exchange 不一致时 fail-closed。
 - [ ] audit/alert JSONL 到达 20 MiB 后在完整记录边界轮转，最多保留 14 份备份。
 
 - [ ] 正常退出前 StateStore 已保存最新 expected positions。

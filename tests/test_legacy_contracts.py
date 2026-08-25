@@ -68,6 +68,21 @@ def test_reconcile_compares_position_quantities_not_prices():
     assert not compare_positions(left, [ContractPosition("m", "DCE", long_today=2)]).matched
 
 
+def test_reconcile_rejects_exchange_mismatch_and_duplicate_contract_rows():
+    expected = [ContractPosition("m2609", "DCE", long_today=1, long_price=3000)]
+
+    exchange_mismatch = [ContractPosition("m2609", "CZCE", long_today=1, long_price=3000)]
+    duplicates = [
+        ContractPosition("m2609", "DCE", long_today=1, long_price=3000),
+        ContractPosition("m2609", "DCE", long_today=1, long_price=3000),
+    ]
+
+    assert not compare_positions(expected, exchange_mismatch).matched
+    result = compare_positions(expected, duplicates)
+    assert not result.matched
+    assert "duplicate" in result.details
+
+
 def test_regular_sim_fills_market_limit_and_keeps_resting_order():
     spec = ContractSpec("m", "DCE", 10, 1, 0.1, 0.1, FeeSpec(open_fixed=2))
     broker = SimBroker(500000, {"m": spec})

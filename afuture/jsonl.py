@@ -13,7 +13,7 @@ class RotatingJsonlWriter:
     """Append complete UTF-8 lines and retain a bounded set of numbered backups.
 
     Rotation is process-local and occurs before an append would exceed ``max_bytes``.
-    A single event larger than the limit is retained intact in the current file.
+    A single event larger than the limit is rejected so the bound remains truthful.
     """
 
     def __init__(
@@ -37,6 +37,8 @@ class RotatingJsonlWriter:
         if not line or "\n" in line or "\r" in line:
             raise ValueError("JSONL record must be one non-empty line")
         encoded = (line + "\n").encode("utf-8")
+        if len(encoded) > self.max_bytes:
+            raise ValueError("JSONL record exceeds max_bytes")
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             current_size = self.path.stat().st_size if self.path.exists() else 0

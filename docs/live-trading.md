@@ -49,7 +49,7 @@ AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 afuture status --config config/afuture.directional-live.example.toml
 ```
 
-它不会初始化日志、连接 CTP 或修改文件。报告包含当前 checksum state、显式 `state.json.prev`、Kill Switch/runtime mode、持仓摘要、audit/alert 大小、路径可写性和最少 100 MiB 磁盘余量。当前 state 不可信时返回 2；`.prev` 只用于人工诊断，不能自动恢复或绕过 `recover-state`。
+它不会初始化日志、连接 CTP 或修改文件，也不要求注入 CTP 用户名、密码和 Broker ID。报告包含当前 checksum state、显式 `state.json.prev`、Kill Switch/runtime mode、持仓摘要、audit/alert 大小、路径可写性和最少 100 MiB 磁盘余量。当前 state 不可信时返回 2；`.prev` 只用于人工诊断，不能自动恢复或绕过 `recover-state`。
 
 设置 `AFUTURE_LIVE_ACK` 后运行无报单 CTP gate：
 
@@ -57,7 +57,7 @@ afuture status --config config/afuture.directional-live.example.toml
 afuture doctor --config config/afuture.directional-live.example.toml --confirm-live
 ```
 
-`doctor` 等待新的账户事件和完整持仓快照，随后检查账户数值、活动委托、catalog、抽样 live metadata、本地期望持仓对账、Kill Switch、runtime mode、上次持久化安全门和 Directional completed activity。JSON 中任一 `checks[].passed=false` 都使进程返回 2；报告中的 `orders_sent` 固定为 0。Directional 新部署必须先观察一个完整 trading day 生成 activity evidence，预检才会通过。
+`doctor` 等待新的账户事件和完整持仓快照，随后检查账户数值、broker/account trading day、margin/available/daily-loss/drawdown 限制、活动委托、catalog、抽样 live metadata、本地期望持仓对账、Kill Switch、runtime mode、上次持久化安全门和 Directional completed activity。Directional activity 复用正式选约的 product/exchange、expiry、volume/OI 门；activity 的 symbol、product、exchange 必须与 catalog 同一条 identity 完全一致，且配置内每个 product 都必须有合格 catalog/activity 覆盖。任一无关、身份冲突或低流动性快照都不能冒充 ready。JSON 中任一 `checks[].passed=false` 都使进程返回 2；报告中的 `orders_sent` 固定为 0。Directional 新部署必须先观察一个完整 trading day 生成 activity evidence，预检才会通过。
 
 ## 4. Directional 冻结配置
 

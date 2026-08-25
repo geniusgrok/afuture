@@ -550,10 +550,7 @@ def _run_doctor(config, args) -> int:
             products = {item.upper() for item in config.directional.products}
             exchanges = {item.upper() for item in config.directional.exchanges}
             for contract in catalog:
-                if (
-                    contract.product.upper() in products
-                    and contract.exchange.upper() in exchanges
-                ):
+                if contract.product.upper() in products and contract.exchange.upper() in exchanges:
                     symbols.append(contract.symbol)
                 if len(set(symbols)) >= args.metadata_limit:
                     break
@@ -571,7 +568,7 @@ def _run_doctor(config, args) -> int:
             account=account,
             positions=broker.get_positions(),
             active_order_count=len(broker.get_active_orders()),
-            catalog_count=len(catalog),
+            catalog=catalog,
             requested_symbols=symbols,
             metadata=metadata,
         )
@@ -621,7 +618,10 @@ def _write_json(payload: dict, output: str | Path | None = None) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    config = load_config(args.config)
+    config = load_config(
+        args.config,
+        require_ctp_credentials=args.command != "status",
+    )
     if args.command == "status":
         return _run_status(config)
     logger = configure_logging(config.log_path)

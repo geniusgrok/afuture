@@ -77,8 +77,15 @@ class StateStore:
         return self._read_verified(self.previous_path).state
 
     def _read_verified(self, path: Path) -> _DecodedState:
+        return self._decode_verified(path.read_bytes())
+
+    def _decode_verified(self, payload: bytes) -> _DecodedState:
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise StateIntegrityError("invalid state UTF-8") from exc
+        try:
+            raw = json.loads(text)
         except json.JSONDecodeError as exc:
             raise StateIntegrityError("invalid state JSON") from exc
         if not isinstance(raw, dict):
@@ -164,6 +171,9 @@ class StateStore:
                 position.validate()
             except (TypeError, ValueError) as exc:
                 raise StateIntegrityError("invalid persisted position") from exc
+        position_symbols = [str(item["symbol"]) for item in positions]
+        if len(position_symbols) != len(set(position_symbols)):
+            raise StateIntegrityError("state field positions contains duplicate symbols")
         for name in object_fields:
             values = payload.get(name, {})
             if any(not isinstance(value, dict) for value in values.values()):
@@ -198,8 +208,8 @@ class StateStore:
         if self.path.exists():
             # A corrupt target is incident evidence, not an empty state.  Verify it
             # before creating a replacement so sequence history cannot silently reset.
-            sequence = self._read_verified(self.path).sequence + 1
             previous_bytes = self.path.read_bytes()
+            sequence = self._decode_verified(previous_bytes).sequence + 1
         state_payload = asdict(state)
         self._state_from_payload(state_payload)
         envelope = {

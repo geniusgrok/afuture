@@ -49,9 +49,7 @@ class FileAlertSink:
         )
 
     def send(self, event: dict[str, object]) -> None:
-        self._writer.write_line(
-            json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-        )
+        self._writer.write_line(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
 
 
 class WebhookAlertSink:

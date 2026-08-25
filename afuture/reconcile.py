@@ -21,25 +21,37 @@ def compare_positions(
 
     def normalized(
         items: list[ContractPosition],
-    ) -> dict[str, tuple[int, int, int, int]]:
-        return {
-            position.symbol: (
+    ) -> tuple[dict[tuple[str, str], tuple[int, int, int, int]], list[tuple[str, str]]]:
+        result: dict[tuple[str, str], tuple[int, int, int, int]] = {}
+        duplicates: list[tuple[str, str]] = []
+        for position in items:
+            if position.empty:
+                continue
+            key = (position.symbol, position.exchange)
+            if key in result:
+                duplicates.append(key)
+                continue
+            result[key] = (
                 position.long_today,
                 position.long_yesterday,
                 position.short_today,
                 position.short_yesterday,
             )
-            for position in items
-            if not position.empty
-        }
+        return result, duplicates
 
-    left = normalized(local)
-    right = normalized(remote)
+    left, left_duplicates = normalized(local)
+    right, right_duplicates = normalized(remote)
+    if left_duplicates or right_duplicates:
+        return ReconcileResult(
+            False,
+            f"duplicate local={left_duplicates}, remote={right_duplicates}",
+        )
     if left == right:
         return ReconcileResult(True)
 
     diffs = []
-    for symbol in sorted(set(left) | set(right)):
-        if left.get(symbol) != right.get(symbol):
-            diffs.append(f"{symbol}: local={left.get(symbol)}, remote={right.get(symbol)}")
+    for symbol, exchange in sorted(set(left) | set(right)):
+        key = (symbol, exchange)
+        if left.get(key) != right.get(key):
+            diffs.append(f"{symbol}.{exchange}: local={left.get(key)}, remote={right.get(key)}")
     return ReconcileResult(False, "; ".join(diffs))

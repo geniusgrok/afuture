@@ -9,9 +9,9 @@ from datetime import datetime
 from math import isfinite
 from pathlib import Path
 
-from .directional_activity import DirectionalActivityStore
+from .directional_activity import DirectionalActivityStore, select_contracts_from_activity
 from .metadata import validate_contract_metadata
-from .models import AccountSnapshot, ContractPosition, ContractSpec, RuntimeMode
+from .models import AccountSnapshot, ContractInfo, ContractPosition, ContractSpec, RuntimeMode
 from .reconcile import compare_positions
 from .state import RuntimeState, StateIntegrityError, StateStore
 
@@ -82,8 +82,13 @@ def _path_facts(path: Path) -> dict[str, object]:
     return {
         "path": str(path),
         "exists": path.exists(),
+        "symlink": path.is_symlink(),
         "size_bytes": path.stat().st_size if path.is_file() else 0,
     }
+
+
+def _symlink_components(path: Path) -> list[Path]:
+    return [candidate for candidate in (path, *path.parents) if candidate.is_symlink()]
 
 
 def build_local_status(
@@ -139,15 +144,36 @@ def build_local_status(
     }
     report.facts["paths"] = {name: _path_facts(path) for name, path in paths.items()}
     ancestors = {_existing_ancestor(path.parent) for path in paths.values()}
-    unwritable = sorted(str(path) for path in ancestors if not os.access(path, os.W_OK))
+    symlink_paths = sorted(
+        {str(candidate) for path in paths.values() for candidate in _symlink_components(path)}
+    )
+    invalid_targets = sorted(
+        str(path)
+        for path in paths.values()
+        if not path.is_symlink() and path.exists() and not path.is_file()
+    )
+    invalid_ancestors = sorted(str(path) for path in ancestors if not path.is_dir())
+    inaccessible_ancestors = sorted(
+        str(path) for path in ancestors if path.is_dir() and not os.access(path, os.W_OK | os.X_OK)
+    )
+    write_targets = (paths["log"], paths["report"], paths["audit"], paths["alert"])
+    unwritable_targets = sorted(
+        str(path) for path in write_targets if path.is_file() and not os.access(path, os.W_OK)
+    )
+    path_errors = [
+        *(f"symlink is not allowed in runtime path: {path}" for path in symlink_paths),
+        *(f"target is not a file: {path}" for path in invalid_targets),
+        *(f"ancestor is not a directory: {path}" for path in invalid_ancestors),
+        *(f"ancestor is not writable/searchable: {path}" for path in inaccessible_ancestors),
+        *(f"write target is not writable: {path}" for path in unwritable_targets),
+    ]
     report.add(
         "runtime_paths_writable",
-        not unwritable,
-        "runtime path ancestors are writable"
-        if not unwritable
-        else "unwritable path ancestors: " + ", ".join(unwritable),
+        not path_errors,
+        "runtime path ancestors are writable" if not path_errors else "; ".join(path_errors),
     )
-    free_by_path = {str(path): shutil.disk_usage(path).free for path in sorted(ancestors)}
+    disk_roots = {path if path.is_dir() else path.parent for path in ancestors}
+    free_by_path = {str(path): shutil.disk_usage(path).free for path in sorted(disk_roots)}
     minimum_free = min(free_by_path.values()) if free_by_path else 0
     report.facts["disk"] = {
         "minimum_free_bytes": minimum_free,
@@ -190,7 +216,7 @@ def build_doctor_report(
     account: AccountSnapshot,
     positions: list[ContractPosition],
     active_order_count: int,
-    catalog_count: int,
+    catalog: list[ContractInfo],
     requested_symbols: list[str],
     metadata: dict[str, ContractSpec],
     min_free_bytes: int = MIN_OPERATIONAL_DISK_FREE_BYTES,
@@ -208,9 +234,25 @@ def build_doctor_report(
     try:
         account.validate()
     except ValueError as exc:
+        account_valid = False
         report.add("account_snapshot_valid", False, str(exc))
     else:
+        account_valid = True
         report.add("account_snapshot_valid", True, "account values are finite and valid")
+    try:
+        parsed_trading_day = datetime.strptime(trading_day, "%Y%m%d").strftime("%Y%m%d")
+    except ValueError:
+        parsed_trading_day = ""
+    trading_day_consistent = bool(
+        len(trading_day) == 8
+        and parsed_trading_day == trading_day
+        and account.trading_day == trading_day
+    )
+    report.add(
+        "trading_day_consistent",
+        trading_day_consistent,
+        f"broker={trading_day!r}, account={account.trading_day!r}",
+    )
     report.add(
         "no_active_orders",
         active_order_count == 0,
@@ -218,8 +260,8 @@ def build_doctor_report(
     )
     report.add(
         "contract_catalog_available",
-        catalog_count > 0,
-        f"contract catalog count: {catalog_count}",
+        bool(catalog),
+        f"contract catalog count: {len(catalog)}",
     )
 
     requested = sorted(set(requested_symbols))
@@ -227,7 +269,9 @@ def build_doctor_report(
     if not requested:
         live_valid, live_detail = False, "no contract metadata was sampled"
     report.add("live_metadata_complete", live_valid, live_detail)
-    configured = {symbol: config.contracts[symbol] for symbol in requested if symbol in config.contracts}
+    configured = {
+        symbol: config.contracts[symbol] for symbol in requested if symbol in config.contracts
+    }
     decision = validate_contract_metadata(configured, metadata) if configured else None
     report.add(
         "configured_metadata_conservative",
@@ -292,6 +336,46 @@ def build_doctor_report(
             reconciliation.details or "local expected positions match broker snapshot",
         )
 
+    risk_failures: list[str] = []
+    if not account_valid:
+        risk_failures.append("invalid account snapshot")
+    elif account.equity > 0:
+        margin_ratio = account.margin / account.equity
+        available_ratio = account.available / account.equity
+        if margin_ratio > config.risk.max_margin_ratio:
+            risk_failures.append(
+                f"margin ratio {margin_ratio:.6f} > {config.risk.max_margin_ratio:.6f}"
+            )
+        if available_ratio < config.risk.min_available_ratio:
+            risk_failures.append(
+                f"available ratio {available_ratio:.6f} < {config.risk.min_available_ratio:.6f}"
+            )
+        if state is not None:
+            if state.trading_day == account.trading_day and state.day_start_equity > 0:
+                daily_loss = (
+                    max(0.0, state.day_start_equity - account.equity) / state.day_start_equity
+                )
+                if daily_loss >= config.risk.max_daily_loss_ratio:
+                    risk_failures.append(
+                        f"daily loss {daily_loss:.6f} >= {config.risk.max_daily_loss_ratio:.6f}"
+                    )
+            if state.equity_high_watermark > 0:
+                drawdown = (
+                    max(0.0, state.equity_high_watermark - account.equity)
+                    / state.equity_high_watermark
+                )
+                if drawdown >= config.risk.max_total_drawdown_ratio:
+                    risk_failures.append(
+                        f"drawdown {drawdown:.6f} >= {config.risk.max_total_drawdown_ratio:.6f}"
+                    )
+    report.add(
+        "account_risk_limits",
+        not risk_failures,
+        "account margin, available, daily-loss and drawdown limits pass"
+        if not risk_failures
+        else "; ".join(risk_failures),
+    )
+
     activity_detail = "directional strategy is disabled"
     activity_ready = True
     if config.directional.enabled:
@@ -325,17 +409,32 @@ def build_doctor_report(
                         and item.timestamp.tzinfo is not None
                         for symbol, item in snapshot.contracts.items()
                     )
-                    activity_ready = bool(
-                        snapshot.contracts and contracts_valid and activity_day < current_day
+                    selected = (
+                        select_contracts_from_activity(
+                            config.directional,
+                            catalog,
+                            snapshot,
+                            current_day,
+                        )
+                        if contracts_valid and activity_day < current_day
+                        else {}
                     )
+                    configured_products = {
+                        product.upper() for product in config.directional.products
+                    }
+                    selected_products = {product.upper() for product in selected}
+                    missing_products = sorted(configured_products - selected_products)
+                    activity_ready = bool(configured_products) and not missing_products
                     activity_detail = (
-                        f"completed activity day: {snapshot.trading_day}"
+                        f"completed activity day: {snapshot.trading_day}; "
+                        f"eligible products: {len(selected_products)}"
                         if activity_ready
-                        else "activity must be internally valid and precede the broker trading day"
+                        else "activity/catalog coverage missing eligible products: "
+                        + ", ".join(missing_products or sorted(configured_products))
                     )
     report.add("directional_activity_ready", activity_ready, activity_detail)
 
-    margin_ratio = account.margin / account.equity if account.equity > 0 else None
+    broker_margin_ratio = account.margin / account.equity if account.equity > 0 else None
     report.facts["broker"] = {
         "ready": broker_ready,
         "fresh_snapshot": fresh_snapshot,
@@ -343,10 +442,10 @@ def build_doctor_report(
         "account_equity": account.equity,
         "account_available": account.available,
         "account_margin": account.margin,
-        "margin_ratio": margin_ratio,
+        "margin_ratio": broker_margin_ratio,
         "position_count": len([item for item in positions if not item.empty]),
         "active_order_count": active_order_count,
-        "contract_catalog_count": catalog_count,
+        "contract_catalog_count": len(catalog),
         "metadata_symbols": sorted(metadata),
         "orders_sent": 0,
     }

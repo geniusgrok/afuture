@@ -113,6 +113,8 @@ frozen historical inputs
 - commission/slippage、notional、margin、gross/net exposure 使用明确 multiplier 与单位；
 - 无法识别的 CTP direction/offset/type/status 产生 `broker_error`，不映射成猜测的经济事件；账户转换失败产生 `account_error`，使 Directional 在仍有风险时先进入 `REDUCE_ONLY`。
 - CTP order/position 数量必须是无损整数，position direction 必须是精确 enum；tick、account、metadata、position average price 的 NaN/inf 或非法符号在进入风险/会计前拒绝。
+- 本地/柜台持仓按 `(symbol, exchange)` 对账；任一侧重复 identity 或 persisted state 重复 symbol 都 fail-closed，不能让 dict overwrite 掩盖仓位。
+- Directional completed activity 与合约目录按 `symbol/product/exchange` identity 交叉核验；身份冲突的流动性证据不能进入生产选约或通过 `doctor`。
 
 ## 8. 风险状态机
 
@@ -151,8 +153,8 @@ Broker account + complete positions + active orders
 ## 10. 可观测性
 
 - `status`：不初始化日志或 Broker，只读检查 state/previous state、证据文件、路径与磁盘；
-- `doctor`：在 fresh CTP snapshot 后检查 account、active orders、metadata、position reconciliation、Kill Switch、runtime mode 和 Directional activity，全程 `orders_sent=0`；
-- `AuditJournal`：signal、order、fill、risk、recovery 的 JSONL 证据；audit/alert 单文件 20 MiB、保留 14 份完整行备份；
+- `doctor`：在 fresh CTP snapshot 后检查 account 数值与风险比率、trading day、active orders、metadata、position reconciliation、Kill Switch、runtime mode 和 Directional activity，全程 `orders_sent=0`；
+- `AuditJournal`：signal、order、fill、risk、recovery 的 JSONL 证据；audit/alert 单文件 20 MiB、保留 14 份完整行备份，超大单条记录拒绝写入；
 - `AlertManager`：本地与 webhook 广播；单 sink 故障不阻止风险动作，但记录脱敏 warning；
 - `ExecutionQualityRecorder`：pair round trip 与 directional rebalance/fill/cycle；
 - report：account、position、performance、margin 和质量摘要。
