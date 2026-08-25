@@ -1,5 +1,7 @@
 # Stress80 Final Production Evidence
 
+> **Superseded but reproducible checkpoint.** PR #24 remains an inherited regression baseline; PR #25 Stress-90 is the current production-research checkpoint and still does not alter live wiring. See [`documentation-index.md`](documentation-index.md).
+
 ## Status
 
 This document records the final fixed-input Production evidence for the Stress-15bp research target. It is a Production-mechanics promotion record, not a claim that live runtime wiring has changed.

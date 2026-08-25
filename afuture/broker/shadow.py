@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from ..models import BrokerEvent, ContractSpec, OrderRequest, Tick
 from .base import Broker
 from .sim import SimBroker
-from ..models import BrokerEvent, ContractSpec, OrderRequest, Tick
 
 
 class ShadowBroker(Broker):

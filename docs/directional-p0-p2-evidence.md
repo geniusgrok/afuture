@@ -1,5 +1,7 @@
 # Directional P0-P2 Alpha / Risk-Capital Evidence
 
+> **Historical record.** Preserved for research lineage and rejected-route evidence; see [`documentation-index.md`](documentation-index.md) for current authority.
+
 Date: 2026-08-23
 
 ## Scope

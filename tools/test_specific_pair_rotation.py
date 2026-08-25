@@ -1,6 +1,6 @@
-from pathlib import Path
 import importlib.util
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -43,6 +43,7 @@ for product, first_prices, second_prices in (
         second_prices,
         (100.0, 80.0, 70.0),
         (50.0, 120.0, 140.0),
+        strict=True,
     ):
         rows.append(
             {
@@ -70,13 +71,9 @@ for product, first_prices, second_prices in (
 original_pairs = validation.PAIRS
 original_min_days = validation.MIN_PRODUCT_DAYS
 try:
-    validation.PAIRS = (
-        validation.base.EconomicPair("P", "Y", "DCE", "test"),
-    )
+    validation.PAIRS = (validation.base.EconomicPair("P", "Y", "DCE", "test"),)
     validation.MIN_PRODUCT_DAYS = 3
-    close, returns, selections, quality = validation.build_roll_safe_panel(
-        pd.DataFrame(rows)
-    )
+    close, returns, selections, quality = validation.build_roll_safe_panel(pd.DataFrame(rows))
 finally:
     validation.PAIRS = original_pairs
     validation.MIN_PRODUCT_DAYS = original_min_days

@@ -5,12 +5,13 @@ contracts for the exact same roots, then the evaluator chooses the dominant elig
 contract point-in-time from observed open interest/volume. Empty or unavailable contract
 months are evidence gaps, never forward-filled synthetic contracts.
 """
+
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
-import time
 
 import akshare as ak
 import pandas as pd
@@ -22,16 +23,57 @@ MAX_WORKERS = 16
 
 EXCHANGE_PRODUCTS = {
     "DCE": (
-        "A", "B", "C", "CS", "EB", "EG", "I", "J", "JM", "L", "LH",
-        "M", "P", "PG", "PP", "V", "Y",
+        "A",
+        "B",
+        "C",
+        "CS",
+        "EB",
+        "EG",
+        "I",
+        "J",
+        "JM",
+        "L",
+        "LH",
+        "M",
+        "P",
+        "PG",
+        "PP",
+        "V",
+        "Y",
     ),
     "CZCE": (
-        "AP", "CF", "CJ", "FG", "MA", "OI", "PF", "PK", "RM", "SA",
-        "SF", "SM", "SR", "TA", "UR",
+        "AP",
+        "CF",
+        "CJ",
+        "FG",
+        "MA",
+        "OI",
+        "PF",
+        "PK",
+        "RM",
+        "SA",
+        "SF",
+        "SM",
+        "SR",
+        "TA",
+        "UR",
     ),
     "SHFE": (
-        "AG", "AL", "AU", "BU", "CU", "FU", "HC", "NI", "PB", "RB",
-        "RU", "SN", "SP", "SS", "ZN",
+        "AG",
+        "AL",
+        "AU",
+        "BU",
+        "CU",
+        "FU",
+        "HC",
+        "NI",
+        "PB",
+        "RB",
+        "RU",
+        "SN",
+        "SP",
+        "SS",
+        "ZN",
     ),
     "INE": ("BC", "LU", "NR"),
 }
@@ -41,9 +83,7 @@ PRODUCTS = tuple(
     for product in EXCHANGE_PRODUCTS[exchange]
 )
 PRODUCT_EXCHANGE = {
-    product: exchange
-    for exchange, products in EXCHANGE_PRODUCTS.items()
-    for product in products
+    product: exchange for exchange, products in EXCHANGE_PRODUCTS.items() for product in products
 }
 
 
@@ -98,9 +138,7 @@ def _download(symbol: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _fetch_one(
-    item: tuple[str, str, str]
-) -> tuple[pd.DataFrame | None, str | None]:
+def _fetch_one(item: tuple[str, str, str]) -> tuple[pd.DataFrame | None, str | None]:
     product, exchange, symbol = item
     try:
         frame = _download(symbol)
@@ -116,9 +154,7 @@ def _fetch_one(
     for column in ("open", "high", "low", "close", "volume", "hold", "settle"):
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = frame.loc[
-        (frame["date"] >= START) & (frame["date"] <= END)
-    ].copy()
+    frame = frame.loc[(frame["date"] >= START) & (frame["date"] <= END)].copy()
     frame.dropna(subset=["date", "close", "hold"], inplace=True)
     frame = frame[(frame["close"] > 0) & (frame["hold"] >= 0)]
     if frame.empty:

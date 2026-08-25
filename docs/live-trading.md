@@ -4,15 +4,7 @@
 
 `afuture` 支持两种账户互斥模式：Calendar Spread / Auto 与 Execution-Aligned Directional。两者共用 Broker、`RiskManager`、Kill Switch、`REDUCE_ONLY`、StateStore、启动对账和审计链。
 
-Directional 历史证据必须分层：
-
-- Float-notional L4：selection-biased Base 年化 **107.4623%**，Stress 15bp 年化 **58.1372%**；
-- 当前 production-mechanics L3 Base：**109.0636% 年化 / 15.8529% DD / 1.998253x actual gross / no permanent halt**；
-- 当前 production-mechanics L3 Stress：**28.9559% 年化 / 28.1152% DD / 1.668769x actual gross / no permanent halt**。
-
-Stress 已从上一版 `0.9249% + margin HALT` 修复为 474/484 个活跃交易日、0 margin reject、无永久 HALT，但没有达到 80%。历史结果不能作为真实资金收益承诺。
-
-后续 net-alpha 研究没有晋级任何新的生产行为：entry/exit 筛选、新 Alpha family 与更宽 soft-margin 候选均因跨窗口不稳或固定 Stress 门失败而拒绝。Live 仍严格使用本文件已有的 PR #14 生产语义。
+Directional 必须区分 live wiring 与离线 checkpoint：PR #25 Stress-90 的 Base 156.881655% / Stress 112.100053% 是固定输入 production-research proxy，全部矩阵行无 HALT、0 margin rejects，但**没有接入 live runtime**。Live 仍使用本文件描述的 Execution-Aligned Directional runtime、Broker/RiskManager 权限和账户 hard gates。历史结果不能作为真实资金收益承诺，也不能跳过本运行手册。
 
 ## 2. 推荐上线顺序
 
@@ -216,19 +208,19 @@ Directional 不持久化第二份策略仓位。重启必须以 Broker 完整 ac
 
 持续检查 `quality-report.directional`。
 
-## 15. Production L3 的边界
+## 15. Production research 的边界
 
-最终固定历史 L3：
+当前固定历史 checkpoint：
 
 ```text
-Base   109.0636% annualized / 15.8529% DD / no permanent halt
-Stress  28.9559% annualized / 28.1152% DD / no permanent halt
+Base full_recent    156.881655% annualized / 15.708467% DD / no HALT
+Stress full_recent  112.100053% annualized / 14.567214% DD / no HALT
 ```
 
-Stress 已证明 15bp + 15% margin proxy 下不再因结构性 margin sizing 问题早停，但 28.9559% 不是 80%，也不是未来收益下限。
+Stress-90 已通过冻结 promotion gate，但仍是离线 proxy，不是未来收益下限，也不是 live activation。
 
 仍缺多年历史真实 L1 bid/ask/depth/queue、partial/reject、CTP 流控、逐日 Broker margin schedule、真实结算手续费和 market impact。因此下一步应取得真实 Shadow/test/small-capital/new-data 证据，而不是继续拟合同一历史。
 
-## 15. PR #15 对实盘行为的影响
+## 16. Research checkpoint 对实盘行为的影响
 
-**没有新的经济行为。** 新增 production-mechanics attribution 只用于历史/验收审计；entry/exit future labels、net-edge screen、新 Alpha families 和 shock-derived margin candidate 都没有连接到 live runtime。实盘仍以 Broker/CTP 为唯一账户、订单、成交、持仓真相，reduction-first、5% daily circuit、hard/manual halt、35% margin、25% available、30% total DD、35 lots、target/realized gross <=2x 全部不变。
+**PR #25 没有改变 live economic behavior。** Stress-90 的 causal leadership response、60m candidate 与 research CSV artifacts 没有连接到 live runtime。实盘仍以 Broker/CTP 为唯一账户、订单、成交、持仓真相；reduction-first、5% daily circuit、hard/manual halt、35% margin、25% available、30% total DD、35 lots、target/realized gross <=2x 全部不变。

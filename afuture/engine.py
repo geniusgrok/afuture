@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import logging
+from collections.abc import Callable
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from time import monotonic
-from typing import Callable
 from zoneinfo import ZoneInfo
 
 from .alerts import AlertManager
@@ -18,8 +19,8 @@ from .metadata import validate_contract_metadata
 from .models import (
     ContractPosition,
     ContractSpec,
-    Order,
     Offset,
+    Order,
     PairConfig,
     RiskDecision,
     RuntimeMode,
@@ -32,11 +33,11 @@ from .position import PositionBook
 from .quality import ExecutionQualityRecorder
 from .reconcile import compare_positions
 from .risk import RiskManager
-from .state import RuntimeState, StateStore
+from .state import MAX_RECENT_TRADE_IDS, RuntimeState, StateStore
 from .strategy import CalendarSpreadStrategy
 
-
 _CHINA_TZ = ZoneInfo("Asia/Shanghai")
+logger = logging.getLogger(__name__)
 
 
 class TradingEngine:
@@ -74,9 +75,7 @@ class TradingEngine:
         self._retiring_auto_pairs: set[str] = set()
         self.risk_manager = risk_manager
         self.state_store = state_store
-        self.strategies = {
-            pair.pair_id: CalendarSpreadStrategy(pair) for pair in pairs
-        }
+        self.strategies = {pair.pair_id: CalendarSpreadStrategy(pair) for pair in pairs}
         self.executor = PairExecutor(
             broker,
             risk_manager,
@@ -87,6 +86,7 @@ class TradingEngine:
 
         self.quotes: dict[str, Tick] = {}
         self.state = RuntimeState()
+        self._recent_trade_id_set: set[str] = set()
         self.halted = False
         self.auto_flatten_imbalance = auto_flatten_imbalance
         self.legging_timeout_seconds = max(0.0, legging_timeout_seconds)
@@ -109,16 +109,13 @@ class TradingEngine:
         self.require_live_metadata = require_live_metadata
         self.metadata_timeout_seconds = metadata_timeout_seconds
         self.historical_mode = historical_mode
-        self.health_clock = health_clock or (
-            lambda: datetime.now(timezone.utc)
-        )
+        self.health_clock = health_clock or (lambda: datetime.now(timezone.utc))
 
     def start(self) -> None:
         """加载持久化状态、启动柜台并订阅所有套利腿。"""
         self.state = self.state_store.load()
-        self.risk_manager.restore_high_watermark(
-            self.state.equity_high_watermark
-        )
+        self._recent_trade_id_set = set(self.state.recent_trade_ids)
+        self.risk_manager.restore_high_watermark(self.state.equity_high_watermark)
         self.halted = self.state.kill_switch
 
         for pair_id, strategy in self.strategies.items():
@@ -148,15 +145,19 @@ class TradingEngine:
                 return
 
         account = self.broker.get_account()
+        try:
+            account.validate()
+        except (TypeError, ValueError) as exc:
+            self._initialized = True
+            self.emergency_stop(f"invalid account snapshot: {exc}")
+            return
         self._advance_trading_day(account)
         self._health_ready_since = monotonic()
         self.risk_manager.set_day_start_equity(
             self.state.day_start_equity or account.equity,
             self.state.trading_day or account.trading_day,
         )
-        self.risk_manager.restore_high_watermark(
-            self.state.equity_high_watermark
-        )
+        self.risk_manager.restore_high_watermark(self.state.equity_high_watermark)
 
         if self.require_live_metadata:
             metadata_decision = self._validate_live_metadata()
@@ -186,19 +187,14 @@ class TradingEngine:
         try:
             if not self._static_spec_symbols:
                 return RiskDecision(True)
-            configured = {
-                symbol: self.specs[symbol]
-                for symbol in self._static_spec_symbols
-            }
+            configured = {symbol: self.specs[symbol] for symbol in self._static_spec_symbols}
             live_specs = self.broker.get_live_contract_specs(
                 sorted(self._static_spec_symbols),
                 self.metadata_timeout_seconds,
             )
             return validate_contract_metadata(configured, live_specs)
         except Exception as exc:
-            return RiskDecision(
-                False, f"live metadata query failed: {exc}"
-            )
+            return RiskDecision(False, f"live metadata query failed: {exc}")
 
     def stop(self) -> None:
         """保存期望状态、关闭 Auto 后台 worker，再关闭柜台。"""
@@ -214,9 +210,7 @@ class TradingEngine:
         result = compare_positions(local, remote)
         self.state.reconciled = result.matched
         if not result.matched:
-            self.emergency_stop(
-                f"position reconciliation failed: {result.details}"
-            )
+            self.emergency_stop(f"position reconciliation failed: {result.details}")
             return False
 
         self.state.positions = [asdict(position) for position in remote]
@@ -230,18 +224,13 @@ class TradingEngine:
             return False
         if not self._initialized:
             self.initialize_after_ready()
-        if (
-            not self._metadata_verified_session
-            or not self.state.metadata_verified
-        ):
+        if not self._metadata_verified_session or not self.state.metadata_verified:
             return False
         if not self.reconcile_startup():
             return False
         if not self.state_store.can_clear_kill_switch(self.state):
             return False
-        if not self.risk_manager.check_account(
-            self.broker.get_account()
-        ).allowed:
+        if not self.risk_manager.check_account(self.broker.get_account()).allowed:
             return False
 
         self.state.kill_switch = False
@@ -282,9 +271,7 @@ class TradingEngine:
                     continue
 
                 quote_time = max(near.timestamp, far.timestamp)
-                quote_decision = self.risk_manager.check_quotes(
-                    [near, far], quote_time
-                )
+                quote_decision = self.risk_manager.check_quotes([near, far], quote_time)
                 if not quote_decision.allowed:
                     continue
 
@@ -337,9 +324,7 @@ class TradingEngine:
                     open_pair_count=self._open_pair_count(),
                     spread_std=strategy.spread_std,
                     rate_limit_time=(
-                        signal.timestamp.timestamp()
-                        if self.historical_mode
-                        else None
+                        signal.timestamp.timestamp() if self.historical_mode else None
                     ),
                 )
                 self._record_quality_decision(pair, signal, near, far, result)
@@ -347,13 +332,8 @@ class TradingEngine:
                     strategy.restore_after_rejected_signal(pre_signal_state)
                 self._persist()
 
-                if (
-                    signal.action is SignalAction.EMERGENCY_EXIT
-                    and not result.accepted
-                ):
-                    self.enter_reduce_only(
-                        f"emergency exit failed: {result.reason}"
-                    )
+                if signal.action is SignalAction.EMERGENCY_EXIT and not result.accepted:
+                    self.enter_reduce_only(f"emergency exit failed: {result.reason}")
         except Exception as exc:
             self.emergency_stop(f"engine exception: {exc}")
 
@@ -384,16 +364,16 @@ class TradingEngine:
             if event.event_type == "position_snapshot":
                 self._reconcile_runtime_snapshot(event.payload)
                 continue
+            if event.event_type == "account_error":
+                self.emergency_stop(f"invalid account snapshot: {event.payload}")
+                continue
             if event.event_type == "broker_error":
                 self.emergency_stop(f"broker error: {event.payload}")
                 continue
             if event.event_type == "account":
                 self._handle_account_event(event.payload)
 
-        if (
-            not self.halted
-            and self.state.runtime_mode == RuntimeMode.RUNNING.value
-        ):
+        if not self.halted and self.state.runtime_mode == RuntimeMode.RUNNING.value:
             health_reason = self._market_health_reason()
             if health_reason:
                 self.emergency_stop(health_reason)
@@ -404,27 +384,60 @@ class TradingEngine:
             self._reduce_only_cycle()
         self._cleanup_retired_auto_pairs()
 
-    def _handle_trade_event(self, trade) -> None:
-        self._record("trade", trade)
-        if not isinstance(trade, Trade) or not self.broker.owns_order(
-            trade.order_id
-        ):
-            self.emergency_stop(
-                "unrecognized trade detected; possible external account activity"
-            )
-            return
+    def _handle_trade_event(self, trade) -> bool:
+        if not isinstance(trade, Trade):
+            self._record("trade", trade)
+            self.emergency_stop("unrecognized trade detected; possible external account activity")
+            return False
+        try:
+            trade.validate()
+            trading_day = self._synchronize_trading_day_for_trade()
+            identity = self._trade_identity(trade, trading_day)
+        except (AttributeError, TypeError, ValueError) as exc:
+            self.emergency_stop(f"invalid trade event: {exc}")
+            return False
+        if identity in self._recent_trade_id_set:
+            return False
+        if not self.broker.owns_order(trade.order_id):
+            self._record("trade", trade)
+            self.emergency_stop("unrecognized trade detected; possible external account activity")
+            return False
+
+        self._recent_trade_id_set.add(identity)
+        self.state.recent_trade_ids.append(identity)
+        if len(self.state.recent_trade_ids) > MAX_RECENT_TRADE_IDS:
+            expired = self.state.recent_trade_ids.pop(0)
+            self._recent_trade_id_set.discard(expired)
         self.state.last_trade_id = trade.trade_id
-        self._capture_quality_trade(trade)
         try:
             self._apply_expected_trade(trade)
         except Exception as exc:
-            self.emergency_stop(
-                f"expected position update failed: {exc}"
-            )
-            return
+            self.emergency_stop(f"expected position update failed: {exc}")
+            return False
+        self._record("trade", trade)
+        self._capture_quality_trade(trade)
         self._finalize_quality_if_flat(trade)
         self._audit_pair_balance()
         self._cleanup_retired_auto_pairs()
+        return True
+
+    def _synchronize_trading_day_for_trade(self) -> str:
+        """Roll persisted state before applying the first fill reported for a new broker day."""
+        account = self.broker.get_account()
+        account.validate()
+        get_trading_day = getattr(self.broker, "get_trading_day", None)
+        reported_day = get_trading_day() if callable(get_trading_day) else account.trading_day
+        trading_day = str(reported_day or account.trading_day or "")
+        if not trading_day:
+            raise ValueError("broker trading day is unavailable")
+        if str(account.trading_day or "") != trading_day:
+            account = replace(account, trading_day=trading_day)
+        self._advance_trading_day(account)
+        return trading_day
+
+    @staticmethod
+    def _trade_identity(trade: Trade, trading_day: str) -> str:
+        return f"{trading_day}:{trade.trade_id}"
 
     def _handle_order_event(self, order) -> None:
         self._record("order", order)
@@ -432,14 +445,18 @@ class TradingEngine:
             self.state.last_order_id = order.order_id
             if order.active and not self.broker.owns_order(order.order_id):
                 self.emergency_stop(
-                    "unrecognized active order detected; "
-                    "possible external account activity"
+                    "unrecognized active order detected; possible external account activity"
                 )
                 return
         self._persist()
         self._audit_pair_balance()
 
     def _handle_account_event(self, account) -> None:
+        try:
+            account.validate()
+        except (AttributeError, TypeError, ValueError) as exc:
+            self.emergency_stop(f"invalid account snapshot: {exc}")
+            return
         previous_day = self._metadata_trading_day
         self._advance_trading_day(account)
         current_day = str(account.trading_day or "")
@@ -480,17 +497,13 @@ class TradingEngine:
             pair
             for pair in self.pairs.values()
             if not pair.session_windows
-            or self.risk_manager.is_pair_session_active(
-                pair, session_reference
-            )
+            or self.risk_manager.is_pair_session_active(pair, session_reference)
         ]
         if not active_pairs:
             return ""
 
         required = {
-            symbol
-            for pair in active_pairs
-            for symbol in (pair.near_symbol, pair.far_symbol)
+            symbol for pair in active_pairs for symbol in (pair.near_symbol, pair.far_symbol)
         }
         quotes_ready = required.issubset(self.quotes)
         if not quotes_ready and self._quote_initialization_grace_active():
@@ -500,14 +513,14 @@ class TradingEngine:
         # 已存在于未来事件队列但尚未发布。此时不能把“回放采样间隔”误当成实时
         # 柜台 stale quote 并永久停机；每次真正交易前仍由 check_quotes 严格检查
         # quote age / cross-leg skew。实盘则继续用墙钟执行全局 stale 停机。
+        max_quote_age: float
         if self.historical_mode:
             max_quote_age = 0.0
         else:
-            max_quote_age = self._max_quote_age(
-                required, reference, quotes_ready
-            )
-            if max_quote_age is None:
+            observed_quote_age = self._max_quote_age(required, reference, quotes_ready)
+            if observed_quote_age is None:
                 return "market quote timestamp is in the future"
+            max_quote_age = observed_quote_age
 
         try:
             self.broker.get_account()
@@ -543,10 +556,7 @@ class TradingEngine:
         if self.historical_mode:
             return True
         grace = self.risk_manager.config.max_quote_age_seconds
-        return bool(
-            self._health_ready_since
-            and monotonic() - self._health_ready_since <= grace
-        )
+        return bool(self._health_ready_since and monotonic() - self._health_ready_since <= grace)
 
     def _max_quote_age(
         self,
@@ -562,10 +572,7 @@ class TradingEngine:
 
         ref_utc = reference.astimezone(timezone.utc)
         ages = [
-            (
-                ref_utc
-                - self.quotes[symbol].timestamp.astimezone(timezone.utc)
-            ).total_seconds()
+            (ref_utc - self.quotes[symbol].timestamp.astimezone(timezone.utc)).total_seconds()
             for symbol in required
         ]
         if any(age < -2.0 for age in ages):
@@ -611,29 +618,19 @@ class TradingEngine:
             any_risk = True
             near = self.quotes.get(pair.near_symbol)
             far = self.quotes.get(pair.far_symbol)
-            if (
-                self.auto_flatten_imbalance
-                and near is not None
-                and far is not None
-            ):
+            if self.auto_flatten_imbalance and near is not None and far is not None:
                 try:
                     self.executor.flatten_imbalance(pair, near, far)
                 except Exception as exc:
-                    self.state.reduce_reason = (
-                        f"{self.state.reduce_reason}; repair failed: {exc}"
-                    )
+                    self.state.reduce_reason = f"{self.state.reduce_reason}; repair failed: {exc}"
 
-        all_balanced = all(
-            self.executor.pair_is_balanced(pair)
-            for pair in self.pairs.values()
-        )
+        all_balanced = all(self.executor.pair_is_balanced(pair) for pair in self.pairs.values())
         if not any_risk or all_balanced:
             self.halted = True
             self.state.runtime_mode = RuntimeMode.HALTED.value
             self.state.kill_switch = True
             self.state.kill_reason = (
-                self.state.reduce_reason
-                or "reduce-only recovery completed; manual review required"
+                self.state.reduce_reason or "reduce-only recovery completed; manual review required"
             )
             self._persist()
 
@@ -647,9 +644,7 @@ class TradingEngine:
                 continue
             first_seen = self._imbalance_since.setdefault(pair.pair_id, now)
             if now - first_seen >= self.legging_timeout_seconds:
-                self.enter_reduce_only(
-                    f"pair imbalance detected: {pair.pair_id}"
-                )
+                self.enter_reduce_only(f"pair imbalance detected: {pair.pair_id}")
                 return
 
     def _imbalance_clock(self) -> float:
@@ -659,13 +654,9 @@ class TradingEngine:
         return monotonic()
 
     def _apply_expected_trade(self, trade: Trade) -> None:
-        book = PositionBook(
-            self.state_store.positions_from_state(self.state)
-        )
+        book = PositionBook(self.state_store.positions_from_state(self.state))
         book.apply_trade(trade)
-        self.state.positions = [
-            asdict(position) for position in book.all()
-        ]
+        self.state.positions = [asdict(position) for position in book.all()]
         self._sync_strategy_positions(book.all())
         self._persist()
 
@@ -673,21 +664,14 @@ class TradingEngine:
         if self.halted:
             return
         if not isinstance(remote, list) or any(
-            not isinstance(position, ContractPosition)
-            for position in remote
+            not isinstance(position, ContractPosition) for position in remote
         ):
-            self.emergency_stop(
-                "invalid position snapshot received from broker"
-            )
+            self.emergency_stop("invalid position snapshot received from broker")
             return
 
-        result = compare_positions(
-            self.state_store.positions_from_state(self.state), remote
-        )
+        result = compare_positions(self.state_store.positions_from_state(self.state), remote)
         if not result.matched:
-            self.emergency_stop(
-                f"runtime position drift detected: {result.details}"
-            )
+            self.emergency_stop(f"runtime position drift detected: {result.details}")
             return
 
         self.state.positions = [asdict(position) for position in remote]
@@ -697,8 +681,7 @@ class TradingEngine:
 
     def _pair_has_active_orders(self, pair_id: str) -> bool:
         return any(
-            order.request.reference.startswith(pair_id)
-            for order in self.broker.get_active_orders()
+            order.request.reference.startswith(pair_id) for order in self.broker.get_active_orders()
         )
 
     def _pair_open_eligible(self, pair_id: str) -> bool:
@@ -709,10 +692,7 @@ class TradingEngine:
         return len(self._open_pair_groups())
 
     def _open_pair_groups(self) -> dict[str, str]:
-        positions = {
-            position.symbol: position
-            for position in self.broker.get_positions()
-        }
+        positions = {position.symbol: position for position in self.broker.get_positions()}
         result: dict[str, str] = {}
         for pair_id, pair in self.pairs.items():
             near = positions.get(pair.near_symbol)
@@ -721,9 +701,7 @@ class TradingEngine:
                 result[pair_id] = pair.risk_group
         return result
 
-    def _sync_strategy_positions(
-        self, positions: list[ContractPosition] | None = None
-    ) -> None:
+    def _sync_strategy_positions(self, positions: list[ContractPosition] | None = None) -> None:
         if positions is None:
             positions = self.state_store.positions_from_state(self.state)
         book = PositionBook(positions)
@@ -753,18 +731,19 @@ class TradingEngine:
         new_day = str(account.trading_day or "")
         old_day = str(self.state.trading_day or "")
         if new_day and old_day and new_day != old_day:
-            book = PositionBook(
-                self.state_store.positions_from_state(self.state)
-            )
+            book = PositionBook(self.state_store.positions_from_state(self.state))
             book.roll_trading_day()
-            self.state.positions = [
-                asdict(position) for position in book.all()
-            ]
+            self.state.positions = [asdict(position) for position in book.all()]
             self._sync_strategy_positions(book.all())
+            # A trade callback may be the first authoritative event for the new day.
+            # Preserve identities already assigned to that day while dropping prior-day fills.
+            prefix = f"{new_day}:"
+            self.state.recent_trade_ids = [
+                identity for identity in self.state.recent_trade_ids if identity.startswith(prefix)
+            ]
+            self._recent_trade_id_set = set(self.state.recent_trade_ids)
 
-        if self.state.day_start_equity <= 0 or (
-            new_day and new_day != old_day
-        ):
+        if self.state.day_start_equity <= 0 or (new_day and new_day != old_day):
             self.state.day_start_equity = account.equity
         if new_day:
             self.state.trading_day = new_day
@@ -773,13 +752,9 @@ class TradingEngine:
         """在 CTP 合约查询完成后初始化自动候选，并恢复持久化动态组合。"""
         assert self.auto_manager is not None
         today = self._trading_date()
-        restored = self.auto_manager.bootstrap(
-            self.broker, today, self.state.auto_pairs
-        )
+        restored = self.auto_manager.bootstrap(self.broker, today, self.state.auto_pairs)
         for pair, pair_specs in restored:
-            self._register_auto_pair(
-                pair, pair_specs, seed_state=None, persist=False
-            )
+            self._register_auto_pair(pair, pair_specs, seed_state=None, persist=False)
 
     def _trading_date(self):
         from datetime import date
@@ -799,14 +774,10 @@ class TradingEngine:
                 self.broker,
                 self._trading_date(),
                 retained_pairs=[
-                    self.pairs[pair_id]
-                    for pair_id in sorted(protected)
-                    if pair_id in self.pairs
+                    self.pairs[pair_id] for pair_id in sorted(protected) if pair_id in self.pairs
                 ],
             )
-            selected = self.auto_manager.select(
-                self.broker, now=now, protected_pair_ids=protected
-            )
+            selected = self.auto_manager.select(self.broker, now=now, protected_pair_ids=protected)
         except Exception as exc:
             # 当日目录或扫描不可确认时，旧的无持仓 Auto pair 不再拥有开仓权。
             # 已有持仓 pair 仍保留管理/退出权限，等待下一次成功刷新恢复候选资格。
@@ -883,16 +854,10 @@ class TradingEngine:
         self._persist()
 
     def _pair_has_position(self, pair: PairConfig) -> bool:
-        positions = {
-            position.symbol: position
-            for position in self.broker.get_positions()
-        }
+        positions = {position.symbol: position for position in self.broker.get_positions()}
         near = positions.get(pair.near_symbol)
         far = positions.get(pair.far_symbol)
-        return bool(
-            (near is not None and not near.empty)
-            or (far is not None and not far.empty)
-        )
+        return bool((near is not None and not near.empty) or (far is not None and not far.empty))
 
     def _open_auto_pair_ids(self) -> set[str]:
         return {
@@ -910,7 +875,10 @@ class TradingEngine:
             return
         expected_edge = 0.0
         expected_spread = float(signal.spread)
-        if signal.action in {SignalAction.LONG_SPREAD, SignalAction.SHORT_SPREAD} and result.volume > 0:
+        if (
+            signal.action in {SignalAction.LONG_SPREAD, SignalAction.SHORT_SPREAD}
+            and result.volume > 0
+        ):
             try:
                 edge = estimate_net_edge(
                     signal.action,
@@ -924,8 +892,12 @@ class TradingEngine:
                 )
                 expected_edge = float(edge.net_edge)
                 expected_spread = float(edge.executable_spread)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "execution-quality estimate failed for pair=%s: %s",
+                    pair.pair_id,
+                    exc,
+                )
         self.quality.record_decision(
             pair_id=pair.pair_id,
             action=signal.action.value,
@@ -936,7 +908,10 @@ class TradingEngine:
             expected_net_edge=expected_edge,
             expected_spread=expected_spread,
         )
-        if result.accepted and signal.action in {SignalAction.LONG_SPREAD, SignalAction.SHORT_SPREAD}:
+        if result.accepted and signal.action in {
+            SignalAction.LONG_SPREAD,
+            SignalAction.SHORT_SPREAD,
+        }:
             self._quality_pending[pair.pair_id] = {
                 "pair": pair,
                 "action": signal.action,
@@ -1033,7 +1008,10 @@ class TradingEngine:
             symbol: sum(int(row["volume"]) for row in opens if row["symbol"] == symbol)
             for symbol in (pair.near_symbol, pair.far_symbol)
         }
-        partial = len(set(open_by_symbol.values())) > 1 or min(open_by_symbol.values(), default=0) < volume
+        partial = (
+            len(set(open_by_symbol.values())) > 1
+            or min(open_by_symbol.values(), default=0) < volume
+        )
         self.quality.record_round_trip(
             pair_id=pair_id,
             expected_net_edge=float(pending.get("expected_net_edge", 0.0)),
@@ -1056,8 +1034,7 @@ class TradingEngine:
 
     def _persist(self) -> None:
         self.state.strategy_states = {
-            pair_id: strategy.snapshot_state()
-            for pair_id, strategy in self.strategies.items()
+            pair_id: strategy.snapshot_state() for pair_id, strategy in self.strategies.items()
         }
         if self.auto_manager is not None:
             self.state.auto_pairs = {
@@ -1067,11 +1044,10 @@ class TradingEngine:
             }
         try:
             account = self.broker.get_account()
+            account.validate()
             self._advance_trading_day(account)
             self.risk_manager.check_account(account)
-            self.state.equity_high_watermark = (
-                self.risk_manager.high_watermark
-            )
-        except Exception:
-            pass
+            self.state.equity_high_watermark = self.risk_manager.high_watermark
+        except Exception as exc:
+            logger.warning("account refresh during state persistence failed: %s", exc)
         self.state_store.save(self.state)

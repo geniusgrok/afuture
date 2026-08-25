@@ -12,12 +12,8 @@ def _api():
 def test_reallocation_preserves_only_survivor_support_sign_and_original_gross():
     reallocate = _api()
     index = pd.to_datetime(["2026-01-05", "2026-01-06"])
-    original = pd.DataFrame(
-        {"A": [1.0, 1.0], "M": [-0.5, -0.5], "I": [0.5, 0.5]}, index=index
-    )
-    approved = pd.DataFrame(
-        {"A": [1.0, 1.0], "M": [-0.5, 0.0], "I": [0.0, 0.5]}, index=index
-    )
+    original = pd.DataFrame({"A": [1.0, 1.0], "M": [-0.5, -0.5], "I": [0.5, 0.5]}, index=index)
+    approved = pd.DataFrame({"A": [1.0, 1.0], "M": [-0.5, 0.0], "I": [0.0, 0.5]}, index=index)
 
     result = reallocate(original_weights=original, approved_weights=approved)
 
@@ -38,12 +34,8 @@ def test_lexicographic_tie_break_prefers_previous_survivor_allocation():
     # the full 2x budget. On day 2 A and M survive while C is rejected; after restoring
     # their original 0.5/0.5 target magnitudes, one extra unit is L1-tracking indifferent.
     # The secondary turnover objective keeps that residual in A, closest to yesterday.
-    original = pd.DataFrame(
-        {"A": [1.0, 0.5], "M": [1.0, 0.5], "C": [0.0, 1.0]}, index=index
-    )
-    approved = pd.DataFrame(
-        {"A": [1.0, 0.5], "M": [0.0, 0.5], "C": [0.0, 0.0]}, index=index
-    )
+    original = pd.DataFrame({"A": [1.0, 0.5], "M": [1.0, 0.5], "C": [0.0, 1.0]}, index=index)
+    approved = pd.DataFrame({"A": [1.0, 0.5], "M": [0.0, 0.5], "C": [0.0, 0.0]}, index=index)
 
     result = reallocate(original_weights=original, approved_weights=approved)
 

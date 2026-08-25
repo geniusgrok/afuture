@@ -7,17 +7,16 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time
 from math import log
-from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from .auto_runtime import MetadataPrefetcher
 from .models import ContractInfo, ContractSpec, PairConfig, Tick
 from .sample_store import MarketSampleStore
 from .scanner import SpreadScanner
-
 
 _CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -125,9 +124,7 @@ class AutoPairSelector:
         config.validate()
         self.config = config
 
-    def build_pairs(
-        self, catalog: Iterable[ContractInfo], today: date
-    ) -> list[PairConfig]:
+    def build_pairs(self, catalog: Iterable[ContractInfo], today: date) -> list[PairConfig]:
         allowed_products = {item.lower() for item in self.config.products}
         allow_all_products = "*" in allowed_products
         allowed_exchanges = {item.upper() for item in self.config.exchanges}
@@ -151,7 +148,7 @@ class AutoPairSelector:
         for (product, exchange), rows in sorted(grouped.items()):
             rows.sort(key=lambda row: (row[0], row[1].symbol))
             rows = rows[: self.config.max_contracts_per_product]
-            for (_, near), (_, far) in zip(rows, rows[1:]):
+            for (_, near), (_, far) in zip(rows, rows[1:], strict=False):
                 pairs.append(self._pair(product, exchange, near, far))
         return pairs
 
@@ -222,9 +219,7 @@ class AutoPairManager:
         self._catalog_day: date | None = None
         self.last_eligible_ids: set[str] = set()
         self.sample_store = sample_store
-        self.metadata = metadata_prefetcher or MetadataPrefetcher(
-            config.metadata_timeout_seconds
-        )
+        self.metadata = metadata_prefetcher or MetadataPrefetcher(config.metadata_timeout_seconds)
         self.evidence = evidence_recorder
 
     @property
@@ -235,9 +230,7 @@ class AutoPairManager:
         self._flush_sample_store()
         self.metadata.close()
 
-    def prepare_catalog(
-        self, catalog: Iterable[ContractInfo], today: date
-    ) -> list[PairConfig]:
+    def prepare_catalog(self, catalog: Iterable[ContractInfo], today: date) -> list[PairConfig]:
         self.candidate_pairs = self.selector.build_pairs(catalog, today)
         self._pairs = {pair.pair_id: pair for pair in self.candidate_pairs}
         self._catalog_day = today
@@ -246,7 +239,7 @@ class AutoPairManager:
             for symbol in (pair.near_symbol, pair.far_symbol):
                 if symbol in self._history:
                     continue
-                history = deque(maxlen=max_history)
+                history: deque[Tick] = deque(maxlen=max_history)
                 if self.sample_store is not None:
                     for row in self.sample_store.load(symbol)[-max_history:]:
                         history.append(row)
@@ -276,13 +269,9 @@ class AutoPairManager:
                 row["session_windows"] = tuple(row["session_windows"])
             pair = PairConfig(**row)
             if pair.near_symbol not in catalog_symbols or pair.far_symbol not in catalog_symbols:
-                raise RuntimeError(
-                    f"persisted auto pair is no longer in CTP catalog: {pair_id}"
-                )
+                raise RuntimeError(f"persisted auto pair is no longer in CTP catalog: {pair_id}")
             self._pairs[pair.pair_id] = pair
-            if all(
-                existing.pair_id != pair.pair_id for existing in self.candidate_pairs
-            ):
+            if all(existing.pair_id != pair.pair_id for existing in self.candidate_pairs):
                 self.candidate_pairs.append(pair)
             pair_specs = self._ensure_specs(broker, pair)
             restored.append((pair, pair_specs))
@@ -334,7 +323,7 @@ class AutoPairManager:
         }
         for symbol in symbols:
             if symbol not in self._history:
-                history = deque(maxlen=max_history)
+                history: deque[Tick] = deque(maxlen=max_history)
                 if self.sample_store is not None:
                     for row in self.sample_store.load(symbol)[-max_history:]:
                         history.append(row)
@@ -355,12 +344,8 @@ class AutoPairManager:
         if history is None:
             return
         if self.config.daily_sample_window:
-            current = tick.timestamp.astimezone(_CHINA_TZ).timetz().replace(
-                tzinfo=None
-            )
-            start, end = AutoConfig._parse_daily_window(
-                self.config.daily_sample_window
-            )
+            current = tick.timestamp.astimezone(_CHINA_TZ).timetz().replace(tzinfo=None)
+            start, end = AutoConfig._parse_daily_window(self.config.daily_sample_window)
             if not start <= current <= end:
                 return
             if history and history[-1].trading_day == tick.trading_day:
@@ -404,7 +389,10 @@ class AutoPairManager:
             if history is None:
                 continue
             history.clear()
-            for item in rows[-history.maxlen :]:
+            maxlen = history.maxlen
+            if maxlen is None:
+                raise RuntimeError("auto sample history must be bounded")
+            for item in rows[-maxlen:]:
                 row = dict(item)
                 row["timestamp"] = datetime.fromisoformat(str(row["timestamp"]))
                 tick = Tick(**row)
@@ -414,9 +402,7 @@ class AutoPairManager:
     def should_scan(self, now: datetime) -> bool:
         if self._last_scan is None:
             return True
-        return (
-            now - self._last_scan
-        ).total_seconds() >= self.config.scan_interval_seconds
+        return (now - self._last_scan).total_seconds() >= self.config.scan_interval_seconds
 
     def select(
         self,
@@ -434,18 +420,15 @@ class AutoPairManager:
         scored: list[tuple[PairConfig, float]] = []
         self.last_eligible_ids = set()
         for pair in self.candidate_pairs:
-            near_history = self._history.get(pair.near_symbol, ())
-            far_history = self._history.get(pair.far_symbol, ())
-            if (
-                len(near_history) < pair.lookback + 1
-                or len(far_history) < pair.lookback + 1
-            ):
+            near_history = self._history.get(pair.near_symbol)
+            far_history = self._history.get(pair.far_symbol)
+            if near_history is None or far_history is None:
+                continue
+            if len(near_history) < pair.lookback + 1 or len(far_history) < pair.lookback + 1:
                 continue
             near, far = near_history[-1], far_history[-1]
             if min(near.volume, far.volume) < self.config.min_volume:
-                self._record_candidate(
-                    pair, near, far, None, None, "volume below minimum"
-                )
+                self._record_candidate(pair, near, far, None, None, "volume below minimum")
                 continue
             if min(near.open_interest, far.open_interest) < self.config.min_open_interest:
                 self._record_candidate(
@@ -460,9 +443,7 @@ class AutoPairManager:
 
             ticks = list(near_history) + list(far_history)
             synchronized = self.scanner.synchronized_ticks(pair, ticks)
-            statistics = self.scanner.statistics(
-                pair, ticks, synchronized=synchronized
-            )
+            statistics = self.scanner.statistics(pair, ticks, synchronized=synchronized)
             if statistics is None:
                 self._record_candidate(
                     pair,
@@ -507,12 +488,9 @@ class AutoPairManager:
             pair_specs = self._prefetched_specs(broker, pair)
             if pair_specs is None:
                 reason = (
-                    self.metadata.error((pair.near_symbol, pair.far_symbol))
-                    or "metadata pending"
+                    self.metadata.error((pair.near_symbol, pair.far_symbol)) or "metadata pending"
                 )
-                self._record_candidate(
-                    pair, near, far, statistics, None, reason
-                )
+                self._record_candidate(pair, near, far, statistics, None, reason)
                 continue
             candidate = self.scanner.scan_pair(pair, ticks, pair_specs)
             if candidate is None:
@@ -549,9 +527,7 @@ class AutoPairManager:
             scored.append((pair, candidate.score))
             self._record_candidate(pair, near, far, statistics, candidate, "")
 
-        return self.rank_candidates(
-            scored, protected_pair_ids=protected_pair_ids
-        )
+        return self.rank_candidates(scored, protected_pair_ids=protected_pair_ids)
 
     def rank_candidates(
         self,
@@ -581,10 +557,7 @@ class AutoPairManager:
         return selected
 
     def pair_specs(self, pair: PairConfig) -> dict[str, ContractSpec]:
-        return {
-            symbol: self._specs[symbol]
-            for symbol in (pair.near_symbol, pair.far_symbol)
-        }
+        return {symbol: self._specs[symbol] for symbol in (pair.near_symbol, pair.far_symbol)}
 
     def strategy_seed(self, pair: PairConfig) -> dict:
         """用扫描阶段历史预热正式策略，并保留确认入场的武装状态。"""
@@ -599,12 +572,8 @@ class AutoPairManager:
             else near.mid_price - far.mid_price
             for near, far in historical
         ][-pair.lookback :]
-        raw_history = [
-            near.mid_price - far.mid_price for near, far in historical
-        ][-pair.lookback :]
-        z_history, armed, extreme = self.scanner.confirmation_seed(
-            pair, historical
-        )
+        raw_history = [near.mid_price - far.mid_price for near, far in historical][-pair.lookback :]
+        z_history, armed, extreme = self.scanner.confirmation_seed(pair, historical)
         last_ts = ""
         last_day = ""
         if historical:
@@ -626,27 +595,15 @@ class AutoPairManager:
             "armed_extreme": extreme,
         }
 
-    def _record_candidate(
-        self, pair, near, far, statistics, candidate, reason: str
-    ) -> None:
+    def _record_candidate(self, pair, near, far, statistics, candidate, reason: str) -> None:
         if self.evidence is None:
             return
         self.evidence.record_candidate(
             pair_id=pair.pair_id,
             timestamp=max(near.timestamp, far.timestamp).isoformat(),
-            zscore=(
-                float(statistics.zscore) if statistics is not None else None
-            ),
-            stationarity=(
-                float(statistics.stationarity_score)
-                if statistics is not None
-                else None
-            ),
-            half_life=(
-                float(statistics.half_life)
-                if statistics is not None
-                else None
-            ),
+            zscore=(float(statistics.zscore) if statistics is not None else None),
+            stationarity=(float(statistics.stationarity_score) if statistics is not None else None),
+            half_life=(float(statistics.half_life) if statistics is not None else None),
             volume=float(min(near.volume, far.volume)),
             open_interest=float(min(near.open_interest, far.open_interest)),
             depth=float(
@@ -657,18 +614,12 @@ class AutoPairManager:
                     far.ask_volume,
                 )
             ),
-            expected_net_edge=(
-                float(candidate.net_edge) if candidate is not None else None
-            ),
-            candidate_score=(
-                float(candidate.score) if candidate is not None else None
-            ),
+            expected_net_edge=(float(candidate.net_edge) if candidate is not None else None),
+            candidate_score=(float(candidate.score) if candidate is not None else None),
             reject_reason=str(reason),
         )
 
-    def _prefetched_specs(
-        self, broker, pair: PairConfig
-    ) -> dict[str, ContractSpec] | None:
+    def _prefetched_specs(self, broker, pair: PairConfig) -> dict[str, ContractSpec] | None:
         symbols = (pair.near_symbol, pair.far_symbol)
         if all(symbol in self._specs for symbol in symbols):
             return self.pair_specs(pair)
@@ -681,19 +632,13 @@ class AutoPairManager:
         self._specs.update(rows)
         return self.pair_specs(pair)
 
-    def _ensure_specs(
-        self, broker, pair: PairConfig
-    ) -> dict[str, ContractSpec]:
+    def _ensure_specs(self, broker, pair: PairConfig) -> dict[str, ContractSpec]:
         """启动恢复路径允许等待；Tick 关键路径使用 _prefetched_specs。"""
         missing = [
-            symbol
-            for symbol in (pair.near_symbol, pair.far_symbol)
-            if symbol not in self._specs
+            symbol for symbol in (pair.near_symbol, pair.far_symbol) if symbol not in self._specs
         ]
         if missing:
-            rows = broker.get_live_contract_specs(
-                missing, self.config.metadata_timeout_seconds
-            )
+            rows = broker.get_live_contract_specs(missing, self.config.metadata_timeout_seconds)
             for symbol in missing:
                 if symbol not in rows:
                     raise RuntimeError(f"live contract spec missing: {symbol}")

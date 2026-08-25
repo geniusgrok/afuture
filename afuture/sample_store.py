@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import asdict
 from datetime import datetime
-import json
 from pathlib import Path
-import re
 from tempfile import NamedTemporaryFile
 
 from .models import Tick

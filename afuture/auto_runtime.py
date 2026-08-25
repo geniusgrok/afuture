@@ -81,7 +81,9 @@ class MetadataPrefetcher:
                     return {symbol: self._cache[symbol] for symbol in key}
                 return None
         try:
-            rows = future.result(timeout=self.timeout_seconds if timeout_seconds is None else timeout_seconds)
+            rows = future.result(
+                timeout=self.timeout_seconds if timeout_seconds is None else timeout_seconds
+            )
         except TimeoutError:
             return None
         except Exception as exc:

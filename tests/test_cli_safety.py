@@ -39,9 +39,7 @@ def test_wait_for_fresh_snapshot_times_out_without_complete_snapshot():
             return False
 
     with pytest.raises(RuntimeError, match="fresh CTP account/position snapshot"):
-        wait_for_fresh_snapshot(
-            FakeBroker(), timeout_seconds=0.001, poll_interval=0.0001
-        )
+        wait_for_fresh_snapshot(FakeBroker(), timeout_seconds=0.001, poll_interval=0.0001)
 
 
 def test_recovery_accepts_balanced_dynamic_volume_not_only_pair_cap():
@@ -65,17 +63,13 @@ def test_recovery_rejects_volume_above_pair_cap_and_unbalanced_positions():
             ],
         )
     with pytest.raises(RuntimeError, match="balanced spread"):
-        validate_recovery_positions(
-            [pair], [ContractPosition("m2609", "DCE", long_today=1)]
-        )
+        validate_recovery_positions([pair], [ContractPosition("m2609", "DCE", long_today=1)])
 
 
 def test_recovery_rejects_unknown_contract():
     pair = PairConfig("m_pair", "m2609", "m2701", "DCE", 3)
     with pytest.raises(RuntimeError, match="not configured"):
-        validate_recovery_positions(
-            [pair], [ContractPosition("rb2610", "SHFE", long_today=1)]
-        )
+        validate_recovery_positions([pair], [ContractPosition("rb2610", "SHFE", long_today=1)])
 
 
 def test_adopt_recovery_state_keeps_kill_switch_and_requires_fresh_metadata(tmp_path: Path):
@@ -89,7 +83,7 @@ def test_adopt_recovery_state_keeps_kill_switch_and_requires_fresh_metadata(tmp_
         metadata_verified=True,
     )
     account = AccountSnapshot(500000, 500000, 400000, 100000, 0, 0, "20260820")
-    positions = [ContractPosition("m2609", "DCE", long_yesterday=1)]
+    positions = [ContractPosition("m2609", "DCE", long_yesterday=1, long_price=3000.0)]
 
     adopt_recovery_state(store, state, account, positions)
 
@@ -127,8 +121,6 @@ def test_drain_after_halt_waits_until_active_orders_are_gone():
     broker = FakeBroker()
     engine = FakeEngine(broker)
 
-    assert drain_after_halt(
-        engine, broker, timeout_seconds=0.1, poll_interval=0.001
-    )
+    assert drain_after_halt(engine, broker, timeout_seconds=0.1, poll_interval=0.001)
     assert broker.cancelled == ["o1"]
     assert engine.calls >= 1

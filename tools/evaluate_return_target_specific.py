@@ -12,16 +12,16 @@ L3 target fit, the pool size is selected once on the already-observed recent two
 specific-contract execution window. Final OOS is therefore non-pristine and never
 presented as independent evidence.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-
 import evaluate_aggressive_directional as aggressive
 import fetch_return_target_specific_daily as specific_fetch
+import numpy as np
+import pandas as pd
 
 MIN_DAYS_TO_DELIVERY = 20
 MIN_PRODUCT_DAYS = 700
@@ -158,9 +158,7 @@ def build_roll_safe_execution_returns(
                     "close": float(chosen["close"]),
                     "volume": float(chosen["volume"]),
                     "open_interest": float(chosen["hold"]),
-                    "days_to_delivery": int(
-                        (pd.Timestamp(chosen["delivery"]) - trading_day).days
-                    ),
+                    "days_to_delivery": int((pd.Timestamp(chosen["delivery"]) - trading_day).days),
                 }
             )
 
@@ -196,8 +194,7 @@ def build_roll_safe_execution_returns(
                         "intraday": current_close / current_open - 1.0,
                     }
                     if all(
-                        np.isfinite(value)
-                        and abs(value) <= aggressive.MAX_ABS_DAILY_RETURN
+                        np.isfinite(value) and abs(value) <= aggressive.MAX_ABS_DAILY_RETURN
                         for value in values.values()
                     ):
                         close_ret.loc[trading_day] = values["close"]
@@ -251,7 +248,9 @@ def apply_product_weights(
     *,
     cost_bps: float,
 ) -> pd.Series:
-    weights = weights.reindex(index=returns.index, columns=returns.columns, fill_value=0.0).fillna(0.0)
+    weights = weights.reindex(index=returns.index, columns=returns.columns, fill_value=0.0).fillna(
+        0.0
+    )
     gross = weights.abs().sum(axis=1)
     if bool((gross > MAX_GROSS_LEVERAGE + 1e-10).any()):
         raise ValueError(f"product weights exceed 2x gross cap: {float(gross.max())}")
@@ -270,7 +269,9 @@ def apply_next_open_product_weights(
     cost_bps: float,
 ) -> pd.Series:
     """Old weights earn gap; new target weights earn open-close; rebalance cost at open."""
-    weights = weights.reindex(index=gap_returns.index, columns=gap_returns.columns, fill_value=0.0).fillna(0.0)
+    weights = weights.reindex(
+        index=gap_returns.index, columns=gap_returns.columns, fill_value=0.0
+    ).fillna(0.0)
     gross = weights.abs().sum(axis=1)
     if bool((gross > MAX_GROSS_LEVERAGE + 1e-10).any()):
         raise ValueError(f"product weights exceed 2x gross cap: {float(gross.max())}")
@@ -301,7 +302,9 @@ def _template_weight_path(
                 order = valid[np.argsort(-np.abs(lagged[valid]), kind="stable")]
                 selected = order[: min(int(template.max_products), len(order))]
                 if selected.size:
-                    each = min(float(template.gross_leverage), MAX_GROSS_LEVERAGE) / float(selected.size)
+                    each = min(float(template.gross_leverage), MAX_GROSS_LEVERAGE) / float(
+                        selected.size
+                    )
                     next_weights[selected] = np.sign(lagged[selected]) * each
             current = next_weights
         audit[position] = current
@@ -328,9 +331,7 @@ def _meta_weight_path(
 ) -> pd.DataFrame:
     frame = pd.DataFrame(score_streams).sort_index().fillna(0.0)
     names = list(frame.columns)
-    scores = aggressive._trailing_score_matrix(
-        frame, int(EXECUTION_SELECTION["meta_lookback"])
-    )
+    scores = aggressive._trailing_score_matrix(frame, int(EXECUTION_SELECTION["meta_lookback"]))
     example = template_weights[names[0]].reindex(frame.index).fillna(0.0)
     final = pd.DataFrame(0.0, index=frame.index, columns=example.columns)
     selected: list[int] = []
@@ -371,9 +372,7 @@ def generate_execution_signal_weights(continuous_raw: pd.DataFrame) -> pd.DataFr
             signal_returns, template, record_weights=False
         )
         # Meta ranking is exactly the frozen L3 continuous theoretical base-cost score.
-        score_streams[template_id] = aggressive.apply_cost(
-            gross_pnl, turnover, BASE_COST_BPS
-        )
+        score_streams[template_id] = aggressive.apply_cost(gross_pnl, turnover, BASE_COST_BPS)
         weight_paths[template_id] = _template_weight_path(signal_returns, template)
     return _meta_weight_path(score_streams, weight_paths)
 
@@ -408,11 +407,13 @@ def evaluate(
     l3_report: dict,
 ) -> dict:
     _validate_l3_report(l3_report)
-    close_ret, gap_ret, intraday_ret, selections, quality = (
-        build_roll_safe_execution_returns(specific_raw)
+    close_ret, gap_ret, intraday_ret, selections, quality = build_roll_safe_execution_returns(
+        specific_raw
     )
     weights = generate_execution_signal_weights(continuous_raw)
-    weights = weights.reindex(index=close_ret.index, columns=close_ret.columns, fill_value=0.0).fillna(0.0)
+    weights = weights.reindex(
+        index=close_ret.index, columns=close_ret.columns, fill_value=0.0
+    ).fillna(0.0)
 
     close_paths: dict[str, dict] = {}
     delayed_paths: dict[str, dict] = {}
@@ -425,21 +426,15 @@ def evaluate(
             apply_product_weights(close_ret, weights, cost_bps=cost)
         )
         delayed_paths[label] = _window_metrics(
-            apply_next_open_product_weights(
-                gap_ret, intraday_ret, weights, cost_bps=cost
-            )
+            apply_next_open_product_weights(gap_ret, intraday_ret, weights, cost_bps=cost)
         )
 
     quality_reasons: list[str] = []
     for product, item in sorted(quality.items()):
         if item["selected_days"] < MIN_PRODUCT_DAYS:
-            quality_reasons.append(
-                f"{product} selected-day coverage below {MIN_PRODUCT_DAYS}"
-            )
+            quality_reasons.append(f"{product} selected-day coverage below {MIN_PRODUCT_DAYS}")
         if item["missing_next_ratio"] >= 0.05:
-            quality_reasons.append(
-                f"{product} missing same-contract next return >=5%"
-            )
+            quality_reasons.append(f"{product} missing same-contract next return >=5%")
 
     base_recent = delayed_paths["base"]["full_recent"]
     stress_recent = delayed_paths["stress"]["full_recent"]

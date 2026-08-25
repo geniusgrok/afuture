@@ -7,11 +7,12 @@ forecast evidence is warmed only by events from a single chronological candidate
 path whose event date is strictly earlier than the reporting-window start; account state,
 margin, governor and high-watermark still reset independently per published window.
 """
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -20,18 +21,20 @@ ROOT = TOOLS.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import evaluate_directional_production_mechanics as mechanics
+
 from afuture.directional_acceptance import ProductionMechanicsConfig
 from afuture.directional_attribution import summarize_production_attribution
 from afuture.directional_mpv_robustness import MPVDirectionalProductionAcceptance
-
-import evaluate_directional_production_mechanics as mechanics
 
 
 def load_frozen_weights(path: Path) -> pd.DataFrame:
     rows = pd.read_csv(path)
     required = {"level_0", "level_1", "weight"}
     if not required.issubset(rows.columns):
-        raise ValueError(f"frozen weight artifact missing columns: {sorted(required - set(rows.columns))}")
+        raise ValueError(
+            f"frozen weight artifact missing columns: {sorted(required - set(rows.columns))}"
+        )
     rows["level_0"] = pd.to_datetime(rows["level_0"], errors="coerce").dt.normalize()
     rows = rows[rows["level_0"].notna()].copy()
     rows["level_1"] = rows["level_1"].astype(str).str.upper()
@@ -56,14 +59,9 @@ def _turnover_summary(frame: pd.DataFrame) -> dict[str, float]:
         "turnover_hard_halt",
         "turnover_gross_guard",
     ]
-    result = {
-        column: float(frame[column].sum()) if column in frame else 0.0
-        for column in columns
-    }
+    result = {column: float(frame[column].sum()) if column in frame else 0.0 for column in columns}
     result["total"] = (
-        float(frame["turnover_notional"].sum())
-        if "turnover_notional" in frame
-        else 0.0
+        float(frame["turnover_notional"].sum()) if "turnover_notional" in frame else 0.0
     )
     result["attributed_total"] = float(sum(result[column] for column in columns))
     return result
@@ -187,7 +185,8 @@ def evaluate_with_weights(specific_raw: pd.DataFrame, weights: pd.DataFrame) -> 
                 not base_training.daily.empty and base_training.daily["halted"].astype(bool).any()
             ),
             "stress_training_halted": bool(
-                not stress_training.daily.empty and stress_training.daily["halted"].astype(bool).any()
+                not stress_training.daily.empty
+                and stress_training.daily["halted"].astype(bool).any()
             ),
         },
         "base": base,

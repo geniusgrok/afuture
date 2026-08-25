@@ -5,12 +5,13 @@ full history for one concrete contract per request. Downloads use a small bounde
 pool because requests are independent network I/O; retries remain per-contract and every
 failure is retained in the evidence instead of being silently filled.
 """
+
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
-import time
 
 import akshare as ak
 import pandas as pd
@@ -93,9 +94,7 @@ def _fetch_one(item: tuple[str, str, str]) -> tuple[pd.DataFrame | None, str | N
     for column in ("open", "high", "low", "close", "volume", "hold", "settle"):
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = frame.loc[
-        (frame["date"] >= START) & (frame["date"] <= END)
-    ].copy()
+    frame = frame.loc[(frame["date"] >= START) & (frame["date"] <= END)].copy()
     frame.dropna(subset=["date", "close"], inplace=True)
     frame = frame[frame["close"] > 0]
     if frame.empty:

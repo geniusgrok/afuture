@@ -4,6 +4,7 @@
 历史 L1 bid/ask/depth 不可得，因此本脚本只证明信号层经济性，不替代 Shadow/CTP
 成交质量验证。参数和品种资格只使用 OOS 之前的窗口；final OOS 不参与选择。
 """
+
 from __future__ import annotations
 
 import json
@@ -17,10 +18,21 @@ import pandas as pd
 
 PRODUCTS = ("A", "C", "EG", "FG", "I", "M", "MA", "OI", "P", "PP", "RB", "RM", "SA", "TA", "Y")
 SPECS = {
-    "A": (10.0, 1.0), "C": (10.0, 1.0), "EG": (10.0, 1.0), "FG": (20.0, 1.0),
-    "I": (100.0, 0.5), "M": (10.0, 1.0), "MA": (10.0, 1.0), "OI": (10.0, 1.0),
-    "P": (10.0, 2.0), "PP": (5.0, 1.0), "RB": (10.0, 1.0), "RM": (10.0, 1.0),
-    "SA": (20.0, 1.0), "TA": (5.0, 2.0), "Y": (10.0, 2.0),
+    "A": (10.0, 1.0),
+    "C": (10.0, 1.0),
+    "EG": (10.0, 1.0),
+    "FG": (20.0, 1.0),
+    "I": (100.0, 0.5),
+    "M": (10.0, 1.0),
+    "MA": (10.0, 1.0),
+    "OI": (10.0, 1.0),
+    "P": (10.0, 2.0),
+    "PP": (5.0, 1.0),
+    "RB": (10.0, 1.0),
+    "RM": (10.0, 1.0),
+    "SA": (20.0, 1.0),
+    "TA": (5.0, 2.0),
+    "Y": (10.0, 2.0),
 }
 WINDOWS = {
     "prior1": ("2022-08-22", "2023-08-20"),
@@ -101,7 +113,7 @@ def _prepare_intraday(raw: pd.DataFrame) -> pd.DataFrame:
         sorted(pd.to_datetime(frame.loc[day_mask, "calendar_date"].dropna().unique()))
     )
     trading_days = []
-    for timestamp, natural_day in zip(frame["datetime"], frame["calendar_date"]):
+    for timestamp, natural_day in zip(frame["datetime"], frame["calendar_date"], strict=True):
         current_minute = timestamp.hour * 60 + timestamp.minute
         if current_minute >= NIGHT_SESSION_START_MINUTE:
             index = day_dates.searchsorted(natural_day, side="right")
@@ -109,10 +121,14 @@ def _prepare_intraday(raw: pd.DataFrame) -> pd.DataFrame:
         else:
             trading_days.append(natural_day)
     frame["trading_day"] = pd.to_datetime(trading_days)
-    frame = frame.dropna(subset=["trading_day"]).sort_values(["datetime", "symbol"]).reset_index(drop=True)
-    frame["visible_volume"] = frame.groupby(
-        ["product", "symbol", "trading_day"], sort=False
-    )["volume"].cumsum()
+    frame = (
+        frame.dropna(subset=["trading_day"])
+        .sort_values(["datetime", "symbol"])
+        .reset_index(drop=True)
+    )
+    frame["visible_volume"] = frame.groupby(["product", "symbol", "trading_day"], sort=False)[
+        "volume"
+    ].cumsum()
     return frame
 
 
@@ -124,9 +140,7 @@ def build_pair_frames(
     if combined.empty:
         return {}
     minute = combined["datetime"].dt.hour * 60 + combined["datetime"].dt.minute
-    sample = combined[
-        (minute >= SAMPLE_START_MINUTE) & (minute <= SAMPLE_END_MINUTE)
-    ].copy()
+    sample = combined[(minute >= SAMPLE_START_MINUTE) & (minute <= SAMPLE_END_MINUTE)].copy()
     if sample.empty:
         return {}
     sample = (
@@ -147,7 +161,7 @@ def build_pair_frames(
         eligible.sort(key=lambda item: (item[0], _contract_key(item[1]), item[1]))
         eligible = eligible[:MAX_CONTRACTS_PER_PRODUCT]
         for (_, near_symbol, near_row), (_, far_symbol, far_row) in zip(
-            eligible, eligible[1:]
+            eligible, eligible[1:], strict=False
         ):
             near_time = pd.Timestamp(near_row["datetime"])
             far_time = pd.Timestamp(far_row["datetime"])
@@ -293,22 +307,19 @@ def generate_trades(frame: pd.DataFrame, product: str, params: dict) -> pd.DataF
                 entry_stationarity = stationarity[index]
                 armed = 0
                 armed_extreme = None
-            elif (
-                (armed == -1 and current_z < params["min_entry"])
-                or (armed == 1 and current_z > -params["min_entry"])
+            elif (armed == -1 and current_z < params["min_entry"]) or (
+                armed == 1 and current_z > -params["min_entry"]
             ):
                 armed = 0
                 armed_extreme = None
             continue
 
         holding = index - int(entry_index)
-        normal_exit = (
-            (position == 1 and current_z >= -params["exit_z"])
-            or (position == -1 and current_z <= params["exit_z"])
+        normal_exit = (position == 1 and current_z >= -params["exit_z"]) or (
+            position == -1 and current_z <= params["exit_z"]
         )
-        stop = (
-            (position == 1 and current_z <= -params["stop"])
-            or (position == -1 and current_z >= params["stop"])
+        stop = (position == 1 and current_z <= -params["stop"]) or (
+            position == -1 and current_z >= params["stop"]
         )
         timeout = params["maxhold"] > 0 and holding >= params["maxhold"]
         terminal = index == len(frame) - 1
@@ -346,8 +357,7 @@ def product_trades(frames, product: str, start: str, end: str, params: dict):
         if root != product:
             continue
         subset = frame[
-            (frame.datetime >= pd.Timestamp(start))
-            & (frame.datetime <= pd.Timestamp(end))
+            (frame.datetime >= pd.Timestamp(start)) & (frame.datetime <= pd.Timestamp(end))
         ].reset_index(drop=True)
         if len(subset) < params["lookback"] + 10:
             continue

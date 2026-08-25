@@ -1,4 +1,5 @@
 """Frozen promotion gate for the validated Stress90 candidate."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -47,10 +48,7 @@ def evaluate_stress90_gate(
             reasons.append(f"{label}_dd_exceeds_30pct")
         if bool(stats.get("halted", False)):
             reasons.append(f"{label}_halted")
-        if (
-            float(stats.get("max_realized_gross_notional_ratio", 0.0))
-            > MAX_REALIZED_GROSS + 1e-10
-        ):
+        if float(stats.get("max_realized_gross_notional_ratio", 0.0)) > MAX_REALIZED_GROSS + 1e-10:
             reasons.append(f"{label}_gross_exceeds_2x")
         if int(stats.get("margin_reject_days", 0)) != 0:
             reasons.append(f"{label}_margin_rejects_nonzero")
@@ -60,9 +58,7 @@ def evaluate_stress90_gate(
             reasons.append(f"stress_{window}_not_positive")
 
     efficiency = float(
-        results[("stress", "full_recent")]["economics"][
-            "net_alpha_per_turnover_bps"
-        ]
+        results[("stress", "full_recent")]["economics"]["net_alpha_per_turnover_bps"]
     )
     if efficiency <= BASELINE_NET_ALPHA_PER_TURNOVER_BPS:
         reasons.append("stress_net_alpha_per_turnover_not_above_30_990722bps")

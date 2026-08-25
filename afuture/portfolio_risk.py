@@ -32,9 +32,7 @@ class PortfolioRiskAnalyzer:
         if bucket_seconds <= 0:
             raise ValueError("bucket_seconds must be positive")
         self.bucket_seconds = int(bucket_seconds)
-        self._series: dict[str, deque[float]] = defaultdict(
-            lambda: deque(maxlen=self.window)
-        )
+        self._series: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=self.window))
         self._timed_series: dict[str, dict[int, float]] = defaultdict(dict)
 
     def update(
@@ -85,41 +83,27 @@ class PortfolioRiskAnalyzer:
         )
 
     @staticmethod
-    def _correlation_from_values(
-        left_values: list[float], right_values: list[float]
-    ) -> float:
+    def _correlation_from_values(left_values: list[float], right_values: list[float]) -> float:
         sample_count = min(len(left_values), len(right_values))
         if sample_count < 3:
             return 0.0
         left_values = left_values[-sample_count:]
         right_values = right_values[-sample_count:]
-        left_changes = [
-            left_values[i] - left_values[i - 1]
-            for i in range(1, sample_count)
-        ]
-        right_changes = [
-            right_values[i] - right_values[i - 1]
-            for i in range(1, sample_count)
-        ]
+        left_changes = [left_values[i] - left_values[i - 1] for i in range(1, sample_count)]
+        right_changes = [right_values[i] - right_values[i - 1] for i in range(1, sample_count)]
         if len(left_changes) < 2:
             return 0.0
 
         left_mean = sum(left_changes) / len(left_changes)
         right_mean = sum(right_changes) / len(right_changes)
-        left_var = sum(
-            (value - left_mean) ** 2 for value in left_changes
-        )
-        right_var = sum(
-            (value - right_mean) ** 2 for value in right_changes
-        )
+        left_var = sum((value - left_mean) ** 2 for value in left_changes)
+        right_var = sum((value - right_mean) ** 2 for value in right_changes)
         if left_var <= 0 or right_var <= 0:
             return 0.0
 
         covariance = sum(
             (left_value - left_mean) * (right_value - right_mean)
-            for left_value, right_value in zip(
-                left_changes, right_changes
-            )
+            for left_value, right_value in zip(left_changes, right_changes, strict=True)
         )
         return covariance / sqrt(left_var * right_var)
 
@@ -132,15 +116,9 @@ class PortfolioRiskAnalyzer:
     ) -> RiskDecision:
         """限制同风险组和高相关套利组合的同时暴露。"""
         if risk_group:
-            group_count = sum(
-                1
-                for group in open_pairs.values()
-                if group == risk_group
-            )
+            group_count = sum(1 for group in open_pairs.values() if group == risk_group)
             if group_count >= self.max_group_open_pairs:
-                return RiskDecision(
-                    False, "risk-group concentration limit reached"
-                )
+                return RiskDecision(False, "risk-group concentration limit reached")
 
         for other_pair_id in open_pairs:
             if other_pair_id == pair_id:

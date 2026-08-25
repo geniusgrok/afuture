@@ -4,12 +4,14 @@ from afuture.directional_basis_alpha import build_basis_carry_weights
 
 
 def test_basis_carry_uses_only_previous_target_session_basis():
-    basis = pd.DataFrame([
-        {"date": "2026-08-18", "symbol": "AG", "dom_basis_rate": 0.02},
-        {"date": "2026-08-18", "symbol": "CU", "dom_basis_rate": -0.01},
-        {"date": "2026-08-19", "symbol": "AG", "dom_basis_rate": -0.03},
-        {"date": "2026-08-19", "symbol": "CU", "dom_basis_rate": 0.04},
-    ])
+    basis = pd.DataFrame(
+        [
+            {"date": "2026-08-18", "symbol": "AG", "dom_basis_rate": 0.02},
+            {"date": "2026-08-18", "symbol": "CU", "dom_basis_rate": -0.01},
+            {"date": "2026-08-19", "symbol": "AG", "dom_basis_rate": -0.03},
+            {"date": "2026-08-19", "symbol": "CU", "dom_basis_rate": 0.04},
+        ]
+    )
     index = pd.to_datetime(["2026-08-18", "2026-08-19", "2026-08-20"])
 
     weights = build_basis_carry_weights(
@@ -26,11 +28,13 @@ def test_basis_carry_uses_only_previous_target_session_basis():
 
 
 def test_basis_carry_fails_closed_on_missing_previous_session_product_evidence():
-    basis = pd.DataFrame([
-        {"date": "2026-08-18", "symbol": "AG", "dom_basis_rate": 0.02},
-        {"date": "2026-08-18", "symbol": "CU", "dom_basis_rate": -0.01},
-        {"date": "2026-08-19", "symbol": "AG", "dom_basis_rate": -0.03},
-    ])
+    basis = pd.DataFrame(
+        [
+            {"date": "2026-08-18", "symbol": "AG", "dom_basis_rate": 0.02},
+            {"date": "2026-08-18", "symbol": "CU", "dom_basis_rate": -0.01},
+            {"date": "2026-08-19", "symbol": "AG", "dom_basis_rate": -0.03},
+        ]
+    )
     index = pd.to_datetime(["2026-08-18", "2026-08-19", "2026-08-20"])
 
     weights = build_basis_carry_weights(
@@ -45,11 +49,13 @@ def test_basis_carry_fails_closed_on_missing_previous_session_product_evidence()
 
 
 def test_basis_carry_zero_basis_creates_no_position_and_never_exceeds_two_x_gross():
-    basis = pd.DataFrame([
-        {"date": "2026-08-18", "symbol": "AG", "dom_basis_rate": 0.0},
-        {"date": "2026-08-18", "symbol": "CU", "dom_basis_rate": -0.01},
-        {"date": "2026-08-18", "symbol": "RB", "dom_basis_rate": 0.01},
-    ])
+    basis = pd.DataFrame(
+        [
+            {"date": "2026-08-18", "symbol": "AG", "dom_basis_rate": 0.0},
+            {"date": "2026-08-18", "symbol": "CU", "dom_basis_rate": -0.01},
+            {"date": "2026-08-18", "symbol": "RB", "dom_basis_rate": 0.01},
+        ]
+    )
     index = pd.to_datetime(["2026-08-18", "2026-08-19"])
 
     weights = build_basis_carry_weights(

@@ -7,14 +7,14 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
-from datetime import datetime
 import json
 import os
-from pathlib import Path
 import time
+from dataclasses import asdict
+from datetime import datetime
+from pathlib import Path
 
-from .alerts import AlertManager, FileAlertSink, WebhookAlertSink
+from .alerts import AlertManager, AlertSink, FileAlertSink, WebhookAlertSink
 from .config import load_config
 from .data import read_ticks
 from .logging_utils import configure_logging
@@ -26,16 +26,13 @@ from .sample_store import MarketSampleStore
 from .scanner import SpreadScanner
 from .state import StateStore
 
-
 _LIVE_ACK = "I_UNDERSTAND_FUTURES_RISK"
 _RECOVERY_ACK = "I_VERIFIED_CTP_POSITIONS"
 
 
 def build_parser() -> argparse.ArgumentParser:
     """创建 CLI，并把研究、观察和真实交易入口明确分离。"""
-    parser = argparse.ArgumentParser(
-        prog="afuture", description="国内期货套利与方向组合交易系统"
-    )
+    parser = argparse.ArgumentParser(prog="afuture", description="国内期货套利与方向组合交易系统")
     sub = parser.add_subparsers(dest="command", required=True)
 
     validate = sub.add_parser("validate", help="校验配置，不连接柜台")
@@ -128,9 +125,7 @@ def wait_for_fresh_snapshot(
     while not broker.snapshot_ready(marker) and time.monotonic() < deadline:
         time.sleep(max(poll_interval, 0.0001))
     if not broker.snapshot_ready(marker):
-        raise RuntimeError(
-            "fresh CTP account/position snapshot did not arrive before timeout"
-        )
+        raise RuntimeError("fresh CTP account/position snapshot did not arrive before timeout")
 
 
 def drain_after_halt(
@@ -154,61 +149,35 @@ def drain_after_halt(
         time.sleep(max(poll_interval, 0.0001))
 
 
-def validate_recovery_positions(
-    pairs: list[PairConfig], positions: list[ContractPosition]
-) -> None:
+def validate_recovery_positions(pairs: list[PairConfig], positions: list[ContractPosition]) -> None:
     """恢复只接受配置内、双腿等量反向且不超过风险上限的套利持仓。"""
-    allowed_symbols = {
-        symbol
-        for pair in pairs
-        for symbol in (pair.near_symbol, pair.far_symbol)
-    }
+    allowed_symbols = {symbol for pair in pairs for symbol in (pair.near_symbol, pair.far_symbol)}
     unknown = sorted(
         position.symbol
         for position in positions
         if not position.empty and position.symbol not in allowed_symbols
     )
     if unknown:
-        raise RuntimeError(
-            f"broker positions are not configured for afuture: {', '.join(unknown)}"
-        )
+        raise RuntimeError(f"broker positions are not configured for afuture: {', '.join(unknown)}")
 
     by_symbol = {position.symbol: position for position in positions if not position.empty}
     for pair in pairs:
-        near = by_symbol.get(
-            pair.near_symbol, ContractPosition(pair.near_symbol, pair.exchange)
-        )
-        far = by_symbol.get(
-            pair.far_symbol, ContractPosition(pair.far_symbol, pair.exchange)
-        )
+        near = by_symbol.get(pair.near_symbol, ContractPosition(pair.near_symbol, pair.exchange))
+        far = by_symbol.get(pair.far_symbol, ContractPosition(pair.far_symbol, pair.exchange))
         if near.empty and far.empty:
             continue
         if near.exchange != pair.exchange or far.exchange != pair.exchange:
-            raise RuntimeError(
-                f"pair {pair.pair_id} exchange does not match configured exchange"
-            )
+            raise RuntimeError(f"pair {pair.pair_id} exchange does not match configured exchange")
 
         long_volume = near.long_total if near.short_total == 0 else 0
-        long_spread = (
-            long_volume > 0
-            and long_volume == far.short_total
-            and far.long_total == 0
-        )
+        long_spread = long_volume > 0 and long_volume == far.short_total and far.long_total == 0
         short_volume = near.short_total if near.long_total == 0 else 0
-        short_spread = (
-            short_volume > 0
-            and short_volume == far.long_total
-            and far.short_total == 0
-        )
+        short_spread = short_volume > 0 and short_volume == far.long_total and far.short_total == 0
         if not (long_spread or short_spread):
-            raise RuntimeError(
-                f"pair {pair.pair_id} is not a configured balanced spread"
-            )
+            raise RuntimeError(f"pair {pair.pair_id} is not a configured balanced spread")
         volume = long_volume if long_spread else short_volume
         if volume > pair.volume:
-            raise RuntimeError(
-                f"pair {pair.pair_id} position exceeds configured risk cap"
-            )
+            raise RuntimeError(f"pair {pair.pair_id} position exceeds configured risk cap")
 
 
 def adopt_recovery_state(
@@ -226,9 +195,7 @@ def adopt_recovery_state(
         state.day_start_equity = account.equity
     if new_day:
         state.trading_day = new_day
-    state.equity_high_watermark = max(
-        float(state.equity_high_watermark or 0.0), account.equity
-    )
+    state.equity_high_watermark = max(float(state.equity_high_watermark or 0.0), account.equity)
     state.kill_switch = True
     state.kill_reason = (
         "operator adopted verified CTP positions; restart live for independent reconciliation"
@@ -306,10 +273,7 @@ def _recover_state(config, args, logger) -> int:
     if config.mode != "live" or config.ctp is None:
         raise ValueError("recover-state requires system.mode=live")
     _require_production_confirmation(config, args)
-    if (
-        not args.confirm_adopt_state
-        or os.getenv("AFUTURE_RECOVERY_ACK") != _RECOVERY_ACK
-    ):
+    if not args.confirm_adopt_state or os.getenv("AFUTURE_RECOVERY_ACK") != _RECOVERY_ACK:
         raise RuntimeError(
             "state recovery requires --confirm-adopt-state and "
             "AFUTURE_RECOVERY_ACK=I_VERIFIED_CTP_POSITIONS"
@@ -318,9 +282,7 @@ def _recover_state(config, args, logger) -> int:
     store = StateStore(config.state_path)
     state = store.load()
     if not state.kill_switch:
-        raise RuntimeError(
-            "state recovery is allowed only while the kill switch is active"
-        )
+        raise RuntimeError("state recovery is allowed only while the kill switch is active")
 
     broker = CtpBroker(config.ctp)
     broker.start()
@@ -367,7 +329,7 @@ def _recover_state(config, args, logger) -> int:
 
 
 def _build_alert_manager(config) -> AlertManager:
-    sinks = [FileAlertSink(config.alert_path)]
+    sinks: list[AlertSink] = [FileAlertSink(config.alert_path)]
     if config.alert_webhook:
         sinks.append(WebhookAlertSink(config.alert_webhook))
     return AlertManager(sinks)
@@ -391,9 +353,7 @@ def _auto_manager(config, *, evidence=None, shadow: bool = False):
     sample_dir = "shadow_market_samples" if shadow else "market_samples"
     return AutoPairManager(
         config.auto,
-        sample_store=MarketSampleStore(
-            _runtime_path(config, sample_dir), max_samples=max_samples
-        ),
+        sample_store=MarketSampleStore(_runtime_path(config, sample_dir), max_samples=max_samples),
         evidence_recorder=evidence,
     )
 
@@ -463,9 +423,7 @@ def _run_live(config, args, logger) -> int:
 
         if engine.halted:
             if not engine.clear_kill_switch_after_reconcile():
-                raise RuntimeError(
-                    "kill switch remains active because reconciliation did not pass"
-                )
+                raise RuntimeError("kill switch remains active because reconciliation did not pass")
         elif not engine.reconcile_startup():
             raise RuntimeError("startup reconciliation failed")
 
@@ -492,18 +450,12 @@ def _run_live(config, args, logger) -> int:
     finally:
         if engine.halted and broker.is_ready():
             try:
-                if not drain_after_halt(
-                    engine, broker, args.halt_drain
-                ):
-                    logger.error(
-                        "停机后仍有活动委托；已保留停机开关，下一次启动会再次检查"
-                    )
+                if not drain_after_halt(engine, broker, args.halt_drain):
+                    logger.error("停机后仍有活动委托；已保留停机开关，下一次启动会再次检查")
             except Exception as exc:
                 logger.error("停机撤单收尾失败：%s", exc)
         try:
-            write_account_report(
-                config.report_path, broker.get_account(), broker.get_positions()
-            )
+            write_account_report(config.report_path, broker.get_account(), broker.get_positions())
         except Exception as exc:
             logger.error("关闭前账户报告写入失败：%s", exc)
         engine.stop()
@@ -591,7 +543,11 @@ def _run_doctor(config, args) -> int:
                 if len(set(symbols)) >= args.metadata_limit:
                     break
         symbols = sorted(set(symbols))[: max(0, args.metadata_limit)]
-        metadata = broker.get_live_contract_specs(symbols, config.metadata_timeout_seconds) if symbols else {}
+        metadata = (
+            broker.get_live_contract_specs(symbols, config.metadata_timeout_seconds)
+            if symbols
+            else {}
+        )
         payload = {
             "ready": broker.is_ready(),
             "trading_day": broker.get_trading_day(),
@@ -617,9 +573,7 @@ def _research_pairs(config, ticks) -> list[PairConfig]:
     if not trading_days:
         raise ValueError("auto research requires trading_day in tick data")
     today = datetime.strptime(max(trading_days), "%Y%m%d").date()
-    return AutoPairSelector(config.auto).build_pairs(
-        config.contract_catalog, today
-    )
+    return AutoPairSelector(config.auto).build_pairs(config.contract_catalog, today)
 
 
 def _parse_stress_multipliers(raw: str) -> tuple[float, ...]:
@@ -651,20 +605,20 @@ def main(argv: list[str] | None = None) -> int:
         from .replay import run_replay
 
         account = run_replay(config, args.data)
-        logger.info(
-            "回放完成：权益 %.2f，保证金 %.2f", account.equity, account.margin
-        )
+        logger.info("回放完成：权益 %.2f，保证金 %.2f", account.equity, account.margin)
         return 0
 
     if args.command == "scan":
         ticks = read_ticks(args.data)
         scanner = SpreadScanner(
-            slippage_ticks=config.auto.slippage_ticks if config.auto.enabled else config.slippage_ticks,
+            slippage_ticks=config.auto.slippage_ticks
+            if config.auto.enabled
+            else config.slippage_ticks,
             max_sync_seconds=config.auto.max_sync_seconds if config.auto.enabled else 2.0,
         )
         rows = []
-        for pair in _research_pairs(config, ticks):
-            candidate = scanner.scan_pair(pair, ticks, config.contracts)
+        for research_pair in _research_pairs(config, ticks):
+            candidate = scanner.scan_pair(research_pair, ticks, config.contracts)
             if candidate is not None:
                 rows.append(asdict(candidate))
         print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -672,39 +626,37 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "accept":
         ticks = read_ticks(args.data)
-        pair = next(
+        accepted_pair = next(
             (item for item in _research_pairs(config, ticks) if item.pair_id == args.pair),
             None,
         )
-        if pair is None:
+        if accepted_pair is None:
             raise ValueError(f"unknown pair: {args.pair}")
         research_config = ResearchConfig(
             train_days=args.train_days,
             validation_days=args.validation_days,
             oos_days=args.oos_days,
             step_days=args.step_days,
-            cost_stress_multipliers=_parse_stress_multipliers(
-                args.stress_multipliers
-            ),
+            cost_stress_multipliers=_parse_stress_multipliers(args.stress_multipliers),
         )
-        result = WalkForwardRunner(
-            config.contracts, config.initial_capital
-        ).run(pair, ticks, research_config)
-        decision = AcceptanceGate().evaluate(result)
+        walk_forward_result = WalkForwardRunner(config.contracts, config.initial_capital).run(
+            accepted_pair, ticks, research_config
+        )
+        acceptance_decision = AcceptanceGate().evaluate(walk_forward_result)
         print(
             json.dumps(
                 {
-                    "accepted": decision.accepted,
-                    "reasons": decision.reasons,
-                    "selected_parameters": result.selected_parameters,
-                    "folds": [asdict(fold) for fold in result.folds],
-                    "stress_results": result.stress_results,
+                    "accepted": acceptance_decision.accepted,
+                    "reasons": acceptance_decision.reasons,
+                    "selected_parameters": walk_forward_result.selected_parameters,
+                    "folds": [asdict(fold) for fold in walk_forward_result.folds],
+                    "stress_results": walk_forward_result.stress_results,
                 },
                 ensure_ascii=False,
                 indent=2,
             )
         )
-        return 0 if decision.accepted else 2
+        return 0 if acceptance_decision.accepted else 2
 
     if args.command == "accept-auto":
         from .auto_acceptance import AutoPortfolioAcceptanceGate
@@ -718,37 +670,41 @@ def main(argv: list[str] | None = None) -> int:
             step_days=args.step_days,
             cost_stress_multipliers=_parse_stress_multipliers(args.stress_multipliers),
         )
-        result = AutoPortfolioRunner(config).run(ticks, research)
-        decision = AutoPortfolioAcceptanceGate().evaluate(result)
+        auto_result = AutoPortfolioRunner(config).run(ticks, research)
+        auto_decision = AutoPortfolioAcceptanceGate().evaluate(auto_result)
         payload = {
-            "accepted": decision.accepted,
-            "reasons": decision.reasons,
-            "gate_metrics": decision.metrics,
-            "selected_parameters": result.selected_parameters,
-            "folds": [asdict(fold) for fold in result.folds],
-            "stress_results": result.stress_results,
-            "robustness": result.robustness,
+            "accepted": auto_decision.accepted,
+            "reasons": auto_decision.reasons,
+            "gate_metrics": auto_decision.metrics,
+            "selected_parameters": auto_result.selected_parameters,
+            "folds": [asdict(fold) for fold in auto_result.folds],
+            "stress_results": auto_result.stress_results,
+            "robustness": auto_result.robustness,
         }
         output = args.output or _runtime_path(config, "auto_acceptance.json")
         _write_json(payload, output)
-        return 0 if decision.accepted else 2
+        return 0 if auto_decision.accepted else 2
 
     if args.command == "data-check":
         from .data_quality import DataQualityAnalyzer
 
         # 保留源文件顺序，才能发现数据供应链中的真实乱序；研究/回放仍按时间排序。
         ticks = read_ticks(args.data, sort_rows=False)
-        result = DataQualityAnalyzer(args.max_gap_seconds).analyze(
+        quality_result = DataQualityAnalyzer(args.max_gap_seconds).analyze(
             ticks, config.contract_catalog, config.auto
         )
         output = args.output or _runtime_path(config, "data_quality.json")
-        _write_json(result.to_dict(), output)
-        return 0 if result.passed else 2
+        _write_json(quality_result.to_dict(), output)
+        return 0 if quality_result.passed else 2
 
     if args.command == "quality-report":
         recorder = _quality_recorder(config, shadow=args.shadow)
         payload = recorder.summary()
-        default_name = "shadow_execution_quality_report.json" if args.shadow else "execution_quality_report.json"
+        default_name = (
+            "shadow_execution_quality_report.json"
+            if args.shadow
+            else "execution_quality_report.json"
+        )
         output = args.output or _runtime_path(config, default_name)
         _write_json(payload, output)
         return 0

@@ -5,11 +5,12 @@ no 60m rule and no hard risk threshold. It first reproduces that known Productio
 then replaces only the existing global 0.25 defensive scaling response with the research
 freeze-new-risk adapter while keeping the exact same OI-confirmed weight path.
 """
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -22,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 import evaluate_directional_60m_oi_confirmation as oi_gate
 import evaluate_directional_production_mechanics as mechanics
+
 from afuture.directional_acceptance import ProductionMechanicsConfig
 from afuture.directional_freeze_new_risk import (
     FreezeNewRiskDirectionalProductionAcceptance,
@@ -38,9 +40,7 @@ def _economics(daily: pd.DataFrame, events: pd.DataFrame, *, cost_bps: float) ->
     gross = 0.0
     if not events.empty and {"kind", "gross_pnl"}.issubset(events.columns):
         gross = float(
-            events.loc[events["kind"].astype(str) == "pnl", "gross_pnl"]
-            .astype(float)
-            .sum()
+            events.loc[events["kind"].astype(str) == "pnl", "gross_pnl"].astype(float).sum()
         )
     cost = turnover * float(cost_bps) / 10000.0
     net = gross - cost
@@ -49,9 +49,7 @@ def _economics(daily: pd.DataFrame, events: pd.DataFrame, *, cost_bps: float) ->
         "turnover_notional": turnover,
         "transaction_cost": cost,
         "net_alpha": net,
-        "net_alpha_per_turnover_bps": (
-            net / turnover * 10000.0 if turnover > 0.0 else 0.0
-        ),
+        "net_alpha_per_turnover_bps": (net / turnover * 10000.0 if turnover > 0.0 else 0.0),
     }
 
 
@@ -99,13 +97,14 @@ def evaluate(
     oi_only = mechanics.evaluate_with_weights(specific_raw, oi_weights)
     oi_lineage = {
         "base": abs(
-            float(oi_only["base"]["windows"]["full_recent"]["annualized_return"])
-            - EXPECTED_OI_BASE
-        ) <= LINEAGE_TOLERANCE,
+            float(oi_only["base"]["windows"]["full_recent"]["annualized_return"]) - EXPECTED_OI_BASE
+        )
+        <= LINEAGE_TOLERANCE,
         "stress": abs(
             float(oi_only["stress"]["windows"]["full_recent"]["annualized_return"])
             - EXPECTED_OI_STRESS
-        ) <= LINEAGE_TOLERANCE,
+        )
+        <= LINEAGE_TOLERANCE,
     }
     if not all(oi_lineage.values()):
         raise RuntimeError(f"60m OI Production lineage reproduction failed: {oi_lineage}")
@@ -141,9 +140,7 @@ def evaluate(
     )
     economics = {
         "base": _economics(base_daily, base_events, cost_bps=mechanics.BASE_COST_BPS),
-        "stress": _economics(
-            stress_daily, stress_events, cost_bps=mechanics.STRESS_COST_BPS
-        ),
+        "stress": _economics(stress_daily, stress_events, cost_bps=mechanics.STRESS_COST_BPS),
     }
     return {
         "role": "60m OI confirmation plus freeze-new-risk Production L3",

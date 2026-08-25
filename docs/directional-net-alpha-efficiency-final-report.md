@@ -1,5 +1,7 @@
 # Directional Net-Alpha Efficiency 最终报告
 
+> **Historical record.** “最终”仅指当时研究阶段。当前 checkpoint 与运行边界见 [`documentation-index.md`](documentation-index.md)。
+
 日期：2026-08-23
 
 ## 1. 最终结论

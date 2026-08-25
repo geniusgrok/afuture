@@ -4,11 +4,13 @@ Broker/TradingEngine remain the only order, fill, account and position truth. Th
 translates target product weights into concrete risk-gated FAK orders. Its quality ledger
 is observability-only and never participates in trading decisions.
 """
+
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, time
-from typing import Mapping, Protocol
+from datetime import date, datetime, time
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -36,7 +38,6 @@ from .models import (
 )
 from .position import PositionBook
 from .risk import OrderRateLimiter, RiskManager
-
 
 _CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -79,15 +80,13 @@ class DirectionalPortfolioManager:
         self.aggressive_ticks = max(0, int(aggressive_ticks))
         self.close_today_first = bool(close_today_first)
         self.metadata_timeout_seconds = max(float(metadata_timeout_seconds), 0.1)
-        self.rate_limiter = OrderRateLimiter(
-            risk_manager.config.max_orders_per_minute
-        )
+        self.rate_limiter = OrderRateLimiter(risk_manager.config.max_orders_per_minute)
         self.quality = quality_recorder
         self._catalog: list[ContractInfo] = []
         self._ticks: dict[str, Tick] = {}
         self._specs: dict[str, ContractSpec] = dict(static_specs or {})
         self._signal_frame: pd.DataFrame | None = None
-        self._signal_refresh_date = None
+        self._signal_refresh_date: date | None = None
         self._initialized = False
 
         self._quality_cycle_seq = 0
@@ -136,28 +135,20 @@ class DirectionalPortfolioManager:
     def maybe_rebalance(self, now: datetime) -> DirectionalActionResult:
         """Generic/test lifecycle; production execution-aligned mode overrides selection."""
         if not self._initialized:
-            return DirectionalActionResult(
-                "reject", "directional manager is not initialized"
-            )
+            return DirectionalActionResult("reject", "directional manager is not initialized")
         if not self.broker.is_ready():
             return DirectionalActionResult("reject", "broker is not ready")
         if not self._inside_rebalance_window(now):
-            return DirectionalActionResult(
-                "hold", "outside directional rebalance window"
-            )
+            return DirectionalActionResult("hold", "outside directional rebalance window")
         if self.broker.get_active_orders():
-            return DirectionalActionResult(
-                "wait", "active orders must settle before rebalance"
-            )
+            return DirectionalActionResult("wait", "active orders must settle before rebalance")
         self._finalize_quality_cycle_if_settled(now)
 
         try:
             signal = self._load_signal(now)
             target_weights = self._next_target_weights(signal)
         except Exception as exc:
-            return DirectionalActionResult(
-                "reject", f"directional signal unavailable: {exc}"
-            )
+            return DirectionalActionResult("reject", f"directional signal unavailable: {exc}")
 
         local_date = self._local(now).date()
         selected = self.selector.select(self._catalog, self._ticks, local_date)
@@ -179,13 +170,10 @@ class DirectionalPortfolioManager:
         try:
             specs = self._ensure_specs(symbols)
         except Exception as exc:
-            return DirectionalActionResult(
-                "reject", f"directional metadata unavailable: {exc}"
-            )
+            return DirectionalActionResult("reject", f"directional metadata unavailable: {exc}")
 
         product_ticks = {
-            product: self._ticks[selected[product].symbol]
-            for product in required_products
+            product: self._ticks[selected[product].symbol] for product in required_products
         }
         target_lots = build_target_lots(
             self.broker.get_account(),
@@ -207,15 +195,11 @@ class DirectionalPortfolioManager:
             )
         if not plan.openings:
             return DirectionalActionResult("hold", "directional portfolio is at target")
-        return self._submit_openings(
-            positions, plan.openings, selected, specs, now
-        )
+        return self._submit_openings(positions, plan.openings, selected, specs, now)
 
     def flatten(self, now: datetime) -> DirectionalActionResult:
         if self.broker.get_active_orders():
-            return DirectionalActionResult(
-                "wait", "active orders must settle before flatten"
-            )
+            return DirectionalActionResult("wait", "active orders must settle before flatten")
         self._finalize_quality_cycle_if_settled(now)
         positions = self.broker.get_positions()
         long_reductions = {
@@ -253,9 +237,7 @@ class DirectionalPortfolioManager:
     def enforce_realized_gross_limit(self, now: datetime) -> DirectionalActionResult:
         """Reduce broker-truth positions only after marked gross exceeds the hard cap."""
         if not self._initialized:
-            return DirectionalActionResult(
-                "reject", "directional manager is not initialized"
-            )
+            return DirectionalActionResult("reject", "directional manager is not initialized")
         if not self.broker.is_ready():
             return DirectionalActionResult("reject", "broker is not ready")
         if self.broker.get_active_orders():
@@ -263,9 +245,7 @@ class DirectionalPortfolioManager:
                 "wait", "active orders must settle before realized gross guard"
             )
 
-        positions = [
-            position for position in self.broker.get_positions() if not position.empty
-        ]
+        positions = [position for position in self.broker.get_positions() if not position.empty]
         if not positions:
             return DirectionalActionResult("hold", "directional portfolio is flat")
         symbols = {position.symbol for position in positions}
@@ -273,9 +253,7 @@ class DirectionalPortfolioManager:
             specs = self._ensure_specs(symbols)
             account = self.broker.get_account()
         except Exception as exc:
-            return DirectionalActionResult(
-                "reject", f"realized gross guard unavailable: {exc}"
-            )
+            return DirectionalActionResult("reject", f"realized gross guard unavailable: {exc}")
         if account.equity <= 0:
             return DirectionalActionResult(
                 "reject", "realized gross guard requires positive equity"
@@ -313,9 +291,7 @@ class DirectionalPortfolioManager:
         except ValueError as exc:
             return DirectionalActionResult("reject", str(exc))
         if not reductions:
-            return DirectionalActionResult(
-                "hold", "realized gross is within directional limit"
-            )
+            return DirectionalActionResult("hold", "realized gross is within directional limit")
         return self._submit_reductions(
             positions,
             reductions,
@@ -328,9 +304,7 @@ class DirectionalPortfolioManager:
 
     def required_symbols(self) -> set[str]:
         symbols = {
-            position.symbol
-            for position in self.broker.get_positions()
-            if not position.empty
+            position.symbol for position in self.broker.get_positions() if not position.empty
         }
         for order in self.broker.get_active_orders():
             if order.request.reference.startswith("directional:"):
@@ -352,16 +326,12 @@ class DirectionalPortfolioManager:
             frame = frame.dropna(how="all")
             if len(frame) < 140:
                 raise RuntimeError("directional signal history is shorter than 140 days")
-            latest = pd.Timestamp(frame.index[-1]).to_pydatetime().replace(
-                tzinfo=_CHINA_TZ
-            )
+            latest = pd.Timestamp(frame.index[-1]).to_pydatetime().replace(tzinfo=_CHINA_TZ)
             age_hours = (local - latest).total_seconds() / 3600.0
             if age_hours < -1:
                 raise RuntimeError("directional signal history is from the future")
             if age_hours > self.config.signal_max_age_hours:
-                raise RuntimeError(
-                    f"directional signal history is stale by {age_hours:.1f}h"
-                )
+                raise RuntimeError(f"directional signal history is stale by {age_hours:.1f}h")
             self._signal_frame = frame
             self._signal_refresh_date = local.date()
         return self._signal_frame.copy()
@@ -376,9 +346,7 @@ class DirectionalPortfolioManager:
         weights = self.policy.target_weights(pd.concat([close, synthetic]))
         gross = sum(abs(float(value)) for value in weights.values())
         if gross > self.config.max_gross_leverage + 1e-10:
-            raise RuntimeError(
-                f"directional signal exceeds configured gross leverage: {gross:.6f}"
-            )
+            raise RuntimeError(f"directional signal exceeds configured gross leverage: {gross:.6f}")
         return {str(key).upper(): float(value) for key, value in weights.items()}
 
     def _ensure_specs(self, symbols: set[str]) -> dict[str, ContractSpec]:
@@ -387,9 +355,7 @@ class DirectionalPortfolioManager:
             getter = getattr(self.broker, "get_live_contract_specs", None)
             if getter is None:
                 raise RuntimeError(f"missing contract metadata: {missing}")
-            self._specs.update(
-                getter(missing, timeout_seconds=self.metadata_timeout_seconds)
-            )
+            self._specs.update(getter(missing, timeout_seconds=self.metadata_timeout_seconds))
         still_missing = sorted(symbol for symbol in symbols if symbol not in self._specs)
         if still_missing:
             raise RuntimeError(f"missing contract metadata: {still_missing}")
@@ -503,8 +469,7 @@ class DirectionalPortfolioManager:
             )
 
         current_volumes = {
-            position.symbol: position.long_total + position.short_total
-            for position in positions
+            position.symbol: position.long_total + position.short_total for position in positions
         }
         account_decision = self.risk_manager.check_open_orders(
             self.broker.get_account(),
@@ -683,9 +648,7 @@ class DirectionalPortfolioManager:
             completion_latency_ms=latency_ms,
             partial_count=len(self._quality_cycle["partial_ids"]),
             rejected_count=len(self._quality_cycle["rejected_ids"]),
-            realized_turnover_notional=float(
-                self._quality_cycle["realized_turnover_notional"]
-            ),
+            realized_turnover_notional=float(self._quality_cycle["realized_turnover_notional"]),
         )
         for order_id in list(self._quality_expectations):
             if self._quality_expectations[order_id].get("cycle_id") == cycle_id:
@@ -711,9 +674,7 @@ class DirectionalPortfolioManager:
             return start <= local_time <= end
         return local_time >= start or local_time <= end
 
-    def _aggressive_price(
-        self, tick: Tick, spec: ContractSpec, side: OrderSide
-    ) -> float:
+    def _aggressive_price(self, tick: Tick, spec: ContractSpec, side: OrderSide) -> float:
         if side is OrderSide.BUY:
             price = tick.ask_price + self.aggressive_ticks * spec.price_tick
             return min(price, tick.limit_up) if tick.limit_up > 0 else price

@@ -9,17 +9,18 @@ Execution turnover and transaction cost deliberately remain product-level truth.
 multiple templates contribute to one product target, this module does *not* invent a
 per-template allocation of integer lots, turnover, or cost.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 from .execution_aligned_policy import (
+    _EXECUTION_TEMPLATES,
     BASE_COST_BPS,
     MAX_ABS_DAILY_RETURN,
     MAX_GROSS_LEVERAGE,
     STRESS_COST_BPS,
-    _EXECUTION_TEMPLATES,
     _clean_prices,
     _intraday_proxy_stream,
     _robust_trailing_scores,
@@ -46,7 +47,7 @@ def build_weight_lineage(
     base_streams: dict[str, pd.Series] = {}
     stress_streams: dict[str, pd.Series] = {}
     paths: dict[str, pd.DataFrame] = {}
-    for template_id, template in zip(policy.template_ids, _EXECUTION_TEMPLATES):
+    for template_id, template in zip(policy.template_ids, _EXECUTION_TEMPLATES, strict=True):
         weights = _template_weight_path(returns, template)
         paths[template_id] = weights
         base_streams[template_id] = _intraday_proxy_stream(
@@ -57,10 +58,14 @@ def build_weight_lineage(
         )
 
     base_frame = pd.DataFrame(base_streams).sort_index().fillna(0.0)
-    stress_frame = pd.DataFrame(stress_streams).reindex(
-        index=base_frame.index,
-        columns=base_frame.columns,
-    ).fillna(0.0)
+    stress_frame = (
+        pd.DataFrame(stress_streams)
+        .reindex(
+            index=base_frame.index,
+            columns=base_frame.columns,
+        )
+        .fillna(0.0)
+    )
     scores = _robust_trailing_scores(
         base_frame,
         stress_frame,
@@ -92,9 +97,7 @@ def build_weight_lineage(
             candidate = (
                 [
                     int(item)
-                    for item in valid[
-                        np.argsort(-row[valid], kind="stable")[: policy.meta_count]
-                    ]
+                    for item in valid[np.argsort(-row[valid], kind="stable")[: policy.meta_count]]
                 ]
                 if valid.size
                 else []
@@ -106,9 +109,7 @@ def build_weight_lineage(
 
         raw = aggregate(selected, timestamp)
         if raw:
-            final.loc[timestamp] = (
-                pd.Series(raw).reindex(final.columns).fillna(0.0)
-            )
+            final.loc[timestamp] = pd.Series(raw).reindex(final.columns).fillna(0.0)
 
         selected_names = tuple(names[item] for item in selected)
         meta_rows.append(
@@ -181,25 +182,19 @@ def build_exact_lineage_attribution(
     """
     meta_frame = meta.copy()
     if not meta_frame.empty:
-        meta_frame["date"] = pd.to_datetime(
-            meta_frame["date"], errors="coerce"
-        ).dt.normalize()
+        meta_frame["date"] = pd.to_datetime(meta_frame["date"], errors="coerce").dt.normalize()
         meta_frame = meta_frame.dropna(subset=["date"]).sort_values("date")
 
     lineage = template_product.copy()
     if not lineage.empty:
-        lineage["date"] = pd.to_datetime(
-            lineage["date"], errors="coerce"
-        ).dt.normalize()
+        lineage["date"] = pd.to_datetime(lineage["date"], errors="coerce").dt.normalize()
         lineage["product"] = lineage["product"].astype(str).str.upper()
         lineage = lineage.dropna(subset=["date"])
     lineage["turnover_notional"] = np.nan
     lineage["transaction_cost"] = np.nan
 
     if lineage.empty:
-        target_weights = pd.DataFrame(
-            columns=["date", "product", "target_weight"]
-        )
+        target_weights = pd.DataFrame(columns=["date", "product", "target_weight"])
     else:
         target_weights = (
             lineage[["date", "product", "aggregate_weight"]]
@@ -225,9 +220,7 @@ def build_exact_lineage_attribution(
             ]
         )
     else:
-        event_frame["date"] = pd.to_datetime(
-            event_frame["date"], errors="coerce"
-        ).dt.normalize()
+        event_frame["date"] = pd.to_datetime(event_frame["date"], errors="coerce").dt.normalize()
         event_frame = event_frame.dropna(subset=["date"])
         event_frame["product"] = event_frame["product"].astype(str).str.upper()
         event_frame["symbol"] = event_frame["symbol"].astype(str)
@@ -262,8 +255,7 @@ def build_exact_lineage_attribution(
         for row in target_weights.itertuples(index=False)
     }
     trade_groups = {
-        pd.Timestamp(day): frame.copy()
-        for day, frame in trades.groupby("date", sort=True)
+        pd.Timestamp(day): frame.copy() for day, frame in trades.groupby("date", sort=True)
     }
     summary_rows = {
         (pd.Timestamp(row.date), str(row.product).upper()): row
@@ -291,9 +283,7 @@ def build_exact_lineage_attribution(
                 traded_products.add(product)
 
         target_products = {
-            product
-            for (target_day, product), _ in target_key_rows.items()
-            if target_day == day
+            product for (target_day, product), _ in target_key_rows.items() if target_day == day
         }
         for product in sorted(target_products | traded_products):
             realized = sum(
@@ -314,9 +304,7 @@ def build_exact_lineage_attribution(
                     "transaction_cost": (
                         float(summary.transaction_cost) if summary is not None else 0.0
                     ),
-                    "execution_actions": (
-                        summary.execution_actions if summary is not None else ()
-                    ),
+                    "execution_actions": (summary.execution_actions if summary is not None else ()),
                 }
             )
 

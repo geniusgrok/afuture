@@ -1,9 +1,10 @@
 """Fixed Production-mechanics evaluation for opportunity-driven directional V2."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -46,7 +47,9 @@ def main() -> None:
     report["_base_daily"].to_csv(runtime / "opportunity_production_base_daily.csv")
     report["_stress_daily"].to_csv(runtime / "opportunity_production_stress_daily.csv")
     report["_base_events"].to_csv(runtime / "opportunity_production_base_events.csv", index=False)
-    report["_stress_events"].to_csv(runtime / "opportunity_production_stress_events.csv", index=False)
+    report["_stress_events"].to_csv(
+        runtime / "opportunity_production_stress_events.csv", index=False
+    )
     output = runtime / "opportunity_production_mechanics_report.json"
     output.write_text(
         json.dumps(_jsonable(report), ensure_ascii=False, indent=2, sort_keys=True),

@@ -1,4 +1,5 @@
 """TradingEngine extension for the account-exclusive directional portfolio."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -6,7 +7,6 @@ from datetime import datetime, timezone
 from .directional_risk import DirectionalRiskScaledPolicy
 from .engine import TradingEngine
 from .models import Order, RuntimeMode, Tick, Trade
-
 
 _DAILY_CIRCUIT_REASON = "daily loss limit reached"
 _ACCOUNT_RISK_REASONS = {
@@ -25,16 +25,14 @@ class DirectionalTradingEngine(TradingEngine):
         super().__init__(*args, **kwargs)
         self.directional_manager = directional_manager
         self._directional_initialized = False
-        self.directional_manager.completed_returns_provider = (
-            lambda: tuple(self.state.recent_daily_returns)
+        self.directional_manager.completed_returns_provider = lambda: tuple(
+            self.state.recent_daily_returns
         )
         policy = getattr(self.directional_manager, "policy", None)
         if policy is not None and not isinstance(policy, DirectionalRiskScaledPolicy):
             self.directional_manager.policy = DirectionalRiskScaledPolicy(
                 policy,
-                completed_returns_provider=(
-                    lambda: tuple(self.state.recent_daily_returns)
-                ),
+                completed_returns_provider=(lambda: tuple(self.state.recent_daily_returns)),
             )
 
     def initialize_after_ready(self) -> None:
@@ -69,9 +67,7 @@ class DirectionalTradingEngine(TradingEngine):
         ):
             return
         try:
-            result = self.directional_manager.enforce_realized_gross_limit(
-                self._reference_now()
-            )
+            result = self.directional_manager.enforce_realized_gross_limit(self._reference_now())
         except Exception as exc:
             self.emergency_stop(f"directional gross guard failed: {exc}")
             return
@@ -85,9 +81,7 @@ class DirectionalTradingEngine(TradingEngine):
                 },
             )
         if result.action == "reject" and self.directional_manager.has_risk():
-            self.enter_reduce_only(
-                result.reason or "directional realized gross guard rejected"
-            )
+            self.enter_reduce_only(result.reason or "directional realized gross guard rejected")
 
     def run_once(self) -> None:
         super().run_once()
@@ -100,9 +94,7 @@ class DirectionalTradingEngine(TradingEngine):
         ):
             return
         try:
-            result = self.directional_manager.maybe_rebalance(
-                self._reference_now()
-            )
+            result = self.directional_manager.maybe_rebalance(self._reference_now())
             if result.action == "risk_off":
                 self._record(
                     "directional_rebalance",
@@ -133,8 +125,10 @@ class DirectionalTradingEngine(TradingEngine):
             account = self.broker.get_account()
         except Exception as exc:
             return f"daily circuit hard-risk classification failed: {exc}"
-        if account.equity <= 0:
-            return "equity is not positive"
+        try:
+            account.validate()
+        except (TypeError, ValueError) as exc:
+            return f"invalid account snapshot: {exc}"
 
         high_watermark = max(
             float(self.risk_manager.high_watermark or 0.0),
@@ -172,7 +166,7 @@ class DirectionalTradingEngine(TradingEngine):
             self.state.directional_daily_circuit_day = ""
 
         if (
-            reason in _ACCOUNT_RISK_REASONS
+            (reason in _ACCOUNT_RISK_REASONS or reason.startswith("invalid account snapshot:"))
             and hasattr(self, "directional_manager")
             and self.directional_manager.has_risk()
         ):
@@ -234,10 +228,7 @@ class DirectionalTradingEngine(TradingEngine):
             and old_last_equity > 0
         ):
             completed_return = old_last_equity / old_day_start - 1.0
-            values = [
-                float(value)
-                for value in self.state.recent_daily_returns[-1:]
-            ]
+            values = [float(value) for value in self.state.recent_daily_returns[-1:]]
             values.append(float(completed_return))
             self.state.recent_daily_returns = values[-2:]
 
@@ -247,9 +238,7 @@ class DirectionalTradingEngine(TradingEngine):
             self.state.last_account_trading_day = new_day
 
     def _capture_quality_trade(self, trade: Trade) -> None:
-        expected = self.directional_manager.directional_order_expectation(
-            trade.order_id
-        )
+        expected = self.directional_manager.directional_order_expectation(trade.order_id)
         if expected is not None:
             commission, source = self._quality_commission(trade)
             self.directional_manager.note_directional_quality_fill(
@@ -260,24 +249,22 @@ class DirectionalTradingEngine(TradingEngine):
             return
         super()._capture_quality_trade(trade)
 
-    def _handle_trade_event(self, trade) -> None:
+    def _handle_trade_event(self, trade) -> bool:
         expected = (
             self.directional_manager.directional_order_expectation(trade.order_id)
             if isinstance(trade, Trade)
             else None
         )
-        super()._handle_trade_event(trade)
-        if expected is not None and not self.halted:
-            self.directional_manager._finalize_quality_cycle_if_settled(
-                self._reference_now()
-            )
+        processed = super()._handle_trade_event(trade)
+        if expected is not None and processed and not self.halted:
+            self.directional_manager._finalize_quality_cycle_if_settled(self._reference_now())
+        return processed
 
     def _handle_order_event(self, order) -> None:
         super()._handle_order_event(order)
         if (
             isinstance(order, Order)
-            and self.directional_manager.directional_order_expectation(order.order_id)
-            is not None
+            and self.directional_manager.directional_order_expectation(order.order_id) is not None
         ):
             self.directional_manager.note_directional_quality_order(order)
 
@@ -299,12 +286,14 @@ class DirectionalTradingEngine(TradingEngine):
         quotes_ready = required.issubset(self.quotes)
         if not quotes_ready and self._quote_initialization_grace_active():
             return ""
+        max_quote_age: float
         if self.historical_mode:
             max_quote_age = 0.0
         else:
-            max_quote_age = self._max_quote_age(required, reference, quotes_ready)
-            if max_quote_age is None:
+            observed_quote_age = self._max_quote_age(required, reference, quotes_ready)
+            if observed_quote_age is None:
                 return "market quote timestamp is in the future"
+            max_quote_age = observed_quote_age
         try:
             self.broker.get_account()
             account_ready = True
@@ -338,9 +327,7 @@ class DirectionalTradingEngine(TradingEngine):
             except Exception as exc:
                 suffix = f"directional flatten exception: {exc}"
                 self.state.reduce_reason = (
-                    f"{self.state.reduce_reason}; {suffix}"
-                    if self.state.reduce_reason
-                    else suffix
+                    f"{self.state.reduce_reason}; {suffix}" if self.state.reduce_reason else suffix
                 )
                 self._persist()
             return

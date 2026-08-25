@@ -4,21 +4,19 @@ from dataclasses import replace
 
 from .models import ContractPosition, Offset, OrderRequest, OrderSide, Trade
 
-
 _SPECIAL_CLOSE_EXCHANGES = {"SHFE", "INE"}
 
 
 class PositionBook:
     """维护今昨、多空数量和持仓均价。"""
 
-    def __init__(
-        self, positions: list[ContractPosition] | None = None
-    ) -> None:
-        self._positions = {
-            position.symbol: replace(position)
-            for position in (positions or [])
-            if not position.empty
-        }
+    def __init__(self, positions: list[ContractPosition] | None = None) -> None:
+        self._positions: dict[str, ContractPosition] = {}
+        for source in positions or []:
+            position = replace(source)
+            self._validate_position(position)
+            if not position.empty:
+                self._positions[position.symbol] = position
 
     def get(self, symbol: str, exchange: str = "") -> ContractPosition:
         if symbol not in self._positions:
@@ -26,11 +24,7 @@ class PositionBook:
         return self._positions[symbol]
 
     def all(self) -> list[ContractPosition]:
-        return [
-            replace(position)
-            for position in self._positions.values()
-            if not position.empty
-        ]
+        return [replace(position) for position in self._positions.values() if not position.empty]
 
     def roll_trading_day(self) -> None:
         """进入新交易日时把今仓转成昨仓。"""
@@ -39,51 +33,81 @@ class PositionBook:
             position.long_today = 0
             position.short_yesterday += position.short_today
             position.short_today = 0
+            self._validate_position(position)
 
     def apply_trade(self, trade: Trade) -> float:
         """应用成交并返回价格点口径的已实现盈亏。"""
-        if trade.volume <= 0:
-            raise ValueError("trade volume must be positive")
+        trade.validate()
         position = self.get(trade.symbol, trade.exchange)
 
         if trade.offset is Offset.OPEN:
             self._apply_open(position, trade)
+            self._validate_position(position)
             return 0.0
 
+        self._validate_close_volume(position, trade)
         if trade.side is OrderSide.SELL:
-            if trade.volume > position.long_total:
-                raise ValueError("close volume exceeds long position")
-            realized = (
-                trade.price - position.long_price
-            ) * trade.volume
+            realized = (trade.price - position.long_price) * trade.volume
             self._consume_long(position, trade.offset, trade.volume)
             if position.long_total == 0:
                 position.long_price = 0.0
         else:
-            if trade.volume > position.short_total:
-                raise ValueError("close volume exceeds short position")
-            realized = (
-                position.short_price - trade.price
-            ) * trade.volume
+            realized = (position.short_price - trade.price) * trade.volume
             self._consume_short(position, trade.offset, trade.volume)
             if position.short_total == 0:
                 position.short_price = 0.0
+        self._validate_position(position)
         return realized
+
+    @staticmethod
+    def _validate_position(position: ContractPosition) -> None:
+        position.validate()
+
+    @staticmethod
+    def _validate_close_volume(
+        position: ContractPosition,
+        trade: Trade,
+    ) -> None:
+        """A close-today/close-yesterday fill cannot borrow another bucket."""
+        if trade.side is OrderSide.SELL:
+            total, today, yesterday, label = (
+                position.long_total,
+                position.long_today,
+                position.long_yesterday,
+                "long",
+            )
+        else:
+            total, today, yesterday, label = (
+                position.short_total,
+                position.short_today,
+                position.short_yesterday,
+                "short",
+            )
+        available = {
+            Offset.CLOSE: total,
+            Offset.CLOSE_TODAY: today,
+            Offset.CLOSE_YESTERDAY: yesterday,
+        }[trade.offset]
+        bucket = {
+            Offset.CLOSE: "total",
+            Offset.CLOSE_TODAY: "today",
+            Offset.CLOSE_YESTERDAY: "yesterday",
+        }[trade.offset]
+        if trade.volume > available:
+            raise ValueError(f"close volume exceeds {bucket} {label} position")
 
     @staticmethod
     def _apply_open(position: ContractPosition, trade: Trade) -> None:
         if trade.side is OrderSide.BUY:
             total = position.long_total + trade.volume
             position.long_price = (
-                position.long_price * position.long_total
-                + trade.price * trade.volume
+                position.long_price * position.long_total + trade.price * trade.volume
             ) / total
             position.long_today += trade.volume
         else:
             total = position.short_total + trade.volume
             position.short_price = (
-                position.short_price * position.short_total
-                + trade.price * trade.volume
+                position.short_price * position.short_total + trade.price * trade.volume
             ) / total
             position.short_today += trade.volume
 
@@ -99,8 +123,14 @@ class PositionBook:
         reference: str = "",
     ) -> list[OrderRequest]:
         """按交易所规则把目标平仓拆成合法的子订单。"""
-        if volume <= 0:
-            raise ValueError("close volume must be positive")
+        if isinstance(volume, bool) or not isinstance(volume, int) or volume <= 0:
+            raise ValueError("close volume must be a positive integer")
+        if not isinstance(side, OrderSide):
+            raise ValueError("close side must be an OrderSide")
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError("close symbol must be a non-empty string")
+        if not isinstance(exchange, str) or not exchange.strip():
+            raise ValueError("close exchange must be a non-empty string")
         position = self.get(symbol, exchange)
         if side is OrderSide.SELL:
             today = position.long_today

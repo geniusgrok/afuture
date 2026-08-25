@@ -92,25 +92,20 @@ class WalkForwardRunner:
                 break
 
             train = self._slice_days(ticks, days[start:train_end])
-            validation = self._slice_days(
-                ticks, days[train_end:validation_end]
-            )
+            validation = self._slice_days(ticks, days[train_end:validation_end])
             oos = self._slice_days(ticks, days[validation_end:oos_end])
 
             candidates: list[dict] = []
             for parameters in grid:
                 candidate_pair = replace(pair, **parameters)
                 train_metrics = self._backtest(candidate_pair, train, 1.0)
-                validation_metrics = self._backtest(
-                    candidate_pair, validation, 1.0
-                )
+                validation_metrics = self._backtest(candidate_pair, validation, 1.0)
                 candidates.append(
                     {
                         **parameters,
                         # 验证窗口权重略高，降低仅拟合训练段的参数晋级概率。
                         "score": (
-                            0.35 * train_metrics["sharpe"]
-                            + 0.65 * validation_metrics["sharpe"]
+                            0.35 * train_metrics["sharpe"] + 0.65 * validation_metrics["sharpe"]
                         ),
                         "max_drawdown": max(
                             abs(train_metrics["max_drawdown"]),
@@ -143,11 +138,7 @@ class WalkForwardRunner:
             selected_rows.append(parameters)
 
         # 最后一个 fold 的参数来自当时可见的训练+验证数据，符合真实滚动生产选择语义。
-        selected_parameters = (
-            selected_rows[-1]
-            if selected_rows
-            else self._parameter_row(pair)
-        )
+        selected_parameters = selected_rows[-1] if selected_rows else self._parameter_row(pair)
         final_pair = replace(pair, **selected_parameters)
         stress_results = {
             multiplier: self._backtest(final_pair, ticks, multiplier)
@@ -166,16 +157,8 @@ class WalkForwardRunner:
         cost_multiplier: float,
     ) -> dict:
         """用方向性可成交价差执行轻量研究回放，并计入完整往返成本。"""
-        near_by_time = {
-            tick.timestamp: tick
-            for tick in ticks
-            if tick.symbol == pair.near_symbol
-        }
-        far_by_time = {
-            tick.timestamp: tick
-            for tick in ticks
-            if tick.symbol == pair.far_symbol
-        }
+        near_by_time = {tick.timestamp: tick for tick in ticks if tick.symbol == pair.near_symbol}
+        far_by_time = {tick.timestamp: tick for tick in ticks if tick.symbol == pair.far_symbol}
         common = sorted(set(near_by_time) & set(far_by_time))
         strategy = CalendarSpreadStrategy(pair)
         cash = self.initial_capital
@@ -208,11 +191,7 @@ class WalkForwardRunner:
                     cost_multiplier=cost_multiplier,
                 )
                 if edge.net_edge > pair.min_net_edge:
-                    position = (
-                        1
-                        if signal.action is SignalAction.LONG_SPREAD
-                        else -1
-                    )
+                    position = 1 if signal.action is SignalAction.LONG_SPREAD else -1
                     entry_spread = edge.executable_spread
                     # 一次性扣除保守估算的完整往返成本，避免退出时漏算费用。
                     cash -= edge.total_cost
@@ -247,9 +226,7 @@ class WalkForwardRunner:
                 )
             high_watermark = max(high_watermark, equity)
             if high_watermark > 0:
-                max_drawdown = min(
-                    max_drawdown, equity / high_watermark - 1.0
-                )
+                max_drawdown = min(max_drawdown, equity / high_watermark - 1.0)
             equity_by_day[near.trading_day] = equity
 
         if position != 0 and common:
@@ -277,9 +254,7 @@ class WalkForwardRunner:
         sharpe = 0.0
         if len(returns) >= 2:
             mean_return = sum(returns) / len(returns)
-            variance = sum(
-                (value - mean_return) ** 2 for value in returns
-            ) / (len(returns) - 1)
+            variance = sum((value - mean_return) ** 2 for value in returns) / (len(returns) - 1)
             if variance > 0:
                 sharpe = mean_return / sqrt(variance) * sqrt(252.0)
 
@@ -361,17 +336,12 @@ class AcceptanceGate:
             reasons.append("no walk-forward folds")
         else:
             positive_ratio = sum(
-                1
-                for fold in result.folds
-                if fold.oos_metrics.get("total_return", 0.0) > 0
+                1 for fold in result.folds if fold.oos_metrics.get("total_return", 0.0) > 0
             ) / len(result.folds)
             if positive_ratio < self.min_positive_oos_ratio:
                 reasons.append("positive OOS ratio is too low")
             worst_drawdown = max(
-                (
-                    abs(fold.oos_metrics.get("max_drawdown", 0.0))
-                    for fold in result.folds
-                ),
+                (abs(fold.oos_metrics.get("max_drawdown", 0.0)) for fold in result.folds),
                 default=0.0,
             )
             if worst_drawdown > self.max_oos_drawdown:

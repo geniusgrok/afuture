@@ -1,5 +1,7 @@
 # Directional Production-Mechanics 最终证据
 
+> **Historical record.** “最终”仅指当时 checkpoint。它已被 Stress-80/90 evidence supersede；see [`documentation-index.md`](documentation-index.md).
+
 日期：2026-08-23
 
 ## 1. 结论

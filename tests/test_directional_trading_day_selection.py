@@ -5,7 +5,6 @@ from afuture.directional import DirectionalConfig
 from afuture.execution_aligned_runtime import ExecutionAlignedDirectionalPortfolioManager
 from afuture.risk import RiskConfig, RiskManager
 
-
 NIGHT_SESSION = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)  # 21:01 Asia/Shanghai
 
 

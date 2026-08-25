@@ -6,6 +6,7 @@ decision uses only the arithmetic sum of the 20 completed daily product returns 
 the previous close and permits an increase only when the direction-conditioned three-
 session benefit estimate strictly exceeds the fixed 15bp one-way cost hurdle.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -35,10 +36,14 @@ def _completed_twenty_session_return(close_prices: pd.DataFrame) -> pd.DataFrame
     # It is not a 20-session compounded price return. The exact definition matters for
     # the archived 440.8444x / 168.5521% / 113.4880% cheap-screen lineage.
     daily = close.pct_change(fill_method=None)
-    return daily.rolling(
-        TREND_LOOKBACK_SESSIONS,
-        min_periods=TREND_LOOKBACK_SESSIONS,
-    ).sum().shift(1)
+    return (
+        daily.rolling(
+            TREND_LOOKBACK_SESSIONS,
+            min_periods=TREND_LOOKBACK_SESSIONS,
+        )
+        .sum()
+        .shift(1)
+    )
 
 
 def apply_cost_aware_no_trade(
@@ -75,22 +80,17 @@ def apply_cost_aware_no_trade(
             target = float(raw.at[timestamp, product])
             current = float(state.get(product, 0.0))
             same_side = (
-                abs(current) > _EPS
-                and abs(target) > _EPS
-                and np.sign(current) == np.sign(target)
+                abs(current) > _EPS and abs(target) > _EPS and np.sign(current) == np.sign(target)
             )
-            increase = (
-                (abs(current) <= _EPS and abs(target) > _EPS)
-                or (same_side and abs(target) > abs(current) + _EPS)
+            increase = (abs(current) <= _EPS and abs(target) > _EPS) or (
+                same_side and abs(target) > abs(current) + _EPS
             )
 
             applied = target
             if increase:
                 trend = float(completed.at[timestamp, product])
                 expected_benefit = (
-                    np.sign(target) * trend * horizon_scale
-                    if np.isfinite(trend)
-                    else float("nan")
+                    np.sign(target) * trend * horizon_scale if np.isfinite(trend) else float("nan")
                 )
                 if not np.isfinite(expected_benefit) or expected_benefit <= hurdle + _EPS:
                     applied = current

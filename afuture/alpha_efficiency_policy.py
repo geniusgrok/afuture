@@ -4,6 +4,7 @@ This wrapper is retained to reproduce Candidate B's cheap Float and fixed Produc
 screens. It is intentionally not reachable from ``runtime_factory`` after Candidate B
 failed the predeclared Production economics gates.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

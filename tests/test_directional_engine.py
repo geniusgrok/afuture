@@ -17,7 +17,6 @@ from afuture.models import (
 from afuture.risk import RiskConfig, RiskManager
 from afuture.state import StateStore
 
-
 NOW = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)
 
 
@@ -219,9 +218,7 @@ def test_directional_signal_risk_off_enters_reduce_only_only_when_risk_exists(tm
 
 
 def test_directional_account_risk_breach_reduces_existing_risk_instead_of_halting(tmp_path):
-    risk = RiskManager(
-        RiskConfig(max_daily_loss_ratio=0.05, max_total_drawdown_ratio=0.30)
-    )
+    risk = RiskManager(RiskConfig(max_daily_loss_ratio=0.05, max_total_drawdown_ratio=0.30))
     broker, manager, engine = _engine(tmp_path, risk=risk)
     manager.risk = True
     broker.account = AccountSnapshot(

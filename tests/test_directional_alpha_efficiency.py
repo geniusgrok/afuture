@@ -3,10 +3,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from afuture.alpha_efficiency_policy import AlphaEfficiencyDirectionalPolicy
 from afuture.directional_alpha_efficiency import (
     build_product_alpha_efficiency_score,
 )
-from afuture.alpha_efficiency_policy import AlphaEfficiencyDirectionalPolicy
 from afuture.execution_aligned_policy import ExecutionAlignedAggressivePolicy
 
 
@@ -29,13 +29,27 @@ def _panel(periods: int = 180):
 def test_alpha_efficiency_score_uses_only_completed_prior_alpha_and_turnover():
     index = pd.bdate_range("2026-01-01", periods=6)
     open_prices = pd.DataFrame(
-        [[100, 100, 100], [100, 100, 100], [100, 100, 100], [100, 100, 100], [100, 100, 100], [100, 100, 100]],
+        [
+            [100, 100, 100],
+            [100, 100, 100],
+            [100, 100, 100],
+            [100, 100, 100],
+            [100, 100, 100],
+            [100, 100, 100],
+        ],
         index=index,
         columns=["A", "B", "C"],
         dtype=float,
     )
     close = pd.DataFrame(
-        [[101, 99, 100], [102, 99, 100], [103, 99, 100], [104, 99, 100], [105, 99, 100], [106, 99, 100]],
+        [
+            [101, 99, 100],
+            [102, 99, 100],
+            [103, 99, 100],
+            [104, 99, 100],
+            [105, 99, 100],
+            [106, 99, 100],
+        ],
         index=index,
         columns=open_prices.columns,
         dtype=float,

@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, datetime
 
-from .auto import AutoPairSelector, AutoConfig
+from .auto import AutoConfig, AutoPairSelector
 from .models import ContractInfo, Tick
 
 
@@ -62,8 +62,8 @@ class DataQualityAnalyzer:
         invalid = 0
         activity_missing = 0
         limit_missing = 0
-        seen: set[tuple[str, object]] = set()
-        last_seen: dict[str, object] = {}
+        seen: set[tuple[str, datetime]] = set()
+        last_seen: dict[str, datetime] = {}
         rows_by_symbol: dict[str, list[Tick]] = defaultdict(list)
         symbols_by_day: dict[str, set[str]] = defaultdict(set)
         samples_by_day: dict[str, int] = defaultdict(int)
@@ -92,7 +92,7 @@ class DataQualityAnalyzer:
         gaps = 0
         for rows in rows_by_symbol.values():
             ordered = sorted(rows, key=lambda item: item.timestamp)
-            for left, right in zip(ordered, ordered[1:]):
+            for left, right in zip(ordered, ordered[1:], strict=False):
                 if left.trading_day != right.trading_day:
                     continue
                 if (right.timestamp - left.timestamp).total_seconds() > self.max_gap_seconds:
@@ -119,9 +119,7 @@ class DataQualityAnalyzer:
                 "sample_share": samples_by_product[product] / max(len(ticks), 1),
                 "symbols": sorted(symbols_by_product[product]),
             }
-        max_product_share = max(
-            (row["sample_share"] for row in coverage.values()), default=0.0
-        )
+        max_product_share = max((row["sample_share"] for row in coverage.values()), default=0.0)
 
         daily_candidates: dict[str, int] = {}
         if catalog and auto_config is not None and auto_config.enabled:
@@ -152,9 +150,7 @@ class DataQualityAnalyzer:
         if gaps:
             warnings.append(f"long intra-day gaps: {gaps}")
         if len(coverage) > 1 and max_product_share >= 0.80:
-            warnings.append(
-                f"single product dominates dataset samples: {max_product_share:.1%}"
-            )
+            warnings.append(f"single product dominates dataset samples: {max_product_share:.1%}")
         zero_candidate_days = [day for day, count in daily_candidates.items() if count <= 0]
         if zero_candidate_days:
             failures.append(

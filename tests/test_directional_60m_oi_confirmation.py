@@ -9,7 +9,12 @@ def _api():
         lag_flow_to_target_days,
     )
 
-    return SUPPORTED_PRODUCTS, build_daily_price_oi_flow, lag_flow_to_target_days, apply_oi_confirmation_to_weights
+    return (
+        SUPPORTED_PRODUCTS,
+        build_daily_price_oi_flow,
+        lag_flow_to_target_days,
+        apply_oi_confirmation_to_weights,
+    )
 
 
 def test_supported_products_are_frozen_from_the_60m_coverage_gate():
@@ -21,10 +26,42 @@ def test_daily_flow_uses_same_day_highest_final_oi_contract_and_requires_oi_grow
     _, build_flow, _, _ = _api()
     raw = pd.DataFrame(
         [
-            {"datetime": "2026-01-05 10:00", "product": "AG", "symbol": "AG2606", "open": 100.0, "close": 101.0, "volume": 10, "hold": 100},
-            {"datetime": "2026-01-05 15:00", "product": "AG", "symbol": "AG2606", "open": 101.0, "close": 103.0, "volume": 20, "hold": 130},
-            {"datetime": "2026-01-05 10:00", "product": "AG", "symbol": "AG2608", "open": 200.0, "close": 199.0, "volume": 50, "hold": 150},
-            {"datetime": "2026-01-05 15:00", "product": "AG", "symbol": "AG2608", "open": 199.0, "close": 198.0, "volume": 50, "hold": 140},
+            {
+                "datetime": "2026-01-05 10:00",
+                "product": "AG",
+                "symbol": "AG2606",
+                "open": 100.0,
+                "close": 101.0,
+                "volume": 10,
+                "hold": 100,
+            },
+            {
+                "datetime": "2026-01-05 15:00",
+                "product": "AG",
+                "symbol": "AG2606",
+                "open": 101.0,
+                "close": 103.0,
+                "volume": 20,
+                "hold": 130,
+            },
+            {
+                "datetime": "2026-01-05 10:00",
+                "product": "AG",
+                "symbol": "AG2608",
+                "open": 200.0,
+                "close": 199.0,
+                "volume": 50,
+                "hold": 150,
+            },
+            {
+                "datetime": "2026-01-05 15:00",
+                "product": "AG",
+                "symbol": "AG2608",
+                "open": 199.0,
+                "close": 198.0,
+                "volume": 50,
+                "hold": 140,
+            },
         ]
     )
 
@@ -37,8 +74,24 @@ def test_daily_flow_direction_is_first_open_to_last_close_when_oi_increases():
     _, build_flow, _, _ = _api()
     raw = pd.DataFrame(
         [
-            {"datetime": "2026-01-05 10:00", "product": "RB", "symbol": "RB2605", "open": 3500.0, "close": 3490.0, "volume": 100, "hold": 1000},
-            {"datetime": "2026-01-05 15:00", "product": "RB", "symbol": "RB2605", "open": 3490.0, "close": 3450.0, "volume": 120, "hold": 1100},
+            {
+                "datetime": "2026-01-05 10:00",
+                "product": "RB",
+                "symbol": "RB2605",
+                "open": 3500.0,
+                "close": 3490.0,
+                "volume": 100,
+                "hold": 1000,
+            },
+            {
+                "datetime": "2026-01-05 15:00",
+                "product": "RB",
+                "symbol": "RB2605",
+                "open": 3490.0,
+                "close": 3450.0,
+                "volume": 120,
+                "hold": 1100,
+            },
         ]
     )
     flow = build_flow(raw)

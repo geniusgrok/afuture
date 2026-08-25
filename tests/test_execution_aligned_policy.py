@@ -1,14 +1,14 @@
-from pathlib import Path
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from afuture.execution_aligned_policy import (
-    ExecutionAlignedAggressivePolicy,
     META_ANNUALIZED_WEIGHT,
     META_SHARPE_WEIGHT,
+    ExecutionAlignedAggressivePolicy,
     _clean_prices,
 )
 

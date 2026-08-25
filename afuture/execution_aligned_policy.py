@@ -9,14 +9,14 @@ endpoints, but surviving candidates retain the Base score ordering so cost robus
 does not replace the primary Alpha objective. Product ordering is frozen alphabetically.
 Gross target notional is capped at 2x.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-
 
 MAX_GROSS_LEVERAGE = 2.0
 MAX_ABS_DAILY_RETURN = 0.20
@@ -50,14 +50,16 @@ def _parse_template_id(raw: str) -> _Template:
         raise ValueError(f"frozen template exceeds gross cap: {raw}")
     return _Template(
         family,
-        int(slow), int(fast), int(max_products), int(rebalance), value,
+        int(slow),
+        int(fast),
+        int(max_products),
+        int(rebalance),
+        value,
     )
 
 
 def _rolling_log_return(returns: pd.DataFrame, window: int) -> pd.DataFrame:
-    return np.log1p(returns.clip(lower=-0.99)).rolling(
-        window, min_periods=window
-    ).sum()
+    return np.log1p(returns.clip(lower=-0.99)).rolling(window, min_periods=window).sum()
 
 
 def _normalized_price(returns: pd.DataFrame) -> pd.DataFrame:
@@ -83,11 +85,7 @@ def _signal_scores(returns: pd.DataFrame, template: _Template) -> pd.DataFrame:
         price = _normalized_price(returns)
         rolling_low = price.rolling(template.slow, min_periods=template.slow).min()
         rolling_high = price.rolling(template.slow, min_periods=template.slow).max()
-        return (
-            (price - rolling_low)
-            / (rolling_high - rolling_low).replace(0.0, np.nan)
-            - 0.5
-        )
+        return (price - rolling_low) / (rolling_high - rolling_low).replace(0.0, np.nan) - 0.5
     if template.family == "acceleration":
         slow = _rolling_log_return(returns, template.slow)
         fast = _rolling_log_return(returns, template.fast)
@@ -95,9 +93,7 @@ def _signal_scores(returns: pd.DataFrame, template: _Template) -> pd.DataFrame:
     raise ValueError(f"unknown frozen directional family: {template.family}")
 
 
-def _template_weight_path(
-    returns: pd.DataFrame, template: _Template
-) -> pd.DataFrame:
+def _template_weight_path(returns: pd.DataFrame, template: _Template) -> pd.DataFrame:
     scores = _signal_scores(returns, template).to_numpy(float)
     current = np.zeros(returns.shape[1], dtype=float)
     audit = np.zeros(returns.shape, dtype=float)
@@ -105,17 +101,13 @@ def _template_weight_path(
     for position in range(1, len(returns)):
         if position % step == 0:
             lagged = scores[position - 1]
-            valid = np.flatnonzero(
-                np.isfinite(lagged) & (np.abs(lagged) > 1e-12)
-            )
+            valid = np.flatnonzero(np.isfinite(lagged) & (np.abs(lagged) > 1e-12))
             next_weights = np.zeros(returns.shape[1], dtype=float)
             if valid.size:
                 order = valid[np.argsort(-np.abs(lagged[valid]), kind="stable")]
                 selected = order[: min(template.max_products, len(order))]
                 if selected.size:
-                    each = min(
-                        template.gross_leverage, MAX_GROSS_LEVERAGE
-                    ) / float(selected.size)
+                    each = min(template.gross_leverage, MAX_GROSS_LEVERAGE) / float(selected.size)
                     next_weights[selected] = np.sign(lagged[selected]) * each
             current = next_weights
         audit[position] = current
@@ -257,9 +249,7 @@ _EXECUTION_TEMPLATE_IDS = (
     "breakout_s40_f0_k1_r5_g2",
     "reversal_s0_f5_k3_r10_g2",
 )
-_EXECUTION_TEMPLATES = tuple(
-    _parse_template_id(item) for item in _EXECUTION_TEMPLATE_IDS
-)
+_EXECUTION_TEMPLATES = tuple(_parse_template_id(item) for item in _EXECUTION_TEMPLATE_IDS)
 
 
 def _clean_prices(frame: pd.DataFrame, products: tuple[str, ...]) -> pd.DataFrame:
@@ -326,32 +316,52 @@ class ExecutionAlignedAggressivePolicy:
         base_streams: dict[str, pd.Series] = {}
         stress_streams: dict[str, pd.Series] = {}
         paths: dict[str, pd.DataFrame] = {}
-        for template_id, template in zip(self.template_ids, _EXECUTION_TEMPLATES):
+        for template_id, template in zip(self.template_ids, _EXECUTION_TEMPLATES, strict=True):
             weights = _template_weight_path(returns, template)
             paths[template_id] = weights
-            base_streams[template_id] = _intraday_proxy_stream(open_prices, close, weights, cost_bps=BASE_COST_BPS)
-            stress_streams[template_id] = _intraday_proxy_stream(open_prices, close, weights, cost_bps=STRESS_COST_BPS)
+            base_streams[template_id] = _intraday_proxy_stream(
+                open_prices, close, weights, cost_bps=BASE_COST_BPS
+            )
+            stress_streams[template_id] = _intraday_proxy_stream(
+                open_prices, close, weights, cost_bps=STRESS_COST_BPS
+            )
 
         base_frame = pd.DataFrame(base_streams).sort_index().fillna(0.0)
-        stress_frame = pd.DataFrame(stress_streams).reindex(index=base_frame.index, columns=base_frame.columns).fillna(0.0)
+        stress_frame = (
+            pd.DataFrame(stress_streams)
+            .reindex(index=base_frame.index, columns=base_frame.columns)
+            .fillna(0.0)
+        )
         scores = _robust_trailing_scores(base_frame, stress_frame, lookback=self.meta_lookback)
         names = list(base_frame.columns)
         final = pd.DataFrame(0.0, index=close.index, columns=close.columns)
         selected: list[int] = []
-        previous_weights: dict[str, float] = {}
 
         def aggregate(indices: list[int], timestamp) -> dict[str, float]:
             if not indices:
                 return {}
             rows = [paths[names[item]].loc[timestamp] for item in indices]
             series = pd.concat(rows, axis=1).mean(axis=1)
-            return {str(product): float(value) for product, value in series.items() if abs(float(value)) > 1e-15}
+            return {
+                str(product): float(value)
+                for product, value in series.items()
+                if abs(float(value)) > 1e-15
+            }
 
         for position, timestamp in enumerate(close.index):
-            if position >= self.meta_lookback and (not selected or position % self.meta_rebalance == 0):
+            if position >= self.meta_lookback and (
+                not selected or position % self.meta_rebalance == 0
+            ):
                 row = scores[position]
                 valid = np.flatnonzero(np.isfinite(row))
-                candidate = ([int(item) for item in valid[np.argsort(-row[valid], kind="stable")][: self.meta_count]] if valid.size else [])
+                candidate = (
+                    [
+                        int(item)
+                        for item in valid[np.argsort(-row[valid], kind="stable")][: self.meta_count]
+                    ]
+                    if valid.size
+                    else []
+                )
                 if not selected:
                     selected = candidate
                 elif candidate != selected:
@@ -360,7 +370,6 @@ class ExecutionAlignedAggressivePolicy:
             raw = aggregate(selected, timestamp)
             if raw:
                 final.loc[timestamp] = pd.Series(raw).reindex(final.columns).fillna(0.0)
-            previous_weights = {str(product): float(value) for product, value in final.loc[timestamp].items() if abs(float(value)) > 1e-15}
 
         gross = final.abs().sum(axis=1)
         if bool((gross > MAX_GROSS_LEVERAGE + 1e-10).any()):

@@ -3,6 +3,7 @@
 This module is retained only to reproduce Candidate A evidence. ``runtime_factory`` never
 wires this policy into live/Shadow production after its fixed Production L3 rejection.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -4,13 +4,9 @@
 
 当前代码级状态：previous-day activity、trading-day signal gate、stale activity fail-closed、reduction-first、margin-aware target sizing、daily circuit、completed-return governor、realized-gross hard guard、gross-position flatten、restart reconciliation、directional execution-quality 和 production-mechanics acceptance 均已实现。
 
-当前经济证据：
+当前最高级别经济证据是 PR #25 的离线 Stress-90 production-research checkpoint：Base full_recent **156.881655% 年化 / 15.708467% 最大回撤 / 1.983123x gross peak**；Stress full_recent **112.100053% 年化 / 14.567214% 最大回撤 / 1.670510x gross peak / 0 margin rejects / no HALT**。Train、validation、OOS、prior1、prior2 也为正且无 HALT。
 
-- Float L4 Base：**107.4623% 年化 / 27.4097% 最大回撤 / target gross≤2x**，selection-biased；
-- Production L3 Base：**109.0636% 年化 / 15.8529% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
-- Production L3 Stress：**28.9559% 年化 / 28.1152% 最大回撤 / actual gross peak 1.668769x / 0 margin rejects / no permanent halt**。
-
-因此 **Base 历史 production-mechanics ≥100% 已满足，Stress 的结构性 margin HALT 已修复，但 Stress 80% 收益目标未满足**。继续真实资金前仍必须完成本清单。
+这满足冻结的研究 promotion gate，但 **PR #25 明确没有接入 live runtime**。它不缩短 Shadow、测试柜台、小资金和未来未见数据门，也不是未来收益承诺。
 
 ## A. 历史与账户机械证据
 
@@ -28,12 +24,13 @@
 - [x] Production L3 输出 turnover attribution，并验证每个 bucket 求和等于总 turnover。
 - [x] completed-activity 选约保留仍 eligible 的 incumbent；challenger 只有 OI 和 volume 同时更高才切换。
 - [x] margin-fitted 同方向 `+1 lot` 增仓可在 incumbent 仍满足 soft margin / 2x gross 时保持不动；减仓与风险动作不被抑制。
-- [x] **Production Base 年化 ≥100%：109.0636%。**
-- [x] **Production Base 最大回撤 ≤30%：15.8529%。**
-- [x] **Production Base actual gross ≤2x：1.998253x。**
-- [x] **Production Base full_recent 不永久 HALT。**
-- [x] **Production Stress full_recent 不永久 HALT：474/484 active days，0 margin rejects。**
-- [x] Stress 未达到 80% 的结果被保留：28.9559% 年化。
+- [x] **Stress-90 Base full_recent 年化：156.881655%。**
+- [x] **Stress-90 Stress full_recent 年化：112.100053%。**
+- [x] **Stress-90 Stress 最大回撤 ≤30%：14.567214%。**
+- [x] **Stress-90 Stress realized gross ≤2x：1.670510x。**
+- [x] **Stress-90 全部七个矩阵行无 HALT、0 margin rejects。**
+- [x] PR #25 Python 3.10/3.13 主 CI run `32798895640` 通过。
+- [x] PR #25 不改变 live runtime wiring 的边界已记录。
 - [ ] 新发生、此前未参与任何选择/调参的未来数据持续验证。
 - [ ] 未来显著恶化时优先降低/关闭风险，不在同一历史上无限追参。
 
@@ -198,24 +195,14 @@
 - [ ] 实盘回撤符合风险预算。
 - [ ] 已重新评估 15bp/高 margin Stress 与真实执行差异。
 
-107.4623% Float、109.0636% Production Base、28.9559% Production Stress 都是**已观察历史结果**。Stress 已不再早期 HALT，但没有达到 80%；这些数字均不是未来年度收益承诺。
+Stress-90 的 156.881655% Base 与 112.100053% Stress 都是**已观察历史 proxy**。这些数字不改变 live 风险权限，也不是未来收益承诺。
 
+## O. 研究晋级与 live 激活边界
 
-## O. 本轮执行效率实验处置
-
-- [x] product replacement persistence 已实现并跑固定 L3；因 Base 降至约 58.41% 而拒绝并回退。
-- [x] cost-aware meta hysteresis 已实现并跑固定 L3；因 Base 约 58.32%、Stress -13.03%、DD 超 30% 且 HALT 而拒绝并回退。
-- [x] same-direction weight resize hysteresis 已实现并跑固定 L3；未通过 promotion gate，已回退。
-- [x] 最终晋级版本保持 Base ≥100%、Stress DD≤30%、no-HALT、gross≤2x、0 margin rejects。
-- [ ] Stress 80% 仍是研究方向，不作为放宽硬门或重复拟合同一历史的理由。
-
-## PR #15 net-alpha 研究收口门
-
-- [x] Stress PnL / turnover / capacity attribution 与现金对账闭合；
-- [x] entry/exit future labels 与 causal features 分离；
-- [x] 未发现跨 prior1/prior2/train/validation/OOS 稳定负贡献的可因果 entry/exit cohort；
-- [x] net-edge candidate 在 prior2 反向失效，未进入生产；
-- [x] 新 Alpha families 未通过 15bp 多窗口门，未做失败策略混合；
-- [x] shock-derived margin candidate 固定 Stress 仅 4.7970% 年化且 permanent HALT，拒绝；
-- [x] 研究失败没有通过改 leverage、成本、margin proxy、风险硬门、数据时点或样本窗口包装成成功；
-- [x] 最终生产经济行为保持 PR #14 基线；只保留行为中性审计/离线诊断与负证据。
+- [x] Stress-80 checkpoint 可精确回归：Stress 80.067891%、DD 29.727688%、0 rejects、无 HALT。
+- [x] Stress-90 bounded promotion gate 通过：Stress 112.100053%、DD 14.567214%、0 rejects、无 HALT。
+- [x] 研究没有放宽 2x gross、35% margin、25% available、5% daily loss、30% drawdown 或 35 lots。
+- [x] 失败路线和 standalone reserve collapse 保留为负证据，没有 rescue tuning。
+- [x] Stress-90 没有接入 live runtime。
+- [ ] 若将 Stress-90 策略接入 live，必须有独立设计、warmup/restart/stale-data/session/roll/live-offline-equivalence 测试和重新审批。
+- [ ] 不以离线年化通过为由跳过 Shadow、测试柜台、小资金或未来新数据。

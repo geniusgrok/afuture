@@ -5,11 +5,12 @@ trade ledgers emitted by ``evaluate_directional_production_mechanics.py``. Templ
 contributions are exact at target-weight level; realized position, turnover, and cost stay
 product-level truth and are never fictionally allocated back to individual templates.
 """
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -46,11 +47,7 @@ def _load_continuous(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         .sort_index()
         .reindex(index=open_prices.index, columns=products)
     )
-    missing = [
-        product
-        for product in products
-        if close[product].notna().sum() < 140
-    ]
+    missing = [product for product in products if close[product].notna().sum() < 140]
     if missing:
         raise RuntimeError(f"directional lineage history missing products: {missing}")
     return open_prices, close
@@ -67,10 +64,9 @@ def _enrich_with_governor(
         raise RuntimeError(f"risk_scale is missing from {daily_path}")
     scales = daily[[date_column, "risk_scale"]].rename(columns={date_column: "date"})
     result = product_execution.merge(scales, on="date", how="left")
-    result["governor_target_weight"] = (
-        result["target_weight"].astype(float)
-        * result["risk_scale"].astype(float)
-    )
+    result["governor_target_weight"] = result["target_weight"].astype(float) * result[
+        "risk_scale"
+    ].astype(float)
     return result
 
 
@@ -89,9 +85,7 @@ def _endpoint(
         template_product=template_product,
         events=events,
     )
-    product_execution = _enrich_with_governor(
-        attribution["product_execution"], daily_path
-    )
+    product_execution = _enrich_with_governor(attribution["product_execution"], daily_path)
     output = runtime / f"directional_lineage_{name}_product_execution.csv"
     product_execution.to_csv(output, index=False)
 
@@ -129,14 +123,10 @@ def main() -> None:
 
     open_prices, close = _load_continuous(continuous_path)
     policy = ExecutionAlignedAggressivePolicy(products=tuple(close.columns))
-    weights, meta, template_product = build_weight_lineage(
-        policy, open_prices, close
-    )
+    weights, meta, template_product = build_weight_lineage(policy, open_prices, close)
     weights.to_csv(runtime / "directional_lineage_target_weights.csv")
     meta.to_csv(runtime / "directional_lineage_meta.csv", index=False)
-    template_product.to_csv(
-        runtime / "directional_lineage_template_product.csv", index=False
-    )
+    template_product.to_csv(runtime / "directional_lineage_template_product.csv", index=False)
 
     summary = {
         "role": "behavior-neutral exact template-to-product-to-execution attribution",

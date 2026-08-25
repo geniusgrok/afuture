@@ -6,15 +6,15 @@ only to the strongest currently active pair instead of being permanently divided
 all prequalified pairs. Selection is causal, turnover is charged whenever the selected
 pair or residual direction changes, and Final OOS remains evaluation-only.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+import evaluate_broad_pair_regime as base
 import numpy as np
 import pandas as pd
-
-import evaluate_broad_pair_regime as base
 
 MAX_ACTIVE_PAIRS = 1
 
@@ -88,9 +88,7 @@ def _desired_path(
             left_value = left_returns[next_index]
             right_value = right_returns[next_index]
             if np.isfinite(left_value) and np.isfinite(right_value):
-                next_return[next_index] = (
-                    left_weight * left_value + right_weight * right_value
-                )
+                next_return[next_index] = left_weight * left_value + right_weight * right_value
 
     return pd.DataFrame(
         {"direction": direction, "score": score, "next_return": next_return},
@@ -165,23 +163,18 @@ def _rotating_portfolio(
                 allocation[pair_id] = direction * gross_each
 
         turnover = sum(
-            abs(allocation[pair_id] - previous_signed_allocation[pair_id])
-            for pair_id in pair_ids
+            abs(allocation[pair_id] - previous_signed_allocation[pair_id]) for pair_id in pair_ids
         )
         pnl.iat[position_index] -= turnover * cost_bps / 10000.0
 
         next_index = position_index + 1
         for pair_id in selected:
             gross_weight = abs(allocation[pair_id])
-            pnl.iat[next_index] += (
-                gross_weight * paths[pair_id]["next_return"].iat[next_index]
-            )
+            pnl.iat[next_index] += gross_weight * paths[pair_id]["next_return"].iat[next_index]
         previous_signed_allocation = allocation
 
     pnl.iat[-1] -= (
-        sum(abs(value) for value in previous_signed_allocation.values())
-        * cost_bps
-        / 10000.0
+        sum(abs(value) for value in previous_signed_allocation.values()) * cost_bps / 10000.0
     )
     return pnl
 
@@ -253,9 +246,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
             and all(base._qualifies(item) for item in pre_oos_items)
         )
         metrics["pre_oos_score"] = (
-            min(item["sharpe"] for item in pre_oos_items)
-            if metrics["pre_oos_pass"]
-            else -999.0
+            min(item["sharpe"] for item in pre_oos_items) if metrics["pre_oos_pass"] else -999.0
         )
         results.append(metrics)
 
@@ -264,12 +255,10 @@ def evaluate(raw: pd.DataFrame) -> dict:
     support = {
         "eligible_profiles": len(eligible),
         "formation_60": sum(
-            item["pre_oos_pass"] and item["profile"]["formation"] == 60
-            for item in results
+            item["pre_oos_pass"] and item["profile"]["formation"] == 60 for item in results
         ),
         "formation_120": sum(
-            item["pre_oos_pass"] and item["profile"]["formation"] == 120
-            for item in results
+            item["pre_oos_pass"] and item["profile"]["formation"] == 120 for item in results
         ),
     }
 
@@ -288,9 +277,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
         "selected_profile_id": selected["profile_id"] if selected else None,
         "selected_prior_pairs": selected["prior_pairs"] if selected else [],
         "selected_current_pairs": selected["current_pairs"] if selected else [],
-        "selected_prior_forward_train": (
-            selected["prior_forward_train"] if selected else None
-        ),
+        "selected_prior_forward_train": (selected["prior_forward_train"] if selected else None),
         "selected_oos_unlevered": selected["oos"] if selected else None,
         "selected_full_recent_unlevered": selected["full_recent"] if selected else None,
     }
@@ -314,7 +301,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
         )
         selection_start, selection_end = base.WINDOWS["selection_full"]
         calibration = selected_current.loc[
-            pd.Timestamp(selection_start):pd.Timestamp(selection_end)
+            pd.Timestamp(selection_start) : pd.Timestamp(selection_end)
         ]
         leverage = base._choose_leverage(calibration)
         report["selected_leverage"] = leverage
@@ -351,19 +338,25 @@ def main() -> None:
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    print(json.dumps({
-        "support": report["support"],
-        "selected_profile": report["selected_profile"],
-        "selected_prior_pairs": report["selected_prior_pairs"],
-        "selected_current_pairs": report["selected_current_pairs"],
-        "selected_prior_forward_train": report["selected_prior_forward_train"],
-        "selected_oos_unlevered": report["selected_oos_unlevered"],
-        "selected_full_recent_unlevered": report["selected_full_recent_unlevered"],
-        "selected_leverage": report["selected_leverage"],
-        "selected_oos": report["selected_oos"],
-        "selected_full_recent": report["selected_full_recent"],
-        "target": report["target"],
-    }, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "support": report["support"],
+                "selected_profile": report["selected_profile"],
+                "selected_prior_pairs": report["selected_prior_pairs"],
+                "selected_current_pairs": report["selected_current_pairs"],
+                "selected_prior_forward_train": report["selected_prior_forward_train"],
+                "selected_oos_unlevered": report["selected_oos_unlevered"],
+                "selected_full_recent_unlevered": report["selected_full_recent_unlevered"],
+                "selected_leverage": report["selected_leverage"],
+                "selected_oos": report["selected_oos"],
+                "selected_full_recent": report["selected_full_recent"],
+                "target": report["target"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

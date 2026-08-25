@@ -1,5 +1,6 @@
-from pathlib import Path
 import importlib.util
+from pathlib import Path
+
 import pandas as pd
 
 spec = importlib.util.spec_from_file_location(
@@ -31,9 +32,7 @@ assert any("prior forward" in reason for reason in reasons)
 assert any("final OOS trade sample" in reason for reason in reasons)
 assert any("neighbor stability" in reason for reason in reasons)
 
-cols = [
-    "datetime", "open", "high", "low", "close", "volume", "hold", "symbol", "product"
-]
+cols = ["datetime", "open", "high", "low", "close", "volume", "hold", "symbol", "product"]
 current = pd.DataFrame(
     [
         ["2025-01-02 15:00:00", 100, 100, 100, 100, 100, 8000, "OI2505", "OI"],

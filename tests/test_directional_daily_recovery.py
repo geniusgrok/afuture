@@ -6,7 +6,6 @@ from afuture.models import AccountSnapshot, RuntimeMode, Tick
 from afuture.risk import RiskConfig, RiskManager
 from afuture.state import StateStore
 
-
 NOW = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)
 
 

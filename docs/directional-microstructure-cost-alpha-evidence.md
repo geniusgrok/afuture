@@ -1,5 +1,7 @@
 # Directional Microstructure / Cost / Intraday Alpha Evidence
 
+> **Historical record.** Preserved for research lineage and negative evidence. It does not describe the current Stress-90 checkpoint or live activation; see [`documentation-index.md`](documentation-index.md).
+
 Date: 2026-08-24
 
 ## Scope and fixed baseline

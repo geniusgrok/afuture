@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
-import os
 from pathlib import Path
-import re
 
 try:
     import tomllib
@@ -63,11 +63,7 @@ def load_config(path: str | Path) -> AppConfig:
 
     risk_raw = data.get("risk", {})
     risk = RiskConfig(
-        **{
-            key: value
-            for key, value in risk_raw.items()
-            if key in RiskConfig.__dataclass_fields__
-        }
+        **{key: value for key, value in risk_raw.items() if key in RiskConfig.__dataclass_fields__}
     )
 
     contract_rows = data.get("contracts", [])
@@ -81,9 +77,7 @@ def load_config(path: str | Path) -> AppConfig:
             "directional mode is account-exclusive and cannot run with static pairs or auto"
         )
     if mode == "replay" and auto.enabled and not contract_catalog:
-        raise ValueError(
-            "replay auto mode requires contract product/expiry metadata"
-        )
+        raise ValueError("replay auto mode requires contract product/expiry metadata")
     ctp = _load_ctp(data.get("ctp", {}), mode)
     if mode == "live" and not pairs and not auto.enabled and not directional.enabled:
         raise ValueError(
@@ -93,14 +87,10 @@ def load_config(path: str | Path) -> AppConfig:
     execution = data.get("execution", {})
     slippage_ticks = int(execution.get("slippage_ticks", 1))
     aggressive_ticks = int(execution.get("aggressive_ticks", 1))
-    legging_timeout_seconds = float(
-        execution.get("legging_timeout_seconds", 2.0)
-    )
+    legging_timeout_seconds = float(execution.get("legging_timeout_seconds", 2.0))
     latency_ticks = int(execution.get("latency_ticks", 0))
     market_impact_ticks = int(execution.get("market_impact_ticks", 0))
-    metadata_timeout_seconds = float(
-        execution.get("metadata_timeout_seconds", 10.0)
-    )
+    metadata_timeout_seconds = float(execution.get("metadata_timeout_seconds", 10.0))
     if any(
         value < 0
         for value in (
@@ -126,18 +116,12 @@ def load_config(path: str | Path) -> AppConfig:
         ctp=ctp,
         slippage_ticks=slippage_ticks,
         aggressive_ticks=aggressive_ticks,
-        auto_flatten_imbalance=bool(
-            execution.get("auto_flatten_imbalance", True)
-        ),
+        auto_flatten_imbalance=bool(execution.get("auto_flatten_imbalance", True)),
         legging_timeout_seconds=legging_timeout_seconds,
-        conservative_simulation=bool(
-            execution.get("conservative_simulation", False)
-        ),
+        conservative_simulation=bool(execution.get("conservative_simulation", False)),
         latency_ticks=latency_ticks,
         market_impact_ticks=market_impact_ticks,
-        require_live_metadata=bool(
-            execution.get("require_live_metadata", mode == "live")
-        ),
+        require_live_metadata=bool(execution.get("require_live_metadata", mode == "live")),
         metadata_timeout_seconds=metadata_timeout_seconds,
         state_path=str(paths.get("state", "runtime/state.json")),
         log_path=str(paths.get("log", "runtime/afuture.log")),
@@ -171,9 +155,7 @@ def _load_contracts(rows: list[dict]) -> dict[str, ContractSpec]:
             fee=fee,
         )
         if not spec.symbol or spec.symbol in contracts:
-            raise ValueError(
-                f"duplicate or empty contract symbol: {spec.symbol}"
-            )
+            raise ValueError(f"duplicate or empty contract symbol: {spec.symbol}")
         if spec.multiplier <= 0 or spec.price_tick <= 0:
             raise ValueError(f"invalid multiplier/price_tick: {spec.symbol}")
         if not 0 < spec.margin_rate_long < 1 or not 0 < spec.margin_rate_short < 1:
@@ -232,59 +214,39 @@ def _load_pairs(
         if pair.volume <= 0:
             raise ValueError(f"pair {pair.pair_id} volume must be positive")
         if pair.sample_seconds < 0:
-            raise ValueError(
-                f"pair {pair.pair_id} sample_seconds cannot be negative"
-            )
+            raise ValueError(f"pair {pair.pair_id} sample_seconds cannot be negative")
         if pair.lookback < 2 or not 0 <= pair.exit_z < pair.entry_z < pair.stop_z:
             raise ValueError(f"pair {pair.pair_id} has invalid z-score parameters")
         if pair.max_holding_samples < 0:
-            raise ValueError(
-                f"pair {pair.pair_id} max_holding_samples cannot be negative"
-            )
+            raise ValueError(f"pair {pair.pair_id} max_holding_samples cannot be negative")
         if pair.structural_mean_shift_z <= 0 or pair.structural_vol_ratio <= 1:
-            raise ValueError(
-                f"pair {pair.pair_id} has invalid structural-break parameters"
-            )
+            raise ValueError(f"pair {pair.pair_id} has invalid structural-break parameters")
         if pair.min_net_edge < 0 or pair.legging_buffer < 0:
-            raise ValueError(
-                f"pair {pair.pair_id} net-edge parameters cannot be negative"
-            )
+            raise ValueError(f"pair {pair.pair_id} net-edge parameters cannot be negative")
         for window in pair.session_windows:
             _validate_session_window(pair.pair_id, window)
         if _contract_root(pair.near_symbol) != _contract_root(pair.far_symbol):
-            raise ValueError(
-                f"pair {pair.pair_id} is not a same-product calendar spread"
-            )
+            raise ValueError(f"pair {pair.pair_id} is not a same-product calendar spread")
 
         for symbol in (pair.near_symbol, pair.far_symbol):
             spec = contracts.get(symbol)
             if spec is None:
-                raise ValueError(
-                    f"pair {pair.pair_id} missing contract spec: {symbol}"
-                )
+                raise ValueError(f"pair {pair.pair_id} missing contract spec: {symbol}")
             if spec.exchange != pair.exchange.upper():
-                raise ValueError(
-                    f"pair {pair.pair_id} exchange does not match {symbol}"
-                )
+                raise ValueError(f"pair {pair.pair_id} exchange does not match {symbol}")
             if symbol in used_symbols:
                 raise ValueError(f"contract {symbol} is reused by multiple pairs")
             used_symbols.add(symbol)
 
         if mode == "live":
             if not pair.expiry_near or not pair.expiry_far:
-                raise ValueError(
-                    f"pair {pair.pair_id} expiry dates are required in live mode"
-                )
+                raise ValueError(f"pair {pair.pair_id} expiry dates are required in live mode")
             near_expiry = date.fromisoformat(pair.expiry_near)
             far_expiry = date.fromisoformat(pair.expiry_far)
             if near_expiry >= far_expiry:
-                raise ValueError(
-                    f"pair {pair.pair_id} expiry_near must be before expiry_far"
-                )
+                raise ValueError(f"pair {pair.pair_id} expiry_near must be before expiry_far")
             if not pair.session_windows:
-                raise ValueError(
-                    f"pair {pair.pair_id} session_windows are required in live mode"
-                )
+                raise ValueError(f"pair {pair.pair_id} session_windows are required in live mode")
         pairs.append(pair)
     return pairs
 
@@ -298,9 +260,7 @@ def _validate_session_window(pair_id: str, raw: str) -> None:
         try:
             datetime.strptime(value, "%H:%M")
         except ValueError as exc:
-            raise ValueError(
-                f"pair {pair_id} has invalid session window: {raw}"
-            ) from exc
+            raise ValueError(f"pair {pair_id} has invalid session window: {raw}") from exc
     if match.group(1) == match.group(2):
         raise ValueError(f"pair {pair_id} session window cannot be zero length")
 
@@ -312,11 +272,7 @@ def _load_auto(raw: dict, mode: str) -> AutoConfig:
         if name in values:
             values[name] = tuple(str(item) for item in values[name])
     auto = AutoConfig(
-        **{
-            key: value
-            for key, value in values.items()
-            if key in AutoConfig.__dataclass_fields__
-        }
+        **{key: value for key, value in values.items() if key in AutoConfig.__dataclass_fields__}
     )
     auto.validate()
     if auto.enabled:
@@ -353,19 +309,10 @@ def _load_ctp(raw: dict, mode: str):
         "password": "AFUTURE_CTP_PASSWORD",
         "broker_id": "AFUTURE_CTP_BROKER",
     }
-    values = {
-        name: os.getenv(env_name, "")
-        for name, env_name in required_env.items()
-    }
-    missing = [
-        env_name
-        for name, env_name in required_env.items()
-        if not values[name]
-    ]
+    values = {name: os.getenv(env_name, "") for name, env_name in required_env.items()}
+    missing = [env_name for name, env_name in required_env.items() if not values[name]]
     if missing:
-        raise ValueError(
-            f"missing CTP environment variables: {', '.join(missing)}"
-        )
+        raise ValueError(f"missing CTP environment variables: {', '.join(missing)}")
 
     td_address = str(raw.get("td_address", "")).strip()
     md_address = str(raw.get("md_address", "")).strip()

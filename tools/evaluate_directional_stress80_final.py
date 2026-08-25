@@ -17,13 +17,14 @@ Fixed composition (no fitted parameter in this stage):
 Hard Production constraints and Broker/RiskManager authority are unchanged. This file is
 an offline evidence entrypoint and is not imported by live runtime wiring.
 """
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -37,6 +38,7 @@ if str(ROOT) not in sys.path:
 
 import evaluate_directional_60m_oi_confirmation as oi_gate
 import evaluate_directional_production_mechanics as mechanics
+
 from afuture.directional_60m_oi_reversal_confirmation import (
     apply_oi_confirmation_to_direction_changes,
 )
@@ -102,10 +104,14 @@ def build_final_candidate_weights(
         original_weights=confirmed,
         approved_weights=approved,
     )
-    candidate = candidate.reindex(
-        index=base_weights.index,
-        columns=base_weights.columns,
-    ).fillna(0.0).astype(float)
+    candidate = (
+        candidate.reindex(
+            index=base_weights.index,
+            columns=base_weights.columns,
+        )
+        .fillna(0.0)
+        .astype(float)
+    )
 
     if not np.isfinite(candidate.to_numpy()).all():
         raise AssertionError("final candidate contains non-finite weights")
@@ -115,7 +121,7 @@ def build_final_candidate_weights(
         raise AssertionError("final survivor allocation exceeds confirmed OI gross")
 
     digest = candidate_weight_digest(candidate)
-    full = candidate.loc[pd.Timestamp("2024-08-21"):pd.Timestamp("2026-08-20")]
+    full = candidate.loc[pd.Timestamp("2024-08-21") : pd.Timestamp("2026-08-20")]
     audit = {
         "candidate_weight_sha256": digest,
         "supported_products": list(oi_gate.SUPPORTED_PRODUCTS),
@@ -151,9 +157,7 @@ def economics(daily: pd.DataFrame, events: pd.DataFrame, *, cost_bps: float) -> 
     gross = 0.0
     if not events.empty and {"kind", "gross_pnl"}.issubset(events.columns):
         gross = float(
-            events.loc[events["kind"].astype(str) == "pnl", "gross_pnl"]
-            .astype(float)
-            .sum()
+            events.loc[events["kind"].astype(str) == "pnl", "gross_pnl"].astype(float).sum()
         )
     transaction_cost = turnover * float(cost_bps) / 10000.0
     net = gross - transaction_cost
@@ -162,9 +166,7 @@ def economics(daily: pd.DataFrame, events: pd.DataFrame, *, cost_bps: float) -> 
         "turnover_notional": turnover,
         "transaction_cost": transaction_cost,
         "net_alpha": net,
-        "net_alpha_per_turnover_bps": (
-            net / turnover * 10000.0 if turnover > 0.0 else 0.0
-        ),
+        "net_alpha_per_turnover_bps": (net / turnover * 10000.0 if turnover > 0.0 else 0.0),
     }
 
 
@@ -193,7 +195,7 @@ def evaluate_window(
     start, end = mechanics.WINDOWS[window]
     result = simulator.simulate(
         specific_raw,
-        candidate_weights.loc[pd.Timestamp(start):pd.Timestamp(end)].copy(),
+        candidate_weights.loc[pd.Timestamp(start) : pd.Timestamp(end)].copy(),
         cost_bps=cost_bps,
         prepared=prepared,
     )

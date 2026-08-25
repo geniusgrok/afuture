@@ -113,9 +113,7 @@ def boot_manager(config: AutoConfig) -> tuple[AutoPairManager, SimBroker]:
 
 
 def test_dense_live_ticks_preserve_statistical_window():
-    manager, broker = boot_manager(
-        auto_config(sample_seconds=60, lookback=3)
-    )
+    manager, broker = boot_manager(auto_config(sample_seconds=60, lookback=3))
     base = datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc)
     for minute, spread in enumerate([10, 11, 10, 25]):
         feed_spread(

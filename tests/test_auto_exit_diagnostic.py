@@ -9,7 +9,6 @@ from afuture.models import ContractInfo, ContractSpec, Tick
 from afuture.risk import RiskConfig, RiskManager
 from afuture.state import StateStore
 
-
 _CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -109,10 +108,29 @@ def test_auto_open_then_reversion_exits_and_retires(tmp_path: Path):
 
     if broker.get_positions():
         print("positions", broker.get_positions())
-        print("orders", [(o.request.reference, o.request.offset.value, o.status.value, o.traded) for o in broker.get_orders()])
-        print("trades", [(t.symbol, t.offset.value, t.side.value, t.volume, t.price) for t in broker.get_trades()])
+        print(
+            "orders",
+            [
+                (o.request.reference, o.request.offset.value, o.status.value, o.traded)
+                for o in broker.get_orders()
+            ],
+        )
+        print(
+            "trades",
+            [
+                (t.symbol, t.offset.value, t.side.value, t.volume, t.price)
+                for t in broker.get_trades()
+            ],
+        )
         print("pairs", sorted(engine.pairs))
         print("retiring", sorted(engine._retiring_auto_pairs))
         print("strategy", {k: v.snapshot_state() for k, v in engine.strategies.items()})
-        print("events", [(kind, getattr(payload, "action", payload)) for kind, payload in journal.events if kind in {"signal", "risk_reject", "emergency_stop", "auto_scan_error"}])
+        print(
+            "events",
+            [
+                (kind, getattr(payload, "action", payload))
+                for kind, payload in journal.events
+                if kind in {"signal", "risk_reject", "emergency_stop", "auto_scan_error"}
+            ],
+        )
     assert broker.get_positions() == []

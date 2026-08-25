@@ -150,14 +150,18 @@ def test_confirmation_seed_consumes_historical_confirmation():
     synchronized: list[tuple[Tick, Tick]] = []
     for index, ratio in enumerate([1.000, 1.002, 0.998, 1.001] * 5):
         when = base + timedelta(hours=index)
-        synchronized.append(
-            (tick("m2609", when, 3000 * ratio), tick("m2701", when, 3000))
-        )
+        synchronized.append((tick("m2609", when, 3000 * ratio), tick("m2701", when, 3000)))
     synchronized.append(
-        (tick("m2609", base + timedelta(hours=21), 3060), tick("m2701", base + timedelta(hours=21), 3000))
+        (
+            tick("m2609", base + timedelta(hours=21), 3060),
+            tick("m2701", base + timedelta(hours=21), 3000),
+        )
     )
     synchronized.append(
-        (tick("m2609", base + timedelta(hours=22), 3054), tick("m2701", base + timedelta(hours=22), 3000))
+        (
+            tick("m2609", base + timedelta(hours=22), 3054),
+            tick("m2701", base + timedelta(hours=22), 3000),
+        )
     )
 
     _z_history, armed, extreme = scanner.confirmation_seed(pair, synchronized)
@@ -209,7 +213,11 @@ def test_daily_scanner_keeps_historical_samples_when_leg_ticks_are_seconds_apart
     # statistical observation. Engine/RiskManager still rejects stale current books.
     assert len(synchronized) == 5
     assert [near.trading_day for near, _ in synchronized] == [
-        "20260817", "20260818", "20260819", "20260820", "20260821"
+        "20260817",
+        "20260818",
+        "20260819",
+        "20260820",
+        "20260821",
     ]
 
 

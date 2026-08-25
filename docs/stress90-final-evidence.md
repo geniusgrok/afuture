@@ -110,4 +110,4 @@ This promotion contains offline validated Production evaluator components only. 
 - Fresh matrix: passed (`1 / 2` used).
 - Focused mechanics/tests before matrix: passed.
 - Code review: one evidence-assembly fail-closed issue found and fixed; no open behavioral finding.
-- Permanent-tree Python 3.10 / Python 3.13 full CI and merge-tree identity: pending final execution.
+- PR and permanent merge-tree Python 3.10 / Python 3.13 full CI: passed. Merge `482455dc57bc6a134f45232e290b4a49c3f7073d`, run `32798895640` completed successfully on 2026-08-25; PR #25 does not change live wiring.

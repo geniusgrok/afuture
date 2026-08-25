@@ -2,7 +2,16 @@
 
 from abc import ABC, abstractmethod
 
-from ..models import AccountSnapshot, BrokerEvent, ContractInfo, ContractPosition, ContractSpec, Order, OrderRequest, Tick
+from ..models import (
+    AccountSnapshot,
+    BrokerEvent,
+    ContractInfo,
+    ContractPosition,
+    ContractSpec,
+    Order,
+    OrderRequest,
+    Tick,
+)
 
 
 class Broker(ABC):

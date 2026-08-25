@@ -45,9 +45,12 @@ def test_full_path_adapter_does_not_change_default_two_return_buffer():
     assert DrawdownReserveFreezeDirectionalProductionAcceptance().retain_completed_returns(
         completed
     ) == [0.03, -0.04]
-    assert FullPathDrawdownReserveFreezeDirectionalProductionAcceptance().retain_completed_returns(
-        completed
-    ) == completed
+    assert (
+        FullPathDrawdownReserveFreezeDirectionalProductionAcceptance().retain_completed_returns(
+            completed
+        )
+        == completed
+    )
 
 
 def test_invalid_hard_limits_fail_closed():

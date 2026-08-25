@@ -1,5 +1,7 @@
 # Stress 68 OI + Freeze Checkpoint Evidence
 
+> **Superseded checkpoint.** Preserved for lineage; later Stress-80 and Stress-90 evidence controls current research status. See [`documentation-index.md`](documentation-index.md).
+
 ## Status
 
 This document preserves the strongest validated Production-mechanics checkpoint found during the Stress-80 research on 2026-08-24. It is intentionally a **checkpoint**, not the final Stress>=80% promotion and not live-runtime wiring.

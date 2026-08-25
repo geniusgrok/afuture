@@ -58,9 +58,7 @@ def test_gate_requires_positive_splits_and_efficiency_improvement():
 
     results = deepcopy(_passing_results())
     results[("stress", "oos")]["stats"]["annualized_return"] = 0.0
-    results[("stress", "full_recent")]["economics"][
-        "net_alpha_per_turnover_bps"
-    ] = 30.990722
+    results[("stress", "full_recent")]["economics"]["net_alpha_per_turnover_bps"] = 30.990722
 
     reasons = evaluate_stress90_gate(results, max_contract_lots=35)["reasons"]
 

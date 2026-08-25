@@ -56,11 +56,10 @@ def common(**overrides):
 def test_research_optimizer_prefers_higher_completed_intraday_mpv_under_same_capacity():
     result = optimize_with_causal_mpv(**common())
     assert result.optimization.target_lots == {"AG2612": 2}
-    assert result.product_estimates[
-        "AG"
-    ].expected_gross_alpha_per_lot_segment > result.product_estimates[
-        "CU"
-    ].expected_gross_alpha_per_lot_segment
+    assert (
+        result.product_estimates["AG"].expected_gross_alpha_per_lot_segment
+        > result.product_estimates["CU"].expected_gross_alpha_per_lot_segment
+    )
 
 
 def test_research_optimizer_falls_back_exactly_without_completed_exposure_evidence():

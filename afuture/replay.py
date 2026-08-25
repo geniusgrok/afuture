@@ -46,9 +46,7 @@ def run_replay(config, data_path: str | Path):
         slippage_ticks=config.slippage_ticks,
         legging_timeout_seconds=config.legging_timeout_seconds,
         journal=AuditJournal(config.journal_path),
-        auto_manager=(
-            AutoPairManager(config.auto) if config.auto.enabled else None
-        ),
+        auto_manager=(AutoPairManager(config.auto) if config.auto.enabled else None),
         require_live_metadata=False,
         historical_mode=True,
     )

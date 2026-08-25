@@ -1,9 +1,10 @@
 """Selection-biased roll-safe L4 for opportunity-driven directional V2."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -14,7 +15,6 @@ if str(ROOT) not in sys.path:
 
 from afuture.execution_aligned_runtime import FROZEN_PRODUCTS
 from afuture.opportunity_aligned_policy import OpportunityAlignedAggressivePolicy
-
 
 MAX_GROSS_LEVERAGE = 2.0
 BASE_COST_BPS = 5.0
@@ -92,14 +92,24 @@ def _window_metrics(series: pd.Series) -> dict[str, dict]:
 def evaluate(specific_raw: pd.DataFrame, continuous_raw: pd.DataFrame) -> dict:
     import evaluate_return_target_specific as specific
 
-    close_ret, gap_ret, intraday_ret, selections, quality = specific.build_roll_safe_execution_returns(specific_raw)
+    close_ret, gap_ret, intraday_ret, selections, quality = (
+        specific.build_roll_safe_execution_returns(specific_raw)
+    )
     weights = generate_execution_signal_weights(continuous_raw)
-    weights = weights.reindex(index=close_ret.index, columns=close_ret.columns, fill_value=0.0).fillna(0.0)
+    weights = weights.reindex(
+        index=close_ret.index, columns=close_ret.columns, fill_value=0.0
+    ).fillna(0.0)
 
     close_paths: dict[str, dict] = {}
     execution_paths: dict[str, dict] = {}
-    for label, cost in (("base", BASE_COST_BPS), ("stress", STRESS_COST_BPS), ("extreme", EXTREME_COST_BPS)):
-        close_paths[label] = _window_metrics(specific.apply_product_weights(close_ret, weights, cost_bps=cost))
+    for label, cost in (
+        ("base", BASE_COST_BPS),
+        ("stress", STRESS_COST_BPS),
+        ("extreme", EXTREME_COST_BPS),
+    ):
+        close_paths[label] = _window_metrics(
+            specific.apply_product_weights(close_ret, weights, cost_bps=cost)
+        )
         execution_paths[label] = _window_metrics(
             specific.apply_next_open_product_weights(gap_ret, intraday_ret, weights, cost_bps=cost)
         )

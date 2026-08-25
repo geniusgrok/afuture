@@ -12,11 +12,12 @@ path is unchanged, while account equity, positions, margin state and high-waterm
 to the configured initial capital/flat state at that window's first day. Static contract
 indexes are prepared once and safely reused across those independent account runs.
 """
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -52,9 +53,7 @@ WINDOWS = {
 
 
 def _metrics(values: pd.Series) -> dict:
-    raw = np.nan_to_num(
-        values.to_numpy(float), nan=0.0, posinf=0.0, neginf=0.0
-    )
+    raw = np.nan_to_num(values.to_numpy(float), nan=0.0, posinf=0.0, neginf=0.0)
     if raw.size == 0:
         return {
             "days": 0,
@@ -67,17 +66,9 @@ def _metrics(values: pd.Series) -> dict:
         }
     equity = np.cumprod(1.0 + raw)
     total = float(equity[-1] - 1.0)
-    annualized = (
-        (1.0 + total) ** (252.0 / raw.size) - 1.0
-        if total > -1.0
-        else -1.0
-    )
+    annualized = (1.0 + total) ** (252.0 / raw.size) - 1.0 if total > -1.0 else -1.0
     std = float(raw.std(ddof=1)) if raw.size > 1 else 0.0
-    sharpe = (
-        float(raw.mean() / std * np.sqrt(252.0))
-        if std > 1e-12
-        else 0.0
-    )
+    sharpe = float(raw.mean() / std * np.sqrt(252.0)) if std > 1e-12 else 0.0
     peak = np.maximum.accumulate(equity)
     drawdown = equity / peak - 1.0
     return {
@@ -93,16 +84,10 @@ def _metrics(values: pd.Series) -> dict:
 
 def _result_stats(result: ProductionSimulationResult) -> dict:
     daily = result.daily
-    returns = (
-        daily["daily_return"].astype(float)
-        if not daily.empty
-        else pd.Series(dtype=float)
-    )
+    returns = daily["daily_return"].astype(float) if not daily.empty else pd.Series(dtype=float)
     stats = _metrics(returns)
     margin_reject_days = (
-        int((daily["margin_reject"].astype(str) != "").sum())
-        if not daily.empty
-        else 0
+        int((daily["margin_reject"].astype(str) != "").sum()) if not daily.empty else 0
     )
     daily_circuit_days = (
         int(daily["daily_circuit"].astype(bool).sum())
@@ -114,11 +99,7 @@ def _result_stats(result: ProductionSimulationResult) -> dict:
         if not daily.empty and "risk_scale" in daily
         else 0
     )
-    halted = (
-        bool(daily["halted"].astype(bool).any())
-        if not daily.empty
-        else False
-    )
+    halted = bool(daily["halted"].astype(bool).any()) if not daily.empty else False
     max_gross_ratio = 0.0
     if not daily.empty:
         equity = daily["equity"].replace(0.0, pd.NA)
@@ -150,9 +131,7 @@ def _simulation_report(
     daily_by_window: dict[str, pd.DataFrame] = {}
     events_by_window: dict[str, pd.DataFrame] = {}
     for name, (start, end) in WINDOWS.items():
-        window_weights = weights.loc[
-            pd.Timestamp(start) : pd.Timestamp(end)
-        ].copy()
+        window_weights = weights.loc[pd.Timestamp(start) : pd.Timestamp(end)].copy()
         result = simulator.simulate(
             specific_raw,
             window_weights,
@@ -254,16 +233,30 @@ def evaluate_with_weights(
     )
 
     turnover_columns = [
-        "turnover_roll", "turnover_resize", "turnover_reversal",
-        "turnover_entry_exit", "turnover_daily_circuit",
-        "turnover_hard_halt", "turnover_gross_guard",
+        "turnover_roll",
+        "turnover_resize",
+        "turnover_reversal",
+        "turnover_entry_exit",
+        "turnover_daily_circuit",
+        "turnover_hard_halt",
+        "turnover_gross_guard",
     ]
+
     def summarize_turnover(frame: pd.DataFrame) -> dict[str, float]:
-        values = {column: float(frame[column].sum()) if column in frame else 0.0 for column in turnover_columns}
-        values["total"] = float(frame["turnover_notional"].sum()) if "turnover_notional" in frame else 0.0
+        values = {
+            column: float(frame[column].sum()) if column in frame else 0.0
+            for column in turnover_columns
+        }
+        values["total"] = (
+            float(frame["turnover_notional"].sum()) if "turnover_notional" in frame else 0.0
+        )
         values["attributed_total"] = float(sum(values[column] for column in turnover_columns))
         return values
-    turnover_attribution = {"base": summarize_turnover(base_daily), "stress": summarize_turnover(stress_daily)}
+
+    turnover_attribution = {
+        "base": summarize_turnover(base_daily),
+        "stress": summarize_turnover(stress_daily),
+    }
     production_attribution = {
         "base": summarize_production_attribution(
             daily=base_daily,
@@ -284,20 +277,15 @@ def evaluate_with_weights(
             proxy = production["windows"]["full_recent"]
             production_gap[label] = {
                 "float_annualized_return": float(historical["annualized_return"]),
-                "production_proxy_annualized_return": float(
-                    proxy["annualized_return"]
-                ),
+                "production_proxy_annualized_return": float(proxy["annualized_return"]),
                 "annualized_return_delta": float(
-                    proxy["annualized_return"]
-                    - historical["annualized_return"]
+                    proxy["annualized_return"] - historical["annualized_return"]
                 ),
                 "float_total_return": float(historical["total_return"]),
                 "production_proxy_total_return": float(proxy["total_return"]),
                 "float_max_drawdown": float(historical["max_drawdown"]),
                 "production_proxy_max_drawdown": float(proxy["max_drawdown"]),
-                "max_drawdown_delta": float(
-                    proxy["max_drawdown"] - historical["max_drawdown"]
-                ),
+                "max_drawdown_delta": float(proxy["max_drawdown"] - historical["max_drawdown"]),
             }
 
     return {
@@ -327,12 +315,8 @@ def evaluate_with_weights(
             "available_cash_gate": True,
             "causal_completed_return_risk_governor": {
                 "lookback_days": int(base_sim.risk_governor.lookback_days),
-                "sample_volatility_trigger": float(
-                    base_sim.risk_governor.volatility_trigger
-                ),
-                "completed_daily_loss_trigger": float(
-                    base_sim.risk_governor.loss_trigger
-                ),
+                "sample_volatility_trigger": float(base_sim.risk_governor.volatility_trigger),
+                "completed_daily_loss_trigger": float(base_sim.risk_governor.loss_trigger),
                 "defensive_scale": float(base_sim.risk_governor.defensive_scale),
             },
             "prepared_contract_indexes_reused_across_windows": True,
@@ -368,39 +352,23 @@ def evaluate(specific_raw: pd.DataFrame, continuous_raw: pd.DataFrame) -> dict:
 
 
 def _jsonable(report: dict) -> dict:
-    return {
-        key: value
-        for key, value in report.items()
-        if not key.startswith("_")
-    }
+    return {key: value for key, value in report.items() if not key.startswith("_")}
 
 
 def main() -> None:
     runtime = Path("runtime")
     specific_path = runtime / "return_target_specific_contracts.csv"
     continuous_path = runtime / "broad_daily_universe.csv"
-    missing = [
-        str(path)
-        for path in (specific_path, continuous_path)
-        if not path.exists()
-    ]
+    missing = [str(path) for path in (specific_path, continuous_path) if not path.exists()]
     if missing:
-        raise SystemExit(
-            f"directional production mechanics inputs missing: {missing}"
-        )
+        raise SystemExit(f"directional production mechanics inputs missing: {missing}")
     report = evaluate(
         pd.read_csv(specific_path),
         pd.read_csv(continuous_path),
     )
-    report["_base_daily"].to_csv(
-        runtime / "directional_production_base_daily.csv"
-    )
-    report["_stress_daily"].to_csv(
-        runtime / "directional_production_stress_daily.csv"
-    )
-    report["_base_events"].to_csv(
-        runtime / "directional_production_base_events.csv", index=False
-    )
+    report["_base_daily"].to_csv(runtime / "directional_production_base_daily.csv")
+    report["_stress_daily"].to_csv(runtime / "directional_production_stress_daily.csv")
+    report["_base_events"].to_csv(runtime / "directional_production_base_events.csv", index=False)
     report["_stress_events"].to_csv(
         runtime / "directional_production_stress_events.csv", index=False
     )

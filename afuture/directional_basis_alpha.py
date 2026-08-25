@@ -1,8 +1,9 @@
 """Research-only causal product weights from completed dominant-contract basis."""
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from math import isfinite
-from typing import Iterable
 
 import numpy as np
 import pandas as pd

@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from afuture.models import Offset, Order, OrderRequest, OrderSide, OrderStatus, OrderType, Trade
 from afuture.quality import ExecutionQualityRecorder
 
-
 NOW = datetime(2026, 8, 25, 1, 1, tzinfo=timezone.utc)
 
 
@@ -76,9 +75,11 @@ def test_directional_quality_recorder_keeps_pair_summary_compatible_and_adds_dir
     assert directional["rejected_count"] == 0
 
 
-def test_directional_order_expectation_uses_broker_fill_truth_without_position_side_effects(tmp_path):
-    from afuture.directional_runtime import DirectionalPortfolioManager
+def test_directional_order_expectation_uses_broker_fill_truth_without_position_side_effects(
+    tmp_path,
+):
     from afuture.directional import DirectionalConfig
+    from afuture.directional_runtime import DirectionalPortfolioManager
     from afuture.models import AccountSnapshot, ContractSpec
     from afuture.risk import RiskConfig, RiskManager
 
@@ -89,7 +90,7 @@ def test_directional_order_expectation_uses_broker_fill_truth_without_position_s
             self.account = AccountSnapshot(100000, 100000, 100000, 0, 0, 0, "20260825")
 
         def send_order(self, request):
-            order_id = f"o-{len(self.orders)+1}"
+            order_id = f"o-{len(self.orders) + 1}"
             self.orders[order_id] = Order(order_id, request, OrderStatus.NOT_TRADED)
             return order_id
 

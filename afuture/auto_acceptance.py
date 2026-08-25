@@ -37,17 +37,12 @@ class AutoPortfolioAcceptanceGate:
         reasons: list[str] = []
         folds = list(result.folds)
         aggregate_oos_return = sum(
-            float(fold.oos_metrics.get("total_return", 0.0))
-            for fold in folds
+            float(fold.oos_metrics.get("total_return", 0.0)) for fold in folds
         )
         residual_oos_folds = sum(
-            int(fold.oos_metrics.get("final_position_count", 0)) != 0
-            for fold in folds
+            int(fold.oos_metrics.get("final_position_count", 0)) != 0 for fold in folds
         )
-        halted_oos_folds = sum(
-            bool(fold.oos_metrics.get("halted", False))
-            for fold in folds
-        )
+        halted_oos_folds = sum(bool(fold.oos_metrics.get("halted", False)) for fold in folds)
         if not folds:
             reasons.append("no auto portfolio walk-forward folds")
             positive_ratio = 0.0
@@ -55,17 +50,12 @@ class AutoPortfolioAcceptanceGate:
             trade_legs = 0
         else:
             positive_ratio = sum(
-                float(fold.oos_metrics.get("total_return", 0.0)) > 0
-                for fold in folds
+                float(fold.oos_metrics.get("total_return", 0.0)) > 0 for fold in folds
             ) / len(folds)
             worst_drawdown = max(
-                abs(float(fold.oos_metrics.get("max_drawdown", 0.0)))
-                for fold in folds
+                abs(float(fold.oos_metrics.get("max_drawdown", 0.0))) for fold in folds
             )
-            trade_legs = sum(
-                int(fold.oos_metrics.get("trade_count", 0))
-                for fold in folds
-            )
+            trade_legs = sum(int(fold.oos_metrics.get("trade_count", 0)) for fold in folds)
             if aggregate_oos_return <= 0:
                 reasons.append("aggregate OOS return is not positive")
             if positive_ratio < self.min_positive_oos_ratio:
@@ -85,13 +75,9 @@ class AutoPortfolioAcceptanceGate:
             default=0.0,
         )
         residual_stress_cases = sum(
-            int(row.get("final_position_count", 0)) != 0
-            for row in stress_rows
+            int(row.get("final_position_count", 0)) != 0 for row in stress_rows
         )
-        halted_stress_cases = sum(
-            bool(row.get("halted", False))
-            for row in stress_rows
-        )
+        halted_stress_cases = sum(bool(row.get("halted", False)) for row in stress_rows)
         if worst_stress < self.min_stress_return:
             reasons.append("cost stress is too fragile")
         if residual_stress_cases:
@@ -107,20 +93,10 @@ class AutoPortfolioAcceptanceGate:
             reasons.append("leave-one-product-out shows catastrophic dependence")
 
         single = result.robustness.get("single_product", {}) or {}
-        positives = [
-            max(0.0, float(row.get("total_return", 0.0)))
-            for row in single.values()
-        ]
+        positives = [max(0.0, float(row.get("total_return", 0.0))) for row in single.values()]
         positive_total = sum(positives)
-        concentration = (
-            max(positives, default=0.0) / positive_total
-            if positive_total > 0
-            else 0.0
-        )
-        if (
-            len(positives) > 1
-            and concentration > self.max_single_product_concentration
-        ):
+        concentration = max(positives, default=0.0) / positive_total if positive_total > 0 else 0.0
+        if len(positives) > 1 and concentration > self.max_single_product_concentration:
             reasons.append("single-product attribution is too concentrated")
 
         metrics = {
@@ -135,6 +111,4 @@ class AutoPortfolioAcceptanceGate:
             "halted_cost_stress_cases": halted_stress_cases,
             "single_product_positive_return_concentration": concentration,
         }
-        return AutoPortfolioAcceptanceDecision(
-            not reasons, tuple(reasons), metrics
-        )
+        return AutoPortfolioAcceptanceDecision(not reasons, tuple(reasons), metrics)

@@ -47,22 +47,54 @@ def test_rebalance_turnover_attribution_classifies_and_sums_executed_deltas():
 
 
 def test_production_daily_turnover_buckets_sum_to_total_without_changing_equity():
-    raw = pd.DataFrame([
-        {"date":"2026-08-20","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":99,"close":99,"volume":5000,"hold":30000},
-        {"date":"2026-08-21","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":100,"close":110,"volume":5000,"hold":30000},
-        {"date":"2026-08-24","product":"A","exchange":"DCE","symbol":"A2609","delivery":"2026-12-15","open":111,"close":112,"volume":5000,"hold":30000},
-    ])
+    raw = pd.DataFrame(
+        [
+            {
+                "date": "2026-08-20",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 99,
+                "close": 99,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-21",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 100,
+                "close": 110,
+                "volume": 5000,
+                "hold": 30000,
+            },
+            {
+                "date": "2026-08-24",
+                "product": "A",
+                "exchange": "DCE",
+                "symbol": "A2609",
+                "delivery": "2026-12-15",
+                "open": 111,
+                "close": 112,
+                "volume": 5000,
+                "hold": 30000,
+            },
+        ]
+    )
     weights = pd.DataFrame(
-        {"A":[1.0,0.0]},
-        index=pd.to_datetime(["2026-08-21","2026-08-24"]),
+        {"A": [1.0, 0.0]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-24"]),
     )
     sim = DirectionalProductionAcceptance(
         ProductionMechanicsConfig(
             initial_capital=100000,
             max_contract_volume=100,
-            max_daily_loss_ratio=.5,
-            max_total_drawdown_ratio=.8,
-            max_margin_ratio=.9,
+            max_daily_loss_ratio=0.5,
+            max_total_drawdown_ratio=0.8,
+            max_margin_ratio=0.9,
             min_available_ratio=0,
         )
     )

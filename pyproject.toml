@@ -20,7 +20,12 @@ live = [
   "akshare>=1.17",
 ]
 dev = [
+  "mypy>=1.17,<2",
+  # NumPy 2.3+ no longer targets Python 3.10; keep development stubs aligned
+  # with afuture's declared minimum runtime while production remains <3.
+  "numpy>=1.26,<2.3",
   "pytest>=8,<10",
+  "ruff>=0.12,<1",
 ]
 
 [project.scripts]
@@ -31,3 +36,23 @@ include = ["afuture*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Standalone research tools intentionally add the repository root before importing
+# project modules so they also work when invoked by file path.
+"tools/*.py" = ["E402"]
+"tests/test_directional_mpv_production_evaluator.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+check_untyped_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true

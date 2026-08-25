@@ -1,10 +1,9 @@
-from pathlib import Path
 import importlib.util
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
 
 spec = importlib.util.spec_from_file_location(
     "return_target",
@@ -60,12 +59,8 @@ def test_causal_momentum_pairing_and_gross_cap() -> None:
 def test_turnover_cost_reduces_return() -> None:
     returns, exchange_map = synthetic_returns()
     template = module.AlphaTemplate("momentum", 20, 0, 20, 1, 1, 1.0)
-    free, _ = module.simulate_template(
-        returns, exchange_map, template, cost_bps=0.0
-    )
-    costed, _ = module.simulate_template(
-        returns, exchange_map, template, cost_bps=30.0
-    )
+    free, _ = module.simulate_template(returns, exchange_map, template, cost_bps=0.0)
+    costed, _ = module.simulate_template(returns, exchange_map, template, cost_bps=30.0)
     assert costed.sum() < free.sum()
 
 
@@ -96,9 +91,7 @@ def test_fail_closed_when_no_positive_calibration_template() -> None:
         "left": pd.Series([-0.002] * 80, index=dates),
         "right": pd.Series([-0.001] * 80, index=dates),
     }
-    assert module.choose_templates(
-        streams, start=dates[0], end=dates[-1], count=2
-    ) == []
+    assert module.choose_templates(streams, start=dates[0], end=dates[-1], count=2) == []
 
 
 def test_dynamic_rotation_adapts_using_trailing_history() -> None:
@@ -151,7 +144,7 @@ def test_evaluate_reports_explicit_non_pristine_target_and_leverage_cap() -> Non
         close = 100.0 * np.cumprod(1.0 + values)
         rows.extend(
             {"date": day, "product": product, "close": price}
-            for day, price in zip(dates, close)
+            for day, price in zip(dates, close, strict=True)
         )
     report = module.evaluate(pd.DataFrame(rows))
     assert report["pristine_final_oos"] is False

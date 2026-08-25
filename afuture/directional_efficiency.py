@@ -4,10 +4,10 @@ This module never owns Alpha, account state or risk authority. It only explains 
 suppresses economically low-value changes that the frozen directional policy already
 requested, while hard risk actions remain authoritative elsewhere.
 """
+
 from __future__ import annotations
 
-from typing import Mapping
-
+from collections.abc import Mapping
 
 TURNOVER_BUCKETS = ("roll", "resize", "reversal", "entry_exit")
 

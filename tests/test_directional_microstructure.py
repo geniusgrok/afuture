@@ -1,7 +1,15 @@
 from datetime import datetime, timezone
 
 from afuture.broker.sim import SimBroker
-from afuture.models import ContractSpec, Offset, OrderRequest, OrderSide, OrderStatus, OrderType, Tick
+from afuture.models import (
+    ContractSpec,
+    Offset,
+    OrderRequest,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Tick,
+)
 
 
 def _spec() -> ContractSpec:

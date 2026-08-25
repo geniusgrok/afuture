@@ -11,10 +11,11 @@ account gates (5% daily loss, 30% total drawdown, 35% margin, 25% available, 2x 
 gross and 35 lots) remain owned by the existing Production mechanics / RiskManager path.
 This module is not imported by live runtime wiring.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Iterable, Mapping
 
 from .directional_acceptance import PRODUCT_MULTIPLIERS, TargetLotStages
 from .directional_risk import DirectionalRiskGovernor
@@ -37,22 +38,15 @@ def freeze_new_risk_target(
 ) -> dict[str, int]:
     """Freeze new/same-sign increases without delaying risk reduction actions."""
     target = {
-        str(symbol): int(volume)
-        for symbol, volume in target_lots.items()
-        if int(volume) != 0
+        str(symbol): int(volume) for symbol, volume in target_lots.items() if int(volume) != 0
     }
     if not triggered:
         return dict(target)
 
     current = {
-        str(symbol): int(volume)
-        for symbol, volume in current_lots.items()
-        if int(volume) != 0
+        str(symbol): int(volume) for symbol, volume in current_lots.items() if int(volume) != 0
     }
-    products = {
-        str(symbol): str(product).upper()
-        for symbol, product in symbol_products.items()
-    }
+    products = {str(symbol): str(product).upper() for symbol, product in symbol_products.items()}
     by_product: dict[str, list[str]] = {}
     for symbol in current:
         product = products.get(symbol)
@@ -101,9 +95,7 @@ class _UnitScaleGovernor:
         return 1.0
 
 
-class FreezeNewRiskDirectionalProductionAcceptance(
-    MarginAwareDirectionalProductionAcceptance
-):
+class FreezeNewRiskDirectionalProductionAcceptance(MarginAwareDirectionalProductionAcceptance):
     """Production-mechanics research adapter with freeze-only soft defense."""
 
     def __init__(self, config=None) -> None:
@@ -158,8 +150,7 @@ class FreezeNewRiskDirectionalProductionAcceptance(
         )
 
         product_for_symbol = {
-            str(symbol): str(product).upper()
-            for product, symbol in selected_symbols.items()
+            str(symbol): str(product).upper() for product, symbol in selected_symbols.items()
         }
         final_notional = 0.0
         for symbol, volume in frozen.items():
@@ -180,14 +171,8 @@ class FreezeNewRiskDirectionalProductionAcceptance(
             raw_integer_notional=float(baseline.raw_integer_notional),
             margin_fitted_notional=float(baseline.margin_fitted_notional),
             final_notional=float(final_notional),
-            integer_rounding_loss_notional=float(
-                baseline.integer_rounding_loss_notional
-            ),
-            max_volume_clipping_notional=float(
-                baseline.max_volume_clipping_notional
-            ),
-            unavailable_contract_notional=float(
-                baseline.unavailable_contract_notional
-            ),
+            integer_rounding_loss_notional=float(baseline.integer_rounding_loss_notional),
+            max_volume_clipping_notional=float(baseline.max_volume_clipping_notional),
+            unavailable_contract_notional=float(baseline.unavailable_contract_notional),
             soft_margin_share=baseline.soft_margin_share,
         )

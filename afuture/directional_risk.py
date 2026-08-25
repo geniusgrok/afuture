@@ -1,10 +1,18 @@
 """Causal risk scaling for the execution-aligned directional portfolio."""
+
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from math import isfinite
 from statistics import stdev
-from typing import Callable, Iterable
+from typing import Protocol
+
+
+class DirectionalRiskScale(Protocol):
+    """Behavioral contract for causal target scaling policies."""
+
+    def scale(self, completed_returns: Iterable[float]) -> float: ...
 
 
 @dataclass(frozen=True)
@@ -32,18 +40,11 @@ class DirectionalRiskGovernor:
             raise ValueError("directional defensive_scale must be in (0, 1]")
 
     def scale(self, completed_returns: Iterable[float]) -> float:
-        values = [
-            float(value)
-            for value in completed_returns
-            if isfinite(float(value))
-        ]
+        values = [float(value) for value in completed_returns if isfinite(float(value))]
         if values and values[-1] <= -self.loss_trigger:
             return self.defensive_scale
         sample = values[-self.lookback_days :]
-        if (
-            len(sample) >= self.lookback_days
-            and stdev(sample) >= self.volatility_trigger
-        ):
+        if len(sample) >= self.lookback_days and stdev(sample) >= self.volatility_trigger:
             return self.defensive_scale
         return 1.0
 
@@ -65,10 +66,7 @@ class DirectionalRiskScaledPolicy:
     def target_weights(self, *args, **kwargs) -> dict[str, float]:
         weights = self.policy.target_weights(*args, **kwargs)
         scale = self.governor.scale(self.completed_returns_provider())
-        return {
-            str(product): float(weight) * scale
-            for product, weight in weights.items()
-        }
+        return {str(product): float(weight) * scale for product, weight in weights.items()}
 
     def __getattr__(self, name):
         return getattr(self.policy, name)

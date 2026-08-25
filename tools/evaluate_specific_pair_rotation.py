@@ -5,17 +5,17 @@ one causal tradable index per product from concrete futures contracts. Contract 
 close t uses only t open interest and a 20-day delivery blackout. Return t->t+1 is then
 measured on that same chosen contract, so no synthetic roll jump can become alpha.
 """
+
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
+from dataclasses import asdict
 from pathlib import Path
-
-import numpy as np
-import pandas as pd
 
 import evaluate_broad_pair_regime as base
 import evaluate_broad_pair_rotation as rotation
+import numpy as np
+import pandas as pd
 
 MIN_DAYS_TO_DELIVERY = 20
 MIN_PRODUCT_DAYS = 700
@@ -39,9 +39,7 @@ def build_roll_safe_panel(
     frame["delivery"] = pd.to_datetime(frame["delivery"], errors="coerce")
     for column in ("close", "volume", "hold"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = frame.dropna(
-        subset=["date", "delivery", "product", "symbol", "close", "hold"]
-    )
+    frame = frame.dropna(subset=["date", "delivery", "product", "symbol", "close", "hold"])
     frame = frame[(frame["close"] > 0) & (frame["hold"] >= 0)]
     frame.drop_duplicates(["product", "symbol", "date"], keep="last", inplace=True)
     frame.sort_values(["product", "date", "symbol"], inplace=True)
@@ -87,9 +85,7 @@ def build_roll_safe_panel(
                     "close": float(chosen["close"]),
                     "volume": float(chosen["volume"]),
                     "open_interest": float(chosen["hold"]),
-                    "days_to_delivery": int(
-                        (pd.Timestamp(chosen["delivery"]) - trading_day).days
-                    ),
+                    "days_to_delivery": int((pd.Timestamp(chosen["delivery"]) - trading_day).days),
                 }
             )
 
@@ -188,9 +184,7 @@ def _evaluate_profile(
             "entries": len(entries),
             **{
                 window: base._window_metrics(stressed, window)
-                for window in (
-                    "prior1", "prior2", "train", "validation", "oos", "full_recent"
-                )
+                for window in ("prior1", "prior2", "train", "validation", "oos", "full_recent")
             },
         }
 
@@ -245,14 +239,10 @@ def _evaluate_profile(
         result["validation"],
     ]
     result["pre_oos_pass"] = bool(
-        prior_pairs
-        and current_pairs
-        and all(base._qualifies(item) for item in pre_oos)
+        prior_pairs and current_pairs and all(base._qualifies(item) for item in pre_oos)
     )
     result["pre_oos_score"] = (
-        min(item["sharpe"] for item in pre_oos)
-        if result["pre_oos_pass"]
-        else -999.0
+        min(item["sharpe"] for item in pre_oos) if result["pre_oos_pass"] else -999.0
     )
     return result
 
@@ -286,12 +276,10 @@ def evaluate(raw: pd.DataFrame) -> dict:
         "support": {
             "eligible_profiles": len(eligible),
             "formation_60": sum(
-                item["pre_oos_pass"] and item["profile"]["formation"] == 60
-                for item in profiles
+                item["pre_oos_pass"] and item["profile"]["formation"] == 60 for item in profiles
             ),
             "formation_120": sum(
-                item["pre_oos_pass"] and item["profile"]["formation"] == 120
-                for item in profiles
+                item["pre_oos_pass"] and item["profile"]["formation"] == 120 for item in profiles
             ),
         },
         "selected_profile": selected["profile"] if selected else None,
@@ -323,7 +311,7 @@ def evaluate(raw: pd.DataFrame) -> dict:
             max_active_pairs=MAX_ACTIVE_PAIRS,
         )
         selection_start, selection_end = base.WINDOWS["selection_full"]
-        calibration = current.loc[pd.Timestamp(selection_start):pd.Timestamp(selection_end)]
+        calibration = current.loc[pd.Timestamp(selection_start) : pd.Timestamp(selection_end)]
         leverage = base._choose_leverage(calibration)
         report["selected_leverage"] = leverage
         scaled = current * leverage if leverage > 0 else current * 0.0
@@ -345,7 +333,10 @@ def evaluate(raw: pd.DataFrame) -> dict:
     report["alpha_survives_specific_contract"] = not alpha_reasons
     report["alpha_reasons"] = alpha_reasons
     reasons.extend(alpha_reasons)
-    if report.get("selected_full_recent") is None or report["selected_full_recent"]["annualized_return"] < 1.0:
+    if (
+        report.get("selected_full_recent") is None
+        or report["selected_full_recent"]["annualized_return"] < 1.0
+    ):
         reasons.append("stressed roll-safe two-year annualized return is below 100%")
     report["target"] = {
         "annualized_return": 1.0,
@@ -373,20 +364,26 @@ def main() -> None:
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    print(json.dumps({
-        "data_quality": report["data_quality"],
-        "support": report["support"],
-        "selected_profile": report["selected_profile"],
-        "selected_prior_pairs": report["selected_prior_pairs"],
-        "selected_current_pairs": report["selected_current_pairs"],
-        "selected_prior_forward_train": report["selected_prior_forward_train"],
-        "selected_leverage": report["selected_leverage"],
-        "selected_oos": report["selected_oos"],
-        "selected_full_recent": report["selected_full_recent"],
-        "alpha_survives_specific_contract": report["alpha_survives_specific_contract"],
-        "alpha_reasons": report["alpha_reasons"],
-        "target": report["target"],
-    }, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "data_quality": report["data_quality"],
+                "support": report["support"],
+                "selected_profile": report["selected_profile"],
+                "selected_prior_pairs": report["selected_prior_pairs"],
+                "selected_current_pairs": report["selected_current_pairs"],
+                "selected_prior_forward_train": report["selected_prior_forward_train"],
+                "selected_leverage": report["selected_leverage"],
+                "selected_oos": report["selected_oos"],
+                "selected_full_recent": report["selected_full_recent"],
+                "alpha_survives_specific_contract": report["alpha_survives_specific_contract"],
+                "alpha_reasons": report["alpha_reasons"],
+                "target": report["target"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

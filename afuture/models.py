@@ -9,16 +9,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from math import isfinite
 
 
 class OrderSide(str, Enum):
     """报单买卖方向。"""
+
     BUY = "BUY"
     SELL = "SELL"
 
 
 class Offset(str, Enum):
     """开平仓方向。"""
+
     OPEN = "OPEN"
     CLOSE = "CLOSE"
     CLOSE_TODAY = "CLOSE_TODAY"
@@ -27,6 +30,7 @@ class Offset(str, Enum):
 
 class OrderType(str, Enum):
     """订单类型。"""
+
     LIMIT = "LIMIT"
     FAK = "FAK"
     FOK = "FOK"
@@ -34,6 +38,7 @@ class OrderType(str, Enum):
 
 class OrderStatus(str, Enum):
     """统一订单状态。"""
+
     SUBMITTING = "SUBMITTING"
     NOT_TRADED = "NOT_TRADED"
     PART_TRADED = "PART_TRADED"
@@ -44,6 +49,7 @@ class OrderStatus(str, Enum):
 
 class SignalAction(str, Enum):
     """套利策略输出。"""
+
     LONG_SPREAD = "LONG_SPREAD"
     SHORT_SPREAD = "SHORT_SPREAD"
     EXIT = "EXIT"
@@ -53,6 +59,7 @@ class SignalAction(str, Enum):
 
 class RuntimeMode(str, Enum):
     """生产状态机状态。"""
+
     RUNNING = "RUNNING"
     REDUCE_ONLY = "REDUCE_ONLY"
     HALTED = "HALTED"
@@ -61,6 +68,7 @@ class RuntimeMode(str, Enum):
 @dataclass(frozen=True)
 class FeeSpec:
     """手续费模型，同时支持按手和按成交额收费。"""
+
     open_fixed: float = 0.0
     open_rate: float = 0.0
     close_fixed: float = 0.0
@@ -72,6 +80,7 @@ class FeeSpec:
 @dataclass(frozen=True)
 class ContractSpec:
     """研究、回放和事前风控所需的合约参数。"""
+
     symbol: str
     exchange: str
     multiplier: float
@@ -88,6 +97,7 @@ class ContractInfo:
     ``listing`` 仅用于历史研究重建“当日真实可见目录”；实盘 CTP 本身只返回已挂牌
     合约，因此该字段可以为空，不会把研究逻辑扩散成第二套生产 Universe。
     """
+
     symbol: str
     exchange: str
     product: str
@@ -102,6 +112,7 @@ class PairConfig:
     ``volume`` 是允许的最大手数；实际开仓手数由风险预算、波动和流动性共同决定。
     相对价值扩展默认关闭，因此旧配置继续使用绝对价差和原有入场逻辑。
     """
+
     pair_id: str
     near_symbol: str
     far_symbol: str
@@ -135,6 +146,7 @@ class PairConfig:
 @dataclass(frozen=True)
 class Tick:
     """统一一档行情。时间戳必须带时区。"""
+
     symbol: str
     exchange: str
     timestamp: datetime
@@ -153,16 +165,22 @@ class Tick:
         """拒绝会导致错误成交或风险估计的异常行情。"""
         if self.timestamp.tzinfo is None:
             raise ValueError("tick timestamp must be timezone-aware")
-        if self.bid_price <= 0 or self.ask_price <= 0:
-            raise ValueError("bid/ask price must be positive")
+        prices = (self.bid_price, self.ask_price, self.last_price)
+        if any(not isfinite(value) or value <= 0 for value in prices):
+            raise ValueError("bid/ask/last price must be finite and positive")
         if self.ask_price < self.bid_price:
             raise ValueError("ask price cannot be below bid price")
-        if self.bid_volume <= 0 or self.ask_volume <= 0:
-            raise ValueError("quote volume must be positive")
+        quote_volumes = (self.bid_volume, self.ask_volume)
+        if any(not isfinite(value) or value <= 0 for value in quote_volumes):
+            raise ValueError("quote volume must be finite and positive")
+        limits = (self.limit_up, self.limit_down)
+        if any(not isfinite(value) or value < 0 for value in limits):
+            raise ValueError("daily price limits must be finite and non-negative")
         if self.limit_up and self.limit_down and self.limit_up <= self.limit_down:
             raise ValueError("daily price limits are invalid")
-        if self.volume < 0 or self.open_interest < 0:
-            raise ValueError("volume/open_interest cannot be negative")
+        activity = (self.volume, self.open_interest)
+        if any(not isfinite(value) or value < 0 for value in activity):
+            raise ValueError("volume/open_interest must be finite and non-negative")
 
     @property
     def mid_price(self) -> float:
@@ -172,6 +190,7 @@ class Tick:
 @dataclass(frozen=True)
 class SpreadSignal:
     """策略信号只表达目标，不直接操作交易账户。"""
+
     pair_id: str
     action: SignalAction
     zscore: float
@@ -185,6 +204,7 @@ class SpreadSignal:
 @dataclass(frozen=True)
 class OrderRequest:
     """统一下单请求。reference 用于跟踪套利组合。"""
+
     symbol: str
     exchange: str
     side: OrderSide
@@ -198,6 +218,7 @@ class OrderRequest:
 @dataclass
 class Order:
     """统一订单状态。"""
+
     order_id: str
     request: OrderRequest
     status: OrderStatus = OrderStatus.SUBMITTING
@@ -217,6 +238,7 @@ class Order:
 @dataclass(frozen=True)
 class Trade:
     """成交记录。"""
+
     trade_id: str
     order_id: str
     symbol: str
@@ -228,10 +250,39 @@ class Trade:
     timestamp: datetime
     commission: float = 0.0
 
+    def validate(self) -> None:
+        """Validate broker-fill identity and economic values before any book mutation."""
+        for field_name, value in (
+            ("trade_id", self.trade_id),
+            ("order_id", self.order_id),
+            ("symbol", self.symbol),
+            ("exchange", self.exchange),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"trade {field_name} must be a non-empty string")
+        if not isinstance(self.side, OrderSide):
+            raise ValueError("trade side must be an OrderSide")
+        if not isinstance(self.offset, Offset):
+            raise ValueError("trade offset must be an Offset")
+        if isinstance(self.volume, bool) or not isinstance(self.volume, int) or self.volume <= 0:
+            raise ValueError("trade volume must be a positive integer")
+        if not isinstance(self.price, (int, float)) or not isfinite(self.price) or self.price <= 0:
+            raise ValueError("trade price must be finite and positive")
+        if self.timestamp.tzinfo is None:
+            raise ValueError("trade timestamp must be timezone-aware")
+        if (
+            isinstance(self.commission, bool)
+            or not isinstance(self.commission, (int, float))
+            or not isfinite(self.commission)
+            or self.commission < 0
+        ):
+            raise ValueError("trade commission must be finite and non-negative")
+
 
 @dataclass
 class ContractPosition:
     """按今昨仓拆分的合约持仓。"""
+
     symbol: str
     exchange: str
     long_today: int = 0
@@ -257,10 +308,41 @@ class ContractPosition:
     def empty(self) -> bool:
         return self.long_total == 0 and self.short_total == 0
 
+    def validate(self) -> None:
+        """Validate restart and broker position truth before it enters accounting."""
+        if not isinstance(self.symbol, str) or not self.symbol.strip():
+            raise ValueError("position symbol must be a non-empty string")
+        if not isinstance(self.exchange, str) or not self.exchange.strip():
+            raise ValueError("position exchange must be a non-empty string")
+        buckets = (
+            self.long_today,
+            self.long_yesterday,
+            self.short_today,
+            self.short_yesterday,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in buckets
+        ):
+            raise ValueError("position buckets cannot be negative and must be integers")
+        for side, price, volume in (
+            ("long", self.long_price, self.long_total),
+            ("short", self.short_price, self.short_total),
+        ):
+            if (
+                isinstance(price, bool)
+                or not isinstance(price, (int, float))
+                or not isfinite(price)
+                or price < 0
+            ):
+                raise ValueError(f"position {side} price must be finite and non-negative")
+            if volume > 0 and price <= 0:
+                raise ValueError(f"open {side} position price must be positive")
+
 
 @dataclass(frozen=True)
 class AccountSnapshot:
     """统一账户快照。"""
+
     balance: float
     equity: float
     available: float
@@ -269,10 +351,33 @@ class AccountSnapshot:
     unrealized_pnl: float
     trading_day: str
 
+    def validate(self) -> None:
+        """Reject account values that could bypass ratio-based risk comparisons."""
+        values = {
+            "balance": self.balance,
+            "equity": self.equity,
+            "available": self.available,
+            "margin": self.margin,
+            "realized_pnl": self.realized_pnl,
+            "unrealized_pnl": self.unrealized_pnl,
+        }
+        for name, value in values.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not isfinite(value)
+            ):
+                raise ValueError(f"account {name} must be finite")
+        if self.balance <= 0 or self.equity <= 0:
+            raise ValueError("account balance/equity must be positive")
+        if self.available < 0 or self.margin < 0:
+            raise ValueError("account available/margin must be non-negative")
+
 
 @dataclass(frozen=True)
 class RiskDecision:
     """风险规则判断结果。"""
+
     allowed: bool
     reason: str = ""
 
@@ -280,6 +385,7 @@ class RiskDecision:
 @dataclass(frozen=True)
 class ExecutionResult:
     """一次套利组合执行结果。"""
+
     accepted: bool
     order_ids: tuple[str, ...] = ()
     reason: str = ""
@@ -289,5 +395,6 @@ class ExecutionResult:
 @dataclass(frozen=True)
 class BrokerEvent:
     """柜台向交易引擎投递的统一事件。"""
+
     event_type: str
     payload: object

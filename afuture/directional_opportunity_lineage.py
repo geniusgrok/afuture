@@ -1,4 +1,5 @@
 """Exact audit lineage for the opportunity-driven directional overlay."""
+
 from __future__ import annotations
 
 import pandas as pd
@@ -74,10 +75,9 @@ def build_opportunity_weight_lineage(
             validate="many_to_one",
         )
         result["opportunity_scale"] = result["opportunity_scale"].fillna(1.0)
-        result["contribution_weight"] = (
-            result["contribution_weight"].astype(float)
-            * result["opportunity_scale"].astype(float)
-        )
+        result["contribution_weight"] = result["contribution_weight"].astype(float) * result[
+            "opportunity_scale"
+        ].astype(float)
         result.rename(
             columns={"adjusted_aggregate_weight": "aggregate_weight"},
             inplace=True,

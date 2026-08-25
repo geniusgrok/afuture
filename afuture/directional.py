@@ -4,14 +4,15 @@ The frozen signal engine lives only in ``execution_aligned_policy``. This module
 configuration, point-in-time contract selector, integer target-lot conversion and
 reduction-first rebalance primitives shared by runtime and tests.
 """
+
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from math import floor
-import re
 from statistics import stdev
-from typing import Iterable, Mapping
 
 from .directional_efficiency import stabilize_one_lot_increases
 from .models import (
@@ -104,9 +105,7 @@ class DirectionalContractSelector:
 
         result: dict[str, ContractInfo] = {}
         for product, rows in candidates.items():
-            rows.sort(
-                key=lambda row: (-row[0], -row[1], row[2], row[3].symbol)
-            )
+            rows.sort(key=lambda row: (-row[0], -row[1], row[2], row[3].symbol))
             result[product] = rows[0][3]
         return result
 
@@ -333,7 +332,9 @@ def build_margin_aware_target_lots(
         per_lot_margin,
         margin_budget=float(account.equity) * sizing_share,
     )
-    current = {str(symbol): int(volume) for symbol, volume in (current_lots or {}).items() if int(volume)}
+    current = {
+        str(symbol): int(volume) for symbol, volume in (current_lots or {}).items() if int(volume)
+    }
     if not current:
         return fitted
     lot_notionals = {
@@ -394,11 +395,7 @@ def build_realized_gross_reductions(
 
     denominator = 1.0 - float(max_gross_ratio) * float(cost_rate)
     if denominator <= 0:
-        return {
-            symbol: -int(volume)
-            for symbol, volume in current_lots.items()
-            if int(volume) != 0
-        }
+        return {symbol: -int(volume) for symbol, volume in current_lots.items() if int(volume) != 0}
     required_reduction = max(0.0, (gross - limit) / denominator)
     retain_scale = max(0.0, 1.0 - required_reduction / gross)
 
@@ -416,9 +413,7 @@ def build_realized_gross_reductions(
         if target_magnitude < magnitude:
             candidates.append((ideal - target_magnitude, symbol, lot_notional))
 
-    for _, symbol, lot_notional in sorted(
-        candidates, key=lambda item: (-item[0], item[1])
-    ):
+    for _, symbol, lot_notional in sorted(candidates, key=lambda item: (-item[0], item[1])):
         if reduction_notional - lot_notional + 1e-10 < required_reduction:
             continue
         volume = int(current_lots[symbol])
@@ -436,9 +431,7 @@ def build_rebalance_plan(
     positions: Iterable[ContractPosition], target_lots: Mapping[str, int]
 ) -> RebalancePlan:
     current = {
-        position.symbol: position.net_volume
-        for position in positions
-        if position.net_volume != 0
+        position.symbol: position.net_volume for position in positions if position.net_volume != 0
     }
     symbols = set(current) | set(target_lots)
     reductions: dict[str, int] = {}

@@ -1,9 +1,10 @@
 """Roll-safe float screen for the predeclared product Alpha-efficiency selector."""
+
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -14,9 +15,9 @@ if str(ROOT) not in sys.path:
 
 import evaluate_aggressive_directional as aggressive
 import evaluate_return_target_specific as specific
+
 from afuture.alpha_efficiency_policy import AlphaEfficiencyDirectionalPolicy
 from afuture.execution_aligned_policy import BASE_COST_BPS
-
 
 MAX_GROSS_LEVERAGE = 2.0
 STRESS_COST_BPS = 15.0
@@ -55,9 +56,9 @@ def build_continuous_price_history(
 
 def generate_alpha_efficiency_weights(continuous_raw: pd.DataFrame) -> pd.DataFrame:
     open_prices, close = build_continuous_price_history(continuous_raw)
-    return AlphaEfficiencyDirectionalPolicy(
-        products=tuple(open_prices.columns)
-    ).weight_history(open_prices, close)
+    return AlphaEfficiencyDirectionalPolicy(products=tuple(open_prices.columns)).weight_history(
+        open_prices, close
+    )
 
 
 def _window_metrics(series: pd.Series) -> dict[str, dict]:
@@ -89,7 +90,7 @@ def evaluate(specific_raw: pd.DataFrame, continuous_raw: pd.DataFrame) -> dict:
             cost_bps=cost,
         )
         execution_paths[label] = _window_metrics(stream)
-        full = weights.loc[pd.Timestamp("2024-08-21"):pd.Timestamp("2026-08-20")]
+        full = weights.loc[pd.Timestamp("2024-08-21") : pd.Timestamp("2026-08-20")]
         turnover[label] = float(full.diff().abs().sum(axis=1).sum())
 
     report = {
@@ -111,9 +112,9 @@ def evaluate(specific_raw: pd.DataFrame, continuous_raw: pd.DataFrame) -> dict:
     runtime = Path("runtime")
     runtime.mkdir(parents=True, exist_ok=True)
     selections.to_csv(runtime / "alpha_efficiency_specific_selection.csv", index=False)
-    weights.stack().rename("weight").reset_index().query(
-        "abs(weight) > 1e-15"
-    ).to_csv(runtime / "alpha_efficiency_weights.csv", index=False)
+    weights.stack().rename("weight").reset_index().query("abs(weight) > 1e-15").to_csv(
+        runtime / "alpha_efficiency_weights.csv", index=False
+    )
     return report
 
 

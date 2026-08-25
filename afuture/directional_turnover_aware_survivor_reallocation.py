@@ -11,6 +11,7 @@ The cost-aware layer is used only as an eligibility mask. On each target day thi
 No threshold, fitted coefficient, product ranking or return estimate is introduced here.
 The helper cannot create support, change a sign, or exceed the original/2x gross budget.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -37,13 +38,9 @@ def _validated_frames(
         raise ValueError("approved weights contain new product support")
 
     approved = (
-        approved_weights.reindex(columns=original.columns, fill_value=0.0)
-        .astype(float)
-        .fillna(0.0)
+        approved_weights.reindex(columns=original.columns, fill_value=0.0).astype(float).fillna(0.0)
     )
-    if not np.isfinite(original.to_numpy()).all() or not np.isfinite(
-        approved.to_numpy()
-    ).all():
+    if not np.isfinite(original.to_numpy()).all() or not np.isfinite(approved.to_numpy()).all():
         raise ValueError("weights must be finite")
 
     approved_support = approved.abs() > _EPS
@@ -51,9 +48,7 @@ def _validated_frames(
     if bool((approved_support & ~original_support).any().any()):
         raise ValueError("approved weights contain new product support")
 
-    sign_flip = approved_support & (
-        np.sign(approved.to_numpy()) != np.sign(original.to_numpy())
-    )
+    sign_flip = approved_support & (np.sign(approved.to_numpy()) != np.sign(original.to_numpy()))
     if bool(np.asarray(sign_flip).any()):
         raise ValueError("approved weights changed original target sign")
 
@@ -74,7 +69,7 @@ def reallocate_survivors_lexicographically(
     """Restore gross on survivors with tracking-first, turnover-second allocation."""
     original, approved = _validated_frames(original_weights, approved_weights)
     result = pd.DataFrame(0.0, index=original.index, columns=original.columns)
-    previous = np.zeros(len(original.columns), dtype=float)
+    previous: np.ndarray = np.zeros(len(original.columns), dtype=float)
 
     for timestamp in original.index:
         original_row = original.loc[timestamp].to_numpy(float)
@@ -128,12 +123,7 @@ def reallocate_survivors_lexicographically(
     original_gross = original.abs().sum(axis=1)
     result_gross = result.abs().sum(axis=1)
     survivor_days = approved.abs().sum(axis=1) > _EPS
-    if bool(
-        (
-            (result_gross[survivor_days] - original_gross[survivor_days]).abs()
-            > 1e-10
-        ).any()
-    ):
+    if bool(((result_gross[survivor_days] - original_gross[survivor_days]).abs() > 1e-10).any()):
         raise AssertionError("survivor reallocation failed to restore original gross")
     if bool((result_gross > original_gross + 1e-10).any()):
         raise AssertionError("survivor reallocation exceeded original gross")
@@ -144,9 +134,7 @@ def reallocate_survivors_lexicographically(
     result_support = result.abs() > _EPS
     if bool((result_support & ~approved_support).any().any()):
         raise AssertionError("survivor reallocation created new support")
-    sign_flip = result_support & (
-        np.sign(result.to_numpy()) != np.sign(original.to_numpy())
-    )
+    sign_flip = result_support & (np.sign(result.to_numpy()) != np.sign(original.to_numpy()))
     if bool(np.asarray(sign_flip).any()):
         raise AssertionError("survivor reallocation changed target sign")
     return result.astype(float)

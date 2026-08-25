@@ -3,11 +3,12 @@
 L3 breadth evidence only. Requests are independent provider I/O, so they use a bounded
 thread pool; every failed root remains explicit in the evidence instead of being filled.
 """
+
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-import time
 
 import akshare as ak
 import pandas as pd
@@ -15,13 +16,56 @@ import pandas as pd
 START = pd.Timestamp("2022-08-22")
 END = pd.Timestamp("2026-08-20")
 PRODUCTS = (
-    "A", "B", "C", "CS", "EB", "EG", "I", "J", "JM", "L", "LH", "M",
-    "P", "PG", "PP", "V", "Y",
-    "AP", "CF", "CJ", "FG", "MA", "OI", "PF", "PK", "RM", "SA", "SF",
-    "SM", "SR", "TA", "UR",
-    "AG", "AL", "AU", "BU", "CU", "FU", "HC", "NI", "PB", "RB", "RU",
-    "SN", "SP", "SS", "ZN",
-    "BC", "LU", "NR",
+    "A",
+    "B",
+    "C",
+    "CS",
+    "EB",
+    "EG",
+    "I",
+    "J",
+    "JM",
+    "L",
+    "LH",
+    "M",
+    "P",
+    "PG",
+    "PP",
+    "V",
+    "Y",
+    "AP",
+    "CF",
+    "CJ",
+    "FG",
+    "MA",
+    "OI",
+    "PF",
+    "PK",
+    "RM",
+    "SA",
+    "SF",
+    "SM",
+    "SR",
+    "TA",
+    "UR",
+    "AG",
+    "AL",
+    "AU",
+    "BU",
+    "CU",
+    "FU",
+    "HC",
+    "NI",
+    "PB",
+    "RB",
+    "RU",
+    "SN",
+    "SP",
+    "SS",
+    "ZN",
+    "BC",
+    "LU",
+    "NR",
 )
 MIN_ROWS = 400
 MAX_WORKERS = 8

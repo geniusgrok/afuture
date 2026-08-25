@@ -57,9 +57,7 @@ def test_pair_executor_can_use_market_event_time_for_historical_rate_limit():
                 max_quote_age_seconds=30.0,
             )
         )
-        executor = PairExecutor(
-            broker, risk, specs, aggressive_ticks=0, slippage_ticks=0
-        )
+        executor = PairExecutor(broker, risk, specs, aggressive_ticks=0, slippage_ticks=0)
         pair = PairConfig("p", "N", "F", "DCE", 1)
         day1 = datetime(2026, 8, 20, 9, 0, tzinfo=timezone.utc)
         near1, far1 = _tick("N", day1, 99, 100), _tick("F", day1, 89, 90)
