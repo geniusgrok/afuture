@@ -240,3 +240,19 @@ def test_position_book_rejects_invalid_identity_or_valuation(
 ) -> None:
     with pytest.raises(ValueError):
         PositionBook([position])
+
+
+def test_position_book_keeps_same_symbol_on_distinct_exchanges() -> None:
+    book = PositionBook(
+        [
+            ContractPosition("same", "DCE", long_today=1, long_price=100.0),
+            ContractPosition("same", "SHFE", short_today=2, short_price=200.0),
+        ]
+    )
+
+    dce = book.get("same", "DCE")
+    shfe = book.get("same", "SHFE")
+
+    assert (dce.long_today, dce.short_today) == (1, 0)
+    assert (shfe.long_today, shfe.short_today) == (0, 2)
+    assert len(book.all()) == 2

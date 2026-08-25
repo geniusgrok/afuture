@@ -320,7 +320,7 @@ def test_duplicate_trade_callback_is_ignored_before_position_side_effects(tmp_pa
 
     state = store.load()
     assert state.positions == before
-    assert state.recent_trade_ids == [f"20260821:{trade.trade_id}"]
+    assert state.recent_trade_ids == [f"20260821:DCE:{trade.trade_id}"]
 
 
 def test_duplicate_trade_callback_is_ignored_after_restart(tmp_path: Path):
@@ -343,8 +343,71 @@ def test_duplicate_trade_callback_is_ignored_after_restart(tmp_path: Path):
 
     state = store.load()
     assert state.positions == before
-    assert state.recent_trade_ids == [f"20260821:{trade.trade_id}"]
+    assert state.recent_trade_ids == [f"20260821:DCE:{trade.trade_id}"]
     assert not restarted.halted
+
+
+def test_legacy_trade_identity_suppresses_replayed_fill_during_migration(tmp_path: Path):
+    specs = setup_specs()
+    broker = SimBroker(500000, specs)
+    broker._trading_day = "20260821"
+    store = StateStore(tmp_path / "s.json")
+    store.save(RuntimeState(trading_day="20260821", recent_trade_ids=["20260821:LEGACY-T1"]))
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    engine.start()
+    broker.owns_order = lambda _order_id: False
+    replay = Trade(
+        "LEGACY-T1",
+        "KNOWN-O1",
+        "m2609",
+        "DCE",
+        OrderSide.BUY,
+        Offset.OPEN,
+        1,
+        3001.0,
+        datetime(2026, 8, 21, 1, tzinfo=timezone.utc),
+    )
+
+    handled = engine._handle_trade_event(replay)
+
+    assert not handled
+    assert not engine.halted
+    assert store.positions_from_state(store.load()) == []
+    assert store.load().recent_trade_ids == ["20260821:LEGACY-T1"]
+
+
+def test_trade_identity_and_expected_positions_include_exchange(tmp_path: Path):
+    specs = setup_specs()
+    broker = SimBroker(500000, specs)
+    broker._trading_day = "20260821"
+    store = StateStore(tmp_path / "s.json")
+    engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
+    engine.start()
+    broker.owns_order = lambda _order_id: True
+    for exchange, order_id in (("DCE", "O-DCE"), ("SHFE", "O-SHFE")):
+        trade = Trade(
+            "SHARED-T1",
+            order_id,
+            "same",
+            exchange,
+            OrderSide.BUY,
+            Offset.OPEN,
+            1,
+            100.0,
+            datetime(2026, 8, 21, 1, tzinfo=timezone.utc),
+        )
+        assert engine._handle_trade_event(trade)
+
+    state = store.load()
+    positions = sorted(store.positions_from_state(state), key=lambda position: position.exchange)
+    assert state.recent_trade_ids == [
+        "20260821:DCE:SHARED-T1",
+        "20260821:SHFE:SHARED-T1",
+    ]
+    assert [(position.symbol, position.exchange, position.long_today) for position in positions] == [
+        ("same", "DCE", 1),
+        ("same", "SHFE", 1),
+    ]
 
 
 def test_new_day_trade_rolls_state_before_fill_and_remains_idempotent(tmp_path: Path):
@@ -375,7 +438,7 @@ def test_new_day_trade_rolls_state_before_fill_and_remains_idempotent(tmp_path: 
     assert state.trading_day == "20260822"
     assert state.positions[0]["long_today"] == 1
     assert state.positions[0]["long_yesterday"] == 0
-    assert state.recent_trade_ids == ["20260822:NEW-DAY-T1"]
+    assert state.recent_trade_ids == ["20260822:DCE:NEW-DAY-T1"]
 
     broker._events.extend(
         [
@@ -394,7 +457,7 @@ def test_new_day_trade_rolls_state_before_fill_and_remains_idempotent(tmp_path: 
     restarted.run_once()
     final_state = store.load()
     assert final_state.positions == state.positions
-    assert final_state.recent_trade_ids == ["20260822:NEW-DAY-T1"]
+    assert final_state.recent_trade_ids == ["20260822:DCE:NEW-DAY-T1"]
     assert not restarted.halted
 
 

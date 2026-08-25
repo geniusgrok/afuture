@@ -171,9 +171,9 @@ class StateStore:
                 position.validate()
             except (TypeError, ValueError) as exc:
                 raise StateIntegrityError("invalid persisted position") from exc
-        position_symbols = [str(item["symbol"]) for item in positions]
-        if len(position_symbols) != len(set(position_symbols)):
-            raise StateIntegrityError("state field positions contains duplicate symbols")
+        position_keys = [(str(item["symbol"]), str(item["exchange"])) for item in positions]
+        if len(position_keys) != len(set(position_keys)):
+            raise StateIntegrityError("state field positions contains duplicate position identities")
         for name in object_fields:
             values = payload.get(name, {})
             if any(not isinstance(value, dict) for value in values.values()):

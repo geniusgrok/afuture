@@ -11,17 +11,28 @@ class PositionBook:
     """维护今昨、多空数量和持仓均价。"""
 
     def __init__(self, positions: list[ContractPosition] | None = None) -> None:
-        self._positions: dict[str, ContractPosition] = {}
+        self._positions: dict[tuple[str, str], ContractPosition] = {}
         for source in positions or []:
             position = replace(source)
             self._validate_position(position)
             if not position.empty:
-                self._positions[position.symbol] = position
+                self._positions[(position.symbol, position.exchange)] = position
 
     def get(self, symbol: str, exchange: str = "") -> ContractPosition:
-        if symbol not in self._positions:
-            self._positions[symbol] = ContractPosition(symbol, exchange)
-        return self._positions[symbol]
+        if not exchange:
+            matches = [
+                position
+                for (candidate_symbol, _), position in self._positions.items()
+                if candidate_symbol == symbol
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise ValueError(f"position exchange is required for ambiguous symbol: {symbol}")
+        key = (symbol, exchange)
+        if key not in self._positions:
+            self._positions[key] = ContractPosition(symbol, exchange)
+        return self._positions[key]
 
     def all(self) -> list[ContractPosition]:
         return [replace(position) for position in self._positions.values() if not position.empty]

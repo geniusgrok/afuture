@@ -11,8 +11,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime
 from math import isfinite
-from queue import Empty, Queue
-from threading import Event
+from threading import Event, Lock
 from time import monotonic, sleep
 from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
@@ -79,21 +78,42 @@ class CtpBroker(Broker):
     _MAX_SEEN_TRADE_KEYS = 10_000
 
     def __init__(
-        self, credentials: CtpCredentials, *, snapshot_stale_seconds: float = 20.0
+        self,
+        credentials: CtpCredentials,
+        *,
+        snapshot_stale_seconds: float = 20.0,
+        max_events_per_poll: int = 100,
     ) -> None:
         if snapshot_stale_seconds <= 0:
             raise ValueError("snapshot_stale_seconds must be positive")
+        if (
+            isinstance(max_events_per_poll, bool)
+            or not isinstance(max_events_per_poll, int)
+            or max_events_per_poll <= 0
+        ):
+            raise ValueError("max_events_per_poll must be a positive integer")
         self.credentials = credentials
         self.snapshot_stale_seconds = snapshot_stale_seconds
+        self.max_events_per_poll = max_events_per_poll
         self._runtime: dict[str, Any] | None = None
         # VeighNa is an optional runtime dependency.  Keep its dynamic objects at
         # the adapter boundary instead of leaking ``Any`` into domain models.
         self._event_engine: Any | None = None
         self._main_engine: Any | None = None
-        self._events: Queue[BrokerEvent] = Queue()
+        self._critical_events: deque[BrokerEvent] = deque()
+        self._latest_ticks: dict[tuple[str, str], BrokerEvent] = {}
+        self._event_lock = Lock()
+        # Lock order is position -> event whenever both are needed. Event polling never
+        # acquires the position lock, so snapshot/trade state and their events stay ordered.
+        self._position_lock = Lock()
+        self._critical_enqueued = 0
+        self._ticks_received = 0
+        self._ticks_coalesced = 0
+        self._critical_delivered = 0
+        self._ticks_delivered = 0
         self._order_references: dict[str, str] = {}
         self._last_account: AccountSnapshot | None = None
-        self._positions: dict[str, ContractPosition] = {}
+        self._positions: dict[tuple[str, str], ContractPosition] = {}
         self._trading_day = ""
         self._account_event_generation = 0
         self._position_snapshot_generation = 0
@@ -314,28 +334,84 @@ class CtpBroker(Broker):
         return self._last_account
 
     def get_positions(self) -> list[ContractPosition]:
+        with self._position_lock:
+            return self._copy_positions_unlocked()
+
+    def _copy_positions_unlocked(self) -> list[ContractPosition]:
         return [replace(position) for position in self._positions.values() if not position.empty]
 
     def poll_events(self) -> list[BrokerEvent]:
-        result = []
-        while True:
-            try:
-                result.append(self._events.get_nowait())
-            except Empty:
-                return result
+        result: list[BrokerEvent] = []
+        with self._event_lock:
+            while self._critical_events and len(result) < self.max_events_per_poll:
+                result.append(self._critical_events.popleft())
+                self._critical_delivered += 1
+            while self._latest_ticks and len(result) < self.max_events_per_poll:
+                key = next(iter(self._latest_ticks))
+                result.append(self._latest_ticks.pop(key))
+                self._ticks_delivered += 1
+        return result
+
+    def delivery_counters(self) -> dict[str, int]:
+        """Return a lock-consistent delivery snapshot for lightweight observability."""
+        with self._event_lock:
+            return {
+                "critical_enqueued": self._critical_enqueued,
+                "ticks_received": self._ticks_received,
+                "ticks_coalesced": self._ticks_coalesced,
+                "critical_delivered": self._critical_delivered,
+                "ticks_delivered": self._ticks_delivered,
+                "critical_backlog": len(self._critical_events),
+                "tick_backlog": len(self._latest_ticks),
+            }
+
+    def _enqueue_critical(self, event: BrokerEvent) -> None:
+        with self._event_lock:
+            self._critical_events.append(event)
+            self._critical_enqueued += 1
+
+    def _enqueue_tick(self, tick: Tick) -> None:
+        key = (tick.symbol, tick.exchange)
+        with self._event_lock:
+            self._ticks_received += 1
+            if key in self._latest_ticks:
+                self._ticks_coalesced += 1
+            self._latest_ticks[key] = BrokerEvent("tick", tick)
 
     def get_trading_day(self) -> str:
         if self._main_engine is not None:
             gateway = self._main_engine.get_gateway(self.gateway_name)
-            td_api = getattr(gateway, "td_api", None) if gateway else None
+            if gateway is None:
+                raise RuntimeError("CTP trading day gateway is unavailable")
+            td_api = getattr(gateway, "td_api", None)
+            if td_api is None:
+                raise RuntimeError("CTP trading day API is unavailable")
             getter = getattr(td_api, "getTradingDay", None)
-            if callable(getter):
+            if not callable(getter):
+                raise RuntimeError("CTP trading day getter is unavailable")
+            try:
                 value = getter()
-                if isinstance(value, bytes):
-                    value = value.decode("ascii", errors="ignore")
-                if value:
-                    self._trading_day = str(value)
-        return self._trading_day or datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")
+            except Exception as exc:
+                raise RuntimeError("CTP trading day query failed") from exc
+            if isinstance(value, bytes):
+                try:
+                    value = value.decode("ascii")
+                except UnicodeDecodeError as exc:
+                    raise RuntimeError("CTP trading day is invalid") from exc
+            self._trading_day = self._validate_trading_day(value)
+        return self._validate_trading_day(self._trading_day)
+
+    @staticmethod
+    def _validate_trading_day(value: object) -> str:
+        if not isinstance(value, str) or not re.fullmatch(r"\d{8}", value):
+            raise RuntimeError("CTP trading day is missing or invalid")
+        try:
+            parsed = datetime.strptime(value, "%Y%m%d")
+        except ValueError as exc:
+            raise RuntimeError("CTP trading day is missing or invalid") from exc
+        if parsed.strftime("%Y%m%d") != value:
+            raise RuntimeError("CTP trading day is missing or invalid")
+        return value
 
     def get_contract_catalog(self) -> list[ContractInfo]:
         """返回 CTP 合约查询得到的期货目录，供自动构建相邻月份。"""
@@ -482,44 +558,45 @@ class CtpBroker(Broker):
             raise ValueError(f"unsupported exchange: {exchange}") from exc
 
     def _on_tick(self, event) -> None:
-        raw = event.data
-        tick = Tick(
-            symbol=raw.symbol,
-            exchange=raw.exchange.value,
-            timestamp=raw.datetime,
-            bid_price=float(raw.bid_price_1),
-            ask_price=float(raw.ask_price_1),
-            last_price=float(raw.last_price),
-            bid_volume=float(raw.bid_volume_1),
-            ask_volume=float(raw.ask_volume_1),
-            trading_day=self.get_trading_day(),
-            limit_up=float(getattr(raw, "limit_up", 0.0) or 0.0),
-            limit_down=float(getattr(raw, "limit_down", 0.0) or 0.0),
-            volume=float(getattr(raw, "volume", 0.0) or 0.0),
-            open_interest=float(getattr(raw, "open_interest", 0.0) or 0.0),
-        )
         try:
+            raw = event.data
+            tick = Tick(
+                symbol=raw.symbol,
+                exchange=raw.exchange.value,
+                timestamp=raw.datetime,
+                bid_price=float(raw.bid_price_1),
+                ask_price=float(raw.ask_price_1),
+                last_price=float(raw.last_price),
+                bid_volume=float(raw.bid_volume_1),
+                ask_volume=float(raw.ask_volume_1),
+                trading_day=self.get_trading_day(),
+                limit_up=float(getattr(raw, "limit_up", 0.0) or 0.0),
+                limit_down=float(getattr(raw, "limit_down", 0.0) or 0.0),
+                volume=float(getattr(raw, "volume", 0.0) or 0.0),
+                open_interest=float(getattr(raw, "open_interest", 0.0) or 0.0),
+            )
             tick.validate()
-        except ValueError:
+        except Exception as exc:
+            self._enqueue_critical(BrokerEvent("broker_error", f"CTP tick conversion failed: {exc}"))
             return
-        self._events.put(BrokerEvent("tick", tick))
+        self._enqueue_tick(tick)
 
     def _on_order(self, event) -> None:
         try:
             order = self._convert_order(event.data)
-        except (AttributeError, TypeError, ValueError) as exc:
-            self._events.put(
+        except Exception as exc:
+            self._enqueue_critical(
                 BrokerEvent(
                     "broker_error",
                     f"CTP order conversion failed: {exc}",
                 )
             )
             return
-        self._events.put(BrokerEvent("order", order))
+        self._enqueue_critical(BrokerEvent("order", order))
 
     def _on_trade(self, event) -> None:
-        raw = event.data
         try:
+            raw = event.data
             numeric_volume = float(raw.volume)
             if (
                 isinstance(raw.volume, bool)
@@ -543,15 +620,16 @@ class CtpBroker(Broker):
                 raw.datetime or datetime.now(ZoneInfo("Asia/Shanghai")),
             )
             trade.validate()
-        except (AttributeError, TypeError, ValueError) as exc:
-            self._events.put(
+            trading_day = self.get_trading_day()
+        except Exception as exc:
+            self._enqueue_critical(
                 BrokerEvent(
                     "broker_error",
                     f"CTP trade conversion failed: {exc}",
                 )
             )
             return
-        trade_key = f"{self.get_trading_day()}:{trade.trade_id}"
+        trade_key = f"{trading_day}:{trade.exchange}:{trade.trade_id}"
         if trade_key in self._seen_trade_keys:
             return
         self._seen_trade_keys.add(trade_key)
@@ -559,66 +637,77 @@ class CtpBroker(Broker):
         if len(self._seen_trade_order) > self._MAX_SEEN_TRADE_KEYS:
             expired = self._seen_trade_order.popleft()
             self._seen_trade_keys.discard(expired)
-        try:
-            book = PositionBook(self.get_positions())
-            book.apply_trade(trade)
-            self._positions = {position.symbol: position for position in book.all()}
-        except Exception as exc:
-            self._events.put(BrokerEvent("broker_error", f"CTP trade mirror update failed: {exc}"))
-        self._events.put(BrokerEvent("trade", trade))
+        with self._position_lock:
+            try:
+                book = PositionBook(self._copy_positions_unlocked())
+                book.apply_trade(trade)
+                self._positions = {
+                    (position.symbol, position.exchange): position for position in book.all()
+                }
+            except Exception as exc:
+                self._enqueue_critical(
+                    BrokerEvent("broker_error", f"CTP trade mirror update failed: {exc}")
+                )
+            self._enqueue_critical(BrokerEvent("trade", trade))
 
     def _on_account(self, event) -> None:
         try:
             account = self._convert_account(event.data)
-        except (AttributeError, TypeError, ValueError) as exc:
-            self._events.put(BrokerEvent("account_error", f"CTP account conversion failed: {exc}"))
+        except Exception as exc:
+            self._enqueue_critical(
+                BrokerEvent("account_error", f"CTP account conversion failed: {exc}")
+            )
             return
         self._last_account = account
         self._account_event_generation += 1
         self._last_account_monotonic = monotonic()
-        self._events.put(BrokerEvent("account", self._last_account))
+        self._enqueue_critical(BrokerEvent("account", self._last_account))
 
     def _handle_position_snapshot(self, raw_positions: list[Any]) -> None:
-        combined: dict[str, ContractPosition] = {}
-        try:
-            for raw in raw_positions:
-                volume = self._exact_integer(raw.volume, "position volume", positive=True)
-                yesterday = self._exact_integer(
-                    raw.yd_volume,
-                    "yesterday position volume",
-                    positive=False,
-                )
-                if yesterday > volume:
-                    raise ValueError(f"invalid CTP position volume for {raw.symbol}")
-                today = volume - yesterday
-                symbol = str(raw.symbol).strip()
-                exchange = str(raw.exchange.value).strip()
-                if not symbol or not exchange:
-                    raise ValueError("CTP position identity is empty")
-                price = float(raw.price)
-                if not isfinite(price) or price <= 0:
-                    raise ValueError(f"invalid CTP position price for {symbol}")
-                position = combined.setdefault(symbol, ContractPosition(symbol, exchange))
-                side = self._direction_to_side(raw.direction)
-                if side is OrderSide.BUY:
-                    position.long_today += today
-                    position.long_yesterday += yesterday
-                    position.long_price = price
-                else:
-                    position.short_today += today
-                    position.short_yesterday += yesterday
-                    position.short_price = price
-            for position in combined.values():
-                position.validate()
-        except Exception as exc:
-            self._events.put(BrokerEvent("broker_error", str(exc)))
-            return
-        self._positions = {
-            symbol: position for symbol, position in combined.items() if not position.empty
-        }
-        self._position_snapshot_generation += 1
-        self._last_position_snapshot_monotonic = monotonic()
-        self._events.put(BrokerEvent("position_snapshot", self.get_positions()))
+        with self._position_lock:
+            combined: dict[tuple[str, str], ContractPosition] = {}
+            try:
+                for raw in raw_positions:
+                    volume = self._exact_integer(raw.volume, "position volume", positive=True)
+                    yesterday = self._exact_integer(
+                        raw.yd_volume,
+                        "yesterday position volume",
+                        positive=False,
+                    )
+                    if yesterday > volume:
+                        raise ValueError(f"invalid CTP position volume for {raw.symbol}")
+                    today = volume - yesterday
+                    symbol = str(raw.symbol).strip()
+                    exchange = str(raw.exchange.value).strip()
+                    if not symbol or not exchange:
+                        raise ValueError("CTP position identity is empty")
+                    price = float(raw.price)
+                    if not isfinite(price) or price <= 0:
+                        raise ValueError(f"invalid CTP position price for {symbol}")
+                    key = (symbol, exchange)
+                    position = combined.setdefault(key, ContractPosition(symbol, exchange))
+                    side = self._direction_to_side(raw.direction)
+                    if side is OrderSide.BUY:
+                        position.long_today += today
+                        position.long_yesterday += yesterday
+                        position.long_price = price
+                    else:
+                        position.short_today += today
+                        position.short_yesterday += yesterday
+                        position.short_price = price
+                for position in combined.values():
+                    position.validate()
+            except Exception as exc:
+                self._enqueue_critical(BrokerEvent("broker_error", str(exc)))
+                return
+            self._positions = {
+                key: position for key, position in combined.items() if not position.empty
+            }
+            self._position_snapshot_generation += 1
+            self._last_position_snapshot_monotonic = monotonic()
+            self._enqueue_critical(
+                BrokerEvent("position_snapshot", self._copy_positions_unlocked())
+            )
 
     def _convert_account(self, raw) -> AccountSnapshot:
         balance = float(raw.balance)

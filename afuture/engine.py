@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import asdict, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from time import monotonic
 from zoneinfo import ZoneInfo
 
@@ -396,7 +396,8 @@ class TradingEngine:
         except (AttributeError, TypeError, ValueError) as exc:
             self.emergency_stop(f"invalid trade event: {exc}")
             return False
-        if identity in self._recent_trade_id_set:
+        legacy_identity = self._legacy_trade_identity(trade, trading_day)
+        if identity in self._recent_trade_id_set or legacy_identity in self._recent_trade_id_set:
             return False
         if not self.broker.owns_order(trade.order_id):
             self._record("trade", trade)
@@ -437,6 +438,10 @@ class TradingEngine:
 
     @staticmethod
     def _trade_identity(trade: Trade, trading_day: str) -> str:
+        return f"{trading_day}:{trade.exchange}:{trade.trade_id}"
+
+    @staticmethod
+    def _legacy_trade_identity(trade: Trade, trading_day: str) -> str:
         return f"{trading_day}:{trade.trade_id}"
 
     def _handle_order_event(self, order) -> None:
@@ -692,11 +697,14 @@ class TradingEngine:
         return len(self._open_pair_groups())
 
     def _open_pair_groups(self) -> dict[str, str]:
-        positions = {position.symbol: position for position in self.broker.get_positions()}
+        positions = {
+            (position.symbol, position.exchange): position
+            for position in self.broker.get_positions()
+        }
         result: dict[str, str] = {}
         for pair_id, pair in self.pairs.items():
-            near = positions.get(pair.near_symbol)
-            far = positions.get(pair.far_symbol)
+            near = positions.get((pair.near_symbol, pair.exchange))
+            far = positions.get((pair.far_symbol, pair.exchange))
             if near and far and not near.empty and not far.empty:
                 result[pair_id] = pair.risk_group
         return result
@@ -756,14 +764,17 @@ class TradingEngine:
         for pair, pair_specs in restored:
             self._register_auto_pair(pair, pair_specs, seed_state=None, persist=False)
 
-    def _trading_date(self):
-        from datetime import date
-
-        raw = str(self.broker.get_trading_day() or "")
+    def _trading_date(self) -> date:
+        raw = self.broker.get_trading_day()
+        if not isinstance(raw, str):
+            raise ValueError("broker trading day must be a valid YYYYMMDD date")
         try:
-            return datetime.strptime(raw, "%Y%m%d").date()
-        except ValueError:
-            return date.today()
+            parsed = datetime.strptime(raw, "%Y%m%d")
+        except ValueError as exc:
+            raise ValueError("broker trading day must be a valid YYYYMMDD date") from exc
+        if parsed.strftime("%Y%m%d") != raw:
+            raise ValueError("broker trading day must be a valid YYYYMMDD date")
+        return parsed.date()
 
     def _refresh_auto_pairs(self, now: datetime) -> None:
         if self.auto_manager is None or not self.auto_manager.initialized:
@@ -854,9 +865,12 @@ class TradingEngine:
         self._persist()
 
     def _pair_has_position(self, pair: PairConfig) -> bool:
-        positions = {position.symbol: position for position in self.broker.get_positions()}
-        near = positions.get(pair.near_symbol)
-        far = positions.get(pair.far_symbol)
+        positions = {
+            (position.symbol, position.exchange): position
+            for position in self.broker.get_positions()
+        }
+        near = positions.get((pair.near_symbol, pair.exchange))
+        far = positions.get((pair.far_symbol, pair.exchange))
         return bool((near is not None and not near.empty) or (far is not None and not far.empty))
 
     def _open_auto_pair_ids(self) -> set[str]:

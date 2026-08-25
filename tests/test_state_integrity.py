@@ -178,7 +178,7 @@ def test_load_rejects_invalid_position_payload(
         StateStore(path).load()
 
 
-def test_load_rejects_duplicate_position_symbols(tmp_path: Path) -> None:
+def test_load_rejects_duplicate_position_identities(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     position = {
         "symbol": "m2609",
@@ -188,8 +188,34 @@ def test_load_rejects_duplicate_position_symbols(tmp_path: Path) -> None:
     }
     write_envelope(path, state={"positions": [position, dict(position)]})
 
-    with pytest.raises(StateIntegrityError, match="duplicate symbols"):
+    with pytest.raises(StateIntegrityError, match="duplicate position identities"):
         StateStore(path).load()
+
+
+def test_state_accepts_same_position_symbol_on_distinct_exchanges(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    positions = [
+        {
+            "symbol": "same",
+            "exchange": "DCE",
+            "long_today": 1,
+            "long_price": 100.0,
+        },
+        {
+            "symbol": "same",
+            "exchange": "SHFE",
+            "short_today": 2,
+            "short_price": 200.0,
+        },
+    ]
+    write_envelope(path, state={"positions": positions})
+
+    restored = StateStore(path).load()
+
+    assert [(item["symbol"], item["exchange"]) for item in restored.positions] == [
+        ("same", "DCE"),
+        ("same", "SHFE"),
+    ]
 
 
 @pytest.mark.parametrize(

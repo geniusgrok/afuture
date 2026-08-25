@@ -2,6 +2,8 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from afuture.auto import AutoConfig, AutoPairManager, AutoPairSelector
 from afuture.broker.ctp import CtpBroker, CtpCredentials
 from afuture.broker.sim import SimBroker
@@ -71,6 +73,25 @@ def auto_config(**overrides) -> AutoConfig:
     )
     values.update(overrides)
     return AutoConfig(**values)
+
+
+@pytest.mark.parametrize("reported_day", [None, "", "2026-08-25", "20260230"])
+def test_engine_trading_date_rejects_missing_or_invalid_broker_day(
+    tmp_path: Path,
+    reported_day: object,
+) -> None:
+    broker = SimBroker(500000, specs())
+    broker.get_trading_day = lambda: reported_day
+    engine = TradingEngine(
+        broker,
+        [],
+        specs(),
+        RiskManager(RiskConfig()),
+        StateStore(tmp_path / "state.json"),
+    )
+
+    with pytest.raises(ValueError, match="broker trading day"):
+        engine._trading_date()
 
 
 def test_selector_builds_only_adjacent_unexpired_same_product_pairs():

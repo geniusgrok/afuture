@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,28 @@ from afuture.models import (
 
 def credentials():
     return CtpCredentials("user", "secret", "9999", "tcp://td", "tcp://md", "app", "auth", "test")
+
+
+def raw_tick(
+    symbol: str = "cu2609",
+    exchange: str = "SHFE",
+    *,
+    price: float = 70_000.0,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        symbol=symbol,
+        exchange=SimpleNamespace(value=exchange),
+        datetime=datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc),
+        bid_price_1=price - 1,
+        ask_price_1=price + 1,
+        last_price=price,
+        bid_volume_1=10,
+        ask_volume_1=10,
+        limit_up=80_000,
+        limit_down=60_000,
+        volume=100,
+        open_interest=200,
+    )
 
 
 def test_ctp_setting_matches_gateway_contract():
@@ -98,6 +121,90 @@ def test_ctp_account_margin_proxy_and_position_snapshot():
     p = broker.get_positions()[0]
     assert (p.long_today, p.long_yesterday, p.short_today, p.short_yesterday) == (2, 1, 0, 2)
     assert broker.poll_events()[0].event_type == "position_snapshot"
+
+
+def test_ctp_critical_event_precedes_coalesced_tick_flood() -> None:
+    broker = CtpBroker(credentials(), max_events_per_poll=2)
+    broker._trading_day = "20260825"
+    for index in range(500):
+        broker._on_tick(SimpleNamespace(data=raw_tick(price=70_000 + index)))
+    broker._on_account(
+        SimpleNamespace(data=SimpleNamespace(balance=500_000, available=400_000))
+    )
+
+    events = broker.poll_events()
+
+    assert [event.event_type for event in events] == ["account", "tick"]
+    assert events[1].payload.last_price == 70_499
+
+
+def test_ctp_poll_is_bounded_and_coalesces_latest_tick_per_contract() -> None:
+    broker = CtpBroker(credentials(), max_events_per_poll=2)
+    broker._trading_day = "20260825"
+    broker._on_tick(SimpleNamespace(data=raw_tick("same", "DCE", price=100)))
+    broker._on_tick(SimpleNamespace(data=raw_tick("same", "DCE", price=101)))
+    broker._on_tick(SimpleNamespace(data=raw_tick("same", "SHFE", price=200)))
+    broker._on_tick(SimpleNamespace(data=raw_tick("other", "DCE", price=300)))
+
+    first = broker.poll_events()
+    second = broker.poll_events()
+    counters = broker.delivery_counters()
+
+    assert len(first) == 2
+    assert [(event.payload.symbol, event.payload.exchange, event.payload.last_price) for event in first] == [
+        ("same", "DCE", 101),
+        ("same", "SHFE", 200),
+    ]
+    assert [(event.payload.symbol, event.payload.exchange) for event in second] == [
+        ("other", "DCE")
+    ]
+    assert counters == {
+        "critical_enqueued": 0,
+        "ticks_received": 4,
+        "ticks_coalesced": 1,
+        "critical_delivered": 0,
+        "ticks_delivered": 3,
+        "critical_backlog": 0,
+        "tick_backlog": 0,
+    }
+
+
+@pytest.mark.parametrize("trading_day", ["", "20260230", "2026-08-25"])
+def test_ctp_rejects_missing_or_invalid_authoritative_trading_day(trading_day: str) -> None:
+    broker = CtpBroker(credentials())
+    broker._trading_day = trading_day
+
+    with pytest.raises(RuntimeError, match="trading day"):
+        broker.get_trading_day()
+
+
+def test_ctp_callback_surfaces_missing_trading_day_without_raising() -> None:
+    broker = CtpBroker(credentials())
+
+    broker._on_tick(SimpleNamespace(data=raw_tick()))
+
+    events = broker.poll_events()
+    assert [event.event_type for event in events] == ["broker_error"]
+    assert "trading day" in str(events[0].payload)
+
+
+@pytest.mark.parametrize(
+    "gateway",
+    [
+        None,
+        SimpleNamespace(td_api=None),
+        SimpleNamespace(td_api=SimpleNamespace()),
+        SimpleNamespace(td_api=SimpleNamespace(getTradingDay=lambda: "")),
+    ],
+    ids=["missing-gateway", "missing-td-api", "missing-getter", "empty-value"],
+)
+def test_started_ctp_rejects_missing_current_trading_day_source(gateway: object) -> None:
+    broker = CtpBroker(credentials())
+    broker._trading_day = "20260824"
+    broker._main_engine = SimpleNamespace(get_gateway=lambda _gateway_name: gateway)
+
+    with pytest.raises(RuntimeError, match="trading day"):
+        broker.get_trading_day()
 
 
 @pytest.mark.parametrize("field", ["balance", "available"])
@@ -273,12 +380,19 @@ def test_ctp_order_conversion_rejects_invalid_economic_value(
         broker._convert_order(raw)
 
 
-def raw_trade(*, direction: str = "LONG", offset: str = "OPEN") -> SimpleNamespace:
+def raw_trade(
+    *,
+    direction: str = "LONG",
+    offset: str = "OPEN",
+    trade_id: str = "CTP.T1",
+    symbol: str = "cu2609",
+    exchange: str = "SHFE",
+) -> SimpleNamespace:
     return SimpleNamespace(
-        vt_tradeid="CTP.T1",
+        vt_tradeid=trade_id,
         vt_orderid="CTP.1",
-        symbol="cu2609",
-        exchange=SimpleNamespace(value="SHFE"),
+        symbol=symbol,
+        exchange=SimpleNamespace(value=exchange),
         direction=SimpleNamespace(name=direction),
         offset=SimpleNamespace(name=offset),
         volume=1,
@@ -330,8 +444,39 @@ def test_ctp_order_handler_rejects_unknown_value_as_broker_error() -> None:
     assert "direction" in str(events[0].payload)
 
 
+def test_ctp_order_callback_surfaces_unexpected_conversion_failure() -> None:
+    broker = CtpBroker(credentials())
+
+    def fail_conversion(_raw: object) -> None:
+        raise RuntimeError("unexpected adapter failure")
+
+    broker._convert_order = fail_conversion
+
+    broker._on_order(SimpleNamespace(data=object()))
+
+    events = broker.poll_events()
+    assert [event.event_type for event in events] == ["broker_error"]
+    assert "unexpected adapter failure" in str(events[0].payload)
+
+
+def test_ctp_trade_callback_surfaces_unexpected_event_extraction_failure() -> None:
+    broker = CtpBroker(credentials())
+
+    class BrokenEvent:
+        @property
+        def data(self) -> object:
+            raise RuntimeError("unexpected trade event failure")
+
+    broker._on_trade(BrokenEvent())
+
+    events = broker.poll_events()
+    assert [event.event_type for event in events] == ["broker_error"]
+    assert "unexpected trade event failure" in str(events[0].payload)
+
+
 def test_ctp_trade_handler_preserves_supported_trade_and_position_mirror() -> None:
     broker = CtpBroker(credentials())
+    broker._trading_day = "20260825"
 
     broker._on_trade(SimpleNamespace(data=raw_trade()))
 
@@ -345,6 +490,7 @@ def test_ctp_trade_handler_preserves_supported_trade_and_position_mirror() -> No
 
 def test_ctp_trade_callback_is_idempotent_within_session() -> None:
     broker = CtpBroker(credentials())
+    broker._trading_day = "20260825"
     event = SimpleNamespace(data=raw_trade())
 
     broker._on_trade(event)
@@ -353,6 +499,132 @@ def test_ctp_trade_callback_is_idempotent_within_session() -> None:
     events = broker.poll_events()
     assert [event.event_type for event in events] == ["trade"]
     assert broker.get_positions()[0].long_today == 1
+
+
+def test_ctp_trade_idempotency_includes_exchange() -> None:
+    broker = CtpBroker(credentials())
+    broker._trading_day = "20260825"
+
+    broker._on_trade(
+        SimpleNamespace(data=raw_trade(trade_id="SHARED-T1", symbol="same", exchange="DCE"))
+    )
+    broker._on_trade(
+        SimpleNamespace(data=raw_trade(trade_id="SHARED-T1", symbol="same", exchange="SHFE"))
+    )
+
+    events = broker.poll_events()
+    positions = sorted(broker.get_positions(), key=lambda position: position.exchange)
+    assert [event.event_type for event in events] == ["trade", "trade"]
+    assert [(position.symbol, position.exchange, position.long_today) for position in positions] == [
+        ("same", "DCE", 1),
+        ("same", "SHFE", 1),
+    ]
+
+
+def test_ctp_position_snapshot_keeps_same_symbol_on_distinct_exchanges() -> None:
+    broker = CtpBroker(credentials())
+    raw_positions = [
+        SimpleNamespace(
+            symbol="same",
+            exchange=SimpleNamespace(value=exchange),
+            direction=SimpleNamespace(name="LONG"),
+            volume=1,
+            yd_volume=0,
+            price=price,
+        )
+        for exchange, price in (("DCE", 100.0), ("SHFE", 200.0))
+    ]
+
+    broker._handle_position_snapshot(raw_positions)
+
+    positions = sorted(broker.get_positions(), key=lambda position: position.exchange)
+    assert [(position.symbol, position.exchange, position.long_price) for position in positions] == [
+        ("same", "DCE", 100.0),
+        ("same", "SHFE", 200.0),
+    ]
+
+
+def test_ctp_serializes_snapshot_and_trade_position_truth_and_events() -> None:
+    broker = CtpBroker(credentials())
+    broker._trading_day = "20260825"
+    snapshot_conversion_started = Event()
+    release_snapshot = Event()
+    trade_prelock_reached = Event()
+    trade_waiting_on_position = Event()
+    trade_finished = Event()
+
+    class ObservablePositionLock:
+        """Expose real lock contention without adding a production test hook."""
+
+        def __init__(self) -> None:
+            self._lock = Lock()
+
+        def __enter__(self) -> "ObservablePositionLock":
+            if not self._lock.acquire(blocking=False):
+                trade_waiting_on_position.set()
+                self._lock.acquire()
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
+
+    broker._position_lock = ObservablePositionLock()
+
+    class BlockingDirection:
+        @property
+        def name(self) -> str:
+            snapshot_conversion_started.set()
+            release_snapshot.wait()
+            return "LONG"
+
+    class CheckpointTradeEvent:
+        @property
+        def data(self) -> SimpleNamespace:
+            trade_prelock_reached.set()
+            return raw_trade(
+                trade_id="INTERLEAVED-T1",
+                symbol="same",
+                exchange="DCE",
+            )
+
+    snapshot = [
+        SimpleNamespace(
+            symbol="same",
+            exchange=SimpleNamespace(value="DCE"),
+            direction=BlockingDirection(),
+            volume=1,
+            yd_volume=0,
+            price=100.0,
+        )
+    ]
+
+    def process_trade() -> None:
+        broker._on_trade(CheckpointTradeEvent())
+        trade_finished.set()
+
+    snapshot_thread = Thread(target=broker._handle_position_snapshot, args=(snapshot,))
+    trade_thread = Thread(target=process_trade)
+    snapshot_thread.start()
+    try:
+        assert snapshot_conversion_started.wait(1)
+        trade_thread.start()
+        assert trade_prelock_reached.wait(1)
+        assert trade_waiting_on_position.wait(1)
+        assert not trade_finished.is_set()
+    finally:
+        release_snapshot.set()
+        snapshot_thread.join(2)
+        if trade_thread.ident is not None:
+            trade_thread.join(2)
+
+    assert not snapshot_thread.is_alive()
+    assert not trade_thread.is_alive()
+    assert trade_finished.is_set()
+    events = broker.poll_events()
+    assert [event.event_type for event in events] == ["position_snapshot", "trade"]
+    assert events[0].payload[0].long_today == 1
+    position = broker.get_positions()[0]
+    assert (position.long_today, position.long_price) == (2, 35_050.0)
 
 
 @pytest.mark.parametrize(
