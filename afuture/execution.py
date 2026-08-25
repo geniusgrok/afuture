@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 
 from .economics import estimate_net_edge
@@ -22,6 +23,8 @@ from .models import (
 )
 from .position import PositionBook
 from .risk import OrderRateLimiter, RiskManager
+
+logger = logging.getLogger(__name__)
 
 
 class PairExecutor:
@@ -352,6 +355,11 @@ class PairExecutor:
             ):
                 try:
                     self.broker.send_order(replace(child, order_type=OrderType.FAK))
-                except Exception:
+                except Exception as exc:
                     # 后续由引擎的失衡审计进入 REDUCE_ONLY，不在此处假装回滚成功。
-                    pass
+                    logger.warning(
+                        "rollback order submission failed for order=%s symbol=%s: %s",
+                        order_id,
+                        order.request.symbol,
+                        exc,
+                    )

@@ -892,8 +892,12 @@ class TradingEngine:
                 )
                 expected_edge = float(edge.net_edge)
                 expected_spread = float(edge.executable_spread)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "execution-quality estimate failed for pair=%s: %s",
+                    pair.pair_id,
+                    exc,
+                )
         self.quality.record_decision(
             pair_id=pair.pair_id,
             action=signal.action.value,
