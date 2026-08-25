@@ -23,6 +23,7 @@ from .directional import (
     build_target_lots,
 )
 from .directional_execution import depth_aware_opening_price
+from .directional_risk import DirectionalRiskResponseMode
 from .models import (
     ContractInfo,
     ContractPosition,
@@ -55,6 +56,8 @@ class DirectionalActionResult:
 
 class DirectionalPortfolioManager:
     """Translate directional targets into concrete orders through shared hard risk gates."""
+
+    policy_risk_response_mode = DirectionalRiskResponseMode.TARGET_SCALE
 
     def __init__(
         self,
@@ -477,7 +480,7 @@ class DirectionalPortfolioManager:
                 side,
                 requested_volume=volume,
                 spec=spec,
-                session_windows=(self.config.rebalance_window,),
+                session_windows=self._entry_session_windows(item.product),
             )
             if not market.allowed:
                 return DirectionalActionResult("reject", market.reason)
@@ -529,6 +532,10 @@ class DirectionalPortfolioManager:
                     tuple(order_ids),
                 )
         return DirectionalActionResult("open", order_ids=tuple(order_ids))
+
+    def _entry_session_windows(self, product: str) -> tuple[str, ...]:
+        del product
+        return (self.config.rebalance_window,)
 
     def _start_quality_cycle(
         self,

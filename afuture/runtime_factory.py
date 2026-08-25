@@ -39,16 +39,11 @@ def build_runtime_engine(
 
     if config.directional.enabled:
         from .directional_engine import DirectionalTradingEngine
-        from .execution_aligned_runtime import (
-            ExecutionAlignedDirectionalPortfolioManager,
-        )
 
         activity_path = Path(state_store.path).with_name("directional_activity.json")
         ohlc_cache_path = Path(state_store.path).with_name("directional_ohlc_cache.json")
-        manager = ExecutionAlignedDirectionalPortfolioManager(
-            config.directional,
-            broker,
-            risk_manager,
+        policy_name = config.directional.policy or "execution_aligned"
+        manager_common = dict(
             aggressive_ticks=config.aggressive_ticks,
             metadata_timeout_seconds=config.metadata_timeout_seconds,
             static_specs=config.contracts,
@@ -56,6 +51,35 @@ def build_runtime_engine(
             ohlc_cache_path=ohlc_cache_path,
             quality_recorder=quality_recorder,
         )
+        if policy_name == "execution_aligned":
+            from .execution_aligned_runtime import (
+                ExecutionAlignedDirectionalPortfolioManager,
+            )
+
+            manager = ExecutionAlignedDirectionalPortfolioManager(
+                config.directional,
+                broker,
+                risk_manager,
+                **manager_common,
+            )
+        elif policy_name == "stress90":
+            from .directional_stress90_runtime import (
+                Stress90DirectionalPortfolioManager,
+            )
+
+            runtime_dir = Path(state_store.path).parent
+            manager = Stress90DirectionalPortfolioManager(
+                config.directional,
+                broker,
+                risk_manager,
+                policy_state_path=runtime_dir / "stress90_policy_state.json",
+                seed_path=runtime_dir / "stress90_bootstrap_seed.json",
+                oi_evidence_path=runtime_dir / "stress90_oi_evidence.json",
+                execution_intent_path=runtime_dir / "stress90_execution_intent.json",
+                **manager_common,
+            )
+        else:  # validated config and direct-construction defense in depth
+            raise ValueError(f"unsupported directional policy: {policy_name}")
         return DirectionalTradingEngine(
             broker,
             config.pairs,

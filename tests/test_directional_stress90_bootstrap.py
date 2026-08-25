@@ -274,6 +274,7 @@ def test_cli_exposes_bootstrap_arguments_and_does_not_require_ctp_secrets(
     from types import SimpleNamespace
 
     from afuture.cli import build_parser, main
+    from afuture.execution_aligned_policy import FROZEN_PRODUCTS
 
     parsed = build_parser().parse_args(
         [
@@ -303,7 +304,8 @@ md_address = "tcp://market.example"
 
 [directional]
 enabled = true
-products = ["M"]
+policy = "stress90"
+products = [{products}]
 
 [paths]
 state = "{state}"
@@ -317,6 +319,7 @@ alert = "{alert}"
             report=tmp_path / "report.json",
             journal=tmp_path / "audit.jsonl",
             alert=tmp_path / "alerts.jsonl",
+            products=", ".join(f'"{product}"' for product in FROZEN_PRODUCTS),
         ),
         encoding="utf-8",
     )

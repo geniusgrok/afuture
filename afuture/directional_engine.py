@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from .directional_risk import DirectionalRiskScaledPolicy
+from .directional_risk import (
+    DirectionalRiskResponseMode,
+    DirectionalRiskScaledPolicy,
+)
 from .engine import TradingEngine
 from .models import Order, RuntimeMode, Tick, Trade
 
@@ -29,11 +32,21 @@ class DirectionalTradingEngine(TradingEngine):
             self.state.recent_daily_returns
         )
         policy = getattr(self.directional_manager, "policy", None)
-        if policy is not None and not isinstance(policy, DirectionalRiskScaledPolicy):
-            self.directional_manager.policy = DirectionalRiskScaledPolicy(
-                policy,
-                completed_returns_provider=(lambda: tuple(self.state.recent_daily_returns)),
+        response_mode = DirectionalRiskResponseMode(
+            getattr(
+                self.directional_manager,
+                "policy_risk_response_mode",
+                DirectionalRiskResponseMode.TARGET_SCALE,
             )
+        )
+        if response_mode is DirectionalRiskResponseMode.TARGET_SCALE:
+            if policy is not None and not isinstance(policy, DirectionalRiskScaledPolicy):
+                self.directional_manager.policy = DirectionalRiskScaledPolicy(
+                    policy,
+                    completed_returns_provider=(lambda: tuple(self.state.recent_daily_returns)),
+                )
+        elif isinstance(policy, DirectionalRiskScaledPolicy):
+            raise ValueError("freeze-new-risk policy cannot use target scaling wrapper")
 
     def initialize_after_ready(self) -> None:
         super().initialize_after_ready()
@@ -242,6 +255,13 @@ class DirectionalTradingEngine(TradingEngine):
             and old_last_equity > 0
         ):
             completed_return = old_last_equity / old_day_start - 1.0
+            recorder = getattr(
+                self.directional_manager,
+                "record_completed_account_return",
+                None,
+            )
+            if callable(recorder):
+                recorder(old_day, completed_return)
             values = [float(value) for value in self.state.recent_daily_returns[-1:]]
             values.append(float(completed_return))
             self.state.recent_daily_returns = values[-2:]

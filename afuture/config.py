@@ -108,7 +108,8 @@ def load_config(
     pairs = _load_pairs(_rows(data.get("pairs", []), "pairs"), contracts, mode)
     auto = _load_auto(_section(data, "auto", set(AutoConfig.__dataclass_fields__)), mode)
     directional = _load_directional(
-        _section(data, "directional", set(DirectionalConfig.__dataclass_fields__))
+        _section(data, "directional", set(DirectionalConfig.__dataclass_fields__)),
+        mode,
     )
     if directional.enabled and (pairs or auto.enabled):
         raise ValueError(
@@ -461,13 +462,20 @@ def _load_auto(raw: Mapping[str, object], mode: str) -> AutoConfig:
     return auto
 
 
-def _load_directional(raw: Mapping[str, object]) -> DirectionalConfig:
+def _load_directional(raw: Mapping[str, object], mode: str) -> DirectionalConfig:
     values = dict(raw)
     for name in ("products", "exchanges"):
         if name in values:
             values[name] = require_string_sequence(values[name], f"directional.{name}")
     config = DirectionalConfig(**cast(Any, values))
     config.validate()
+    if config.enabled and mode == "live" and not config.policy:
+        raise ValueError("directional.policy must be explicit in live mode")
+    if config.enabled and config.policy == "stress90":
+        from .execution_aligned_policy import FROZEN_PRODUCTS
+
+        if tuple(sorted({item.upper() for item in config.products})) != FROZEN_PRODUCTS:
+            raise ValueError("Stress-90 requires the frozen 50-product universe")
     return config
 
 

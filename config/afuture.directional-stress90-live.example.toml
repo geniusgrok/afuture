@@ -1,6 +1,5 @@
-# Execution-aligned directional portfolio test/Shadow configuration.
-# The frozen 50-product universe and policy match the final specific-contract L4.
-# Historical return evidence is selection-biased; use Shadow/test CTP before real capital.
+# Stress-90 production-wiring example. This file grants no activation approval.
+# Keep credentials in AFUTURE_CTP_* environment variables, never in this file.
 [system]
 mode = "live"
 initial_capital = 500000
@@ -12,7 +11,8 @@ md_address = "tcp://YOUR_MARKET_FRONT"
 
 [directional]
 enabled = true
-policy = "execution_aligned"
+policy = "stress90"
+account_exclusive = true
 products = [
   "A", "AG", "AL", "AP", "AU", "B", "BC", "BU", "C", "CF", "CJ", "CS",
   "CU", "EB", "EG", "FG", "FU", "HC", "I", "J", "JM", "L", "LH", "LU",
@@ -26,13 +26,10 @@ min_days_to_expiry = 20
 min_volume = 1000
 min_open_interest = 5000
 max_contract_volume = 35
-# Broad cross-midnight window permits each product's first fresh tradable session.
-# Openings still require fresh quotes, sufficient depth and all RiskManager gates.
+# Stress-90 applies the immutable per-product first-entry manifest; this compatibility
+# window is retained for legacy manager validation and is not an entry-chasing license.
 rebalance_window = "20:55-09:10"
-# Primary freshness is trading-day alignment with the completed activity snapshot.
-# This is only a secondary ceiling for genuinely stale feeds / abnormal timestamps.
 signal_max_age_hours = 96
-account_exclusive = true
 
 [risk]
 max_margin_ratio = 0.35

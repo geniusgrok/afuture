@@ -36,6 +36,7 @@ MAX_GROSS_LEVERAGE = 2.0
 @dataclass(frozen=True)
 class DirectionalConfig:
     enabled: bool = False
+    policy: str = ""
     products: tuple[str, ...] = ()
     exchanges: tuple[str, ...] = ("DCE", "CZCE", "SHFE", "INE")
     max_gross_leverage: float = MAX_GROSS_LEVERAGE
@@ -50,6 +51,7 @@ class DirectionalConfig:
     def validate(self) -> None:
         require_bool(self.enabled, "directional.enabled")
         require_bool(self.account_exclusive, "directional.account_exclusive")
+        require_string(self.policy, "directional.policy")
         for field_name in ("products", "exchanges"):
             require_string_sequence(getattr(self, field_name), f"directional.{field_name}")
         require_string(self.rebalance_window, "directional.rebalance_window")
@@ -64,6 +66,8 @@ class DirectionalConfig:
             require_finite_number(getattr(self, field_name), f"directional.{field_name}")
         if not self.enabled:
             return
+        if self.policy not in {"", "execution_aligned", "stress90"}:
+            raise ValueError("directional.policy must be execution_aligned or stress90")
         if not self.products:
             raise ValueError("directional products cannot be empty")
         if not self.exchanges:

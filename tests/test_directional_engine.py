@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from afuture.directional_engine import DirectionalTradingEngine
 from afuture.directional_runtime import DirectionalActionResult
 from afuture.models import (
@@ -35,6 +37,7 @@ class _Manager:
         self.quality_orders = []
         self.quality_fills = []
         self.quality_finalize_calls = 0
+        self.completed_account_returns = []
 
     def bootstrap(self, now):
         self.bootstrap_calls += 1
@@ -74,6 +77,9 @@ class _Manager:
 
     def _finalize_quality_cycle_if_settled(self, now):
         self.quality_finalize_calls += 1
+
+    def record_completed_account_return(self, trading_day, daily_return):
+        self.completed_account_returns.append((trading_day, daily_return))
 
 
 class _Broker:
@@ -167,6 +173,31 @@ def test_directional_engine_forwards_ticks_enforces_gross_and_runs_manager(tmp_p
     assert manager.rebalance_calls == 1
     engine.stop()
     assert manager.closed is True
+
+
+def test_directional_engine_records_completed_broker_day_before_advancing_runtime_state(
+    tmp_path,
+):
+    broker, manager, engine = _engine(tmp_path)
+    engine.state.trading_day = "20260824"
+    engine.state.day_start_equity = 100_000.0
+    engine.state.last_account_trading_day = "20260824"
+    engine.state.last_account_equity = 90_000.0
+    next_account = AccountSnapshot(
+        90_000.0,
+        90_000.0,
+        90_000.0,
+        0.0,
+        0.0,
+        0.0,
+        "20260825",
+    )
+
+    engine._advance_trading_day(next_account)
+
+    assert manager.completed_account_returns[0][0] == "20260824"
+    assert manager.completed_account_returns[0][1] == pytest.approx(-0.1)
+    assert engine.state.trading_day == "20260825"
 
 
 def test_directional_gross_guard_reduction_keeps_engine_running(tmp_path):

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from .directional_acceptance import PRODUCT_MULTIPLIERS, TargetLotStages
 from .directional_risk import DirectionalRiskGovernor
 from .directional_robustness import MarginAwareDirectionalProductionAcceptance
+from .directional_stress90_planner import freeze_new_risk_target
 
 _EPS = 1e-15
 
@@ -27,58 +28,6 @@ _EPS = 1e-15
 def risk_freeze_triggered(completed_returns: Iterable[float]) -> bool:
     """Use the existing governor's exact completed-return trigger semantics."""
     return DirectionalRiskGovernor().scale(completed_returns) < 1.0 - _EPS
-
-
-def freeze_new_risk_target(
-    *,
-    current_lots: Mapping[str, int],
-    target_lots: Mapping[str, int],
-    symbol_products: Mapping[str, str],
-    triggered: bool,
-) -> dict[str, int]:
-    """Freeze new/same-sign increases without delaying risk reduction actions."""
-    target = {
-        str(symbol): int(volume) for symbol, volume in target_lots.items() if int(volume) != 0
-    }
-    if not triggered:
-        return dict(target)
-
-    current = {
-        str(symbol): int(volume) for symbol, volume in current_lots.items() if int(volume) != 0
-    }
-    products = {str(symbol): str(product).upper() for symbol, product in symbol_products.items()}
-    by_product: dict[str, list[str]] = {}
-    for symbol in current:
-        product = products.get(symbol)
-        if not product:
-            raise ValueError(f"missing current symbol product: {symbol}")
-        by_product.setdefault(product, []).append(symbol)
-
-    result: dict[str, int] = {}
-    for symbol, wanted in sorted(target.items()):
-        product = products.get(symbol)
-        if not product:
-            raise ValueError(f"missing target symbol product: {symbol}")
-
-        have = int(current.get(symbol, 0))
-        if have != 0:
-            # Reversals and same-sign reductions remain exact targets.
-            if (have > 0) != (wanted > 0) or abs(wanted) <= abs(have):
-                result[symbol] = wanted
-            else:
-                # Same-contract, same-sign increase is the only incumbent action frozen.
-                result[symbol] = have
-            continue
-
-        # A target on a different symbol of an already-held product is a contract roll,
-        # not a fresh product-level risk entry, and must remain executable.
-        if by_product.get(product):
-            result[symbol] = wanted
-            continue
-
-        # No incumbent product exposure: suppress the new risk entry.
-
-    return {symbol: volume for symbol, volume in result.items() if volume != 0}
 
 
 @dataclass(frozen=True)

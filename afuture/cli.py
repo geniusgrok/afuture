@@ -116,6 +116,18 @@ def build_parser() -> argparse.ArgumentParser:
     stress90_bootstrap.add_argument("--runtime-dir", required=True)
     stress90_bootstrap.add_argument("--through", required=True, help="最终 target day（YYYYMMDD）")
 
+    ohlc_refresh = sub.add_parser(
+        "directional-ohlc-refresh",
+        help="在无订单权限的进程中更新已完成日 Directional OHLC cache",
+    )
+    ohlc_refresh.add_argument("--config", required=True)
+    ohlc_refresh.add_argument(
+        "--current-trading-day",
+        required=True,
+        help="从运行中 CTP 会话取得的当前 trading day（YYYYMMDD）",
+    )
+    ohlc_refresh.add_argument("--cache", default="")
+
     recover = sub.add_parser("recover-state", help="人工核验后重建本地期望持仓")
     recover.add_argument("--config", required=True)
     recover.add_argument("--confirm-live", action="store_true")
@@ -647,8 +659,10 @@ def _run_status(config) -> int:
     return 0 if report.passed else 2
 
 
-def _run_stress90_bootstrap(args) -> int:
+def _run_stress90_bootstrap(config, args) -> int:
     """Run the fixed replay without initializing a broker or requiring CTP secrets."""
+    if config.directional.policy != "stress90":
+        raise ValueError("stress90-bootstrap requires directional.policy=stress90")
     from .directional_stress90_bootstrap import bootstrap_stress90
 
     result = bootstrap_stress90(
@@ -657,6 +671,41 @@ def _run_stress90_bootstrap(args) -> int:
         write_artifacts=True,
     )
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _run_directional_ohlc_refresh(config, args) -> int:
+    """Refresh market evidence in an explicitly order-incapable CLI process."""
+
+    if config.directional.policy != "stress90":
+        raise ValueError("directional-ohlc-refresh requires directional.policy=stress90")
+    from .directional_ohlc_cache import DirectionalOHLCCacheStore
+    from .directional_ohlc_refresh import refresh_directional_ohlc_cache
+    from .execution_aligned_runtime import SinaContinuousOHLCProvider
+
+    cache_path = (
+        Path(args.cache)
+        if args.cache
+        else Path(config.state_path).with_name("directional_ohlc_cache.json")
+    )
+    entry = refresh_directional_ohlc_cache(
+        DirectionalOHLCCacheStore(cache_path),
+        provider=SinaContinuousOHLCProvider(),
+        products=tuple(config.directional.products),
+        current_ctp_trading_day=args.current_trading_day,
+    )
+    print(
+        json.dumps(
+            {
+                "cache": str(cache_path),
+                "latest_completed_day": entry.latest_date.strftime("%Y%m%d"),
+                "row_count": entry.row_count,
+                "content_digest": entry.content_digest,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -693,12 +742,15 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(
         args.config,
-        require_ctp_credentials=args.command not in {"status", "stress90-bootstrap"},
+        require_ctp_credentials=args.command
+        not in {"status", "stress90-bootstrap", "directional-ohlc-refresh"},
     )
     if args.command == "status":
         return _run_status(config)
     if args.command == "stress90-bootstrap":
-        return _run_stress90_bootstrap(args)
+        return _run_stress90_bootstrap(config, args)
+    if args.command == "directional-ohlc-refresh":
+        return _run_directional_ohlc_refresh(config, args)
     logger = configure_logging(config.log_path)
 
     if args.command == "validate":

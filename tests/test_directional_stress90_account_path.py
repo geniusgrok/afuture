@@ -103,6 +103,68 @@ def test_completed_account_day_rejects_duplicate_backward_and_invalid_returns():
             record_completed_account_day(_state(), "20260825", invalid)
 
 
+def test_runtime_account_day_persistence_is_idempotent_and_rejects_conflict(tmp_path):
+    from types import SimpleNamespace
+
+    from afuture.directional import DirectionalConfig
+    from afuture.directional_stress90_runtime import Stress90DirectionalPortfolioManager
+    from afuture.directional_stress90_state import (
+        Stress90PolicyStateStore,
+        Stress90SeedStore,
+    )
+    from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+    from afuture.risk import RiskConfig, RiskManager
+
+    state = _state()
+    seed_path = tmp_path / "seed.json"
+    state_path = tmp_path / "state.json"
+    # Reconstruct the immutable seed identity already embedded by _state().
+    from afuture.directional_stress90_state import Stress90BootstrapSeed
+
+    seed = Stress90BootstrapSeed(
+        policy_id=state.policy_id,
+        policy_definition_digest=state.policy_definition_digest,
+        products_manifest_digest=state.products_manifest_digest,
+        supported_oi_products=state.supported_oi_products,
+        bootstrap_source_manifest=state.bootstrap_source_manifest,
+        bootstrap_through_day=state.bootstrap_through_day,
+        last_completed_input_day=state.last_completed_input_day,
+        last_completed_target_day=state.last_completed_target_day,
+        last_decision_digest=state.last_decision_digest,
+        last_oi_confirmed_weights=state.last_oi_confirmed_weights,
+        last_cost_approved_weights=state.last_cost_approved_weights,
+        last_survivor_weights=state.last_survivor_weights,
+        completed_concentrations=state.completed_concentrations,
+        bootstrap_candidate_state_digest=state.bootstrap_candidate_state_digest,
+        historical_candidate_weight_sha256=(
+            __import__(
+                "afuture.directional_stress90_policy",
+                fromlist=["STRESS90_POLICY"],
+            ).STRESS90_POLICY.historical_candidate_weight_sha256
+        ),
+        seed_digest=state.bootstrap_seed_digest,
+    )
+    Stress90SeedStore(seed_path).save_new(seed)
+    Stress90PolicyStateStore(state_path).save(state)
+    manager = Stress90DirectionalPortfolioManager(
+        DirectionalConfig(enabled=True, policy="stress90", products=FROZEN_PRODUCTS),
+        SimpleNamespace(),
+        RiskManager(RiskConfig(margin_estimate_buffer=1.25)),
+        policy_state_path=state_path,
+        seed_path=seed_path,
+        oi_evidence_path=tmp_path / "oi.json",
+    )
+
+    manager.record_completed_account_return("20260825", -0.10)
+    manager.record_completed_account_return("20260825", -0.10)
+    record = Stress90PolicyStateStore(state_path).load_required_record()
+
+    assert record.sequence == 2
+    assert record.state.completed_account_wealth == pytest.approx(0.9)
+    with pytest.raises(RuntimeError, match="conflicts"):
+        manager.record_completed_account_return("20260825", -0.11)
+
+
 def test_sufficient_statistics_trigger_matches_full_return_list_each_day():
     from afuture.directional_drawdown_reserve_freeze import drawdown_reserve_triggered
     from afuture.directional_stress90_state import (

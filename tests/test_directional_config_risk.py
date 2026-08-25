@@ -93,6 +93,53 @@ stop_z = 4.0
         load_config(mixed)
 
 
+def test_live_directional_policy_must_be_explicit_but_replay_blank_is_legacy_compatible(
+    tmp_path: Path,
+):
+    replay = _write(
+        tmp_path,
+        """
+[system]
+mode = "replay"
+initial_capital = 500000
+
+[directional]
+enabled = true
+products = ["A"]
+exchanges = ["DCE"]
+""",
+    )
+    assert load_config(replay).directional.policy == ""
+
+    live = _write(
+        tmp_path,
+        """
+[system]
+mode = "live"
+initial_capital = 500000
+
+[ctp]
+environment = "test"
+td_address = "tcp://trade"
+md_address = "tcp://market"
+
+[directional]
+enabled = true
+products = ["A"]
+exchanges = ["DCE"]
+""",
+    )
+    with pytest.raises(ValueError, match="directional.policy must be explicit"):
+        load_config(live, require_ctp_credentials=False)
+
+
+def test_directional_policy_rejects_unknown_identity():
+    from afuture.directional import DirectionalConfig
+
+    with pytest.raises(ValueError, match="directional.policy"):
+        DirectionalConfig(enabled=True, products=("A",), policy="optimized90").validate()
+
+
 def _tick(*, bid=99.0, ask=101.0, bid_volume=100, ask_volume=100) -> Tick:
     return Tick(
         symbol="A2609",
