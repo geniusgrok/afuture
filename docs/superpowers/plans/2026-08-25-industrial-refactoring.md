@@ -48,7 +48,7 @@
 - Consumes: repository at baseline `482455dc57bc6a134f45232e290b4a49c3f7073d`.
 - Produces: severity-ranked inventory, dependency graph facts, current data/decision flow, Markdown classification, and commands used by later tasks.
 
-- [ ] **Step 1: Record repository facts**
+- [x] **Step 1: Record repository facts**
 
 Run and copy stable findings—not raw verbose output—into the audit:
 
@@ -60,11 +60,11 @@ find tests -name 'test_*.py' -type f | sort
 find . -name '*.md' -not -path './.git/*' | sort
 ```
 
-- [ ] **Step 2: Record dependency and size diagnostics**
+- [x] **Step 2: Record dependency and size diagnostics**
 
 Use an AST-based import graph to confirm cycles and `wc -l` only as review signals. The document must explicitly identify `TradingEngine`, directional acceptance/runtime, CLI, persistence, broker adapters, and research-only modules, and must distinguish a large cohesive module from a God module.
 
-- [ ] **Step 3: Record the severity inventory**
+- [x] **Step 3: Record the severity inventory**
 
 Include these confirmed items with evidence and affected invariants:
 
@@ -78,7 +78,7 @@ P2     README/architecture/checklist mix live mechanics with later research chec
 
 Add other findings only when a concrete code path, reproduction, or inconsistent contract is present.
 
-- [ ] **Step 4: Run the pre-change fast baseline**
+- [x] **Step 4: Run the pre-change fast baseline**
 
 Run:
 
@@ -89,7 +89,7 @@ Run:
 
 Expected: current baseline tests pass; the separate minimal reproductions in the audit demonstrate the defects.
 
-- [ ] **Step 5: Commit and publish Checkpoint A**
+- [x] **Step 5: Commit and publish Checkpoint A**
 
 ```bash
 git add docs/refactoring/architecture-audit-20260825.md docs/superpowers/plans/2026-08-25-industrial-refactoring.md
