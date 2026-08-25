@@ -60,6 +60,10 @@ class ShadowBroker(Broker):
         if symbol in self.sim.specs:
             self.sim.subscribe(symbol, exchange)
 
+    def set_raw_tick_observer(self, observer) -> None:
+        """Observe the real raw market callback once, never the coalesced Shadow copy."""
+        self.live.set_raw_tick_observer(observer)
+
     def send_order(self, request: OrderRequest) -> str:
         """关键安全属性：订单只发送到本地模拟柜台。"""
         return self.sim.send_order(request)

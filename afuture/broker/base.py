@@ -1,6 +1,7 @@
 """交易柜台统一接口。"""
 
 from abc import ABC, abstractmethod
+from typing import Protocol
 
 from ..models import (
     AccountSnapshot,
@@ -12,6 +13,12 @@ from ..models import (
     OrderRequest,
     Tick,
 )
+
+
+class RawTickObserver(Protocol):
+    """Non-blocking market-evidence observer invoked before normal Tick delivery."""
+
+    def observe_raw_tick(self, tick: Tick, contract: ContractInfo | None) -> None: ...
 
 
 class Broker(ABC):
@@ -50,6 +57,19 @@ class Broker(ABC):
 
     def publish_tick(self, tick: Tick) -> None:
         raise NotImplementedError
+
+    def set_raw_tick_observer(self, observer: RawTickObserver | None) -> None:
+        """Install one callback-safe observer; implementations must notify pre-coalescing."""
+        self._raw_tick_observer = observer
+
+    def _notify_raw_tick_observer(
+        self,
+        tick: Tick,
+        contract: ContractInfo | None,
+    ) -> None:
+        observer = getattr(self, "_raw_tick_observer", None)
+        if observer is not None:
+            observer.observe_raw_tick(tick, contract)
 
     def get_trading_day(self) -> str:
         return self.get_account().trading_day

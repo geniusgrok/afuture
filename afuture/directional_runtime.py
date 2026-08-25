@@ -69,6 +69,7 @@ class DirectionalPortfolioManager:
         metadata_timeout_seconds: float = 10.0,
         static_specs: Mapping[str, ContractSpec] | None = None,
         quality_recorder=None,
+        raw_tick_observer=None,
     ) -> None:
         config.validate()
         self.config = config
@@ -82,6 +83,7 @@ class DirectionalPortfolioManager:
         self.metadata_timeout_seconds = max(float(metadata_timeout_seconds), 0.1)
         self.rate_limiter = OrderRateLimiter(risk_manager.config.max_orders_per_minute)
         self.quality = quality_recorder
+        self.raw_tick_observer = raw_tick_observer
         self._catalog: list[ContractInfo] = []
         self._ticks: dict[str, Tick] = {}
         self._specs: dict[str, ContractSpec] = dict(static_specs or {})
@@ -100,6 +102,14 @@ class DirectionalPortfolioManager:
         products = {item.upper() for item in self.config.products}
         exchanges = {item.upper() for item in self.config.exchanges}
         local_date = self._local(now).date()
+        trading_day: str | None = None
+        catalog_date = local_date
+        if self.raw_tick_observer is not None:
+            trading_day = self.broker.get_trading_day()
+            try:
+                catalog_date = datetime.strptime(trading_day, "%Y%m%d").date()
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("directional CTP trading day is invalid") from exc
         allowed: list[ContractInfo] = []
         for item in catalog:
             if item.product.upper() not in products:
@@ -108,7 +118,13 @@ class DirectionalPortfolioManager:
                 continue
             if item.listing:
                 try:
-                    if datetime.fromisoformat(item.listing).date() > local_date:
+                    if datetime.fromisoformat(item.listing).date() > catalog_date:
+                        continue
+                except ValueError:
+                    continue
+            if self.raw_tick_observer is not None:
+                try:
+                    if datetime.fromisoformat(item.expiry).date() < catalog_date:
                         continue
                 except ValueError:
                     continue
@@ -116,14 +132,30 @@ class DirectionalPortfolioManager:
         if not allowed:
             raise RuntimeError("directional contract catalog has no allowed products")
         self._catalog = allowed
+        if self.raw_tick_observer is not None:
+            self.raw_tick_observer.set_expected_contracts(
+                trading_day,
+                allowed,
+            )
+            self.broker.set_raw_tick_observer(self.raw_tick_observer)
         for item in allowed:
             self.broker.subscribe(item.symbol, item.exchange)
         self._initialized = True
 
     def close(self) -> None:
-        closer = getattr(self.signal_provider, "close", None)
-        if callable(closer):
-            closer()
+        try:
+            if self.raw_tick_observer is not None:
+                self.broker.set_raw_tick_observer(None)
+                self.checkpoint_oi_evidence()
+        finally:
+            closer = getattr(self.signal_provider, "close", None)
+            if callable(closer):
+                closer()
+
+    def checkpoint_oi_evidence(self) -> None:
+        """Durably commit raw OI evidence only after a bounded broker batch."""
+        if self.raw_tick_observer is not None:
+            self.raw_tick_observer.checkpoint()
 
     def observe(self, tick: Tick) -> None:
         if not self._initialized:

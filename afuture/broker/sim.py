@@ -54,6 +54,9 @@ class SimBroker(Broker):
         self.depth_haircut = float(depth_haircut)
         self.size_impact_ticks = max(0, int(size_impact_ticks))
         self._contract_catalog = list(contract_catalog or [])
+        self._contract_catalog_by_symbol = {
+            contract.symbol: contract for contract in self._contract_catalog
+        }
         self.position_book = PositionBook()
         self._orders: dict[str, Order] = {}
         self._trades: list[Trade] = []
@@ -121,6 +124,10 @@ class SimBroker(Broker):
 
     def publish_tick(self, tick: Tick) -> None:
         tick.validate()
+        self._notify_raw_tick_observer(
+            tick,
+            self._contract_catalog_by_symbol.get(tick.symbol),
+        )
         self._tick_seq += 1
         if self._trading_day and tick.trading_day != self._trading_day:
             self.position_book.roll_trading_day()

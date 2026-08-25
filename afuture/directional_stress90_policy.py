@@ -15,6 +15,7 @@ from typing import TypeAlias
 import numpy as np
 import pandas as pd
 
+from .directional_sessions import SESSION_MANIFEST_DIGEST
 from .execution_aligned_policy import (
     BASE_COST_BPS,
     EXECUTION_TEMPLATE_IDS,
@@ -81,6 +82,7 @@ class Stress90PolicyDefinition:
     benefit_horizon_sessions: int = 3
     cost_hurdle_bps: float = 15.0
     hhi_rule: str = "abs_weight_hhi_le_strictly_prior_expanding_median"
+    session_manifest_digest: str = SESSION_MANIFEST_DIGEST
     hard_drawdown_ratio: float = 0.30
     daily_loss_ratio: float = 0.05
     max_gross_leverage: float = MAX_GROSS_LEVERAGE
@@ -106,6 +108,7 @@ class Stress90PolicyDefinition:
             "benefit_horizon_sessions": 3,
             "cost_hurdle_bps": 15.0,
             "hhi_rule": "abs_weight_hhi_le_strictly_prior_expanding_median",
+            "session_manifest_digest": SESSION_MANIFEST_DIGEST,
             "hard_drawdown_ratio": 0.30,
             "daily_loss_ratio": 0.05,
             "max_gross_leverage": MAX_GROSS_LEVERAGE,

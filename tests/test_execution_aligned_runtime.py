@@ -298,6 +298,8 @@ class _FillLatencyEngine(DirectionalTradingEngine):
 def _activity_lifecycle_engine(
     tmp_path: Path,
     store: DirectionalActivityStore,
+    *,
+    oi_observer=None,
 ) -> tuple[_LatencyBroker, DirectionalTradingEngine]:
     broker = _LatencyBroker()
     manager = ExecutionAlignedDirectionalPortfolioManager(
@@ -307,6 +309,7 @@ def _activity_lifecycle_engine(
         signal_provider=_Provider(),
         policy=_Policy(),
         activity_tracker=DirectionalActivityTracker(store),
+        raw_tick_observer=oi_observer,
     )
     engine = DirectionalTradingEngine(
         broker,
@@ -319,6 +322,26 @@ def _activity_lifecycle_engine(
     )
     engine.start()
     return broker, engine
+
+
+def test_post_batch_oi_checkpoint_failure_halts_engine(tmp_path: Path) -> None:
+    class FailingOiObserver:
+        def checkpoint(self):
+            raise OSError("injected OI checkpoint failure")
+
+    broker, engine = _activity_lifecycle_engine(
+        tmp_path,
+        DirectionalActivityStore(tmp_path / "directional_activity.json"),
+        oi_observer=FailingOiObserver(),
+    )
+    broker.events = []
+
+    engine.run_once()
+
+    assert engine.halted is True
+    assert engine.state.kill_reason == (
+        "directional OI evidence checkpoint failed: injected OI checkpoint failure"
+    )
 
 
 @pytest.mark.parametrize(

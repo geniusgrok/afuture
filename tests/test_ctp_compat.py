@@ -6,6 +6,7 @@ import pytest
 
 from afuture.broker.ctp import CtpBroker, CtpCredentials, build_ctp_setting
 from afuture.models import (
+    ContractInfo,
     ContractPosition,
     Offset,
     OrderRequest,
@@ -167,6 +168,48 @@ def test_ctp_poll_is_bounded_and_coalesces_latest_tick_per_contract() -> None:
         "critical_backlog": 0,
         "tick_backlog": 0,
     }
+
+
+def test_ctp_raw_observer_sees_every_tick_before_manager_coalescing() -> None:
+    broker = CtpBroker(credentials(), max_events_per_poll=2)
+    broker._trading_day = "20260825"
+    contract = ContractInfo("A2612", "DCE", "A", "2026-12-15")
+    broker._contract_catalog[contract.symbol] = contract
+    observed = []
+
+    class Observer:
+        def observe_raw_tick(self, tick, metadata):
+            assert broker.delivery_counters()["ticks_received"] == len(observed)
+            observed.append((tick.last_price, metadata))
+
+    broker.set_raw_tick_observer(Observer())
+    for index in range(1_000):
+        broker._on_tick(SimpleNamespace(data=raw_tick("A2612", "DCE", price=100.0 + index)))
+    broker._on_account(SimpleNamespace(data=SimpleNamespace(balance=500_000, available=400_000)))
+
+    events = broker.poll_events()
+    assert len(observed) == 1_000
+    assert all(metadata == contract for _price, metadata in observed)
+    assert [event.event_type for event in events] == ["account", "tick"]
+    assert events[-1].payload.last_price == 1_099.0
+    assert broker.delivery_counters()["ticks_coalesced"] == 999
+
+
+def test_ctp_raw_observer_failure_is_critical_and_tick_is_not_delivered() -> None:
+    broker = CtpBroker(credentials())
+    broker._trading_day = "20260825"
+
+    class Observer:
+        def observe_raw_tick(self, tick, metadata):
+            raise RuntimeError("injected evidence failure")
+
+    broker.set_raw_tick_observer(Observer())
+    broker._on_tick(SimpleNamespace(data=raw_tick("A2612", "DCE", price=100.0)))
+
+    events = broker.poll_events()
+    assert [event.event_type for event in events] == ["broker_error"]
+    assert "injected evidence failure" in str(events[0].payload)
+    assert broker.delivery_counters()["ticks_received"] == 0
 
 
 @pytest.mark.parametrize("trading_day", ["", "20260230", "2026-08-25"])

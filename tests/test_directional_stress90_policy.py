@@ -17,6 +17,7 @@ def test_stress90_definition_has_distinct_definition_and_historical_digests():
     assert len(STRESS90_POLICY.policy_definition_digest) == 64
     assert len(STRESS90_POLICY.policy_manifest_digest) == 64
     assert len(STRESS90_POLICY.products_manifest_digest) == 64
+    assert len(STRESS90_POLICY.session_manifest_digest) == 64
     assert len(STRESS90_POLICY.products) == 50
     assert len(STRESS90_POLICY.template_ids) == 96
     assert STRESS90_POLICY.meta_lookback == 11
@@ -56,6 +57,7 @@ def test_stress90_definition_is_immutable():
         {"template_ids": ("changed",)},
         {"meta_lookback": 12},
         {"cost_hurdle_bps": 10.0},
+        {"session_manifest_digest": "0" * 64},
         {"max_gross_leverage": 2.1},
         {"max_margin_ratio": 0.36},
         {"historical_candidate_weight_sha256": "0" * 64},

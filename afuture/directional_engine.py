@@ -92,6 +92,13 @@ class DirectionalTradingEngine(TradingEngine):
             except Exception as exc:
                 self.emergency_stop(f"directional activity checkpoint failed: {exc}")
                 return
+        oi_checkpoint = getattr(self.directional_manager, "checkpoint_oi_evidence", None)
+        if callable(oi_checkpoint):
+            try:
+                oi_checkpoint()
+            except Exception as exc:
+                self.emergency_stop(f"directional OI evidence checkpoint failed: {exc}")
+                return
         self._initialize_directional_manager()
         if (
             self.halted

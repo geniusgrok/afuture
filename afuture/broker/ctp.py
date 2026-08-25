@@ -605,6 +605,10 @@ class CtpBroker(Broker):
                 open_interest=float(getattr(raw, "open_interest", 0.0) or 0.0),
             )
             tick.validate()
+            self._notify_raw_tick_observer(
+                tick,
+                self._contract_catalog.get(tick.symbol),
+            )
         except Exception as exc:
             self._enqueue_critical(
                 BrokerEvent("broker_error", f"CTP tick conversion failed: {exc}")
