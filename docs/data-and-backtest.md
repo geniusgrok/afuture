@@ -1,108 +1,111 @@
 # 数据、回放与研究
 
+本文说明数据在何时可见、如何进入回放，以及研究区间如何隔离。术语和指标定义见 [`glossary.md`](glossary.md)。
+
 ## 1. 数据职责
 
-| 数据 | 用途 | 不可替代的边界 |
+| 数据 | 用途 | 不能替代的证据 |
 | --- | --- | --- |
-| Tick / CTP L1 | 回放、fresh quote、depth、limit、交易日与执行 | 不能从日线伪造 queue、partial 或 reject |
-| CTP catalog / metadata | listing、expiry、multiplier、tick、margin、fee | 缺失可信字段时 live opening fail-closed |
-| continuous OHLC | Directional 产品 signal 与 meta history | continuous roll jump 不算可交易 PnL |
-| concrete-contract OHLC/OI/volume | point-in-time 选约、roll-safe next-open 与 account proxy | 必须使用当时已挂牌合约和冻结 multiplier |
-| Broker account / position / fill | live cash、equity、margin、持仓与成交真相 | 研究 target 或 request 不能替代 fill truth |
+| Tick / CTP 一档行情 | 回放、最新报价、盘口深度、涨跌停、交易日和订单执行 | 日线不能伪造排队、部分成交或拒单 |
+| CTP 合约目录和参数 | 挂牌、到期、乘数、最小变动价位、保证金和手续费 | 缺失可信字段时不能开仓 |
+| 连续合约开高低收 | 方向组合的品种信号历史 | 换月跳空不能计入可交易盈亏 |
+| 具体合约价格、持仓量和成交量 | 当时可见的选约、换月和次日开盘账户模拟 | 必须使用当时已挂牌合约和固定乘数 |
+| Broker 账户、持仓和成交 | 实盘现金、权益、保证金、持仓和成交真相 | 研究目标或订单请求不能替代真实成交 |
 
-公开历史不包含多年完整 bid/ask/depth/queue/partial/reject、真实订单流控、逐日 Broker margin schedule、实际结算费率和 market impact。固定 5bp/15bp、12%/15% margin proxy 是可比较的研究假设，不是精确 CTP 历史重放。
+公开历史数据通常不包含多年完整买卖盘口、排队、部分成交、柜台拒单、订单限流、逐日保证金和实际结算费率。固定成本和保证金比例只是为了可比较的研究假设，不是精确的 CTP 历史重放。
 
 ## 2. 输入完整性
 
-所有进入 causal daily 研究或 acceptance 的 frame 必须满足：
+进入日频研究或验收的表格必须满足：
 
-- `DatetimeIndex` 可解析、唯一且严格单调；
-- 所需列存在；
-- required product/symbol/date key 唯一；
-- 数值列不含 NaN/inf；
-- 必需价格严格为正，cost bps 非负；
+- 时间索引可解析、唯一并严格递增；
+- 必需列完整；
+- 品种、合约和日期的组合键唯一；
+- 数值列不含 NaN 或无穷值；
+- 必需价格严格为正，交易成本不能为负；
 - 缺失值只能出现在调用者明确允许的稀疏区域；
-- duplicate date 不允许通过排序或 keep-last 隐式选择真相。
+- 重复日期不能通过排序或“保留最后一条”隐式选择真相。
 
-Tick 数据额外校验 timestamp、bid/ask/mid、depth、volume、open interest、limit 与 trading day。原始顺序需要用于 data-check 的 duplicate/out-of-order 诊断；回放才在验证后排序。
+Tick 数据还要校验时间戳、买卖价、中间价、盘口数量、成交量、持仓量、涨跌停和交易日。数据质量检查保留原始顺序以发现重复和乱序；回放只能在校验通过后排序。
 
-## 3. 因果时间规则
+## 3. 时间因果规则
 
 ```text
-完整交易日 D 的 OHLC
-→ D+1 产品目标
+完整交易日 D 的品种价格
+→ D+1 品种目标
 
-完整交易日 D 的 concrete-contract volume/OI
+完整交易日 D 的具体合约成交量和持仓量
 → D+1 具体合约
 
-D 已选具体合约的 D close → D+1 open
-+ D+1 新目标的 open → close
-- D+1 open turnover cost
-→ D+1 account return
+D 日已选合约的收盘到 D+1 开盘盈亏
++ D+1 新目标的开盘到收盘盈亏
+- D+1 开盘成交成本
+→ D+1 账户收益
 ```
 
 禁止：
 
-- 用 D+1 未完成 volume/OI 改写 D 已冻结选约；
-- 用当前 session PnL 决定当前目标；
-- 把 continuous adjusted price 的换月跳空记为交易收益；
-- 用未来 label、MFE/MAE 或 candidate outcome 作为 production feature；
-- 在 appended future data 后改变过去 target/state label。
+- 用 D+1 尚未完成的成交量或持仓量改写 D 日已经冻结的选约；
+- 用当前交易日尚未完成的盈亏决定当前目标；
+- 把连续合约换月跳空记为交易收益；
+- 用未来标签、未来最大有利/不利波动或候选结果作为生产特征；
+- 追加未来数据后改变过去的目标或状态标签。
 
-## 4. Trading day、session 与 timezone
+## 4. 交易日、时段和时区
 
-生产 Tick 必须带 timezone；中国夜盘自然日与 trading day 不能混用。`DirectionalActivityTracker` 只在 `Tick.trading_day` 推进时冻结前一完整日 snapshot。周末、节假日与夜盘依赖 trading-day evidence，不用自然日小时差猜测“最新”。
+生产 Tick 必须包含时区。中国期货夜盘的自然日期和柜台交易日不能混用。
 
-`required_signal_day = completed_activity_snapshot.trading_day`。OHLC 必须覆盖 required day，然后 `signal_max_age_hours` 才处理未来 timestamp 或长时间停更。第一次启动没有 completed snapshot 时不新增 Directional 风险。
+`DirectionalActivityTracker` 只在 `Tick.trading_day` 推进时冻结前一完整交易日的流动性快照。周末、节假日和夜盘都依赖柜台交易日证据，不能根据自然日小时差猜测数据是否最新。
 
-## 5. 回放与撮合
+方向组合要求价格历史覆盖流动性快照对应的交易日。第一次启动尚未形成完整快照时，系统不增加方向风险。
 
-`afuture replay` 使用与运行时相同的 strategy、risk、execution、Broker event 和 accounting 语义。默认 SimBroker 是确定性回归模型；opt-in realistic L1 模式只有在输入真实 point-in-time L1/tick 时，才模拟 depth haircut、partial FAK、latency、size/depth impact 与 unfilled quantity。
+## 5. 回放和撮合
 
-回放保护以下不变量：
+`afuture replay` 复用运行时的策略、风控、执行、Broker 事件和记账规则。默认 `SimBroker` 是确定性回归模型。
 
-- request 不更新 position；fill 才更新；
-- commission 与 slippage 在 cash/equity 中只记一次；
-- close volume、offset 与今昨 bucket 先校验后修改；
-- reversal 先平后开；
-- reduction 未确认前不 opening；
-- active order、reject、cancel、partial、retry 不产生重复 fill；
-- HALT/REDUCE_ONLY 期间不增加风险。
+只有输入真实、当时可见的一档行情时，增强模拟才会使用盘口深度折扣、部分 FAK 成交、延迟、订单数量冲击和未成交数量。没有这些输入时，系统不会伪造“真实 L1”精度。
+
+回放保护以下规则：
+
+- 订单请求不更新持仓，成交才更新；
+- 手续费和滑点只在现金和权益中记录一次；
+- 平仓数量、开平标记和今昨仓先校验后修改；
+- 反转先平仓再开仓；
+- 减仓未确认前不允许开仓；
+- 活动委托、拒单、撤单、部分成交和重试不产生重复成交；
+- 只减仓和硬停机期间不增加风险。
 
 ## 6. 研究窗口
 
-Stress-80/90 matrix 的每一行都是从 frozen initial capital、flat position 和显式 pre-window causal state 开始的独立账户模拟。Train、validation、OOS 与 prior windows 用于不同阶段检验；`full_recent` 是覆盖这些阶段的汇总视图，因此会重叠，不能称为 pristine holdout。
+压力验证矩阵的每一行都从固定初始资金、空仓和显式的窗口前状态开始，拥有独立账户模拟：
 
-任何被模板选择、候选筛选、promotion 或人工判断观察过的 OOS 都必须记录 `pristine=false`。研究报告应同时保存窗口日期、成本、margin proxy、initial capital、input digest、candidate digest、gross peak、reject 和 HALT，而不是只保存年化收益。
+- 训练区间用于形成或选择候选；
+- 验证区间用于比较候选；
+- 样本外区间用于检验未参与形成过程的数据；
+- 前序区间检查不同历史阶段；
+- 汇总窗口覆盖上述近期区段，因此会与子区间重叠。
 
-## 7. 当前 Stress-90 checkpoint
+样本外区间一旦被模板选择、候选筛选或人工判断观察，就必须记录为不再纯净。研究报告不能只保存年化收益，还要保存窗口日期、成本、保证金假设、初始资金、输入摘要、候选摘要、最高总敞口、风控拒绝和停机状态。
 
-继承基线：
+## 7. 当前离线压力研究证据
 
-- Stress-80 merge `b4207abb50aca1e39d5ebba3affc04765857251a`（PR #24）；
-- Stress-90 merge `482455dc57bc6a134f45232e290b4a49c3f7073d`（PR #25）；
-- fixed candidate weight SHA256 `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`。
+当前方向组合候选的历史代号是 `Stress-90`。数字表示该轮预先设定的压力情景年化收益目标，不表示交易成本、保证金比例或实盘风险等级。
 
-| Window | Annualized | Max DD | Gross peak | HALT | Rejects |
-| --- | ---: | ---: | ---: | --- | ---: |
-| Base full_recent | 156.881655% | 15.708467% | 1.983123x | false | 0 |
-| Stress train | 28.891985% | 13.657897% | 1.648285x | false | 0 |
-| Stress validation | 512.267292% | 11.783634% | 1.626864x | false | 0 |
-| Stress OOS | 102.808956% | 17.632605% | 1.649642x | false | 0 |
-| Stress full_recent | 112.100053% | 14.567214% | 1.670510x | false | 0 |
-| Stress prior1 | 12.141524% | 23.228982% | 1.677099x | false | 0 |
-| Stress prior2 | 8.578529% | 18.354608% | 1.648349x | false | 0 |
+| 情景 | 单边成本 | 保证金比例 | 汇总窗口年化收益 | 最大回撤幅度 | 最高总敞口 | 保证金拒绝 | 硬停机 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 标准情景 | 5 个基点 | 12% | 156.881655% | 15.708467% | 1.983123 倍权益 | 0 | 否 |
+| 压力情景 | 15 个基点 | 15% | 112.100053% | 14.567214% | 1.670510 倍权益 | 0 | 否 |
 
-PR #25 run `32798895640` 的 Python 3.10/3.13 CI 通过。完整输入摘要、成本、turnover、net alpha 与 bounded-search 约束见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。该 checkpoint 是离线研究晋级，不会自动接入 live runtime。
+这些数字只描述固定历史输入下的离线账户模拟。完整分段结果、输入摘要、成本、换手和防过拟合约束见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。该候选没有自动接入实盘。
 
 ## 8. 何时重跑昂贵验证
 
-普通命名、文档、类型和行为中性重构只运行局部/模块测试。只有以下变化需要重新执行完整 frozen backtest / Stress / acceptance matrix：
+普通命名、文档、类型和行为不变的重构只运行受影响测试。以下变化才需要重新执行完整回测、压力矩阵和验收矩阵：
 
-- Alpha、target construction、position sizing 或 risk response；
-- leverage、gross、margin、cash、drawdown、cost 或 fill assumption；
-- contract selection、roll、timestamp、session、calendar 或 split definition；
-- shared accounting/execution infrastructure 的行为修改；
-- final validation 暴露实质问题并修复。
+- 策略信号、目标构造、仓位大小或风险响应；
+- 杠杆、总敞口、保证金、现金、回撤、成本或成交假设；
+- 合约选择、换月、时间戳、交易时段、交易日历或窗口划分；
+- 共享记账和执行基础设施的行为；
+- 完整验证发现实质问题并完成修复。
 
-更高信息价值的下一步是新发生数据、多交易日 CTP Shadow、真实 margin/fee、planned-vs-realized turnover/slippage/tracking、测试柜台订单生命周期与极小资金，而不是在相同已观察历史上继续调参。
+更高价值的下一步是新发生数据、多日 CTP Shadow、真实手续费和保证金、计划与实际成交差异、测试柜台订单生命周期和极小资金，而不是继续调整同一历史数据。

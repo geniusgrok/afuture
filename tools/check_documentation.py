@@ -98,7 +98,8 @@ def _classified_markdown(root: Path, index: Path) -> Counter[Path]:
 def _historical_markdown(root: Path, index: Path) -> list[Path]:
     text = index.read_text(encoding="utf-8")
     match = re.search(
-        r"## Historical or superseded record\n(?P<body>.*?)(?=\n## )",
+        r"## (?:Historical or superseded record|历史或已替代记录)\n"
+        r"(?P<body>.*?)(?=\n## )",
         text,
         flags=re.DOTALL,
     )

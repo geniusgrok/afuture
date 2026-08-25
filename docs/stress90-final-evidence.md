@@ -1,12 +1,14 @@
-# Stress90 Final Production Evidence
+# 当前离线压力研究证据（历史代号 Stress-90）
 
-## Decision
+> 阅读说明：`Stress-90` 的“90”表示本轮预先设定的压力情景年化收益目标不低于 90%，不是 90 个基点成本、90% 保证金或实盘风险等级。标准情景使用单边 5 个基点成本和固定 12% 保证金比例假设；压力情景使用单边 15 个基点和 15% 假设。本文保存原始字段和研究代号以保证结果可复核，术语定义见 [`glossary.md`](glossary.md)。该候选没有接入实盘。
+
+## 结论
 
 Promote the causal expanding-median leadership freeze as the new Production research checkpoint. It materially exceeds the inherited Stress80 checkpoint, clears the ideal `>=90%` Stress objective, makes both prior windows positive, and leaves live runtime wiring unchanged.
 
 Authoritative parent: `b4207abb50aca1e39d5ebba3affc04765857251a` (PR #24). The fresh matrix was executed from clean promotion commit `01aebdbbce9ded98a48108c7193f028218faef91`; the only subsequent pre-CI changes are evidence documentation and fail-closed matrix-payload validation, not simulation behavior.
 
-## Frozen candidate
+## 固定候选
 
 The Stress80 target construction is unchanged:
 
@@ -31,7 +33,7 @@ The fixed drawdown reserve remains `25% = 30% total hard DD - 5% daily-loss rese
 
 Candidate weight SHA256: `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`.
 
-## Immutable inputs
+## 固定输入
 
 | File | SHA256 |
 | --- | --- |
@@ -43,7 +45,7 @@ Candidate weight SHA256: `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb
 
 No spot, inventory, margin, position or transaction history was fabricated.
 
-## Fresh Production matrix
+## 完整账户模拟矩阵
 
 All seven rows are independent account simulations. Base uses 5bp and the frozen Base margin proxy; Stress uses 15bp and the frozen Stress margin proxy.
 
@@ -61,7 +63,7 @@ The assembled promotion gate returns `passed=true` with an empty reason list.
 
 The inherited Stress80 evaluator was rerun on the same clean tree and still returns candidate digest `8e38dbf...d63f09f28`, Stress annualized `80.067891%`, DD `-29.727688%`, turnover `337,934,465`, efficiency `30.990722 bps`, no HALT and zero margin rejects. The new behavior is therefore additive and the PR #24 checkpoint remains exactly reproducible.
 
-## Improvement over Stress80
+## 相比前一压力研究候选的变化
 
 | Metric | Stress80 | Stress90 | Change |
 | --- | ---: | ---: | ---: |
@@ -75,7 +77,7 @@ The inherited Stress80 evaluator was rerun on the same clean tree and still retu
 
 The gain is not mechanical minimum-turnover optimization: concentrated recent entry/increase remains the alpha engine. The response suppresses only diffuse-leadership additions whose net contribution is negative in prior1, prior2 and full_recent.
 
-## Causality and overfit controls
+## 时间因果和防过拟合约束
 
 - Current target weights are already available at the decision; strictly prior expanding HHI contains no future market data.
 - The comparison happens before the current HHI is appended.
@@ -86,7 +88,7 @@ The gain is not mechanical minimum-turnover optimization: concentrated recent en
 - Two of three allowed families and two of six quick candidates were used; the third family was stopped after the ideal target passed.
 - Full-path reserve correctness was tested once and rejected as standalone negative evidence; it was not tuned.
 
-## Risk and runtime boundary
+## 风控与实盘边界
 
 Unchanged hard authorities:
 
@@ -101,11 +103,11 @@ Unchanged hard authorities:
 
 This promotion contains offline validated Production evaluator components only. It does not wire the strategy into live runtime and does not use research CSV artifacts as live data sources. Any later live promotion still requires restart recovery, missing/stale 60m fail-closed behavior, session/calendar and roll correctness, startup warmup, and live/offline equivalence tests.
 
-## Negative evidence
+## 失败路线证据
 
 `docs/stress90-bounded-research-evidence.md` preserves the complete bounded counters, P0 attribution, causal regime decomposition, the standalone full-path reserve collapse to `0.829912%`, and the inherited locked failures. No failed route was rescued with parameter changes.
 
-## Verification disposition
+## 验证结果
 
 - Fresh matrix: passed (`1 / 2` used).
 - Focused mechanics/tests before matrix: passed.

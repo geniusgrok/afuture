@@ -1,166 +1,158 @@
 # 架构与数据流
 
+本文描述当前代码的职责边界、依赖方向和不可违反的事件顺序。术语和公式统一定义在 [`glossary.md`](glossary.md)。
+
 ## 1. 系统边界
 
-`afuture` 有两条账户互斥的正式运行链：Calendar / Auto 与 Execution-Aligned Directional。它们共享唯一的账户和执行真相：
+`afuture` 有两条账户互斥的正式运行链：
 
-- Broker/CTP：订单、成交、账户与柜台持仓；
-- `PositionBook`：对 Broker fill 的本地确定性镜像；
-- `RiskManager`：账户 hard gate、`REDUCE_ONLY`、daily circuit 与 HALT；
-- `StateStore`：带 schema、sequence、checksum 的重启证据和显式 previous snapshot；
-- TradingEngine：事件顺序、对账、持久化与可观测性编排。
+- 跨期价差：固定组合或自动选择相邻月份合约；
+- 方向组合：根据已完成数据生成品种目标，再选择具体合约和手数。
 
-策略、研究 evaluator 和 CLI 都不能直接赋值真实持仓，也不能绕过 Broker 成交与 RiskManager 权限。
+两条链共享唯一的账户和执行真相：
 
-## 2. 依赖方向与职责
+| 组件 | 权限和职责 |
+| --- | --- |
+| Broker / CTP | 提供订单、成交、账户和柜台持仓的权威事件 |
+| `PositionBook` | 根据 Broker 成交维护本地持仓镜像 |
+| `RiskManager` | 执行账户限制、只减仓状态和硬停机 |
+| `StateStore` | 保存带版本、序号和校验和的重启证据 |
+| `TradingEngine` | 编排事件顺序、对账、持久化和运行观测 |
+
+策略、研究工具和命令行都不能直接修改真实持仓，也不能绕过 Broker 成交和 `RiskManager`。
+
+## 2. 依赖方向
 
 稳定依赖方向是：
 
 ```text
-models / config
-→ pure calculations and policies
-→ strategy / risk / execution
-→ runtime orchestration
-→ broker / persistence / CLI / reporting
+统一数据模型和配置
+→ 无外部副作用的计算与策略规则
+→ 策略、风控和订单计划
+→ 运行时编排
+→ Broker、持久化、命令行和报告
 ```
 
-当前包没有已知 import cycle。动态 VeighNa 类型只停留在 `broker/ctp.py` 适配边界，转换后使用 `models.py` 中的 enum/dataclass。没有为了单一实现引入 Repository/Factory/Service 层；TradingEngine 虽然职责较重，但 event、fill、risk、state 的顺序高度耦合，当前以测试保护的显式编排优先于高风险拆分。
+当前包没有已知循环导入。VeighNa 的动态类型只存在于 `broker/ctp.py` 适配边界，进入系统后统一转换为 `models.py` 中的枚举和数据类。
 
-## 3. Calendar / Auto 主链路
+项目没有为单一实现增加 Repository、Factory、Service 或依赖注入层。`TradingEngine` 的事件、成交、风控和状态顺序彼此紧密相关，目前保留显式编排并用测试保护，避免为拆分而拆分。
+
+## 3. 跨期价差主链路
 
 ```text
-CTP catalog / Tick
-→ AutoPairManager
-   point-in-time catalog、front-3、adjacent、activity/sync/liquidity
-→ CalendarSpreadStrategy
-   signal history、entry/exit/stop/confirmation
-→ PortfolioRisk + RiskManager
-→ PairExecutor
-   reductions/openings、双腿 FAK、partial rollback
-→ Broker
-→ fill event
-→ PositionBook / account / state / quality
+CTP 合约目录和行情
+→ 选择同品种、相邻月份且流动性合格的组合
+→ 根据价差历史生成开仓、退出或止损意图
+→ 检查账户和组合风险
+→ 生成双腿订单；先减仓，后开仓
+→ Broker 返回成交、部分成交、撤单或拒单
+→ 更新持仓、资金、状态和执行质量
 ```
 
-Auto 只拥有候选与 open-eligible 状态。一个 pair 失去候选资格后，既有仓位仍受 managed 逻辑约束直至退出，不能因扫描结果消失而成为无人管理风险。
+自动选择模块只决定候选组合和是否允许新增仓位。组合失去候选资格后，已有仓位仍由系统管理直至安全退出，不能因为扫描结果消失而成为无人管理的风险。
 
-## 4. Directional live 主链路
+## 4. 方向组合主链路
 
 ```text
-已完成产品 OHLC
-→ ExecutionAlignedAggressivePolicy
-→ 产品目标权重（target gross <=2x）
+已完成交易日的品种价格
+→ 生成品种目标权重
 
-已完成交易日 D 的 CTP volume/OI snapshot
-→ D+1 concrete contract selection
+上一完整交易日的成交量和持仓量
+→ 为下一交易日选择具体合约
 
-Broker positions + fresh D+1 quotes + live ContractSpec
-→ integer target lots（单合约 <=35）
-→ margin-aware downward fitting
-→ deterministic reductions
-→ Broker 确认 reductions 后再 openings
-→ RiskManager hard gates
-→ FAK → Broker fill truth
-→ realized-gross guard / circuit / HALT
-→ state / audit / execution quality
+柜台持仓、实时行情和合约参数
+→ 把目标权重转换成整数手数
+→ 在保证金和可用资金范围内只向下缩减目标
+→ 先执行减仓
+→ Broker 确认减仓后再允许开仓
+→ 每笔订单再次通过账户硬限制
+→ 成交驱动记账
+→ 检查实际总敞口、单日亏损和硬停机
+→ 保存状态、审计和执行质量
 ```
 
-`DirectionalPortfolioManager` 不维护第二套账户。signal provider 失败时，只有已缓存历史覆盖 required signal day 才可继续；缺失且已有风险时转入风险收缩，账户为空时拒绝新增。
+`DirectionalPortfolioManager` 不维护第二套账户。信号数据暂时不可用时，只有已缓存数据覆盖必需交易日才能继续；已有风险但证据不足时进入风险收缩，空账户则拒绝新增仓位。
 
-## 5. Offline production-research evaluator
+## 5. 离线账户验证
 
-`DirectionalProductionAcceptance` 是 deterministic account proxy，负责从冻结目标和历史具体合约数据模拟：
+`DirectionalProductionAcceptance` 是确定性账户模拟器：相同输入必定产生相同结果。它从固定目标和历史具体合约数据模拟：
 
-- previous-close → current-open 既有头寸 PnL；
-- reduction-first 订单序列；
-- integer lots、multiplier、commission、turnover；
-- cash、realized/unrealized PnL、equity；
-- margin、available、gross exposure、reject、daily circuit、HALT；
-- train、validation、OOS、prior 与 full_recent 结果行。
+- 前收盘到次开盘的已有仓位盈亏；
+- 先减仓、后开仓的订单顺序；
+- 整数手数、合约乘数、手续费和换手；
+- 现金、已实现和未实现盈亏、权益；
+- 保证金、可用资金、总敞口、风控拒绝和停机；
+- 训练、验证、样本外、前序区间和汇总窗口的独立账户结果。
 
-PR #25 Stress-90 在该离线 evaluator 上增加 causal expanding-median HHI leadership freeze，并继承 Stress-80 的 9-product 60m Price × OI confirmation、cost eligibility、survivor reallocation 与 25% drawdown reserve。它没有修改 live runtime wiring。
+当前离线压力研究候选在该模拟器上验证，但没有接入实盘策略。完整假设和结果见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。
 
-```text
-frozen historical inputs
-→ causal 60m signal / target construction
-→ Stress-80 target and reserve mechanics
-→ Stress-90 leadership response
-→ independent account simulation per result row
-→ promotion matrix / evidence
-```
+## 6. 时间和研究窗口
 
-当前研究 checkpoint 是 `main` merge `482455dc57bc6a134f45232e290b4a49c3f7073d`（PR #25）。Stress full_recent 年化 112.100053%、最大回撤 14.567214%、gross peak 1.670510x、0 margin rejects、无 HALT；这些数字只描述固定历史 proxy。详见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。
+- D 日完整价格数据只能影响 D+1 及以后的品种目标；
+- D 日最终成交量和持仓量只能决定 D+1 的具体合约；
+- 当前交易日尚未完成的盈亏不能影响当前目标；
+- 连续合约换月产生的价格跳空不能计入可交易收益；
+- D 到 D+1 的收益必须来自 D 日已经选定的同一具体合约；
+- 验证和样本外模拟不继承同一矩阵其他结果行的账户状态；
+- 汇总窗口覆盖训练、验证和样本外区间，与它们存在重叠，不是独立留出集；
+- 样本外区间一旦被用于选择候选，必须标记为不再纯净。
 
-## 6. 时间与窗口不变量
+## 7. 执行与账户记账
 
-- D 日 completed OHLC 只决定 D+1 及以后目标；
-- D 日最终 volume/OI 只决定 D+1 concrete contract；
-- 当前 session PnL 不进入当前目标的 completed-return governor；
-- continuous roll jump 不计入可交易收益；
-- t→t+1 收益来自 t 日已经选择的同一具体合约；
-- validation/OOS simulation 不继承同矩阵其它结果行的账户状态；
-- `full_recent` 是覆盖 train/validation/OOS 等区段的汇总窗口，**不是**与它们不重叠的 holdout；
-- 一旦 OOS 被选择流程观察，文档必须标记 non-pristine。
+- 提交订单请求不改变持仓；只有 Broker 成交事件可以改变持仓；
+- 撤单、拒单和未成交不改变持仓、现金或盈亏；
+- 部分成交只按实际成交量记账，重试不能产生重复成交；
+- CTP 和引擎分别按“交易日 + 成交编号”去重，重连和重启不能重复入账；
+- 反转必须先平旧方向再开新方向；
+- 上期所和能源中心的平今、平昨独立校验，不能跨今昨仓借量；
+- 手续费、滑点、名义价值、保证金和敞口必须使用明确的合约乘数和单位；
+- 无法识别的 CTP 方向、开平、订单类型或状态必须报错，不能猜测；
+- 数量必须能无损转换成整数；非法标识、NaN 和无穷值在进入风控和记账前拒绝；
+- 本地和柜台持仓按“合约 + 交易所”对账，重复记录或交易所不一致必须失败关闭；
+- 流动性快照的合约、品种和交易所必须与合约目录一致。
 
-## 7. Execution 与 accounting 不变量
-
-- 提交 request 不改变持仓；只有 Broker trade/fill event 改变；
-- reject/cancel 不改变 position、cash 或 realized PnL；
-- partial fill 只按实际成交量记账，retry 不能重复成交；
-- CTP 与 TradingEngine 分别用有界 `trading_day:trade_id` 集合阻止同一回报重复镜像；引擎集合随 state 持久化以覆盖重启 replay，首个新日成交先推进交易日，换日只淘汰旧日 ID；
-- reversal 是 close 后 open，不是绕过 execution 的净仓赋值；
-- SHFE/INE close-today 与 close-yesterday 独立校验，不能跨 bucket 借量；
-- commission/slippage、notional、margin、gross/net exposure 使用明确 multiplier 与单位；
-- 无法识别的 CTP direction/offset/type/status 产生 `broker_error`，不映射成猜测的经济事件；账户转换失败产生 `account_error`，使 Directional 在仍有风险时先进入 `REDUCE_ONLY`。
-- CTP order/position 数量必须是无损整数，position direction 必须是精确 enum；tick、account、metadata、position average price 的 NaN/inf 或非法符号在进入风险/会计前拒绝。
-- 本地/柜台持仓按 `(symbol, exchange)` 对账；任一侧重复 identity 或 persisted state 重复 symbol 都 fail-closed，不能让 dict overwrite 掩盖仓位。
-- Directional completed activity 与合约目录按 `symbol/product/exchange` identity 交叉核验；身份冲突的流动性证据不能进入生产选约或通过 `doctor`。
-
-## 8. 风险状态机
+## 8. 风险状态
 
 ```text
-RUNNING
-→ soft/runtime risk condition
-→ REDUCE_ONLY
-→ reductions / flatten
-→ 完整安全检查
+RUNNING（正常运行）
+→ 出现可恢复风险
+→ REDUCE_ONLY（只允许减仓）
+→ 完成减仓并通过全部安全检查
 → RUNNING
 
-RUNNING or REDUCE_ONLY
-→ hard/manual condition
-→ HALTED
-→ 人工核验、对账和恢复门
+RUNNING 或 REDUCE_ONLY
+→ 出现硬风险或人工停机
+→ HALTED（硬停机）
+→ 人工处理、柜台对账和恢复
 → RUNNING
 ```
 
-Directional hard authority 保持 target/realized gross `<=2x`、margin `<=35%`、available `>=25%`、daily loss `5%`、total drawdown `30%`、单合约 `<=35` 手。Daily-loss 是同 trading-day circuit；total drawdown、margin、cash、non-positive equity、metadata/对账异常属于 hard/manual 路径。任何风险收缩层都只能降低目标。
+方向组合示例配置的硬限制是：目标和实际总敞口不超过账户权益的 2 倍、保证金不超过 35%、可用资金不低于 25%、单日亏损达到 5% 时停止新增风险、总回撤达到 30% 时硬停机、单合约不超过 35 手。所有风险收缩层只能降低目标。
 
-## 9. State 与恢复
+## 9. 状态与恢复
 
-```text
-Broker account + complete positions + active orders
-↔ RuntimeState expected positions / event IDs / risk markers
-```
+启动时，系统把柜台账户、完整持仓和活动委托与本地预期状态对比。今昨仓、多空方向、合约身份和关键风险标记全部一致后，才能标记为已对账。
 
-启动只有在今昨、多空、合约与关键状态完全一致时 reconciled。State envelope 的 JSON、schema、positive sequence、checksum、持仓数量/均价或成交去重历史不可信时：
+状态文件的 JSON、版本、正序号、校验和、持仓数量、均价或成交去重历史不可信时：
 
-- `load` fail-closed；
-- `save` 不允许把损坏目标覆盖成 sequence 1；
-- 原文件保持不变，供人工诊断；
-- 每次成功推进前把上一份已验证 envelope 原样保存到 `<state>.prev`；该文件只供人工检查，`load` 永不自动回退；
-- `recover-state` 仍保持 Kill Switch，不能直接恢复交易。
+- `load` 拒绝加载；
+- `save` 不允许覆盖损坏文件；
+- 原文件保留用于人工诊断；
+- 每次成功推进前，把上一份已验证文件原样保存为 `<state>.prev`；
+- `.prev` 只用于人工检查，运行时永不自动回退；
+- `recover-state` 保持停机开关，不能直接恢复交易。
 
 ## 10. 可观测性
 
-- `status`：不初始化日志或 Broker，只读检查 state/previous state、证据文件、路径与磁盘；
-- `doctor`：在 fresh CTP snapshot 后检查 account 数值与风险比率、trading day、active orders、metadata、position reconciliation、Kill Switch、runtime mode 和 Directional activity，全程 `orders_sent=0`；
-- `AuditJournal`：signal、order、fill、risk、recovery 的 JSONL 证据；audit/alert 单文件 20 MiB、保留 14 份完整行备份，超大单条记录拒绝写入；
-- `AlertManager`：本地与 webhook 广播；单 sink 故障不阻止风险动作，但记录脱敏 warning；
-- `ExecutionQualityRecorder`：pair round trip 与 directional rebalance/fill/cycle；
-- report：account、position、performance、margin 和质量摘要。
+- `status`：不连接 Broker，只读检查当前和上一份状态、证据文件、路径和磁盘；
+- `doctor`：连接 CTP 取得新快照，检查账户、风险比率、交易日、活动委托、合约参数、持仓对账和流动性证据，全程不发送订单；
+- `AuditJournal`：记录信号、订单、成交、风险和恢复事件；
+- `AlertManager`：向本地文件和可选 webhook 发送告警；
+- `ExecutionQualityRecorder`：记录计划与实际成交、滑点、手续费、延迟、部分成交和换手；
+- 报告：汇总账户、持仓、绩效、保证金和执行质量。
 
-告警、quality 和 report 都是观测层，不拥有下单或风险权限。
+审计、告警和报告只负责观测，不拥有下单或风控权限。
 
-## 11. 明确非目标
+## 11. 非目标
 
-当前不需要数据库、消息队列、Web 服务、微服务或第二账户状态机。研究 artifacts 不直接成为 live 数据源。后续架构变化必须由已复现的正确性、容量或维护问题驱动；真实收益与执行可信度的下一批高价值证据来自未来数据、CTP Shadow、测试柜台和小资金，而不是继续扩大同一历史上的参数空间。
+当前不需要数据库、消息队列、Web 服务、微服务或第二套账户状态机。研究数据不会直接成为实盘数据源。架构变化必须由已经复现的正确性、容量或维护问题驱动；下一批高价值证据来自新发生数据、多日 Shadow、测试柜台和小资金，而不是扩大同一历史上的参数搜索。
