@@ -425,7 +425,9 @@ class TradingEngine:
         """Roll persisted state before applying the first fill reported for a new broker day."""
         account = self.broker.get_account()
         account.validate()
-        trading_day = str(self.broker.get_trading_day() or account.trading_day or "")
+        get_trading_day = getattr(self.broker, "get_trading_day", None)
+        reported_day = get_trading_day() if callable(get_trading_day) else account.trading_day
+        trading_day = str(reported_day or account.trading_day or "")
         if not trading_day:
             raise ValueError("broker trading day is unavailable")
         if str(account.trading_day or "") != trading_day:
