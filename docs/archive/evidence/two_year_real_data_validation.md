@@ -1,6 +1,6 @@
 # 两年真实数据验收：corrected 最终结论
 
-> **Historical record.** Preserved for the corrected earlier validation lineage. Current checkpoint and authority are listed in [`documentation-index.md`](documentation-index.md).
+> **Historical record.** Preserved for the corrected earlier validation lineage. Current checkpoint and authority are listed in [`documentation-index.md`](../../documentation-index.md).
 
 ## 结论
 

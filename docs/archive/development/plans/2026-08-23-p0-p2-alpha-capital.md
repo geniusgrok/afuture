@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10/3.13, pandas, numpy, pytest, akshare, GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-08-23-p0-p2-alpha-capital-design.md`
+**Spec:** `docs/archive/development/specs/2026-08-23-p0-p2-alpha-capital-design.md`
 
 ## Global Constraints
 - target/realized gross <= 2.0x; max margin 35%; min available 25%; daily loss 5%; total drawdown 30%; max 35 lots.

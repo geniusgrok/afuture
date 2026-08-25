@@ -7,7 +7,7 @@
 - Broker/CTP：订单、成交、账户与柜台持仓；
 - `PositionBook`：对 Broker fill 的本地确定性镜像；
 - `RiskManager`：账户 hard gate、`REDUCE_ONLY`、daily circuit 与 HALT；
-- `StateStore`：带 schema、sequence、checksum 的重启证据；
+- `StateStore`：带 schema、sequence、checksum 的重启证据和显式 previous snapshot；
 - TradingEngine：事件顺序、对账、持久化与可观测性编排。
 
 策略、研究 evaluator 和 CLI 都不能直接赋值真实持仓，也不能绕过 Broker 成交与 RiskManager 权限。
@@ -145,11 +145,14 @@ Broker account + complete positions + active orders
 - `load` fail-closed；
 - `save` 不允许把损坏目标覆盖成 sequence 1；
 - 原文件保持不变，供人工诊断；
+- 每次成功推进前把上一份已验证 envelope 原样保存到 `<state>.prev`；该文件只供人工检查，`load` 永不自动回退；
 - `recover-state` 仍保持 Kill Switch，不能直接恢复交易。
 
 ## 10. 可观测性
 
-- `AuditJournal`：signal、order、fill、risk、recovery 的 JSONL 证据；
+- `status`：不初始化日志或 Broker，只读检查 state/previous state、证据文件、路径与磁盘；
+- `doctor`：在 fresh CTP snapshot 后检查 account、active orders、metadata、position reconciliation、Kill Switch、runtime mode 和 Directional activity，全程 `orders_sent=0`；
+- `AuditJournal`：signal、order、fill、risk、recovery 的 JSONL 证据；audit/alert 单文件 20 MiB、保留 14 份完整行备份；
 - `AlertManager`：本地与 webhook 广播；单 sink 故障不阻止风险动作，但记录脱敏 warning；
 - `ExecutionQualityRecorder`：pair round trip 与 directional rebalance/fill/cycle；
 - report：account、position、performance、margin 和质量摘要。

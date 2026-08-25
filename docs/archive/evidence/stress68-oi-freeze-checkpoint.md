@@ -1,6 +1,6 @@
 # Stress 68 OI + Freeze Checkpoint Evidence
 
-> **Superseded checkpoint.** Preserved for lineage; later Stress-80 and Stress-90 evidence controls current research status. See [`documentation-index.md`](documentation-index.md).
+> **Superseded checkpoint.** Preserved for lineage; later Stress-80 and Stress-90 evidence controls current research status. See [`documentation-index.md`](../../documentation-index.md).
 
 ## Status
 

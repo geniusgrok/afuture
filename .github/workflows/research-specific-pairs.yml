@@ -22,7 +22,9 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install akshare pandas
+      - run: >-
+          python -m pip install akshare pandas
+          -c constraints/core-dev.txt -c constraints/live.txt
       - name: Verify roll-safe contract selection causality
         run: python tools/test_specific_pair_rotation.py
       - name: Fetch targeted concrete futures contracts

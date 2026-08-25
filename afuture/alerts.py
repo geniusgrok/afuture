@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Protocol
 from urllib.request import Request, urlopen
 
+from .jsonl import DEFAULT_JSONL_BACKUP_COUNT, DEFAULT_JSONL_MAX_BYTES, RotatingJsonlWriter
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,13 +34,24 @@ class MemoryAlertSink:
 class FileAlertSink:
     """追加写 JSONL，确保即使外部通知失败仍保留本地证据。"""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_bytes: int = DEFAULT_JSONL_MAX_BYTES,
+        backup_count: int = DEFAULT_JSONL_BACKUP_COUNT,
+    ) -> None:
         self.path = Path(path)
+        self._writer = RotatingJsonlWriter(
+            self.path,
+            max_bytes=max_bytes,
+            backup_count=backup_count,
+        )
 
     def send(self, event: dict[str, object]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._writer.write_line(
+            json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        )
 
 
 class WebhookAlertSink:

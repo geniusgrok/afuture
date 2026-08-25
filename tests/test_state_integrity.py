@@ -215,6 +215,41 @@ def test_save_increments_only_verified_sequence(tmp_path: Path) -> None:
     assert store.load().trading_day == "20260826"
 
 
+def test_save_retains_exact_previous_verified_state(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.json")
+    store.save(RuntimeState(trading_day="20260825", last_order_id="order-1"))
+    original = store.path.read_bytes()
+
+    store.save(RuntimeState(trading_day="20260826", last_order_id="order-2"))
+
+    assert store.previous_path.read_bytes() == original
+    previous = store.load_previous()
+    assert previous is not None
+    assert previous.trading_day == "20260825"
+    assert previous.last_order_id == "order-1"
+    assert store.load().last_order_id == "order-2"
+
+
+def test_load_never_falls_back_to_valid_previous_state(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.json")
+    store.save(RuntimeState(trading_day="20260825"))
+    store.save(RuntimeState(trading_day="20260826"))
+    store.path.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(StateIntegrityError, match="invalid state JSON"):
+        store.load()
+
+    previous = store.load_previous()
+    assert previous is not None
+    assert previous.trading_day == "20260825"
+
+
+def test_load_previous_returns_none_when_no_verified_backup_exists(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "state.json")
+
+    assert store.load_previous() is None
+
+
 def test_save_migrates_valid_legacy_state(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     path.write_text(

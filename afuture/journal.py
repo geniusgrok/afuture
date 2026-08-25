@@ -7,12 +7,25 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
+from .jsonl import DEFAULT_JSONL_BACKUP_COUNT, DEFAULT_JSONL_MAX_BYTES, RotatingJsonlWriter
+
 
 class AuditJournal:
     """逐行记录信号、订单、成交和风险事件。"""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_bytes: int = DEFAULT_JSONL_MAX_BYTES,
+        backup_count: int = DEFAULT_JSONL_BACKUP_COUNT,
+    ) -> None:
         self.path = Path(path)
+        self._writer = RotatingJsonlWriter(
+            self.path,
+            max_bytes=max_bytes,
+            backup_count=backup_count,
+        )
 
     def record(
         self,
@@ -21,21 +34,18 @@ class AuditJournal:
         *,
         timestamp: datetime | None = None,
     ) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         row = {
             "timestamp": (timestamp or datetime.now(timezone.utc)).isoformat(),
             "event_type": event_type,
             "payload": _to_jsonable(payload),
         }
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(
-                    row,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-                + "\n"
+        self._writer.write_line(
+            json.dumps(
+                row,
+                ensure_ascii=False,
+                separators=(",", ":"),
             )
+        )
 
 
 def _to_jsonable(value: object) -> object:

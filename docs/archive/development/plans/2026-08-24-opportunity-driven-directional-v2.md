@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10+, pandas, numpy, pytest, GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-08-24-opportunity-driven-directional-v2-design.md`
+**Spec:** `docs/archive/development/specs/2026-08-24-opportunity-driven-directional-v2-design.md`
 
 ## Global Constraints
 

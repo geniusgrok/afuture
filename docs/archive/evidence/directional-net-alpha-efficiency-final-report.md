@@ -1,6 +1,6 @@
 # Directional Net-Alpha Efficiency 最终报告
 
-> **Historical record.** “最终”仅指当时研究阶段。当前 checkpoint 与运行边界见 [`documentation-index.md`](documentation-index.md)。
+> **Historical record.** “最终”仅指当时研究阶段。当前 checkpoint 与运行边界见 [`documentation-index.md`](../../documentation-index.md)。
 
 日期：2026-08-23
 
@@ -208,4 +208,4 @@ calm soft share = 35% * (1 - 5% - 0.60%) = 33.04%
 
 下一阶段真正有新增信息价值的输入是：**新发生的未见市场期、真实 CTP Shadow、实际 commission/slippage/margin、测试柜台 partial/reject/reconnect 和小资金 live execution**，而不是继续优化 2024-08-21~2026-08-20。
 
-过程证据见 `docs/directional-net-alpha-efficiency-evidence.md`。
+过程证据见 `docs/archive/evidence/directional-net-alpha-efficiency-evidence.md`。

@@ -41,6 +41,24 @@ AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 
 以及 `--confirm-live`。
 
+## 3.1 本地状态与 CTP 预检
+
+先运行完全本地、只读的状态检查：
+
+```bash
+afuture status --config config/afuture.directional-live.example.toml
+```
+
+它不会初始化日志、连接 CTP 或修改文件。报告包含当前 checksum state、显式 `state.json.prev`、Kill Switch/runtime mode、持仓摘要、audit/alert 大小、路径可写性和最少 100 MiB 磁盘余量。当前 state 不可信时返回 2；`.prev` 只用于人工诊断，不能自动恢复或绕过 `recover-state`。
+
+设置 `AFUTURE_LIVE_ACK` 后运行无报单 CTP gate：
+
+```bash
+afuture doctor --config config/afuture.directional-live.example.toml --confirm-live
+```
+
+`doctor` 等待新的账户事件和完整持仓快照，随后检查账户数值、活动委托、catalog、抽样 live metadata、本地期望持仓对账、Kill Switch、runtime mode、上次持久化安全门和 Directional completed activity。JSON 中任一 `checks[].passed=false` 都使进程返回 2；报告中的 `orders_sent` 固定为 0。Directional 新部署必须先观察一个完整 trading day 生成 activity evidence，预检才会通过。
+
 ## 4. Directional 冻结配置
 
 使用 `config/afuture.directional-live.example.toml` 作为 test/Shadow 起点：
@@ -174,7 +192,7 @@ Directional Shadow 使用真实 CTP catalog/tick/trading day/metadata 和正式 
 ## 12. Doctor
 
 ```bash
-afuture doctor --config config/afuture.directional-live.example.toml
+afuture doctor --config config/afuture.directional-live.example.toml --confirm-live
 ```
 
 Doctor 只检查登录、account/position snapshot、catalog、multiplier、price tick、margin、commission metadata，不包含真实报单入口。

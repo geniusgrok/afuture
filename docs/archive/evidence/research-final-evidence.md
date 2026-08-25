@@ -1,6 +1,6 @@
 # afuture 研究证据总览
 
-> **Historical record.** “当前” and “最终” below refer to the 2026-08-21–23 research stage. Stress-90 is the later production-research checkpoint; see [`documentation-index.md`](documentation-index.md).
+> **Historical record.** “当前” and “最终” below refer to the 2026-08-21–23 research stage. Stress-90 is the later production-research checkpoint; see [`documentation-index.md`](../../documentation-index.md).
 
 本文件保留 2026-08-21~2026-08-23 的主要研究与生产机械结论。旧套利专项没有被删除或改写；Execution-Aligned Directional 是另一条账户互斥策略链。
 

@@ -12,6 +12,37 @@ from afuture.models import AccountSnapshot, ContractPosition, PairConfig
 from afuture.state import RuntimeState, StateStore
 
 
+def test_status_is_local_read_only_and_does_not_create_log(tmp_path: Path, capsys) -> None:
+    from afuture.cli import main
+
+    config_path = tmp_path / "status.toml"
+    config_path.write_text(
+        """
+[system]
+mode = "replay"
+initial_capital = 500000
+
+[paths]
+state = "{state}"
+log = "{log}"
+report = "{report}"
+journal = "{journal}"
+alert = "{alert}"
+""".format(
+            state=tmp_path / "state.json",
+            log=tmp_path / "afuture.log",
+            report=tmp_path / "report.json",
+            journal=tmp_path / "audit.jsonl",
+            alert=tmp_path / "alerts.jsonl",
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(["status", "--config", str(config_path)]) == 0
+    assert '"passed": true' in capsys.readouterr().out
+    assert not (tmp_path / "afuture.log").exists()
+
+
 def test_wait_for_fresh_snapshot_requires_both_generations_to_advance():
     class FakeBroker:
         def __init__(self):

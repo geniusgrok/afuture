@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10/3.13, pandas, numpy, pytest, GitHub Actions.
 
-**Spec:** `docs/superpowers/specs/2026-08-23-directional-execution-efficiency-design.md`
+**Spec:** `docs/archive/development/specs/2026-08-23-directional-execution-efficiency-design.md`
 
 **Final disposition (2026-08-23):** execution completed. Promoted: attribution, roll hysteresis, one-lot increase no-trade and adaptive margin contraction. Rejected/reverted after fixed L3: meta hysteresis, product replacement persistence and same-direction weight hysteresis. Final promoted L3: Base 109.0636%, Stress 28.9559%; 80% not achieved.
 
@@ -143,9 +143,9 @@
 - Modify: `docs/data-and-backtest.md`
 - Modify: `docs/live-trading.md`
 - Modify: `docs/production-checklist.md`
-- Modify: `docs/directional-production-mechanics-evidence.md`
-- Modify: `docs/research-final-evidence.md`
-- Modify: `docs/return-target-100-evidence.md`
+- Modify: `docs/archive/evidence/directional-production-mechanics-evidence.md`
+- Modify: `docs/archive/evidence/research-final-evidence.md`
+- Modify: `docs/archive/evidence/return-target-100-evidence.md`
 - Modify: tests/docs only as required for consistency.
 
 **Interfaces:**

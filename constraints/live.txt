@@ -1,0 +1,5 @@
+# Exact optional live/research adapters. Validate native CTP wheels on the target
+# workstation before any production session; CI intentionally does not install them.
+vnpy==4.4.0
+vnpy_ctp==6.7.11.4
+akshare==1.18.94

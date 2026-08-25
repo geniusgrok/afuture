@@ -104,6 +104,9 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--snapshot-wait", type=float, default=12.0)
     doctor.add_argument("--metadata-limit", type=int, default=4)
 
+    status = sub.add_parser("status", help="只读检查本地运行状态、证据文件和磁盘空间")
+    status.add_argument("--config", required=True)
+
     recover = sub.add_parser("recover-state", help="人工核验后重建本地期望持仓")
     recover.add_argument("--config", required=True)
     recover.add_argument("--confirm-live", action="store_true")
@@ -519,9 +522,10 @@ def _run_shadow(config, args, logger) -> int:
 
 
 def _run_doctor(config, args) -> int:
-    """无订单检查 CTP 会话、fresh snapshot、目录和少量元数据。"""
+    """无订单检查 CTP、fresh snapshot、持仓、状态和本地运行条件。"""
     from .auto import AutoPairSelector
     from .broker.ctp import CtpBroker
+    from .operations import build_doctor_report
 
     if config.mode != "live" or config.ctp is None:
         raise ValueError("doctor requires system.mode=live")
@@ -542,25 +546,48 @@ def _run_doctor(config, args) -> int:
                 symbols.extend([pair.near_symbol, pair.far_symbol])
                 if len(set(symbols)) >= args.metadata_limit:
                     break
+        if config.directional.enabled and catalog:
+            products = {item.upper() for item in config.directional.products}
+            exchanges = {item.upper() for item in config.directional.exchanges}
+            for contract in catalog:
+                if (
+                    contract.product.upper() in products
+                    and contract.exchange.upper() in exchanges
+                ):
+                    symbols.append(contract.symbol)
+                if len(set(symbols)) >= args.metadata_limit:
+                    break
         symbols = sorted(set(symbols))[: max(0, args.metadata_limit)]
         metadata = (
             broker.get_live_contract_specs(symbols, config.metadata_timeout_seconds)
             if symbols
             else {}
         )
-        payload = {
-            "ready": broker.is_ready(),
-            "trading_day": broker.get_trading_day(),
-            "account_equity": account.equity,
-            "position_count": len(broker.get_positions()),
-            "contract_catalog_count": len(catalog),
-            "metadata_symbols": sorted(metadata),
-            "orders_sent": 0,
-        }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0
+        report = build_doctor_report(
+            config,
+            broker_ready=broker.is_ready(),
+            fresh_snapshot=True,
+            trading_day=broker.get_trading_day(),
+            account=account,
+            positions=broker.get_positions(),
+            active_order_count=len(broker.get_active_orders()),
+            catalog_count=len(catalog),
+            requested_symbols=symbols,
+            metadata=metadata,
+        )
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        return 0 if report.passed else 2
     finally:
         broker.stop()
+
+
+def _run_status(config) -> int:
+    """Print local operational facts without initializing logging or a broker."""
+    from .operations import build_local_status
+
+    report = build_local_status(config)
+    print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    return 0 if report.passed else 2
 
 
 def _research_pairs(config, ticks) -> list[PairConfig]:
@@ -595,6 +622,8 @@ def _write_json(payload: dict, output: str | Path | None = None) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
+    if args.command == "status":
+        return _run_status(config)
     logger = configure_logging(config.log_path)
 
     if args.command == "validate":
