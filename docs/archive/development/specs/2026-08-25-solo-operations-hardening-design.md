@@ -1,5 +1,7 @@
 # Solo Operations Hardening Design
 
+> **归档说明：** 本文是已完成阶段的设计记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 Status: approved implementation record. This document records an engineering change, not the current trading policy.
 
 ## Context

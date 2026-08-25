@@ -52,6 +52,39 @@ def test_checker_recognizes_chinese_historical_section(tmp_path: Path):
     assert checker._historical_markdown(tmp_path, index) == [historical]
 
 
+def test_checker_rejects_archive_document_without_top_notice(tmp_path: Path):
+    archive = tmp_path / "docs" / "archive" / "old-plan.md"
+    archive.parent.mkdir(parents=True)
+    archive.write_text("# Old plan\n\nStill looks current.\n", encoding="utf-8")
+
+    errors = checker.check_archive_notices(tmp_path)
+
+    assert errors == ["docs/archive/old-plan.md: missing top-level archive notice"]
+
+
+def test_checker_accepts_standard_archive_notice(tmp_path: Path):
+    archive = tmp_path / "docs" / "archive" / "old-plan.md"
+    archive.parent.mkdir(parents=True)
+    archive.write_text(
+        "# Old plan\n\n> **归档说明：** 本文只保存历史决策，不描述当前系统。\n",
+        encoding="utf-8",
+    )
+
+    assert checker.check_archive_notices(tmp_path) == []
+
+
+def test_current_configuration_reference_covers_every_supported_field():
+    assert checker.check_configuration_reference(ROOT) == []
+
+
+def test_current_data_format_reference_covers_tick_csv_schema():
+    assert checker.check_tick_schema_reference(ROOT) == []
+
+
+def test_required_current_authority_documents_exist_and_are_indexed():
+    assert checker.check_required_authority_documents(ROOT) == []
+
+
 def test_readme_explains_stress_research_label_in_plain_language():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 

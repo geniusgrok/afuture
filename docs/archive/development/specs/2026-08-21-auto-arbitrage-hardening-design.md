@@ -1,5 +1,7 @@
 # Auto Arbitrage Hardening Design
 
+> **归档说明：** 本文是已完成阶段的设计记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 ## Goal
 
 Close the highest-value correctness and tail-risk gaps between the current `afuture` implementation and a small personal-use automated calendar-spread trader. The system remains single-strategy, single-engine and CTP-based; this change does not add a second trading path, machine-learning selector, service platform or portfolio-management framework.

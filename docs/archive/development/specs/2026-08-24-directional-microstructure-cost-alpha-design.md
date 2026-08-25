@@ -1,5 +1,7 @@
 # Directional Microstructure, Cost, and Intraday Alpha Design
 
+> **归档说明：** 本文是已完成阶段的设计记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 Date: 2026-08-24
 Base: `main@591bcc1f006b7588720b578b453ce58f0ba62690` (PR #16)
 

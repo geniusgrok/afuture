@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import fields
 from pathlib import Path
 
+from afuture.auto import AutoConfig
 from afuture.cli import build_parser
+from afuture.directional import DirectionalConfig
+from afuture.models import ContractInfo, ContractSpec, FeeSpec, PairConfig, Tick
+from afuture.risk import RiskConfig
 
 CURRENT_RESEARCH_BASELINE = "482455dc57bc6a134f45232e290b4a49c3f7073d"
 REPOSITORY_PATH_PREFIXES = (
@@ -21,6 +26,54 @@ REPOSITORY_PATH_PREFIXES = (
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 INLINE_CODE = re.compile(r"`([^`\n]+)`")
 DOCUMENTED_COMMAND = re.compile(r"(?m)^\s*afuture\s+([a-z][a-z0-9-]*)\b")
+ARCHIVE_NOTICE_MARKERS = (
+    "> **归档说明：**",
+    "> **Historical record.**",
+    "> **Historical governance record.**",
+    "> **Superseded checkpoint.**",
+    "> **Superseded but reproducible checkpoint.**",
+)
+REQUIRED_AUTHORITY_DOCUMENTS = (
+    "docs/configuration.md",
+    "docs/data-formats.md",
+    "docs/strategies.md",
+    "docs/troubleshooting.md",
+)
+STATIC_CONFIGURATION_FIELDS = {
+    "system": ("mode", "initial_capital"),
+    "ctp": ("environment", "td_address", "md_address"),
+    "execution": (
+        "slippage_ticks",
+        "aggressive_ticks",
+        "auto_flatten_imbalance",
+        "legging_timeout_seconds",
+        "conservative_simulation",
+        "latency_ticks",
+        "market_impact_ticks",
+        "require_live_metadata",
+        "metadata_timeout_seconds",
+    ),
+    "paths": ("state", "log", "report", "journal", "alert"),
+    "alert": ("webhook",),
+}
+CONFIGURATION_DATACLASSES = {
+    "risk": RiskConfig,
+    "auto": AutoConfig,
+    "directional": DirectionalConfig,
+    "pairs": PairConfig,
+    "contracts": ContractInfo,
+    "contract_spec": ContractSpec,
+    "contracts.fee": FeeSpec,
+}
+CONFIGURATION_ENVIRONMENT_VARIABLES = (
+    "AFUTURE_CTP_USER",
+    "AFUTURE_CTP_PASSWORD",
+    "AFUTURE_CTP_BROKER",
+    "AFUTURE_CTP_APP_ID",
+    "AFUTURE_CTP_AUTH_CODE",
+    "AFUTURE_LIVE_ACK",
+    "AFUTURE_RECOVERY_ACK",
+)
 
 
 def repository_markdown_files(root: Path) -> list[Path]:
@@ -85,6 +138,90 @@ def documented_cli_subcommands(readme: Path) -> set[str]:
     return set(DOCUMENTED_COMMAND.findall(readme.read_text(encoding="utf-8")))
 
 
+def check_archive_notices(root: Path) -> list[str]:
+    """Prevent direct links to archived plans from looking like current authority."""
+    archive = root / "docs" / "archive"
+    if not archive.exists():
+        return []
+    errors: list[str] = []
+    for path in sorted(archive.rglob("*.md")):
+        head = "\n".join(path.read_text(encoding="utf-8").splitlines()[:6])
+        if not any(marker in head for marker in ARCHIVE_NOTICE_MARKERS):
+            errors.append(f"{path.relative_to(root)}: missing top-level archive notice")
+    return errors
+
+
+def _documented_inline_tokens(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    return {token.strip() for token in INLINE_CODE.findall(path.read_text(encoding="utf-8"))}
+
+
+def supported_configuration_fields() -> set[str]:
+    result = {
+        f"{section}.{name}"
+        for section, names in STATIC_CONFIGURATION_FIELDS.items()
+        for name in names
+    }
+    for section, model in CONFIGURATION_DATACLASSES.items():
+        for item in fields(model):
+            if section == "contract_spec":
+                if item.name != "fee":
+                    result.add(f"contracts.{item.name}")
+            else:
+                result.add(f"{section}.{item.name}")
+    return result
+
+
+def check_configuration_reference(root: Path) -> list[str]:
+    reference = root / "docs" / "configuration.md"
+    if not reference.exists():
+        return ["docs/configuration.md: missing configuration reference"]
+    documented = _documented_inline_tokens(reference)
+    errors = [
+        f"docs/configuration.md: undocumented configuration field: {name}"
+        for name in sorted(supported_configuration_fields().difference(documented))
+    ]
+    errors.extend(
+        f"docs/configuration.md: undocumented environment variable: {name}"
+        for name in CONFIGURATION_ENVIRONMENT_VARIABLES
+        if name not in documented
+    )
+    return errors
+
+
+def check_tick_schema_reference(root: Path) -> list[str]:
+    reference = root / "docs" / "data-formats.md"
+    if not reference.exists():
+        return ["docs/data-formats.md: missing Tick CSV schema reference"]
+    documented = _documented_inline_tokens(reference)
+    return [
+        f"docs/data-formats.md: undocumented Tick CSV field: {item.name}"
+        for item in fields(Tick)
+        if item.name not in documented
+    ]
+
+
+def check_required_authority_documents(root: Path) -> list[str]:
+    readme_tokens = (root / "README.md").read_text(encoding="utf-8")
+    index_tokens = (root / "docs" / "documentation-index.md").read_text(encoding="utf-8")
+    errors: list[str] = []
+    for relative in REQUIRED_AUTHORITY_DOCUMENTS:
+        path = root / relative
+        if not path.exists():
+            errors.append(f"{relative}: missing required current authority document")
+            continue
+        readme_target = relative
+        index_target = Path(relative).name
+        if readme_target not in readme_tokens:
+            errors.append(f"README.md: missing current authority link: {relative}")
+        if index_target not in index_tokens:
+            errors.append(
+                f"docs/documentation-index.md: missing current authority link: {relative}"
+            )
+    return errors
+
+
 def _classified_markdown(root: Path, index: Path) -> Counter[Path]:
     result: Counter[Path] = Counter()
     text = index.read_text(encoding="utf-8")
@@ -129,6 +266,10 @@ def check_repository(root: Path) -> list[str]:
             ),
         )
     ]
+    errors.extend(check_archive_notices(root))
+    errors.extend(check_configuration_reference(root))
+    errors.extend(check_tick_schema_reference(root))
+    errors.extend(check_required_authority_documents(root))
 
     index = root / "docs" / "documentation-index.md"
     if not index.exists():

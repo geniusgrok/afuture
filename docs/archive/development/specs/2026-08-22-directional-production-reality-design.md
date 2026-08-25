@@ -1,5 +1,7 @@
 # Directional Production Reality Closure Design
 
+> **归档说明：** 本文是已完成阶段的设计记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 日期：2026-08-22
 
 ## 目标

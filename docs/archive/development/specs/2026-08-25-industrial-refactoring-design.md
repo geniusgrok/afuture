@@ -1,5 +1,7 @@
 # Industrial Refactoring Design
 
+> **归档说明：** 本文是已完成阶段的设计记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 Status: approved and implemented through Checkpoint D on 2026-08-25; final Checkpoint E remains governed by the implementation plan.
 
 ## 1. Purpose

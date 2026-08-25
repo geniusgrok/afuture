@@ -1,6 +1,6 @@
 # 数据、回放与研究
 
-本文说明数据在何时可见、如何进入回放，以及研究区间如何隔离。术语和指标定义见 [`glossary.md`](glossary.md)。
+本文说明数据在何时可见、如何进入回放，以及研究区间如何隔离。Tick CSV 的精确字段定义见 [`data-formats.md`](data-formats.md)，术语和指标定义见 [`glossary.md`](glossary.md)。
 
 ## 1. 数据职责
 

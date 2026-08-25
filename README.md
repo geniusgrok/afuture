@@ -119,6 +119,8 @@ python -m pip install -e ".[live,dev]" \
 - `config/afuture.live.example.toml`：跨期策略 CTP 配置；
 - `config/afuture.directional-live.example.toml`：方向组合 CTP 配置。
 
+全部字段的类型、默认值、单位和约束见 [`docs/configuration.md`](docs/configuration.md)。
+
 主要配置段：
 
 | 配置段 | 内容 |
@@ -220,8 +222,12 @@ python -m compileall -q afuture
 
 - [`docs/glossary.md`](docs/glossary.md)：术语、缩写和公式；
 - [`docs/architecture.md`](docs/architecture.md)：模块边界、依赖方向和事件顺序；
+- [`docs/strategies.md`](docs/strategies.md)：当前策略规则、决策时点和实盘边界；
+- [`docs/configuration.md`](docs/configuration.md)：全部配置字段、默认值、单位和约束；
+- [`docs/data-formats.md`](docs/data-formats.md)：Tick CSV 字段、类型和数据质量要求；
 - [`docs/data-and-backtest.md`](docs/data-and-backtest.md)：数据时点、回放假设和研究窗口；
 - [`docs/live-trading.md`](docs/live-trading.md)：CTP、Shadow、停机和恢复；
+- [`docs/troubleshooting.md`](docs/troubleshooting.md)：常见故障、诊断顺序和安全恢复；
 - [`docs/production-checklist.md`](docs/production-checklist.md)：真实资金上线检查表；
 - [`docs/stress90-final-evidence.md`](docs/stress90-final-evidence.md)：当前离线压力研究证据；
 - [`docs/documentation-index.md`](docs/documentation-index.md)：全部 Markdown 的权威分类和历史记录入口。

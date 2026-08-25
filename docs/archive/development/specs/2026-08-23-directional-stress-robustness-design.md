@@ -1,5 +1,7 @@
 # Directional Stress Robustness Design
 
+> **归档说明：** 本文是已完成阶段的设计记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 ## Goal
 
 Improve the frozen execution-aligned directional portfolio's production Stress robustness without increasing leverage or relaxing any account hard gate. Historical acceptance targets are Base annualized return >=100% and Stress 15bp annualized return >=80% when honestly attainable; they are not future-return guarantees.

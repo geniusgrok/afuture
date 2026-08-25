@@ -1,41 +1,41 @@
 # 当前离线压力研究证据（历史代号 Stress-90）
 
-> 阅读说明：`Stress-90` 的“90”表示本轮预先设定的压力情景年化收益目标不低于 90%，不是 90 个基点成本、90% 保证金或实盘风险等级。标准情景使用单边 5 个基点成本和固定 12% 保证金比例假设；压力情景使用单边 15 个基点和 15% 假设。本文保存原始字段和研究代号以保证结果可复核，术语定义见 [`glossary.md`](glossary.md)。该候选没有接入实盘。
+> 阅读说明：`Stress-90` 的“90”表示本轮预先设定的压力情景年化收益目标不低于 90%，不是 90 个基点成本、90% 保证金或实盘风险等级。标准情景使用单边 5 个基点成本和固定 12% 保证金比例假设；压力情景使用单边 15 个基点和 15% 假设。本文保留文件名、输出字段和研究代号，便于与程序结果核对；术语定义见 [`glossary.md`](glossary.md)。该候选没有接入实盘。
 
 ## 结论
 
-Promote the causal expanding-median leadership freeze as the new Production research checkpoint. It materially exceeds the inherited Stress80 checkpoint, clears the ideal `>=90%` Stress objective, makes both prior windows positive, and leaves live runtime wiring unchanged.
+本轮将“基于历史集中度冻结新增风险”确定为当前离线研究候选。它超过预设的压力情景 90% 年化目标，使两个更早历史窗口转为正收益，并保持实盘运行链不变。
 
-Authoritative parent: `b4207abb50aca1e39d5ebba3affc04765857251a` (PR #24). The fresh matrix was executed from clean promotion commit `01aebdbbce9ded98a48108c7193f028218faef91`; the only subsequent pre-CI changes are evidence documentation and fail-closed matrix-payload validation, not simulation behavior.
+这是一份固定输入下的研究结论，不是实盘收益承诺，也不代表离线策略已经获得真实资金权限。
 
 ## 固定候选
 
-The Stress80 target construction is unchanged:
+候选继承前一版的目标构造：
 
-1. 9-product 60m Price × OI confirmation;
-2. D -> D+1 causal alignment;
-3. entry / same-side increase / reversal confirmation;
-4. fixed 20-completed-session cost eligibility;
-5. fixed 3-session benefit horizon;
-6. fixed 15bp one-way hurdle;
-7. tracking-first / turnover-second survivor reallocation.
+1. 9 个品种的 60 分钟价格与持仓量方向确认；
+2. D 日信号最早在 D+1 执行；
+3. 开仓、同方向加仓和反转都需要确认；
+4. 固定使用此前 20 个完整交易日判断成本后是否值得交易；
+5. 固定使用 3 个交易日作为收益观察范围；
+6. 固定要求覆盖单边 15 个基点成本；
+7. 存活模板优先降低目标偏差，其次降低换手。
 
-The promoted response adds one zero-fit causal state:
+本轮只增加一个没有拟合参数的因果状态：
 
-- Compute standard HHI from absolute current target weights.
-- Compare it with the median of all strictly earlier finite target HHI values.
-- `current HHI <= prior expanding median` freezes only new product entries and same-sign increases.
-- Reductions, exits, reversals and same-product rolls remain executable.
-- Inactive initial history passes unchanged.
-- The state advances from every causal target day, not candidate holdings or PnL.
+- 以当前目标权重绝对值计算标准 HHI 集中度；
+- 与所有严格早于当前时点的有限 HHI 中位数比较；
+- 当前 HHI 不高于历史扩展中位数时，只冻结新开品种和同方向加仓；
+- 减仓、退出、反转和同品种换月仍可执行；
+- 初始历史不足时不冻结；
+- 无论候选是否成交，每个因果目标日都会推进集中度历史，避免账户结果反向污染信号状态。
 
-The fixed drawdown reserve remains `25% = 30% total hard DD - 5% daily-loss reserve`, now using the full completed causal account-return path. No winning window reaches the 25% soft boundary, so this correctness repair is behavior-neutral for the final matrix while making the documented definition truthful.
+回撤预留固定为 25%，即 30% 总回撤硬限制减去 5% 单日亏损预留。它使用全部已经完成的因果账户收益，而不是只看最近两日。最终候选各窗口均未触及 25% 软边界，因此这项正确性修复没有改变本矩阵结果。
 
-Candidate weight SHA256: `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`.
+候选权重 SHA256：`8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`。
 
 ## 固定输入
 
-| File | SHA256 |
+| 文件 | SHA256 |
 | --- | --- |
 | `broad_daily_universe.csv` | `c1d46bc113a79bd2e000bf5d66ee53c59337eda750b2d3b1409e40f3f4833d0f` |
 | `return_target_specific_contracts.csv` | `f8b3f4232cb1bc9eaed65a4401dff6bed121faee064252727202874ad7d53c64` |
@@ -43,73 +43,119 @@ Candidate weight SHA256: `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb
 | `prior_two_year_broad_60m.csv` | `3351aa3ae8dec0cf0e9b9a64026181ac8ff2cc22858c442821fe3c94767036b1` |
 | `two_year_broad_60m.csv` | `5faf112bb69dd5ddf48ed34419e2046b1c6bdd651b595ca46a46804d8317a27b` |
 
-No spot, inventory, margin, position or transaction history was fabricated.
+研究没有伪造现货、库存、保证金、持仓或成交记录。
+
+## 如何复核
+
+上述五个输入文件不提交到 Git。仓库中的下载工具可以重新抓取部分日线数据，但外部数据源会修订，且两个 60 分钟文件没有完整的公开重建链。因此：
+
+- 拥有与表中摘要一致的五个归档文件时，可以精确复核固定候选和账户矩阵；
+- 只有当前 Git 仓库时，不能声称已经完整复现这份历史结果；
+- 重新下载得到摘要不同的数据属于一次新的研究输入，必须另行记录，不能覆盖本证据。
+
+将五个文件放入 `runtime/` 后，先核对摘要，再分别运行七个独立账户窗口：
+
+```bash
+sha256sum \
+  runtime/broad_daily_universe.csv \
+  runtime/return_target_specific_contracts.csv \
+  runtime/execution_aligned_weights.csv \
+  runtime/prior_two_year_broad_60m.csv \
+  runtime/two_year_broad_60m.csv
+
+python tools/evaluate_directional_stress90_final.py --scenario base   --window full_recent --output runtime/stress90/base_full_recent.json
+python tools/evaluate_directional_stress90_final.py --scenario stress --window prior1      --output runtime/stress90/stress_prior1.json
+python tools/evaluate_directional_stress90_final.py --scenario stress --window prior2      --output runtime/stress90/stress_prior2.json
+python tools/evaluate_directional_stress90_final.py --scenario stress --window train       --output runtime/stress90/stress_train.json
+python tools/evaluate_directional_stress90_final.py --scenario stress --window validation  --output runtime/stress90/stress_validation.json
+python tools/evaluate_directional_stress90_final.py --scenario stress --window oos         --output runtime/stress90/stress_oos.json
+python tools/evaluate_directional_stress90_final.py --scenario stress --window full_recent --output runtime/stress90/stress_full_recent.json
+```
+
+每个输出都会校验候选摘要和固定风险约束。可用以下命令组装最终门：
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+from tools.evaluate_directional_stress90_final import assemble_matrix_payload
+
+paths = sorted(Path("runtime/stress90").glob("*.json"))
+matrix = assemble_matrix_payload(
+    json.loads(path.read_text(encoding="utf-8")) for path in paths
+)
+print(json.dumps(matrix["gate"], ensure_ascii=False, indent=2))
+PY
+```
+
+预期最终输出为 `passed: true` 且 `reasons` 为空。执行环境、代码版本、输入摘要或依赖版本变化时，应把结果视为新的证据，而不是强行解释为数值误差。
 
 ## 完整账户模拟矩阵
 
-All seven rows are independent account simulations. Base uses 5bp and the frozen Base margin proxy; Stress uses 15bp and the frozen Stress margin proxy.
+七行均为独立账户模拟。标准情景使用单边 5 个基点和固定标准保证金比例；压力情景使用单边 15 个基点和固定压力保证金比例。
 
-| Window | Annualized | Max DD | Gross PnL | Cost | Net alpha | Turnover | Net/turn | Gross peak | HALT | Rejects |
+| 情景与窗口 | 年化收益 | 最大回撤 | 毛收益 | 成本 | 净收益 | 换手金额 | 每换手净收益 | 最高总敞口 | 硬停机 | 保证金拒绝 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
-| Stress prior1 | 12.141524% | -23.228982% | 122,085.00 | 66,958.75 | 55,126.25 | 44,639,165 | 12.349302 bps | 1.677099x | false | 0 |
-| Stress prior2 | 8.578529% | -18.354608% | 111,235.00 | 69,935.80 | 41,299.20 | 46,623,865 | 8.857953 bps | 1.648349x | false | 0 |
-| Base full_recent | 156.881655% | -15.708467% | 2,693,765.00 | 132,381.86 | 2,561,383.14 | 264,763,725 | 96.742223 bps | 1.983123x | false | 0 |
-| Stress train | 28.891985% | -13.657897% | 229,025.00 | 91,023.25 | 138,001.75 | 60,682,165 | 22.741732 bps | 1.648285x | false | 0 |
-| Stress validation | 512.267292% | -11.783634% | 726,940.00 | 50,469.45 | 676,470.55 | 33,646,300 | 201.053474 bps | 1.626864x | false | 0 |
-| Stress OOS | 102.808956% | -17.632605% | 268,380.00 | 62,293.73 | 206,086.28 | 41,529,150 | 49.624487 bps | 1.649642x | false | 0 |
-| Stress full_recent | 112.100053% | -14.567214% | 1,929,280.00 | 310,257.23 | 1,619,022.78 | 206,838,150 | 78.274862 bps | 1.670510x | false | 0 |
+| 压力前序一 | 12.141524% | -23.228982% | 122,085.00 | 66,958.75 | 55,126.25 | 44,639,165 | 12.349302 bps | 1.677099 倍 | 否 | 0 |
+| 压力前序二 | 8.578529% | -18.354608% | 111,235.00 | 69,935.80 | 41,299.20 | 46,623,865 | 8.857953 bps | 1.648349 倍 | 否 | 0 |
+| 标准汇总窗口 | 156.881655% | -15.708467% | 2,693,765.00 | 132,381.86 | 2,561,383.14 | 264,763,725 | 96.742223 bps | 1.983123 倍 | 否 | 0 |
+| 压力训练 | 28.891985% | -13.657897% | 229,025.00 | 91,023.25 | 138,001.75 | 60,682,165 | 22.741732 bps | 1.648285 倍 | 否 | 0 |
+| 压力验证 | 512.267292% | -11.783634% | 726,940.00 | 50,469.45 | 676,470.55 | 33,646,300 | 201.053474 bps | 1.626864 倍 | 否 | 0 |
+| 压力样本外 | 102.808956% | -17.632605% | 268,380.00 | 62,293.73 | 206,086.28 | 41,529,150 | 49.624487 bps | 1.649642 倍 | 否 | 0 |
+| 压力汇总窗口 | 112.100053% | -14.567214% | 1,929,280.00 | 310,257.23 | 1,619,022.78 | 206,838,150 | 78.274862 bps | 1.670510 倍 | 否 | 0 |
 
-The assembled promotion gate returns `passed=true` with an empty reason list.
+组装后的晋级门结果为通过，拒绝原因列表为空。
 
-The inherited Stress80 evaluator was rerun on the same clean tree and still returns candidate digest `8e38dbf...d63f09f28`, Stress annualized `80.067891%`, DD `-29.727688%`, turnover `337,934,465`, efficiency `30.990722 bps`, no HALT and zero margin rejects. The new behavior is therefore additive and the PR #24 checkpoint remains exactly reproducible.
+前一版候选在相同干净代码树上仍得到：压力情景年化 80.067891%、最大回撤 -29.727688%、换手 337,934,465、每换手净收益 30.990722 个基点、无硬停机且无保证金拒绝。因此新规则是在继承前一版信号和硬限制的基础上增加，而不是回退已有结果。
 
-## 相比前一压力研究候选的变化
+## 相比前一候选的变化
 
-| Metric | Stress80 | Stress90 | Change |
+| 指标 | 前一候选 | 当前候选 | 变化 |
 | --- | ---: | ---: | ---: |
-| Stress annualized | 80.067891% | 112.100053% | +32.032162 pp |
-| Stress max DD | -29.727688% | -14.567214% | +15.160474 pp |
-| Stress net alpha | 1,047,283.30 | 1,619,022.78 | +571,739.47 |
-| Stress turnover | 337,934,465 | 206,838,150 | -131,096,315 |
-| Stress net/turn | 30.990722 bps | 78.274862 bps | +47.284141 bps |
-| prior1 annualized | -32.117204% / HALT | 12.141524% | positive / no HALT |
-| prior2 annualized | -29.445651% / HALT | 8.578529% | positive / no HALT |
+| 压力汇总窗口年化收益 | 80.067891% | 112.100053% | +32.032162 个百分点 |
+| 压力汇总窗口最大回撤 | -29.727688% | -14.567214% | 改善 15.160474 个百分点 |
+| 压力净收益 | 1,047,283.30 | 1,619,022.78 | +571,739.47 |
+| 压力换手金额 | 337,934,465 | 206,838,150 | -131,096,315 |
+| 每换手净收益 | 30.990722 bps | 78.274862 bps | +47.284141 bps |
+| 前序一 | -32.117204% / 硬停机 | 12.141524% | 转正且未停机 |
+| 前序二 | -29.445651% / 硬停机 | 8.578529% | 转正且未停机 |
 
-The gain is not mechanical minimum-turnover optimization: concentrated recent entry/increase remains the alpha engine. The response suppresses only diffuse-leadership additions whose net contribution is negative in prior1, prior2 and full_recent.
+收益改善不是简单压低换手：近期较集中的开仓和加仓仍是主要收益来源。新规则只抑制了在前序一、前序二和汇总窗口中净贡献都为负的分散领导状态新增风险。
 
 ## 时间因果和防过拟合约束
 
-- Current target weights are already available at the decision; strictly prior expanding HHI contains no future market data.
-- The comparison happens before the current HHI is appended.
-- Independent validation/OOS simulations receive only target-state history strictly before their start.
-- Appended future data cannot change prior target-state labels.
-- No candidate holdings, realized PnL or outcome label feeds the state, avoiding the failed candidate-owned feedback loop.
-- No threshold, percentile, lookback, product, leverage, margin, OI setting, cost hurdle, horizon or reserve parameter was searched.
-- Two of three allowed families and two of six quick candidates were used; the third family was stopped after the ideal target passed.
-- Full-path reserve correctness was tested once and rejected as standalone negative evidence; it was not tuned.
+- 当前目标权重在决策时已经可见，比较只使用严格早于当前时点的 HHI；
+- 先比较，再把当前 HHI 加入历史；
+- 验证和样本外账户只接收窗口开始前的目标状态历史；
+- 追加未来数据不能改变过去的目标状态标签；
+- 状态不读取候选持仓、已实现盈亏或结果标签；
+- 没有搜索阈值、分位数、回看窗口、品种、杠杆、保证金、持仓量设置、成本门、收益观察范围或回撤预留；
+- 允许的三类假设只使用了两类，六个快速候选只使用了两个；达到预设目标后停止；
+- 完整收益路径的回撤预留只测试一次，作为单独策略时失败，没有继续调参挽救。
 
 ## 风控与实盘边界
 
-Unchanged hard authorities:
+以下硬限制没有变化：
 
-- target and realized gross `<=2x`;
-- margin `<=35%` and available `>=25%`;
-- daily-loss hard gate `5%`;
-- total-drawdown hard gate `30%`;
-- maximum contract lots `35`;
-- reduction-first execution;
-- Broker/CTP remains the only truth for positions, capital and fills;
-- RiskManager/circuit/HALT authority is unchanged.
+- 目标和实际总敞口不超过权益 2 倍；
+- 保证金不超过权益 35%，可用资金不低于权益 25%；
+- 单日亏损硬限制 5%；
+- 总回撤硬限制 30%；
+- 单合约不超过 35 手；
+- 减仓先于开仓；
+- Broker/CTP 是持仓、资金和成交的唯一真相；
+- `RiskManager`、单日熔断和 `HALTED` 的权限没有变化。
 
-This promotion contains offline validated Production evaluator components only. It does not wire the strategy into live runtime and does not use research CSV artifacts as live data sources. Any later live promotion still requires restart recovery, missing/stale 60m fail-closed behavior, session/calendar and roll correctness, startup warmup, and live/offline equivalence tests.
+当前候选只存在于离线验收组件，没有修改实盘策略，也没有把研究 CSV 当成实盘数据源。未来若接入实盘，仍需验证启动预热、重启恢复、60 分钟数据缺失或陈旧、交易时段、交易日历、换月以及线上线下一致性。
 
-## 失败路线证据
+## 失败路线
 
-`docs/stress90-bounded-research-evidence.md` preserves the complete bounded counters, P0 attribution, causal regime decomposition, the standalone full-path reserve collapse to `0.829912%`, and the inherited locked failures. No failed route was rescued with parameter changes.
+[`stress90-bounded-research-evidence.md`](stress90-bounded-research-evidence.md) 保存研究次数、最高优先级归因、因果市场状态、单独回撤预留失败结果及继承的失败路线。没有通过调整参数挽救失败候选。
 
-## 验证结果
+## 验证记录
 
-- Fresh matrix: passed (`1 / 2` used).
-- Focused mechanics/tests before matrix: passed.
-- Code review: one evidence-assembly fail-closed issue found and fixed; no open behavioral finding.
-- PR and permanent merge-tree Python 3.10 / Python 3.13 full CI: passed. Merge `482455dc57bc6a134f45232e290b4a49c3f7073d`, run `32798895640` completed successfully on 2026-08-25; PR #25 does not change live wiring.
+- 固定输入矩阵：通过，使用 1 次完整矩阵额度；
+- 相关机制和单元测试：通过；
+- 审查发现并修复一项矩阵载荷未能失败关闭的问题，没有遗留行为问题；
+- Python 3.10 和 Python 3.13 的完整持续集成均通过；
+- 最终研究合并提交为 `482455dc57bc6a134f45232e290b4a49c3f7073d`，该提交没有修改实盘接线。

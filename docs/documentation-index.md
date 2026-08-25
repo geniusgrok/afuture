@@ -8,9 +8,13 @@
 - [`README.md`](../README.md) — 项目定位、能力、使用方式和边界。
 - [`docs/glossary.md`](glossary.md) — 术语、缩写和公式的统一定义。
 - [`docs/architecture.md`](architecture.md) — 当前模块边界、依赖方向和数据流。
+- [`docs/strategies.md`](strategies.md) — 当前策略规则、决策时点和实盘边界。
+- [`docs/configuration.md`](configuration.md) — TOML 字段、默认值、单位和约束。
+- [`docs/data-formats.md`](data-formats.md) — Tick CSV 字段和数据质量契约。
 - [`docs/data-and-backtest.md`](data-and-backtest.md) — 当前数据、时间因果和模拟约束。
 - [`docs/documentation-index.md`](documentation-index.md) — 本文档分类索引。
 - [`docs/live-trading.md`](live-trading.md) — CTP、影子运行、停机和恢复手册。
+- [`docs/troubleshooting.md`](troubleshooting.md) — 故障诊断和人工恢复手册。
 - [`docs/production-checklist.md`](production-checklist.md) — 真实资金上线检查表。
 
 ## 工程审计与验证记录

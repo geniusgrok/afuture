@@ -1,5 +1,7 @@
 # Directional Net-Alpha Efficiency Design
 
+> **归档说明：** 本文是已完成阶段的设计记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 ## Goal
 
 Improve realizable Stress net alpha for the frozen Execution-Aligned Directional Portfolio without relaxing any hard risk gate, increasing leverage above 2x, or fitting the repeatedly observed 2024-08-21..2026-08-20 window.

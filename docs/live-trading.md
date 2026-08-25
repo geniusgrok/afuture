@@ -1,6 +1,6 @@
 # 实盘、影子运行、停机与恢复
 
-本文是 CTP 运行手册。Shadow（影子运行）使用实时 CTP 信息，但订单、成交、持仓和资金全部由本地模拟 Broker 维护，绝不向柜台发送委托。术语和公式见 [`glossary.md`](glossary.md)。
+本文是 CTP 正常运行手册。Shadow（影子运行）使用实时 CTP 信息，但订单、成交、持仓和资金全部由本地模拟 Broker 维护，绝不向柜台发送委托。异常诊断见 [`troubleshooting.md`](troubleshooting.md)，术语和公式见 [`glossary.md`](glossary.md)。
 
 ## 1. 适用范围
 

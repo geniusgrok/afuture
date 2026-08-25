@@ -1,5 +1,7 @@
 # Production Return 100% Implementation Plan
 
+> **归档说明：** 本文是已完成阶段的实施记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 **Goal:** Make the directional production-account/mechanics path achieve >=100% annualized Base return without increasing the 2x gross leverage cap or relaxing total drawdown/margin/cash hard gates.
 
 **Architecture:** Replace lifetime shutdown after a daily-loss breach with a recoverable same-trading-day circuit breaker: flatten, block new risk for the rest of that CTP trading day, and restore RUNNING only on a later trading day after broker readiness, no active orders/residual risk, metadata verification, account risk checks and reconciliation pass. Add a causal directional risk governor using completed account returns only: when the latest completed daily return is <=-2% or the two-completed-day sample volatility is >=3%, scale the next directional target to 25%; otherwise keep 100%. Tighten directional per-contract max volume from 100 to 35. Keep the signal target capped at 2.0x and enforce a separate broker-truth realized-gross hard guard: do not pre-haircut targets below the ceiling, but submit reduction-only FAK when marked gross exceeds 2.0x; fail closed if the guard cannot safely classify or reduce the exposure. Total drawdown, margin, cash reserve, nonpositive equity, metadata and reconciliation failures remain hard/manual halts.

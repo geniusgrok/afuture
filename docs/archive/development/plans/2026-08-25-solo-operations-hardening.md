@@ -1,5 +1,7 @@
 # Solo Operations Hardening Implementation Plan
 
+> **归档说明：** 本文是已完成阶段的实施记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 Status: execution record. Implement against `origin/main` merge `34fd0210b914b847ed10ecadead53b62015a32af`.
 
 ## Task 1: Verified previous state

@@ -1,5 +1,7 @@
 # Directional Microstructure and Cost Efficiency Implementation Plan
 
+> **归档说明：** 本文是已完成阶段的实施记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 > Execute with Superpowers TDD and progressive verification. Base branch is `main`; feature branch is `codex/afuture-microstructure-cost-alpha-20260824`.
 
 ## Task 1 - Development harness and baseline lock

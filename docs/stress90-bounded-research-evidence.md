@@ -1,87 +1,99 @@
 # 压力研究过程与失败证据（历史代号 Stress-90）
 
-> 阅读说明：本文记录有界研究过程、使用次数和被拒绝路线。`Stress-90` 的数字表示预先设定的压力情景年化收益目标，不表示压力参数。原始研究字段保留英文以便与输出文件核对；术语定义见 [`glossary.md`](glossary.md)。
+> 阅读说明：本文记录研究次数、归因过程和被拒绝路线。`Stress-90` 的数字表示预先设定的压力情景年化收益目标，不表示压力参数。原始算法名和输出字段保留英文以便与代码核对；术语定义见 [`glossary.md`](glossary.md)。
 
 ## 基线
 
-- Base commit: `b4207abb50aca1e39d5ebba3affc04765857251a`.
-- Production checkpoint: Stress80 final candidate; live runtime wiring unchanged.
-- Candidate weight SHA256: `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`.
-- Exact pre-research Stress reproduction: annualized `80.067891%`, DD `-29.727688%`, turnover `337,934,465`, cost `506,901.6975`, net alpha `1,047,283.3025`, efficiency `30.990722 bps`, gross peak `1.683773x`, no HALT and zero margin rejects.
+- 起点提交：`b4207abb50aca1e39d5ebba3affc04765857251a`；
+- 起点候选：前一版压力研究候选，实盘接线未改变；
+- 候选权重 SHA256：`8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`；
+- 研究前精确复核结果：压力年化 80.067891%、最大回撤 -29.727688%、换手 337,934,465、成本 506,901.6975、净收益 1,047,283.3025、每换手净收益 30.990722 个基点、最高总敞口 1.683773 倍、没有硬停机和保证金拒绝。
 
 ## 有界研究次数
 
-- Major hypothesis families used: `2 / 3`.
-- Production quick candidates used: `2 / 6`.
-- Final full matrices used: `1 / 2`.
+- 重大假设类别：使用 `2 / 3`；
+- 快速生产候选：使用 `2 / 6`；
+- 最终完整矩阵：使用 `1 / 2`。
+
+达到预设目标后停止，没有继续搜索第三类假设或第二次完整矩阵。
 
 ## 不再重复尝试的失败路线
 
-PR #21/#23 and the inherited evidence lock candidate-owned MPV, generic/no-trade suppress-only, generic integer tracking/floor/ceil/lot feasibility, exact hard-feasible margin, turnover-first survivor allocation, all-DCE OI/freeze, OI-selective freeze, raw member flow, standalone Price×OI×Volume/session portfolios, naive curve/basis and Candidate A/B product selection. None was retuned.
+此前研究已经否决以下路线：候选账户结果反向驱动状态、通用禁止交易、只按换手优化、通用整数向上/向下取整和手数可行性、刚好满足硬门的保证金分配、先按换手分配存活模板、全大商所持仓量过滤、选择性持仓量冻结、原始成员资金流、单独价格×持仓量×成交量/时段组合、简单期限结构或基差，以及两个品种选择候选。
 
-## 最高优先级的收益来源归因
+这些路线没有重新调参。本轮只研究新的、预先限定且能够保持因果性的假设。
 
-Behavior-neutral independent Stress account paths reconcile `initial equity + gross PnL - exact cost = final equity`:
+## 最高优先级收益归因
 
-| Window | Annualized | Max DD | Gross PnL | Cost | Net alpha | Turnover | Net/turn |
+以下压力账户路径不改变策略行为，并满足：
+
+```text
+初始权益 + 毛收益 - 精确成本 = 最终权益
+```
+
+| 窗口 | 年化收益 | 最大回撤 | 毛收益 | 成本 | 净收益 | 换手金额 | 每换手净收益 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| prior1 | -32.117204% | -30.807368% | -83,935.00 | 64,975.88 | -148,910.88 | 43,317,255 | -34.376805 bps |
-| prior2 | -29.445651% | -30.144016% | -89,720.00 | 53,086.41 | -142,806.41 | 35,390,940 | -40.351121 bps |
-| full_recent | 80.067891% | -29.727688% | 1,554,185.00 | 506,901.70 | 1,047,283.30 | 337,934,465 | 30.990722 bps |
+| 前序一 | -32.117204% | -30.807368% | -83,935.00 | 64,975.88 | -148,910.88 | 43,317,255 | -34.376805 bps |
+| 前序二 | -29.445651% | -30.144016% | -89,720.00 | 53,086.41 | -142,806.41 | 35,390,940 | -40.351121 bps |
+| 汇总窗口 | 80.067891% | -29.727688% | 1,554,185.00 | 506,901.70 | 1,047,283.30 | 337,934,465 | 30.990722 bps |
 
-The prior failure is gross expectancy, not mainly cost: entry plus increase gross is `-87,910` in prior1 and `-62,105` in prior2, versus `+1,416,250` recent. Recent increases alone contribute `+726,912.95` net, so generic turnover suppression would delete valid alpha. Recent AG and FU net alpha totals more than the portfolio because other products subtract value, identifying product leadership without authorizing product selection. Fixed holding cutoffs are not stable across windows. Capacity losses are material, but inherited generic integer/margin experiments already failed and were not reopened.
+前序窗口的主要问题是毛收益为负，不只是成本过高：开仓加同方向加仓在前序一贡献 -87,910，在前序二贡献 -62,105，在汇总窗口贡献 +1,416,250。近期同方向加仓单独贡献 +726,912.95 净收益，因此通用降低换手会同时删除有效收益。固定持有期在不同窗口也不稳定。
 
-## 假设一：完整收益路径下的回撤预留
+## 假设一：使用完整收益路径的回撤预留
 
-The inherited simulator kept only the last two completed returns, so its documented running-high-watermark 25% reserve triggered on zero days. Full causal history would have triggered on `162`, `170` and `32` decision days in prior1, prior2 and full_recent. The zero-degree-of-freedom correctness candidate kept `25% = 30% hard DD - 5% daily-loss reserve`, froze only entry/same-side increase, and left every hard gate unchanged.
+继承的模拟器只保留最近两个完整日收益，导致文档所称的“运行高水位 25% 回撤预留”实际从未触发。改用全部已完成因果收益后，前序一、前序二和汇总窗口分别触发 162、170 和 32 个决策日。
 
-| Window | Annualized | Max DD | Net alpha | Turnover | Net/turn |
+该候选没有新增可调参数：仍使用 `25% = 30% 总回撤硬限制 - 5% 单日亏损预留`，只冻结开仓和同方向加仓，减仓和退出仍可执行。
+
+| 窗口 | 年化收益 | 最大回撤 | 净收益 | 换手金额 | 每换手净收益 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Base full_recent | 128.778098% | -25.691466% | 1,950,608.52 | 460,472,955 | 42.360979 bps |
-| Stress train | 10.177351% | -24.231874% | 48,772.07 | 118,355,285 | 4.120819 bps |
-| Stress validation | 511.519900% | -16.988818% | 675,792.17 | 57,748,555 | 117.023217 bps |
-| Stress OOS | 44.102450% | -24.165871% | 97,608.47 | 64,844,355 | 15.052732 bps |
-| Stress full_recent | 0.829912% | -26.246962% | 8,000.23 | 137,739,850 | 0.580821 bps |
+| 标准汇总窗口 | 128.778098% | -25.691466% | 1,950,608.52 | 460,472,955 | 42.360979 bps |
+| 压力训练 | 10.177351% | -24.231874% | 48,772.07 | 118,355,285 | 4.120819 bps |
+| 压力验证 | 511.519900% | -16.988818% | 675,792.17 | 57,748,555 | 117.023217 bps |
+| 压力样本外 | 44.102450% | -24.165871% | 97,608.47 | 64,844,355 | 15.052732 bps |
+| 压力汇总窗口 | 0.829912% | -26.246962% | 8,000.23 | 137,739,850 | 0.580821 bps |
 
-The full_recent account reaches the reserve and then permits reductions/exits while blocking recovery re-entry. The response self-extinguishes and fails both headline and efficiency gates. No threshold rescue was attempted. The winner below fixes the reserve definition without changing its measured path because every winner DD stays above the 25% boundary.
+汇总账户触及预留后允许减仓和退出，却阻止恢复性重新开仓，最终自行熄灭，未通过收益和效率门。本轮没有尝试修改 25% 阈值来挽救它。最终胜出候选仍采用修正后的完整收益路径，但各窗口都没有触发 25% 边界，因此结果不受该修复影响。
 
-## 重要市场状态归因
+## 因果市场状态归因
 
-Causal labels used only current targets, prices completed before the decision day, the already-fixed 20-session horizon, zero/sign/unanimity boundaries, or a strictly prior expanding median. Appended future data and current-day close shocks cannot alter an earlier label. Market-trend sign, signal/trend alignment, exact directional unanimity and realized-volatility state did not isolate a stable positive prior regime.
+状态标签只使用当前目标、决策日前已经完成的价格、固定的 20 日成本判断、固定的 3 日观察范围、零值/符号边界或严格早于当前时点的扩展中位数。追加未来数据或修改当前日收盘不能改变过去标签。
 
-Target-weight HHI relative to its strictly prior expanding median produced one stable opportunity for entry plus same-side increase:
+市场趋势方向、信号与趋势一致性、方向一致程度和已实现波动状态都没有找到在前序窗口稳定为正的区域。只有“目标权重 HHI 相对严格历史扩展中位数”形成稳定区分：
 
-| Window | Concentration state | Gross PnL | Cost | Net alpha | Turnover |
+| 窗口 | 集中度状态 | 毛收益 | 成本 | 净收益 | 换手金额 |
 | --- | --- | ---: | ---: | ---: | ---: |
-| prior1 | above prior median | -35,680.00 | 8,878.99 | -44,558.99 | 5,919,325 |
-| prior1 | not above prior median | -60,030.00 | 20,420.01 | -80,450.01 | 13,613,340 |
-| prior2 | above prior median | -25,005.00 | 5,805.51 | -30,810.51 | 3,870,340 |
-| prior2 | not above prior median | -36,900.00 | 18,455.52 | -55,355.52 | 12,303,680 |
-| full_recent | above prior median | 1,447,945.00 | 120,484.58 | 1,327,460.42 | 80,323,055 |
-| full_recent | not above prior median | -50,825.00 | 123,958.46 | -174,783.46 | 82,638,970 |
+| 前序一 | 高于历史中位数 | -35,680.00 | 8,878.99 | -44,558.99 | 5,919,325 |
+| 前序一 | 不高于历史中位数 | -60,030.00 | 20,420.01 | -80,450.01 | 13,613,340 |
+| 前序二 | 高于历史中位数 | -25,005.00 | 5,805.51 | -30,810.51 | 3,870,340 |
+| 前序二 | 不高于历史中位数 | -36,900.00 | 18,455.52 | -55,355.52 | 12,303,680 |
+| 汇总窗口 | 高于历史中位数 | 1,447,945.00 | 120,484.58 | 1,327,460.42 | 80,323,055 |
+| 汇总窗口 | 不高于历史中位数 | -50,825.00 | 123,958.46 | -174,783.46 | 82,638,970 |
 
-## 假设二：基于历史中位数的新增风险冻结
+## 假设二：基于历史中位数冻结新增风险
 
-- **Economic rationale:** diffuse leadership loses after 15bp in all diagnostic windows, while concentrated recent leadership preserves the main alpha engine.
-- **Causal inputs:** absolute current causal target weights and earlier target HHI only. No realized candidate PnL, holdings outcome or future data.
-- **Degrees of freedom:** zero fitted thresholds and no new lookback. Standard HHI is compared to its strictly prior expanding median; equality is weak leadership; insufficient initial history passes.
-- **Exact rule:** if current HHI is no greater than the median of earlier finite HHI, freeze new product entries and same-sign increases. Reductions, exits, reversals, same-product rolls and all hard-gate actions pass. State updates on every causal target day, independently of account actions.
-- **Rejection rule:** any declared gate failure rejects the candidate. No percentile, lookback, equality, product, transform or weight rescue was allowed.
+- **经济依据：** 分散领导状态在三个诊断窗口扣除 15 个基点成本后均为负；近期集中领导状态保留主要收益来源。
+- **因果输入：** 当前目标权重绝对值及严格早于当前时点的 HHI，不读取候选盈亏、持仓结果或未来数据。
+- **自由度：** 没有拟合阈值和新增回看窗口，只把标准 HHI 与严格历史扩展中位数比较；相等归入较弱状态，初始历史不足时不冻结。
+- **精确规则：** 当前 HHI 不高于历史中位数时，冻结新开品种和同方向加仓；减仓、退出、反转、同品种换月和全部硬风控动作继续执行。每个因果目标日都更新状态。
+- **拒绝规则：** 任一预先声明的门失败就否决，不允许通过改分位数、回看窗口、相等边界、品种、变换或权重挽救。
 
-Quick evidence:
+快速证据：
 
-| Window | Annualized | Max DD | Gross PnL | Cost | Net alpha | Turnover | Net/turn | Gross peak | HALT | Rejects |
+| 情景与窗口 | 年化收益 | 最大回撤 | 毛收益 | 成本 | 净收益 | 换手金额 | 每换手净收益 | 最高总敞口 | 硬停机 | 保证金拒绝 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
-| Stress prior1 | 12.141524% | -23.228982% | 122,085.00 | 66,958.75 | 55,126.25 | 44,639,165 | 12.349302 bps | 1.677099x | false | 0 |
-| Stress prior2 | 8.578529% | -18.354608% | 111,235.00 | 69,935.80 | 41,299.20 | 46,623,865 | 8.857953 bps | 1.648349x | false | 0 |
-| Base full_recent | 156.881655% | -15.708467% | 2,693,765.00 | 132,381.86 | 2,561,383.14 | 264,763,725 | 96.742223 bps | 1.983123x | false | 0 |
-| Stress train | 28.891985% | -13.657897% | 229,025.00 | 91,023.25 | 138,001.75 | 60,682,165 | 22.741732 bps | 1.648285x | false | 0 |
-| Stress validation | 512.267292% | -11.783634% | 726,940.00 | 50,469.45 | 676,470.55 | 33,646,300 | 201.053474 bps | 1.626864x | false | 0 |
-| Stress OOS | 102.808956% | -17.632605% | 268,380.00 | 62,293.73 | 206,086.28 | 41,529,150 | 49.624487 bps | 1.649642x | false | 0 |
-| Stress full_recent | 112.100053% | -14.567214% | 1,929,280.00 | 310,257.23 | 1,619,022.78 | 206,838,150 | 78.274862 bps | 1.670510x | false | 0 |
+| 压力前序一 | 12.141524% | -23.228982% | 122,085.00 | 66,958.75 | 55,126.25 | 44,639,165 | 12.349302 bps | 1.677099 倍 | 否 | 0 |
+| 压力前序二 | 8.578529% | -18.354608% | 111,235.00 | 69,935.80 | 41,299.20 | 46,623,865 | 8.857953 bps | 1.648349 倍 | 否 | 0 |
+| 标准汇总窗口 | 156.881655% | -15.708467% | 2,693,765.00 | 132,381.86 | 2,561,383.14 | 264,763,725 | 96.742223 bps | 1.983123 倍 | 否 | 0 |
+| 压力训练 | 28.891985% | -13.657897% | 229,025.00 | 91,023.25 | 138,001.75 | 60,682,165 | 22.741732 bps | 1.648285 倍 | 否 | 0 |
+| 压力验证 | 512.267292% | -11.783634% | 726,940.00 | 50,469.45 | 676,470.55 | 33,646,300 | 201.053474 bps | 1.626864 倍 | 否 | 0 |
+| 压力样本外 | 102.808956% | -17.632605% | 268,380.00 | 62,293.73 | 206,086.28 | 41,529,150 | 49.624487 bps | 1.649642 倍 | 否 | 0 |
+| 压力汇总窗口 | 112.100053% | -14.567214% | 1,929,280.00 | 310,257.23 | 1,619,022.78 | 206,838,150 | 78.274862 bps | 1.670510 倍 | 否 | 0 |
 
-The frozen quick gate passes with no reasons. Stress full_recent improves by `32.032162` percentage points, DD by `15.160474` points, turnover by `131,096,315`, net alpha by `571,739.47`, and efficiency by `47.284141 bps`. Both prior windows become positive and stop HALTing. The ideal `>=90%` target is met, so no third hypothesis family or extra quick candidate was run.
+压力汇总窗口年化收益提高 32.032162 个百分点，最大回撤改善 15.160474 个百分点，换手减少 131,096,315，净收益增加 571,739.47，每换手净收益增加 47.284141 个基点。两个前序窗口都转正且不再触发硬停机。
 
 ## 结论
 
-The clean seven-window matrix reproduces the quick values exactly and the assembled frozen gate passes with no reasons. The remaining work is permanent-tree review/CI and merge identity verification; no second matrix or further hypothesis is authorized.
+七窗口完整矩阵与快速结果一致，固定晋级门通过且没有拒绝原因。预设的压力年化 90% 目标已经达到，因此研究按有界规则停止，没有使用剩余假设或矩阵额度。
+
+精确输入、复核命令、完整矩阵和实盘边界见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。

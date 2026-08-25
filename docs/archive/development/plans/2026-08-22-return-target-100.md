@@ -1,5 +1,7 @@
 # Return Target 100 Implementation Plan
 
+> **归档说明：** 本文是已完成阶段的实施记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build and validate a low-gross-leverage multi-alpha futures portfolio research engine that prioritizes >=100% annualized historical return, then wire only genuinely surviving signals into afuture's existing risk/execution boundary.

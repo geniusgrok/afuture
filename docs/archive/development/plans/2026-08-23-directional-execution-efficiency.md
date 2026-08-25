@@ -1,5 +1,7 @@
 # Directional Execution Efficiency Implementation Plan
 
+> **归档说明：** 本文是已完成阶段的实施记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Reduce economically low-value directional turnover and safely recover margin capacity so Stress annualized return moves materially toward 80% while Base remains >=100% and all production hard gates remain unchanged.

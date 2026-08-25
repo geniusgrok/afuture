@@ -21,148 +21,148 @@
 
 ## B. 当前生产风险门认知
 
-- [x] daily loss 5% 是同 trading-day circuit，而不是自动取消风险门。
-- [x] total drawdown 30% 仍是 hard/manual halt。
-- [x] max margin 35% / min available 25% 仍是 hard gate。
-- [x] adaptive soft target share 的平静上限为 30%，completed shock 只可进一步收缩；它不替代或放宽 35%/25% hard gates。
-- [x] target gross 与 actual gross 都有 2.0x 硬边界。
-- [x] 单合约 max volume = 35。
-- [x] actual gross 超限才 reduction-only；margin target 与 gross guard 分别约束保证金和名义风险。
-- [x] 没有为恢复历史数字放宽 daily-loss / DD / margin / cash / leverage。
-- [ ] 任何未来风险阈值调整先有 Shadow/test/small-capital 新证据。
+- [x] 单日亏损 5% 是同一柜台交易日内的熔断，不会自动取消其他风险门。
+- [x] 总回撤 30% 仍然触发需要人工处理的硬停机。
+- [x] 保证金不超过 35%、可用资金不低于 25% 仍是硬限制。
+- [x] 正常目标保证金份额最高约 30%，完整交易日冲击只会进一步收缩；它不替代或放宽 35%/25% 硬限制。
+- [x] 目标总敞口和实际总敞口都不超过权益的 2 倍。
+- [x] 单合约最多 35 手。
+- [x] 只有实际总敞口超限才进入只减仓；保证金目标和总敞口保护分别约束资金占用和名义风险。
+- [x] 没有为恢复历史收益而放宽单日亏损、总回撤、保证金、现金或杠杆限制。
+- [ ] 未来调整风险阈值前先取得新的 Shadow、测试柜台和小资金证据。
 
 ## C. 配置与账户隔离
 
-- [ ] 使用冻结 50 品种 Universe，不为追近期收益随意删改。
+- [ ] 使用固定的 50 品种范围，不为追逐近期收益随意删改。
 - [ ] `directional.max_gross_leverage <= 2.0`。
 - [ ] `directional.max_contract_volume == 35` 或更低。
-- [ ] directional 与 static pairs / Auto 不同时启用。
-- [ ] 同一账户没有手工/其它程序交易破坏 account-exclusive 假设。
+- [ ] 方向组合不与固定跨期组合或 Auto 同时启用。
+- [ ] 同一账户没有手工或其他程序交易，保持账户独占假设。
 - [ ] 目标交易所和品种权限已开通。
 - [ ] `rebalance_window` 经过测试柜台验证。
-- [ ] margin / available / daily-loss / DD 已按真实承受能力确认。
+- [ ] 保证金、可用资金、单日亏损和总回撤限制已按真实承受能力确认。
 
 ## D. 上一完整交易日的流动性快照
 
-- [ ] CTP catalog 覆盖冻结 50 品种。
-- [ ] 连续观察至少一个完整 trading day，生成 `directional_activity.json`。
-- [ ] snapshot volume/OI 等于上一完整交易日最后可见 activity。
-- [ ] `doctor` 复用正式 activity selector，activity 的 symbol/product/exchange 与 catalog identity 一致，且 50 个配置 product 均有通过 expiry/volume/OI 门的覆盖。
-- [ ] 次交易日当前累计 volume/OI 不会改变已冻结主力。
-- [ ] listing/expiry/20 天过滤正确。
-- [ ] incumbent eligibility + challenger OI/volume 双维 dominance 与离线重建一致；无 incumbent 时 OI → volume → expiry → symbol 排序一致。
-- [ ] 新部署无 completed snapshot 时不会新增风险。
-- [ ] 重启后能恢复最近 completed snapshot。
-- [ ] completed activity 比最新完整 signal day 陈旧时 fail-closed。
+- [ ] CTP 合约目录覆盖固定的 50 个品种。
+- [ ] 连续观察至少一个完整柜台交易日，生成 `directional_activity.json`。
+- [ ] 快照中的成交量和持仓量等于上一完整交易日最后可见值。
+- [ ] `doctor` 复用正式选约器；合约、品种和交易所身份与 CTP 目录一致，且 50 个配置品种都有通过到期日、成交量和持仓量门槛的合约。
+- [ ] 次交易日当前累计成交量和持仓量不会改变已冻结主力。
+- [ ] 挂牌日、到期日和距到期 20 天过滤正确。
+- [ ] 已持有合约的保留条件和挑战合约的成交量/持仓量双重优势与离线重建一致；没有已持有合约时按持仓量、成交量、到期日和合约代码依次排序。
+- [ ] 新部署没有上一完整交易日快照时不会新增风险。
+- [ ] 重启后能恢复最近一份完整快照。
+- [ ] 流动性快照落后于最新完整信号交易日时拒绝增加风险。
 
 ## E. 信号日期、策略状态和仓位收缩
 
-- [ ] 50 品种 continuous OHLC 在 Shadow 中连续多日成功。
-- [ ] 最新 OHLC 覆盖 `completed_activity_snapshot.trading_day`。
-- [ ] 周末/节假日按 required trading day 语义处理。
-- [ ] 普通交易日漏完整 bar 时即使小时数未超限也拒绝。
-- [ ] provider 临时失败但缓存已覆盖 required day 时可继续。
-- [ ] required signal 缺失且账户为空时不新增风险。
-- [ ] required signal/activity 缺失且有风险时进入 `REDUCE_ONLY`。
-- [ ] meta 仍使用冻结 96 templates / lookback 11 / rebalance 3 / active 3。
-- [ ] meta 的 15bp evidence 只做生存门；存活模板按 Base score 排名，不在实盘期间动态重拟合历史参数。
-- [ ] completed daily returns 只在 trading day 完成后入 state。
-- [ ] 当前 session PnL 不会前视进入 governor。
-- [ ] -2% loss / 3% two-day volatility 的 25% defensive scaling 在 Shadow 可解释。
+- [ ] 50 个品种的连续合约开高低收数据在 Shadow 中连续多日成功更新。
+- [ ] 最新完整价格历史覆盖 `completed_activity_snapshot.trading_day`。
+- [ ] 周末和节假日按所需柜台交易日处理。
+- [ ] 普通交易日缺少完整日线时，即使未超过小时上限也拒绝增加风险。
+- [ ] 数据提供方临时失败但缓存已经覆盖所需交易日时可以继续。
+- [ ] 所需信号缺失且账户为空时不新增风险。
+- [ ] 所需信号或流动性快照缺失且仍有风险时进入 `REDUCE_ONLY`。
+- [ ] 元组合仍使用固定的 96 个模板、11 日回看、每 3 日选择最多 3 个模板。
+- [ ] 15 个基点压力证据只作为生存门；存活模板按标准成本评分排序，实盘期间不重新拟合历史参数。
+- [ ] 完整日收益只在柜台交易日结束后写入状态。
+- [ ] 当前交易时段尚未完成的盈亏不会提前进入风险收缩判断。
+- [ ] 完整日亏损达到 2% 或两日波动达到 3% 时缩小到 25% 的规则在 Shadow 中可解释。
 
 ## F. 保证金约束、先减后开和总敞口限制
 
-- [ ] live target 使用 Broker side-specific margin rate、mid、multiplier、buffer 计算逐手 margin。
-- [ ] 当前 35%/25%/5% 配置下平静 target margin share 约为 30%，completed shock 高于 3% 时能因果收缩。
-- [ ] 缺少正的 margin evidence 时 fail-closed，不用猜测 margin 开仓。
-- [ ] margin fitter 不会增加任一 requested lot。
-- [ ] margin-fitted openings 仍经过 `RiskManager.check_open_orders()` 35%/25% hard gates。
-- [ ] target=0、反转、超额风险能先 reduction。
-- [ ] 某个新目标无 eligible contract 时不会阻塞其它产品减仓。
-- [ ] 不可用产品已有仓位不加仓、不换月。
-- [ ] reductions 全部由 Broker 确认后，下一 cycle 才 opening。
-- [ ] active order 存在时 rebalance/gross guard 不重复发单。
-- [ ] actual marked gross `>2.0x` 时 gross guard 产生 reduction-only FAK。
-- [ ] gross guard 完成后实际 gross `<=2.0x`。
-- [ ] gross guard 无法安全计算/执行时 fail-closed。
-- [ ] 同一合约同时有 long/short 毛仓时 flatten 两边都能平，不因 net=0 漏风险。
-- [ ] reduction FAK 未成交/partial 后下一 cycle 以 Broker 真实持仓重算。
+- [ ] 实盘目标使用 Broker 返回的多空保证金率、中间价、合约乘数和缓冲计算逐手保证金。
+- [ ] 当前 35%/25%/5% 配置下，平静期目标保证金份额约为 30%；完整日冲击高于 3% 时只会因果收缩。
+- [ ] 缺少正的保证金证据时拒绝开仓，不猜测保证金率。
+- [ ] 整数手数拟合不会增加任一请求手数。
+- [ ] 缩量后的开仓单仍经过 `RiskManager.check_open_orders()` 的 35%/25% 硬限制。
+- [ ] 目标为零、反转和超额风险都先减仓。
+- [ ] 某个新目标没有合格合约时，不会阻塞其他产品必要减仓。
+- [ ] 不可用产品的已有仓位不加仓、不换月。
+- [ ] 所有减仓都由 Broker 确认后，下一轮才允许开仓。
+- [ ] 存在活动委托时，调仓和总敞口保护不重复发单。
+- [ ] 按市价标记的实际总敞口超过 2 倍权益时，只生成减仓 FAK。
+- [ ] 总敞口减仓完成后，实际总敞口不超过 2 倍权益。
+- [ ] 无法安全计算或执行总敞口减仓时拒绝增加风险。
+- [ ] 同一合约同时存在多头和空头毛仓时分别平仓，不因净仓为零漏掉风险。
+- [ ] 减仓 FAK 未成交或部分成交后，下一轮以 Broker 真实持仓重新计算。
 
 ## G. 单日风控熔断和硬停机
 
-- [ ] 5% daily-loss 触发当日 flatten 并禁止重新加风险。
-- [ ] 同一 trading day 不自动恢复。
-- [ ] 下一 CTP trading day 只有 Broker ready / no active orders / flat risk / metadata / account / reconcile 全通过才恢复。
-- [ ] total DD / margin / cash / nonpositive equity 不走 daily-circuit 自动恢复。
+- [ ] 单日亏损达到 5% 时当日退出风险并禁止重新加仓。
+- [ ] 同一柜台交易日不会自动恢复。
+- [ ] 下一柜台交易日只有 Broker 就绪、没有活动委托、风险已清空、合约参数、账户限制和持仓对账全部通过才恢复。
+- [ ] 总回撤、保证金、可用资金或非正权益问题不走单日熔断的自动恢复路径。
 - [ ] Kill Switch 不会被跨日逻辑错误清除。
 
 ## H. Shadow
 
 - [ ] `afuture shadow --config config/afuture.directional-live.example.toml` 连续运行多个真实交易日。
-- [ ] Shadow 真实读取 CTP catalog/tick/trading day/metadata。
+- [ ] Shadow 真实读取 CTP 合约目录、行情、柜台交易日和合约参数。
 - [ ] Shadow 不调用真实 CTP `send_order()`。
-- [ ] 每日 signal day / activity day / selected contract / raw target / margin-fitted target 可解释。
-- [ ] modeled per-lot margin 与 Broker metadata 差异可解释。
-- [ ] target gross vs actual gross 差异可解释。
-- [ ] gross guard 触发/完成/剩余 gross 可解释。
+- [ ] 每日信号日、流动性日、所选合约、原始目标和保证金缩量目标可解释。
+- [ ] 模型逐手保证金与 Broker 合约参数的差异可解释。
+- [ ] 目标总敞口和实际总敞口的差异可解释。
+- [ ] 总敞口保护的触发、完成和剩余风险可解释。
 - [ ] depth 足以覆盖计划手数。
-- [ ] margin / available / daily-loss / DD 状态可解释。
-- [ ] planned vs realized turnover/slippage/commission/tracking 有稳定记录。
-- [ ] 历史 proxy 与真实 margin schedule 的差异得到重点复核。
+- [ ] 保证金、可用资金、单日亏损和总回撤状态可解释。
+- [ ] 计划与实际换手、滑点、手续费和目标偏差有稳定记录。
+- [ ] 历史固定保证金假设与真实逐日保证金表的差异得到重点复核。
 
 ## I. Doctor / 测试柜台
 
 - [ ] `afuture status` 当前 state、previous evidence、路径和磁盘检查全部通过。
-- [ ] `afuture doctor --confirm-live` 的 fresh snapshot、account/trading day、margin/available/daily-loss/drawdown、active orders、catalog、metadata、Kill Switch/runtime mode、persisted gates、position reconciliation 和 activity 检查全部通过，且 `orders_sent=0`。
-- [ ] 单方向 FAK 开仓；对手一档深度覆盖整笔手数时 opening 使用 best opposite，否则回退 legacy aggressive tick。
-- [ ] FAK 未成交、partial、reject；depth-aware opening 不得改变 reduction aggressive 价格、订单数量或 hard-risk authority。
+- [ ] `afuture doctor --confirm-live` 的新快照、账户交易日、保证金、可用资金、单日亏损、总回撤、活动委托、合约目录、合约参数、停机开关、运行状态、持久化安全门、持仓对账和流动性检查全部通过，且 `orders_sent=0`。
+- [ ] 单方向 FAK 开仓：对手一档深度覆盖整笔手数时使用当前最优对手价，否则使用原有保守主动价。
+- [ ] 覆盖 FAK 未成交、部分成交和拒单；基于深度的开仓优化不得改变减仓价格、订单数量或硬风控权限。
 - [ ] 平仓与平今/平昨。
-- [ ] 多产品 order-rate。
-- [ ] 换月 reduction 完成前不新增风险。
-- [ ] side-specific margin-aware sizing 与柜台冻结保证金一致或差异可解释。
-- [ ] realized gross guard 真正通过 CTP 产生减仓并回到限额内。
-- [ ] hedged gross-position flatten 正确。
-- [ ] daily circuit 次交易日恢复正确。
-- [ ] 未知 order/trade/position drift 触发安全停机。
+- [ ] 多产品同时报单仍满足频率限制。
+- [ ] 换月减仓完成前不新增风险。
+- [ ] 区分多空保证金率的目标手数与柜台冻结保证金一致，或差异可解释。
+- [ ] 实际总敞口保护真正通过 CTP 减仓并回到限额内。
+- [ ] 同一合约多空并存时能够分别退出毛仓。
+- [ ] 单日熔断在下一柜台交易日的恢复条件正确。
+- [ ] 未知委托、成交或持仓漂移触发安全停机。
 - [ ] 断线、行情陈旧、快照陈旧状态正确。
 - [ ] `REDUCE_ONLY` 只减仓。
-- [ ] query/order 流控不过载。
-- [ ] Broker margin/commission 与 metadata/结算单一致。
+- [ ] 查询和报单频率不会使柜台过载。
+- [ ] Broker 保证金和手续费与合约参数及结算单一致。
 
 ## J. 重启和状态真相
 
 - [ ] 每次第二次及后续 state save 产生 `<state>.prev`，内容是上一份通过 checksum 的 envelope。
 - [ ] 损坏 current state 时程序返回失败，绝不自动采用 `.prev`。
-- [ ] current state 非 UTF-8、重复 position symbol，或柜台/本地 position exchange 不一致时 fail-closed。
+- [ ] 当前状态非 UTF-8、包含重复持仓合约，或柜台与本地持仓交易所不一致时拒绝继续运行。
 - [ ] audit/alert JSONL 到达 20 MiB 后在完整记录边界轮转，最多保留 14 份备份。
 
 - [ ] 正常退出前 StateStore 已保存最新 expected positions。
 - [ ] 重启后 RuntimeState 与 Broker 完整持仓一致时 reconciled。
-- [ ] 任一合约今昨/多空不一致时 fail-closed。
-- [ ] recent completed returns / daily circuit marker 跨重启正确。
+- [ ] 任一合约今昨仓或多空方向不一致时拒绝继续运行。
+- [ ] 最近完整日收益和单日熔断标记能正确跨重启恢复。
 - [ ] directional 没有第二份独立策略仓位可与 Broker 漂移。
 - [ ] Kill Switch 只有在全部安全条件确认后解除。
 
-## K. Account sizing
+## K. 账户规模与整数手数
 
-- [ ] 用真实 equity、multiplier、当前价格和 side-specific margin 复核 integer target lots。
+- [ ] 用真实权益、合约乘数、当前价格和多空保证金率复核目标整数手数。
 - [ ] 小资金不会因整数手数长期把组合压成极少数产品。
-- [ ] 35 手 cap 不产生不可接受 tracking error。
-- [ ] 实际 margin 缩量后的 gross 可解释。
-- [ ] 30% soft target margin 与真实账户波动之间仍有足够 headroom。
+- [ ] 35 手上限不会产生不可接受的目标偏差。
+- [ ] 实际保证金缩量后的总敞口可解释。
+- [ ] 30% 正常目标保证金与真实账户波动之间仍有足够安全余量。
 - [ ] 账户规模不足时降低风险/复杂度，不放宽硬门。
-- [ ] 不通过 leverage >2x 追历史收益。
+- [ ] 不通过超过 2 倍杠杆追逐历史收益。
 
-## L. Directional execution quality
+## L. 方向组合执行质量
 
-- [ ] `directional_rebalance` 持续记录 signal/activity day、target、planned turnover。
+- [ ] `directional_rebalance` 持续记录信号日、流动性日、目标和计划换手。
 - [ ] `directional_fill` 只来自 Broker trade callback。
-- [ ] expected vs fill price 的 slippage bps 正常。
-- [ ] 真实 commission 与结算单抽样一致。
-- [ ] `directional_cycle` 有 realized turnover、tracking error、latency、partial/reject。
+- [ ] 预期价格与成交价格之间的滑点基点正常。
+- [ ] 真实手续费与结算单抽样一致。
+- [ ] `directional_cycle` 记录实际换手、目标偏差、延迟、部分成交和拒单。
 - [ ] `quality-report.directional` 每日可读。
-- [ ] realized turnover 没有系统性显著高于模型假设。
-- [ ] p95 slippage 没有吞掉大部分可兑现 Alpha。
+- [ ] 实际换手没有系统性显著高于模型假设。
+- [ ] 滑点 95 分位数没有吞掉大部分可兑现收益。
 
 ## M. 极小真实资金
 
@@ -170,8 +170,8 @@
 - [ ] 测试规模即使完全损失也不影响整体资金安全。
 - [ ] 连续多个交易日无 order/state/position 事故。
 - [ ] 主力切换与换月正确。
-- [ ] margin sizing / gross guard / daily circuit / hard halt 都按预期执行。
-- [ ] 实际成本与 Base/Stress 差异可解释。
+- [ ] 保证金定仓、总敞口保护、单日熔断和硬停机都按预期执行。
+- [ ] 实际成本与标准/压力情景的差异可解释。
 - [ ] 实际回撤符合账户风险预算。
 
 ## N. 扩大风险前
@@ -183,9 +183,9 @@
 - [ ] 测试柜台稳定。
 - [ ] 极小真实仓位稳定。
 - [ ] execution quality 可接受。
-- [ ] integer/multiplier/margin 后组合没有严重漂移。
+- [ ] 经过整数手数、合约乘数和保证金约束后，实际组合没有严重偏离目标。
 - [ ] 实盘回撤符合风险预算。
-- [ ] 已重新评估 15bp/高 margin Stress 与真实执行差异。
+- [ ] 已重新评估单边 15 个基点、高保证金压力情景与真实执行的差异。
 
 离线研究指标不能改变实盘风险权限，也不是未来收益承诺。
 

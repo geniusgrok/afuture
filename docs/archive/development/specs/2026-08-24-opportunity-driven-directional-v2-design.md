@@ -1,5 +1,7 @@
 # Opportunity-Driven Directional V2 Design
 
+> **归档说明：** 本文是已完成阶段的设计记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 Date: 2026-08-24
 Baseline: `main@e89ff6c03b9909904ddcc958891cbedad0d30918`
 

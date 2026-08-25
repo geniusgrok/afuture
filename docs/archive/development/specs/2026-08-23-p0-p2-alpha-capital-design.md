@@ -1,5 +1,7 @@
 # P0-P2 Alpha and Risk-Capital Efficiency Design
 
+> **归档说明：** 本文是已完成阶段的设计记录，不描述当前系统；当前事实见 [`documentation-index.md`](../../../documentation-index.md)。
+
 ## Goal
 Raise execution-aligned directional Stress net return without relaxing the fixed hard-risk gates, increasing leverage above 2x, hiding transaction costs, or fitting the repeatedly observed 2024-08-21..2026-08-20 window.
 
