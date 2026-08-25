@@ -175,6 +175,22 @@ def test_directional_engine_forwards_ticks_enforces_gross_and_runs_manager(tmp_p
     assert manager.closed is True
 
 
+def test_directional_engine_halts_before_stress90_bootstrap_without_activation_marker(
+    tmp_path,
+):
+    from afuture.directional_stress90_policy import STRESS90_POLICY
+
+    manager = _Manager()
+    manager.runtime_policy_id = STRESS90_POLICY.policy_id
+    manager.runtime_policy_definition_digest = STRESS90_POLICY.policy_definition_digest
+
+    _broker, manager, engine = _engine(tmp_path, manager=manager)
+
+    assert engine.halted is True
+    assert "explicit activation" in engine.state.kill_reason
+    assert manager.bootstrap_calls == 0
+
+
 def test_directional_engine_records_completed_broker_day_before_advancing_runtime_state(
     tmp_path,
 ):

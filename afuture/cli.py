@@ -11,7 +11,7 @@ import json
 import os
 import re
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -20,12 +20,12 @@ from .config import load_config
 from .data import read_ticks
 from .logging_utils import configure_logging
 from .metadata import validate_contract_metadata
-from .models import AccountSnapshot, ContractPosition, PairConfig, RuntimeMode
+from .models import AccountSnapshot, ContractInfo, ContractPosition, PairConfig, RuntimeMode, Tick
 from .quality import ExecutionQualityRecorder
 from .research import AcceptanceGate, ResearchConfig, WalkForwardRunner
 from .sample_store import MarketSampleStore
 from .scanner import SpreadScanner
-from .state import StateStore
+from .state import RuntimeState, StateStore
 
 _LIVE_ACK = "I_UNDERSTAND_FUTURES_RISK"
 _RECOVERY_ACK = "I_VERIFIED_CTP_POSITIONS"
@@ -116,6 +116,41 @@ def build_parser() -> argparse.ArgumentParser:
     stress90_bootstrap.add_argument("--runtime-dir", required=True)
     stress90_bootstrap.add_argument("--through", required=True, help="最终 target day（YYYYMMDD）")
 
+    stress90_activate = sub.add_parser(
+        "stress90-activate",
+        help="在停机、空仓、无活动委托并完成对账后显式绑定 Stress-90 identity",
+    )
+    stress90_activate.add_argument("--config", required=True)
+    stress90_activate.add_argument("--confirm-live", action="store_true")
+    stress90_activate.add_argument("--confirm-activation", action="store_true")
+    stress90_activate.add_argument("--operator-reason", required=True)
+    stress90_activate.add_argument("--runtime-dir", default="")
+    stress90_activate.add_argument("--startup-timeout", type=float, default=60.0)
+    stress90_activate.add_argument("--snapshot-wait", type=float, default=12.0)
+
+    stress90_rebase = sub.add_parser(
+        "stress90-account-rebase",
+        help="在完整生命周期安全门后显式重置 Stress-90 live account soft path",
+    )
+    stress90_rebase.add_argument("--config", required=True)
+    stress90_rebase.add_argument("--confirm-live", action="store_true")
+    stress90_rebase.add_argument("--confirm-rebase", action="store_true")
+    stress90_rebase.add_argument("--operator-reason", required=True)
+    stress90_rebase.add_argument("--runtime-dir", default="")
+    stress90_rebase.add_argument("--startup-timeout", type=float, default=60.0)
+    stress90_rebase.add_argument("--snapshot-wait", type=float, default=12.0)
+
+    stress90_compare = sub.add_parser(
+        "stress90-oi-compare",
+        help="离线比较 CTP raw OI evidence 与批准的 vendor 60m evidence",
+    )
+    stress90_compare.add_argument("--config", required=True)
+    stress90_compare.add_argument("--trading-day", required=True)
+    stress90_compare.add_argument("--vendor", required=True)
+    stress90_compare.add_argument("--runtime-dir", default="")
+    stress90_compare.add_argument("--output", default="")
+    stress90_compare.add_argument("--absolute-tolerance", type=float, default=1e-9)
+
     ohlc_refresh = sub.add_parser(
         "directional-ohlc-refresh",
         help="在无订单权限的进程中更新已完成日 Directional OHLC cache",
@@ -150,6 +185,54 @@ def wait_for_fresh_snapshot(
         time.sleep(max(poll_interval, 0.0001))
     if not broker.snapshot_ready(marker):
         raise RuntimeError("fresh CTP account/position snapshot did not arrive before timeout")
+
+
+def _collect_doctor_quotes(
+    broker,
+    contracts: dict[str, ContractInfo],
+    *,
+    trading_day: str,
+    timeout_seconds: float,
+    poll_interval: float = 0.05,
+) -> dict[str, Tick]:
+    """Collect a bounded current-session quote snapshot without any order capability."""
+
+    pending = set(contracts)
+    quotes: dict[str, Tick] = {}
+    for symbol in sorted(contracts):
+        contract = contracts[symbol]
+        if contract.symbol != symbol or not contract.exchange:
+            raise RuntimeError(f"doctor contract identity is invalid: {symbol}")
+        broker.subscribe(symbol, contract.exchange)
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while pending and time.monotonic() <= deadline:
+        events = broker.poll_events()
+        for event in events:
+            if event.event_type in {"trade", "order"}:
+                raise RuntimeError(
+                    f"doctor observed concurrent {event.event_type} event; account is not stable"
+                )
+            if event.event_type in {"broker_error", "account_error"}:
+                raise RuntimeError(f"doctor broker event failed: {event.payload}")
+            if event.event_type != "tick":
+                continue
+            tick = event.payload
+            if not isinstance(tick, Tick) or tick.symbol not in contracts:
+                continue
+            contract = contracts[tick.symbol]
+            if tick.exchange.upper() != contract.exchange.upper():
+                raise RuntimeError(f"doctor quote identity mismatch: {tick.symbol}")
+            if tick.trading_day != trading_day:
+                continue
+            try:
+                tick.validate()
+            except ValueError as exc:
+                raise RuntimeError(f"doctor quote is invalid: {tick.symbol}: {exc}") from exc
+            quotes[tick.symbol] = tick
+            pending.discard(tick.symbol)
+        if pending and not events:
+            time.sleep(max(0.0001, float(poll_interval)))
+    return quotes
 
 
 def drain_after_halt(
@@ -414,6 +497,24 @@ def _quality_recorder(config, *, shadow: bool = False) -> ExecutionQualityRecord
     return ExecutionQualityRecorder(_runtime_path(config, name))
 
 
+def _shadow_runtime_paths(config) -> dict[str, object]:
+    """Keep Stress-90 candidate/account/intent state isolated from the live account."""
+
+    runtime_dir = Path(config.state_path).parent
+    if config.directional.policy == "stress90":
+        shadow_dir = runtime_dir / "shadow"
+        return {
+            "state": shadow_dir / "state.json",
+            "journal": shadow_dir / "audit.jsonl",
+            "persistent": True,
+        }
+    return {
+        "state": runtime_dir / "shadow_state.json",
+        "journal": runtime_dir / "shadow_audit.jsonl",
+        "persistent": False,
+    }
+
+
 def _auto_manager(config, *, evidence=None, shadow: bool = False):
     from .auto import AutoPairManager
 
@@ -551,15 +652,22 @@ def _run_shadow(config, args, logger) -> int:
     )
     broker.update_specs(config.contracts)
     quality = _quality_recorder(config, shadow=True)
-    shadow_state = _runtime_path(config, "shadow_state.json")
-    # Shadow 的 SimBroker 不代表真实持仓；每次观察会话都从空虚拟账户开始。
-    if shadow_state.exists():
+    shadow_paths = _shadow_runtime_paths(config)
+    shadow_state = shadow_paths["state"]
+    if not isinstance(shadow_state, Path):  # pragma: no cover - internal contract
+        raise RuntimeError("shadow state path is invalid")
+    # Legacy Shadow sessions retain their existing empty-account behavior. Stress-90
+    # state is account-path evidence and must survive restart exactly like live state.
+    if shadow_paths["persistent"] is not True and shadow_state.exists():
         shadow_state.unlink()
+    shadow_journal = shadow_paths["journal"]
+    if not isinstance(shadow_journal, Path):  # pragma: no cover - internal contract
+        raise RuntimeError("shadow journal path is invalid")
     engine = _build_cli_engine(
         config,
         broker,
         StateStore(shadow_state),
-        journal=AuditJournal(_runtime_path(config, "shadow_audit.jsonl")),
+        journal=AuditJournal(shadow_journal),
         alert_manager=_build_alert_manager(config),
         auto_manager=_auto_manager(config, evidence=quality, shadow=True),
         quality_recorder=quality,
@@ -609,24 +717,75 @@ def _run_doctor(config, args) -> int:
         wait_for_fresh_snapshot(broker, args.snapshot_wait)
         account = broker.get_account()
         catalog = broker.get_contract_catalog()
-        symbols = list(config.contracts)
-        if config.auto.enabled and catalog:
-            raw_day = broker.get_trading_day()
-            today = datetime.strptime(raw_day, "%Y%m%d").date()
-            auto_pairs = AutoPairSelector(config.auto).build_pairs(catalog, today)
-            for pair in auto_pairs:
-                symbols.extend([pair.near_symbol, pair.far_symbol])
-                if len(set(symbols)) >= args.metadata_limit:
-                    break
-        if config.directional.enabled and catalog:
-            products = {item.upper() for item in config.directional.products}
-            exchanges = {item.upper() for item in config.directional.exchanges}
-            for contract in catalog:
-                if contract.product.upper() in products and contract.exchange.upper() in exchanges:
-                    symbols.append(contract.symbol)
-                if len(set(symbols)) >= args.metadata_limit:
-                    break
-        symbols = sorted(set(symbols))[: max(0, args.metadata_limit)]
+        trading_day = broker.get_trading_day()
+        positions = broker.get_positions()
+        active_orders = broker.get_active_orders()
+        quotes: dict[str, Tick] = {}
+        symbols: list[str]
+        if config.directional.enabled and config.directional.policy == "stress90":
+            from .directional_activity import (
+                DirectionalActivityStore,
+                select_contracts_from_activity,
+                validate_directional_activity_snapshot,
+            )
+
+            selected = {}
+            try:
+                snapshot = DirectionalActivityStore(
+                    Path(config.state_path).with_name("directional_activity.json")
+                ).load()
+                if snapshot is not None:
+                    validate_directional_activity_snapshot(snapshot)
+                    catalog_by_symbol = {item.symbol: item for item in catalog}
+                    preferred = {
+                        catalog_by_symbol[position.symbol].product.upper(): position.symbol
+                        for position in positions
+                        if not position.empty and position.symbol in catalog_by_symbol
+                    }
+                    selected = select_contracts_from_activity(
+                        config.directional,
+                        catalog,
+                        snapshot,
+                        datetime.strptime(trading_day, "%Y%m%d").date(),
+                        preferred_symbols=preferred,
+                    )
+            except (KeyError, TypeError, ValueError):
+                # The report independently validates and surfaces the exact evidence error.
+                selected = {}
+            catalog_by_symbol = {item.symbol: item for item in catalog}
+            selected_contracts = {item.symbol: item for item in selected.values()}
+            for position in positions:
+                if not position.empty and position.symbol in catalog_by_symbol:
+                    selected_contracts[position.symbol] = catalog_by_symbol[position.symbol]
+            symbols = sorted(selected_contracts)
+            if selected_contracts:
+                quotes = _collect_doctor_quotes(
+                    broker,
+                    selected_contracts,
+                    trading_day=trading_day,
+                    timeout_seconds=args.snapshot_wait,
+                )
+        else:
+            symbols = list(config.contracts)
+            if config.auto.enabled and catalog:
+                today = datetime.strptime(trading_day, "%Y%m%d").date()
+                auto_pairs = AutoPairSelector(config.auto).build_pairs(catalog, today)
+                for pair in auto_pairs:
+                    symbols.extend([pair.near_symbol, pair.far_symbol])
+                    if len(set(symbols)) >= args.metadata_limit:
+                        break
+            if config.directional.enabled and catalog:
+                products = {item.upper() for item in config.directional.products}
+                exchanges = {item.upper() for item in config.directional.exchanges}
+                for contract in catalog:
+                    if (
+                        contract.product.upper() in products
+                        and contract.exchange.upper() in exchanges
+                    ):
+                        symbols.append(contract.symbol)
+                    if len(set(symbols)) >= args.metadata_limit:
+                        break
+            symbols = sorted(set(symbols))[: max(0, args.metadata_limit)]
         metadata = (
             broker.get_live_contract_specs(symbols, config.metadata_timeout_seconds)
             if symbols
@@ -636,13 +795,14 @@ def _run_doctor(config, args) -> int:
             config,
             broker_ready=broker.is_ready(),
             fresh_snapshot=True,
-            trading_day=broker.get_trading_day(),
+            trading_day=trading_day,
             account=account,
-            positions=broker.get_positions(),
-            active_order_count=len(broker.get_active_orders()),
+            positions=positions,
+            active_order_count=len(active_orders),
             catalog=catalog,
             requested_symbols=symbols,
             metadata=metadata,
+            quotes=quotes,
         )
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         return 0 if report.passed else 2
@@ -672,6 +832,338 @@ def _run_stress90_bootstrap(config, args) -> int:
     )
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     return 0
+
+
+def _stress90_lifecycle_paths(config, runtime_dir: str) -> dict[str, Path]:
+    if runtime_dir:
+        root = Path(runtime_dir)
+        return {
+            "runtime": root,
+            "state": root / "state.json",
+            "journal": root / "audit.jsonl",
+        }
+    state = Path(config.state_path)
+    return {
+        "runtime": state.parent,
+        "state": state,
+        "journal": Path(config.journal_path),
+    }
+
+
+def _validate_stress90_lifecycle_config(config) -> None:
+    from .execution_aligned_policy import FROZEN_PRODUCTS
+
+    if config.mode != "live" or config.ctp is None:
+        raise ValueError("Stress-90 lifecycle commands require system.mode=live")
+    if (
+        not config.directional.enabled
+        or config.directional.policy != "stress90"
+        or not config.directional.account_exclusive
+    ):
+        raise ValueError(
+            "Stress-90 lifecycle commands require enabled, explicit stress90, "
+            "account-exclusive configuration"
+        )
+    products = tuple(sorted({str(item).upper() for item in config.directional.products}))
+    if products != FROZEN_PRODUCTS:
+        raise ValueError("Stress-90 lifecycle commands require the frozen 50-product universe")
+
+
+def _run_stress90_activate(config, args) -> int:
+    """Explicitly bind generic runtime state to one immutable bootstrap identity."""
+
+    from .broker.ctp import CtpBroker
+    from .directional_policy_activation import (
+        STRESS90_ACTIVATION_CONFIRMATION,
+        activate_stress90_policy,
+    )
+    from .directional_stress90_state import Stress90PolicyStateStore, Stress90SeedStore
+    from .journal import AuditJournal
+    from .reconcile import compare_positions
+
+    _validate_stress90_lifecycle_config(config)
+    _require_production_confirmation(config, args)
+    if (
+        not args.confirm_activation
+        or os.getenv("AFUTURE_STRESS90_ACTIVATION_ACK") != STRESS90_ACTIVATION_CONFIRMATION
+    ):
+        raise RuntimeError(
+            "Stress-90 activation requires --confirm-activation and "
+            "AFUTURE_STRESS90_ACTIVATION_ACK=I_CONFIRM_STRESS90_POLICY_ACTIVATION"
+        )
+    paths = _stress90_lifecycle_paths(config, args.runtime_dir)
+    seed = Stress90SeedStore(paths["runtime"] / "stress90_bootstrap_seed.json").load_required()
+    policy_state = Stress90PolicyStateStore(
+        paths["runtime"] / "stress90_policy_state.json"
+    ).load_required()
+    if policy_state.bootstrap_seed_digest != seed.seed_digest:
+        raise RuntimeError("Stress-90 activation seed/policy-state identity mismatch")
+
+    store = StateStore(paths["state"])
+    existed = store.path.exists()
+    state = store.load()
+    broker = CtpBroker(config.ctp)
+    _seed_state_aware_ctp_broker(broker, state if existed else None, reject_ambiguous=True)
+    broker.start()
+    try:
+        _wait_until_ready(broker, args.startup_timeout)
+        wait_for_fresh_snapshot(broker, args.snapshot_wait)
+        account = broker.get_account()
+        account.validate()
+        trading_day = broker.get_trading_day()
+        if account.trading_day != trading_day:
+            raise RuntimeError("Stress-90 activation account/CTP trading day mismatch")
+        if trading_day < policy_state.last_completed_target_day:
+            raise RuntimeError("Stress-90 activation CTP trading day precedes bootstrap state")
+        positions = broker.get_positions()
+        active_orders = broker.get_active_orders()
+        local_positions = store.positions_from_state(state) if existed else []
+        reconciliation = compare_positions(local_positions, positions)
+        if not reconciliation.matched:
+            raise RuntimeError(
+                "Stress-90 activation Broker/local reconciliation failed: " + reconciliation.details
+            )
+        if existed:
+            if state.runtime_mode != RuntimeMode.HALTED.value or not state.kill_switch:
+                raise RuntimeError("Stress-90 activation requires an existing HALTED state")
+        else:
+            state = RuntimeState(
+                kill_switch=True,
+                kill_reason="fresh Stress-90 commissioning requires activation",
+                runtime_mode=RuntimeMode.HALTED.value,
+            )
+        state = replace(
+            state,
+            kill_switch=True,
+            kill_reason="Stress-90 activated; doctor/Shadow gates remain required",
+            runtime_mode=RuntimeMode.HALTED.value,
+            reconciled=True,
+            metadata_verified=False,
+            trading_day=trading_day,
+            day_start_equity=float(account.equity),
+            equity_high_watermark=max(
+                float(state.equity_high_watermark or 0.0), float(account.equity)
+            ),
+            last_account_equity=float(account.equity),
+            last_account_trading_day=trading_day,
+        )
+        activated = activate_stress90_policy(
+            state,
+            broker_flat=not any(not position.empty for position in positions),
+            local_flat=not any(not position.empty for position in local_positions),
+            no_active_orders=not active_orders,
+            reconciled=reconciliation.matched,
+            bootstrap_seed_digest=seed.seed_digest,
+            operator_reason=args.operator_reason,
+            strong_confirmation=os.environ["AFUTURE_STRESS90_ACTIVATION_ACK"],
+        )
+        journal = AuditJournal(paths["journal"])
+        journal.record(
+            "stress90_policy_activation_prepared",
+            {
+                "trading_day": trading_day,
+                "bootstrap_seed_digest": seed.seed_digest,
+                "operator_reason": args.operator_reason,
+                "runtime_state_preexisting": existed,
+            },
+        )
+        store.save(activated)
+        journal.record(
+            "stress90_policy_activation_completed",
+            {
+                "trading_day": trading_day,
+                "bootstrap_seed_digest": seed.seed_digest,
+                "kill_switch_remains_active": True,
+            },
+        )
+        print(
+            json.dumps(
+                {
+                    "activated": True,
+                    "runtime_dir": str(paths["runtime"]),
+                    "trading_day": trading_day,
+                    "bootstrap_seed_digest": seed.seed_digest,
+                    "runtime_mode": RuntimeMode.HALTED.value,
+                    "kill_switch": True,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    finally:
+        broker.stop()
+
+
+def _run_stress90_account_rebase(config, args) -> int:
+    """Reset account-path statistics only after explicit flat-account reconciliation."""
+
+    from .broker.ctp import CtpBroker
+    from .directional_policy_activation import require_directional_policy_identity
+    from .directional_stress90_policy import STRESS90_POLICY
+    from .directional_stress90_state import (
+        REBASE_CONFIRMATION,
+        Stress90PolicyStateStore,
+        Stress90SeedStore,
+        rebase_stress90_account,
+    )
+    from .journal import AuditJournal
+    from .reconcile import compare_positions
+
+    _validate_stress90_lifecycle_config(config)
+    _require_production_confirmation(config, args)
+    if not args.confirm_rebase or os.getenv("AFUTURE_STRESS90_REBASE_ACK") != REBASE_CONFIRMATION:
+        raise RuntimeError(
+            "Stress-90 account rebase requires --confirm-rebase and "
+            "AFUTURE_STRESS90_REBASE_ACK=RESET_STRESS90_ACCOUNT_PATH"
+        )
+    paths = _stress90_lifecycle_paths(config, args.runtime_dir)
+    store = StateStore(paths["state"])
+    if not store.path.exists():
+        raise RuntimeError("Stress-90 account rebase requires existing runtime state")
+    state = store.load()
+    if state.runtime_mode != RuntimeMode.HALTED.value or not state.kill_switch:
+        raise RuntimeError("Stress-90 account rebase requires HALTED state and kill switch")
+    seed = Stress90SeedStore(paths["runtime"] / "stress90_bootstrap_seed.json").load_required()
+    require_directional_policy_identity(
+        state,
+        policy_id=STRESS90_POLICY.policy_id,
+        policy_definition_digest=STRESS90_POLICY.policy_definition_digest,
+        products_manifest_digest=STRESS90_POLICY.products_manifest_digest,
+        bootstrap_seed_digest=seed.seed_digest,
+    )
+    policy_store = Stress90PolicyStateStore(paths["runtime"] / "stress90_policy_state.json")
+    policy_record = policy_store.load_required_record()
+    if policy_record.state.bootstrap_seed_digest != seed.seed_digest:
+        raise RuntimeError("Stress-90 account rebase seed/policy-state identity mismatch")
+
+    broker = CtpBroker(config.ctp)
+    _seed_state_aware_ctp_broker(broker, state, reject_ambiguous=True)
+    broker.start()
+    try:
+        _wait_until_ready(broker, args.startup_timeout)
+        wait_for_fresh_snapshot(broker, args.snapshot_wait)
+        account = broker.get_account()
+        account.validate()
+        trading_day = broker.get_trading_day()
+        if account.trading_day != trading_day:
+            raise RuntimeError("Stress-90 account rebase account/CTP trading day mismatch")
+        positions = broker.get_positions()
+        local_positions = store.positions_from_state(state)
+        active_orders = broker.get_active_orders()
+        reconciliation = compare_positions(local_positions, positions)
+        if not reconciliation.matched:
+            raise RuntimeError(
+                "Stress-90 account rebase Broker/local reconciliation failed: "
+                + reconciliation.details
+            )
+        rebased, audit = rebase_stress90_account(
+            policy_record.state,
+            account_trading_day=trading_day,
+            account_equity=account.equity,
+            operator_reason=args.operator_reason,
+            halted=True,
+            broker_flat=not any(not position.empty for position in positions),
+            local_flat=not any(not position.empty for position in local_positions),
+            no_active_orders=not active_orders,
+            reconciled=bool(state.reconciled and reconciliation.matched),
+            strong_confirmation=os.environ["AFUTURE_STRESS90_REBASE_ACK"],
+        )
+        journal = AuditJournal(paths["journal"])
+        journal.record(
+            "stress90_account_rebase_prepared",
+            {
+                **asdict(audit),
+                "bootstrap_seed_digest": seed.seed_digest,
+                "kill_switch_active": True,
+            },
+        )
+        policy_store.save(rebased, expected_sequence=policy_record.sequence)
+        generic_rebased = replace(
+            state,
+            trading_day=trading_day,
+            day_start_equity=float(account.equity),
+            equity_high_watermark=float(account.equity),
+            last_account_equity=float(account.equity),
+            last_account_trading_day=trading_day,
+            reconciled=True,
+            metadata_verified=False,
+            kill_switch=True,
+            kill_reason="Stress-90 account path rebased; doctor/Shadow gates remain required",
+            runtime_mode=RuntimeMode.HALTED.value,
+        )
+        store.save(generic_rebased)
+        journal.record(
+            "stress90_account_rebase_completed",
+            {
+                **asdict(audit),
+                "bootstrap_seed_digest": seed.seed_digest,
+                "kill_switch_remains_active": True,
+            },
+        )
+        print(
+            json.dumps(
+                {
+                    "rebased": True,
+                    "runtime_dir": str(paths["runtime"]),
+                    "trading_day": trading_day,
+                    "account_equity": account.equity,
+                    "operator_reason": args.operator_reason,
+                    "runtime_mode": RuntimeMode.HALTED.value,
+                    "kill_switch": True,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    finally:
+        broker.stop()
+
+
+def _run_stress90_oi_compare(config, args) -> int:
+    """Compare two completed evidence sources in a process with no Broker/order object."""
+
+    if not config.directional.enabled or config.directional.policy != "stress90":
+        raise ValueError("stress90-oi-compare requires directional.policy=stress90")
+    from .directional_stress90_oi_comparator import (
+        compare_completed_oi_evidence,
+        load_vendor_oi_reference,
+    )
+    from .directional_stress90_oi_runtime import Stress90OiEvidenceStore
+
+    runtime_dir = Path(args.runtime_dir) if args.runtime_dir else Path(config.state_path).parent
+    record = Stress90OiEvidenceStore(
+        runtime_dir / "stress90_oi_evidence.json"
+    ).load_required_record()
+    live = next(
+        (
+            evidence
+            for evidence in record.state.completed
+            if evidence.trading_day == args.trading_day
+        ),
+        None,
+    )
+    if live is None:
+        raise RuntimeError(
+            f"completed CTP Stress-90 OI evidence is unavailable: {args.trading_day}"
+        )
+    vendor, vendor_sha256 = load_vendor_oi_reference(args.vendor)
+    comparison = compare_completed_oi_evidence(
+        live,
+        vendor,
+        absolute_tolerance=args.absolute_tolerance,
+    )
+    payload = {
+        **comparison.to_dict(),
+        "vendor_input_path": str(Path(args.vendor)),
+        "vendor_input_sha256": vendor_sha256,
+        "orders_sent": 0,
+        "activation_blocked": bool(comparison.unexplained_flow_differences),
+    }
+    output = args.output or runtime_dir / (f"stress90_oi_comparison_{args.trading_day}.json")
+    _write_json(payload, output)
+    return 0 if comparison.matched else 2
 
 
 def _run_directional_ohlc_refresh(config, args) -> int:
@@ -743,7 +1235,12 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(
         args.config,
         require_ctp_credentials=args.command
-        not in {"status", "stress90-bootstrap", "directional-ohlc-refresh"},
+        not in {
+            "status",
+            "stress90-bootstrap",
+            "stress90-oi-compare",
+            "directional-ohlc-refresh",
+        },
     )
     if args.command == "status":
         return _run_status(config)
@@ -751,6 +1248,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_stress90_bootstrap(config, args)
     if args.command == "directional-ohlc-refresh":
         return _run_directional_ohlc_refresh(config, args)
+    if args.command == "stress90-oi-compare":
+        return _run_stress90_oi_compare(config, args)
     logger = configure_logging(config.log_path)
 
     if args.command == "validate":
@@ -867,6 +1366,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return _run_doctor(config, args)
+
+    if args.command == "stress90-activate":
+        return _run_stress90_activate(config, args)
+
+    if args.command == "stress90-account-rebase":
+        return _run_stress90_account_rebase(config, args)
 
     if args.command == "shadow":
         return _run_shadow(config, args, logger)

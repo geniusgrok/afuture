@@ -587,6 +587,10 @@ class DirectionalPortfolioManager:
             return
         cycle_id = str(self._quality_cycle["cycle_id"])
         product = str(request.reference).split(":", 1)[1] if ":" in request.reference else ""
+        contract = getattr(self, "_catalog_by_symbol", {}).get(request.symbol)
+        if contract is not None:
+            product = contract.product.upper()
+        expected_windows = self._entry_session_windows(product) if product else ()
         self._quality_expectations[order_id] = {
             "cycle_id": cycle_id,
             "product": product,
@@ -599,6 +603,18 @@ class DirectionalPortfolioManager:
             "submitted": now,
         }
         self._quality_cycle["order_ids"].add(order_id)
+        self.quality.record_directional_order_plan(
+            cycle_id=cycle_id,
+            order_id=order_id,
+            product=product,
+            symbol=request.symbol,
+            side=request.side.value,
+            offset=request.offset.value,
+            volume=request.volume,
+            expected_open_window=",".join(expected_windows),
+            planned_order_price=request.price,
+            planning_timestamp=now.isoformat(),
+        )
 
     def directional_order_expectation(self, order_id: str) -> dict | None:
         item = self._quality_expectations.get(order_id)
@@ -640,6 +656,7 @@ class DirectionalPortfolioManager:
             commission=float(commission),
             commission_source=commission_source,
             fill_notional=fill_notional,
+            actual_fill_timestamp=trade.timestamp.isoformat(),
         )
         if self._quality_cycle and self._quality_cycle["cycle_id"] == expected["cycle_id"]:
             self._quality_cycle["realized_turnover_notional"] += fill_notional

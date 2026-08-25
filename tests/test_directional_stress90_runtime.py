@@ -351,6 +351,7 @@ def _mechanical_manager(
     target_weight: float,
     positions=None,
     concentration_freeze: bool = False,
+    quality_recorder=None,
 ):
     from types import SimpleNamespace
 
@@ -451,6 +452,7 @@ def _mechanical_manager(
         execution_intent_path=intent_path,
         activity_tracker=SimpleNamespace(completed_snapshot=activity),
         static_specs={"A2612": spec},
+        quality_recorder=quality_recorder,
     )
     weights = {product: 0.0 for product in STRESS90_POLICY.products}
     weights["A"] = target_weight
@@ -458,7 +460,12 @@ def _mechanical_manager(
         previous_target_trading_day="20260824",
         target_trading_day="20260825",
         daily_decision_digest="d" * 64,
+        base_weights=weights,
+        oi_confirmed_weights=weights,
+        cost_approved_weights=weights,
         survivor_weights=weights,
+        current_hhi=1.0,
+        prior_hhi_median=0.5,
         concentration_freeze=concentration_freeze,
         input_days={"completed_close": "20260824", "completed_oi": "20260824"},
     )
@@ -468,6 +475,28 @@ def _mechanical_manager(
     manager._catalog_by_symbol = {contract.symbol: contract}
     manager._ticks = {tick.symbol: tick}
     return manager, broker, intent_path, now
+
+
+def test_runtime_records_one_complete_quality_decision_before_first_order(tmp_path: Path):
+    from afuture.quality import ExecutionQualityRecorder
+
+    recorder = ExecutionQualityRecorder(tmp_path / "quality.jsonl")
+    manager, broker, _intent_path, now = _mechanical_manager(
+        tmp_path,
+        target_weight=1.0,
+        quality_recorder=recorder,
+    )
+
+    first = manager.maybe_rebalance(now)
+    second = manager.maybe_rebalance(now)
+
+    assert first.action == "open"
+    assert second.action == "open"
+    rows = [row for row in recorder._read() if row.get("event") == "stress90_decision"]
+    assert len(rows) == 1
+    assert rows[0]["stress90_margin_fitted_target"] == {"A2612": 10}
+    assert rows[0]["stress90_decision_digest"] == "d" * 64
+    assert len(broker.orders) == 2
 
 
 def test_runtime_persists_execution_intent_before_order_and_reuses_it_after_partial_fill(

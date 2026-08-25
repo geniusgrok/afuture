@@ -131,6 +131,109 @@ def test_raw_ticks_build_hourly_bars_volume_deltas_and_completed_flow():
     assert completed.missing_contracts == ()
 
 
+def test_vendor_comparator_covers_mechanics_and_blocks_unexplained_flow_difference():
+    from dataclasses import replace
+
+    from afuture.directional_stress90_oi_comparator import (
+        VendorOiProductEvidence,
+        VendorOiReference,
+        compare_completed_oi_evidence,
+    )
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceAggregator
+
+    catalog = _catalog()
+    aggregator = Stress90OiEvidenceAggregator()
+    aggregator.set_expected_contracts("20260825", catalog)
+    _observe_complete_flat_products(aggregator, catalog)
+    a = next(item for item in catalog if item.product == "A")
+    aggregator.observe_raw_tick(
+        _tick(
+            a,
+            "20260825",
+            datetime(2026, 8, 24, 21, 0, tzinfo=_CHINA),
+            price=100,
+            volume=10,
+            hold=100,
+        ),
+        a,
+    )
+    aggregator.observe_raw_tick(
+        _tick(
+            a,
+            "20260825",
+            datetime(2026, 8, 25, 14, 59, tzinfo=_CHINA),
+            price=102,
+            volume=30,
+            hold=110,
+        ),
+        a,
+    )
+    aggregator.set_expected_contracts("20260826", catalog)
+    completed = aggregator.completed_evidence("20260825")
+    products = {}
+    for product in _SUPPORTED:
+        symbol = completed.dominant_symbols[product]
+        assert symbol is not None
+        row = completed.contracts[symbol]
+        products[product] = VendorOiProductEvidence(
+            symbol,
+            row.first_open,
+            row.last_close,
+            row.first_hold,
+            row.last_hold,
+            row.total_volume,
+            int(completed.flows[product]),
+        )
+    reference = VendorOiReference("approved_vendor", "20260825", products)
+
+    exact = compare_completed_oi_evidence(completed, reference)
+    changed = dict(products)
+    changed["A"] = replace(changed["A"], flow=-1)
+    mismatch = compare_completed_oi_evidence(
+        completed,
+        VendorOiReference("approved_vendor", "20260825", changed),
+    )
+
+    assert exact.matched is True
+    assert exact.unexplained_flow_differences == ()
+    assert mismatch.matched is False
+    assert mismatch.unexplained_flow_differences == ("A",)
+    assert mismatch.product_results["A"]["flow_matched"] is False
+
+
+def test_vendor_oi_reference_loader_is_schema_strict_and_reports_input_sha(tmp_path: Path):
+    from afuture.directional_stress90_oi_comparator import load_vendor_oi_reference
+
+    payload = {
+        "schema_version": 1,
+        "source": "approved_vendor",
+        "trading_day": "20260825",
+        "products": {
+            product: {
+                "dominant_symbol": f"{product}2612",
+                "first_open": 100.0,
+                "last_close": 101.0,
+                "first_hold": 1000.0,
+                "last_hold": 1100.0,
+                "total_volume": 500.0,
+                "flow": 1,
+            }
+            for product in _SUPPORTED
+        },
+    }
+    path = tmp_path / "vendor.json"
+    encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+    path.write_bytes(encoded)
+
+    reference, digest = load_vendor_oi_reference(path)
+
+    assert reference.trading_day == "20260825"
+    assert digest == __import__("hashlib").sha256(encoded).hexdigest()
+    path.write_text('{"schema_version":1,"schema_version":1}', encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate"):
+        load_vendor_oi_reference(path)
+
+
 def test_dominant_contract_tie_break_is_hold_then_volume_then_symbol():
     from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceAggregator
 

@@ -6,13 +6,22 @@ import pytest
 
 from afuture.broker.ctp import CtpBroker, CtpCredentials
 from afuture.cli import (
+    _collect_doctor_quotes,
     _recover_state,
+    _shadow_runtime_paths,
     adopt_recovery_state,
     drain_after_halt,
     validate_recovery_positions,
     wait_for_fresh_snapshot,
 )
-from afuture.models import AccountSnapshot, ContractPosition, PairConfig
+from afuture.models import (
+    AccountSnapshot,
+    BrokerEvent,
+    ContractInfo,
+    ContractPosition,
+    PairConfig,
+    Tick,
+)
 from afuture.state import RuntimeState, StateStore
 
 
@@ -70,6 +79,7 @@ md_address = "tcp://market.example"
 
 [directional]
 enabled = true
+policy = "execution_aligned"
 products = ["M"]
 
 [paths]
@@ -183,6 +193,259 @@ def test_doctor_preflight_never_calls_send_order(
 
     assert _run_doctor(config, args) == 0
     assert '"orders_sent": 0' in capsys.readouterr().out
+
+
+def test_stress90_doctor_quote_collection_is_bounded_current_day_and_order_incapable():
+    contracts = {
+        "a2609": ContractInfo("a2609", "DCE", "A", "2026-09-01"),
+        "m2609": ContractInfo("m2609", "DCE", "M", "2026-09-01"),
+    }
+
+    class FakeBroker:
+        def __init__(self):
+            self.subscriptions = []
+            self.polls = 0
+
+        def subscribe(self, symbol, exchange):
+            self.subscriptions.append((symbol, exchange))
+
+        def poll_events(self):
+            self.polls += 1
+            if self.polls == 1:
+                return [
+                    BrokerEvent(
+                        "tick",
+                        Tick(
+                            "a2609",
+                            "DCE",
+                            datetime(2026, 8, 24, tzinfo=timezone.utc),
+                            99,
+                            101,
+                            100,
+                            10,
+                            11,
+                            "20260824",
+                        ),
+                    ),
+                    BrokerEvent(
+                        "tick",
+                        Tick(
+                            "m2609",
+                            "DCE",
+                            datetime(2026, 8, 25, tzinfo=timezone.utc),
+                            2999,
+                            3001,
+                            3000,
+                            12,
+                            13,
+                            "20260825",
+                        ),
+                    ),
+                ]
+            return [
+                BrokerEvent(
+                    "tick",
+                    Tick(
+                        "a2609",
+                        "DCE",
+                        datetime(2026, 8, 25, tzinfo=timezone.utc),
+                        3999,
+                        4001,
+                        4000,
+                        14,
+                        15,
+                        "20260825",
+                    ),
+                )
+            ]
+
+        def send_order(self, request):
+            raise AssertionError("doctor must never submit an order")
+
+    broker = FakeBroker()
+    quotes = _collect_doctor_quotes(
+        broker,
+        contracts,
+        trading_day="20260825",
+        timeout_seconds=0.05,
+        poll_interval=0.0001,
+    )
+
+    assert broker.subscriptions == [("a2609", "DCE"), ("m2609", "DCE")]
+    assert set(quotes) == {"a2609", "m2609"}
+    assert quotes["a2609"].trading_day == "20260825"
+
+
+def test_stress90_doctor_quote_collection_fails_on_concurrent_trade_event():
+    contract = ContractInfo("m2609", "DCE", "M", "2026-09-01")
+
+    class FakeBroker:
+        def subscribe(self, symbol, exchange):
+            return None
+
+        def poll_events(self):
+            return [BrokerEvent("trade", object())]
+
+    with pytest.raises(RuntimeError, match="trade event"):
+        _collect_doctor_quotes(
+            FakeBroker(),
+            {"m2609": contract},
+            trading_day="20260825",
+            timeout_seconds=0.01,
+            poll_interval=0.0001,
+        )
+
+
+def test_stress90_doctor_uses_activity_selected_contracts_not_sampling_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from afuture.auto import AutoConfig
+    from afuture.cli import _run_doctor
+    from afuture.directional import DirectionalConfig
+    from afuture.directional_activity import (
+        ContractActivity,
+        DirectionalActivitySnapshot,
+        DirectionalActivityStore,
+    )
+    from afuture.models import ContractSpec
+    from afuture.risk import RiskConfig
+
+    catalog = [ContractInfo("m2609", "DCE", "M", "2026-12-31")]
+    spec = ContractSpec("m2609", "DCE", 10, 1, 0.12, 0.12)
+    subscribed: list[tuple[str, str]] = []
+
+    class FakeBroker:
+        def __init__(self, credentials):
+            self.credentials = credentials
+
+        def seed_trade_identities(self, identities):
+            return None
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+        def is_ready(self):
+            return True
+
+        def snapshot_marker(self):
+            return (0, 0)
+
+        def snapshot_ready(self, marker):
+            return True
+
+        def get_account(self):
+            return AccountSnapshot(500_000, 500_000, 500_000, 0, 0, 0, "20260825")
+
+        def get_contract_catalog(self):
+            return catalog
+
+        def get_trading_day(self):
+            return "20260825"
+
+        def get_live_contract_specs(self, symbols, timeout_seconds):
+            assert symbols == ["m2609"]
+            return {"m2609": spec}
+
+        def get_positions(self):
+            return []
+
+        def get_active_orders(self):
+            return []
+
+        def subscribe(self, symbol, exchange):
+            subscribed.append((symbol, exchange))
+
+        def poll_events(self):
+            return [
+                BrokerEvent(
+                    "tick",
+                    Tick(
+                        "m2609",
+                        "DCE",
+                        datetime(2026, 8, 25, tzinfo=timezone.utc),
+                        2999,
+                        3001,
+                        3000,
+                        10,
+                        10,
+                        "20260825",
+                    ),
+                )
+            ]
+
+        def send_order(self, request):
+            raise AssertionError("doctor must never submit an order")
+
+    monkeypatch.setattr("afuture.broker.ctp.CtpBroker", FakeBroker)
+    state_path = tmp_path / "state.json"
+    DirectionalActivityStore(tmp_path / "directional_activity.json").save(
+        DirectionalActivitySnapshot(
+            "20260824",
+            {
+                "m2609": ContractActivity(
+                    "m2609",
+                    "DCE",
+                    "M",
+                    "20260824",
+                    10_000,
+                    20_000,
+                    datetime(2026, 8, 24, tzinfo=timezone.utc),
+                )
+            },
+        )
+    )
+    config = SimpleNamespace(
+        mode="live",
+        ctp=SimpleNamespace(environment="test"),
+        contracts={},
+        auto=AutoConfig(),
+        directional=DirectionalConfig(
+            enabled=True,
+            policy="stress90",
+            products=("M",),
+            exchanges=("DCE",),
+        ),
+        risk=RiskConfig(max_margin_ratio=0.35, min_available_ratio=0.25),
+        metadata_timeout_seconds=1.0,
+        state_path=str(state_path),
+        log_path=str(tmp_path / "afuture.log"),
+        report_path=str(tmp_path / "report.json"),
+        journal_path=str(tmp_path / "audit.jsonl"),
+        alert_path=str(tmp_path / "alerts.jsonl"),
+    )
+    args = SimpleNamespace(
+        confirm_live=False,
+        startup_timeout=0.1,
+        snapshot_wait=0.05,
+        metadata_limit=0,
+    )
+
+    assert _run_doctor(config, args) == 2
+    assert subscribed == [("m2609", "DCE")]
+
+
+def test_stress90_shadow_uses_dedicated_persistent_runtime_directory(tmp_path: Path):
+    stress = SimpleNamespace(
+        state_path=str(tmp_path / "state.json"),
+        directional=SimpleNamespace(policy="stress90"),
+    )
+    legacy = SimpleNamespace(
+        state_path=str(tmp_path / "state.json"),
+        directional=SimpleNamespace(policy="execution_aligned"),
+    )
+
+    stress_paths = _shadow_runtime_paths(stress)
+    legacy_paths = _shadow_runtime_paths(legacy)
+
+    assert stress_paths["state"] == tmp_path / "shadow" / "state.json"
+    assert stress_paths["journal"] == tmp_path / "shadow" / "audit.jsonl"
+    assert stress_paths["persistent"] is True
+    assert legacy_paths["state"] == tmp_path / "shadow_state.json"
+    assert legacy_paths["persistent"] is False
 
 
 def test_wait_for_fresh_snapshot_requires_both_generations_to_advance():

@@ -137,6 +137,12 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
     """Independent adapter; candidate targets remain 1x and soft defenses freeze only risk."""
 
     policy_risk_response_mode = DirectionalRiskResponseMode.FREEZE_NEW_RISK
+    runtime_policy_id = STRESS90_POLICY.policy_id
+    runtime_policy_definition_digest = STRESS90_POLICY.policy_definition_digest
+    runtime_products_manifest_digest = STRESS90_POLICY.products_manifest_digest
+
+    def runtime_bootstrap_seed_digest(self) -> str:
+        return self.seed_store.load_required().seed_digest
 
     def __init__(
         self,
@@ -398,6 +404,43 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             persisted_margin_fitted_lots=persisted_margin_fitted_lots,
         )
 
+    def _record_stress90_quality(self, prepared, stages: Stress90LotStages) -> None:
+        if self.quality is None:
+            return
+        has_decision = getattr(self.quality, "has_stress90_decision", None)
+        record_decision = getattr(self.quality, "record_stress90_decision", None)
+        if not callable(has_decision) or not callable(record_decision):
+            raise RuntimeError("Stress-90 quality recorder lacks decision audit capability")
+        if has_decision(prepared.daily_decision_digest):
+            return
+        state = self.policy_state_store.load_required()
+        completed_drawdown = max(
+            0.0,
+            1.0
+            - float(state.completed_account_wealth) / float(state.completed_account_high_watermark),
+        )
+        record_decision(
+            target_trading_day=prepared.target_trading_day,
+            stress90_base_target=dict(prepared.base_weights),
+            stress90_oi_target=dict(prepared.oi_confirmed_weights),
+            stress90_cost_approved_target=dict(prepared.cost_approved_weights),
+            stress90_survivor_target=dict(prepared.survivor_weights),
+            stress90_hhi=prepared.current_hhi,
+            stress90_prior_hhi_median=prepared.prior_hhi_median,
+            stress90_concentration_freeze=prepared.concentration_freeze,
+            stress90_completed_drawdown=completed_drawdown,
+            stress90_drawdown_reserve_freeze=drawdown_reserve_triggered_from_state(state),
+            stress90_raw_integer_target=stages.raw_integer_lots,
+            stress90_margin_fitted_target=stages.margin_fitted_lots,
+            stress90_drawdown_frozen_target=stages.drawdown_frozen_lots,
+            stress90_hhi_frozen_target=stages.hhi_frozen_lots,
+            stress90_integer_target=stages.margin_fitted_lots,
+            stress90_final_frozen_target=stages.final_frozen_lots,
+            stress90_reduction_plan=stages.reductions,
+            stress90_opening_plan=stages.openings,
+            stress90_decision_digest=prepared.daily_decision_digest,
+        )
+
     def maybe_rebalance(self, now: datetime) -> DirectionalActionResult:
         """Converge Broker truth to one already-durable Stress-90 daily decision."""
 
@@ -546,6 +589,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             entry_blocked_products=blocked_products,
         )
         self._last_lot_stages = stages
+        self._record_stress90_quality(prepared, stages)
         target_gross = sum(abs(float(value)) for value in prepared.survivor_weights.values())
         signal_day = str(prepared.input_days["completed_close"])
         if stages.reductions:

@@ -60,6 +60,37 @@ class DirectionalTradingEngine(TradingEngine):
         if self.halted or not self._initialized or self._directional_initialized:
             return
         try:
+            policy_id = getattr(self.directional_manager, "runtime_policy_id", "")
+            if policy_id:
+                from .directional_policy_activation import (
+                    require_directional_policy_identity,
+                )
+
+                require_directional_policy_identity(
+                    self.state,
+                    policy_id=policy_id,
+                    policy_definition_digest=getattr(
+                        self.directional_manager,
+                        "runtime_policy_definition_digest",
+                        "",
+                    ),
+                    products_manifest_digest=getattr(
+                        self.directional_manager,
+                        "runtime_products_manifest_digest",
+                        "",
+                    ),
+                    bootstrap_seed_digest=(
+                        self.directional_manager.runtime_bootstrap_seed_digest()
+                        if callable(
+                            getattr(
+                                self.directional_manager,
+                                "runtime_bootstrap_seed_digest",
+                                None,
+                            )
+                        )
+                        else None
+                    ),
+                )
             self.directional_manager.bootstrap(self._reference_now())
             self._directional_initialized = True
         except Exception as exc:

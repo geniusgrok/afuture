@@ -103,6 +103,9 @@ class SinaContinuousOHLCProvider:
 class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
     """Use completed-day activity and causal OHLC history for production target weights."""
 
+    runtime_policy_id = "execution_aligned"
+    runtime_policy_definition_digest = ""
+
     def __init__(
         self,
         config,
