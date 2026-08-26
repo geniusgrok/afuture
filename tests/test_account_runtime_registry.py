@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import stat
 from multiprocessing import get_context
 from pathlib import Path
+from threading import BrokenBarrierError
 
 import pytest
 
@@ -85,6 +87,39 @@ def _block_inside_pristine_registry_load(
 
     registry._load_unlocked = blocked_load  # type: ignore[method-assign]
     registry.load()
+
+
+def _bind_account_through_alias_with_save_barrier(
+    registry_path: str,
+    account: str,
+    runtime_dir: str,
+    epoch: str,
+    operation: str,
+    save_barrier,
+    results,
+) -> None:
+    from afuture.account_runtime_registry import (
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = AccountRuntimeRegistry(registry_path)
+    real_save = registry._save_unlocked
+
+    def synchronized_save(previous, bindings):
+        try:
+            save_barrier.wait(timeout=3)
+        except BrokenBarrierError:
+            pass
+        return real_save(previous, bindings)
+
+    registry._save_unlocked = synchronized_save  # type: ignore[method-assign]
+    try:
+        registry.bind_new(account, runtime_dir, epoch, operation)
+    except AccountRuntimeRegistryError:
+        results.put("rejected")
+    else:
+        results.put("bound")
 
 
 def test_account_binding_survives_release_and_rejects_another_runtime(
@@ -397,6 +432,201 @@ def test_concurrent_processes_cannot_claim_one_account_for_two_runtimes(
         "bound",
         "rejected",
     ]
+
+
+def test_registry_path_identity_normalizes_lexical_and_parent_symlink_aliases(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistry
+
+    real_parent = tmp_path / "real"
+    nested = real_parent / "nested"
+    nested.mkdir(parents=True)
+    parent_alias = tmp_path / "parent-alias"
+    parent_alias.symlink_to(real_parent, target_is_directory=True)
+    canonical_path = real_parent / "registry.json"
+
+    canonical = AccountRuntimeRegistry(canonical_path)
+    lexical_alias = AccountRuntimeRegistry(nested / ".." / "registry.json")
+    symlink_alias = AccountRuntimeRegistry(parent_alias / "registry.json")
+
+    assert canonical.path == canonical_path
+    assert lexical_alias.path == canonical_path
+    assert symlink_alias.path == canonical_path
+    assert lexical_alias.lock_path == canonical.lock_path
+    assert symlink_alias.lineage_path == canonical.lineage_path
+
+
+def test_alias_writers_share_one_lock_after_visible_lock_is_removed(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistry
+
+    context = get_context("spawn")
+    results = context.Queue()
+    save_barrier = context.Barrier(2)
+    parent = tmp_path / "registry-parent"
+    nested = parent / "nested"
+    nested.mkdir(parents=True)
+    canonical_path = parent / "registry.json"
+    lexical_alias_path = nested / ".." / "registry.json"
+    registry = _initialized_registry(canonical_path)
+    registry.lock_path.unlink()
+    account = "a" * 64
+
+    first = context.Process(
+        target=_bind_account_through_alias_with_save_barrier,
+        args=(
+            str(lexical_alias_path),
+            account,
+            str(tmp_path / "runtime-a"),
+            "b" * 64,
+            "c" * 64,
+            save_barrier,
+            results,
+        ),
+    )
+    second = context.Process(
+        target=_bind_account_through_alias_with_save_barrier,
+        args=(
+            str(canonical_path),
+            account,
+            str(tmp_path / "runtime-b"),
+            "d" * 64,
+            "e" * 64,
+            save_barrier,
+            results,
+        ),
+    )
+    first.start()
+    second.start()
+    first.join(timeout=15)
+    second.join(timeout=15)
+
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+    assert sorted((results.get(timeout=2), results.get(timeout=2))) == [
+        "bound",
+        "rejected",
+    ]
+    final = AccountRuntimeRegistry(canonical_path).load_required()
+    previous = json.loads(registry.previous_path.read_text(encoding="utf-8"))
+    assert final.sequence == 2
+    assert previous["sequence"] == 1
+    assert final.parent_checksum == previous["checksum"]
+
+
+def test_visible_lock_symlink_replacement_fails_closed(tmp_path: Path) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistryError
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    target = tmp_path / "lock-target"
+    target.write_text("do not modify", encoding="utf-8")
+    registry.lock_path.unlink()
+    registry.lock_path.symlink_to(target)
+
+    with pytest.raises(AccountRuntimeRegistryError, match="lock failed"):
+        registry.load_required()
+
+    assert target.read_text(encoding="utf-8") == "do not modify"
+
+
+def test_visible_lock_eexist_race_is_flocked_until_registry_lock_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _initialized_registry(tmp_path / "registry.json")
+    registry.lock_path.unlink()
+    real_exists = registry._exists
+    injected = False
+
+    def create_lock_during_initial_check(path: Path) -> bool:
+        nonlocal injected
+        if path == registry.lock_path and not injected:
+            injected = True
+            path.touch(mode=0o600)
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(registry, "_exists", create_lock_during_initial_check)
+    with registry._exclusive_lock() as lock:
+        assert lock.legacy_lock_evidence is False
+        assert lock.visible_descriptor is not None
+        contender = os.open(registry.lock_path, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(contender)
+
+    contender = os.open(registry.lock_path, os.O_RDWR)
+    try:
+        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(contender)
+
+
+def test_registry_lock_setup_failure_releases_kernel_lock_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.account_runtime_registry import (
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+    kernel_descriptor = os.open("/dev/null", os.O_RDWR)
+    monkeypatch.setattr(
+        registry,
+        "_acquire_kernel_lock",
+        lambda _path: kernel_descriptor,
+    )
+
+    def fail_exists(_path: Path) -> bool:
+        raise AccountRuntimeRegistryError("injected evidence check failure")
+
+    monkeypatch.setattr(registry, "_exists", fail_exists)
+    with pytest.raises(AccountRuntimeRegistryError, match="evidence check"):
+        with registry._exclusive_lock():
+            pytest.fail("lock body must not be entered")
+
+    with pytest.raises(OSError):
+        os.fstat(kernel_descriptor)
+
+
+def test_visible_lock_cleanup_failure_does_not_mask_fsync_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistryError
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    registry.lock_path.unlink()
+    real_fsync = os.fsync
+    real_close = os.close
+    failed_descriptor: int | None = None
+
+    def fail_visible_lock_fsync(descriptor: int) -> None:
+        nonlocal failed_descriptor
+        descriptor_path = Path(f"/proc/self/fd/{descriptor}").resolve()
+        if descriptor_path == registry.lock_path:
+            failed_descriptor = descriptor
+            raise OSError("injected visible lock fsync failure")
+        real_fsync(descriptor)
+
+    def fail_matching_close(descriptor: int) -> None:
+        real_close(descriptor)
+        if descriptor == failed_descriptor:
+            raise OSError("injected visible lock close failure")
+
+    monkeypatch.setattr(os, "fsync", fail_visible_lock_fsync)
+    monkeypatch.setattr(os, "close", fail_matching_close)
+    with pytest.raises(AccountRuntimeRegistryError, match="lock failed") as exc_info:
+        registry.load_required()
+
+    assert exc_info.value.__cause__ is not None
+    assert "fsync failure" in str(exc_info.value.__cause__)
 
 
 def test_registry_lineage_marker_prevents_deleted_anchor_reinitialization(
