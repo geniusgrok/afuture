@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -81,6 +82,15 @@ class ShadowBroker(Broker):
 
     def send_order(self, request: OrderRequest) -> str:
         """关键安全属性：订单只发送到本地模拟柜台。"""
+        require_session = getattr(
+            self.live,
+            "require_stress90_session_startup_capability_current",
+            None,
+        )
+        if callable(require_session):
+            # Shadow orders do not consume the live-account baseline. Any later real
+            # CTP order/trade ingress continues to invalidate simulated submissions.
+            require_session()
         self._synchronize_trading_day()
         return self.sim.send_order(request)
 
@@ -116,6 +126,36 @@ class ShadowBroker(Broker):
         self._synchronize_trading_day()
         return self.sim.get_session_trades()
 
+    def refresh_session_activity(self, *, timeout_seconds: float = 10.0):
+        """Prove the live CTP source session while local trades stay Sim-owned."""
+        return self.live.refresh_session_activity(timeout_seconds=timeout_seconds)
+
+    def get_session_activity_account_identity_digest(self) -> str:
+        return self.live.get_account_identity_digest()
+
+    def configure_order_submission_journal(self, path, **identity) -> None:
+        self.live.configure_order_submission_journal(path, **identity)
+
+    def require_stress90_session_startup_capability(self) -> None:
+        self.live.require_stress90_session_startup_capability()
+
+    def install_stress90_session_startup_capability(self, **proof) -> None:
+        self.live.install_stress90_session_startup_capability(**proof)
+
+    def require_stress90_session_startup_capability_current(self) -> None:
+        self.live.require_stress90_session_startup_capability_current()
+
+    def require_session_activity_evidence_current(self, evidence) -> None:
+        self.live.require_session_activity_evidence_current(evidence)
+
+    def recover_stress90_session_activity(self, evidence):
+        return self.live.recover_stress90_session_activity(evidence)
+
+    def checkpoint_order_submission_journal(self) -> None:
+        checkpoint = getattr(self.live, "checkpoint_order_submission_journal", None)
+        if callable(checkpoint):
+            checkpoint()
+
     def seed_order_reference_prefixes(self, prefixes) -> None:
         setter = getattr(self.sim, "seed_order_reference_prefixes", None)
         if callable(setter):
@@ -145,6 +185,18 @@ class ShadowBroker(Broker):
 
     def has_pending_critical_events(self) -> bool:
         return bool(self.live.has_pending_critical_events())
+
+    @contextmanager
+    def lifecycle_state_commit_fence(self):
+        """Linearize both live callback ingress and the local Shadow account."""
+
+        live_fence = getattr(self.live, "lifecycle_state_commit_fence", None)
+        sim_fence = getattr(self.sim, "lifecycle_state_commit_fence", None)
+        if not callable(live_fence) or not callable(sim_fence):
+            raise RuntimeError("Shadow lifecycle commit fence is unavailable")
+        with live_fence():
+            with sim_fence():
+                yield
 
     def snapshot_marker(self):
         getter = getattr(self.live, "snapshot_marker", None)

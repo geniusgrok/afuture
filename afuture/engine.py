@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import asdict, replace
 from datetime import date, datetime, timezone
+from math import isfinite
 from time import monotonic
 from zoneinfo import ZoneInfo
 
@@ -21,6 +22,10 @@ from .models import (
     ContractSpec,
     Offset,
     Order,
+    OrderRequest,
+    OrderSide,
+    OrderStatus,
+    OrderType,
     PairConfig,
     RiskDecision,
     RuntimeMode,
@@ -65,6 +70,7 @@ class TradingEngine:
         metadata_timeout_seconds: float = 10.0,
         historical_mode: bool = False,
         health_clock: Callable[[], datetime] | None = None,
+        technical_activation_authority=None,
     ) -> None:
         self.broker = broker
         self.pairs = {pair.pair_id: pair for pair in pairs}
@@ -110,6 +116,18 @@ class TradingEngine:
         self.metadata_timeout_seconds = metadata_timeout_seconds
         self.historical_mode = historical_mode
         self.health_clock = health_clock or (lambda: datetime.now(timezone.utc))
+        self.technical_activation_authority = technical_activation_authority
+
+    @property
+    def requires_technical_activation_permit(self) -> bool:
+        """Whether non-circuit HALTED recovery is owned by a one-shot authority."""
+        return bool(
+            getattr(
+                self.technical_activation_authority,
+                "requires_technical_activation_permit",
+                False,
+            )
+        )
 
     def start(self) -> None:
         """加载持久化状态、启动柜台并订阅所有套利腿。"""
@@ -134,7 +152,14 @@ class TradingEngine:
         defer_empty_historical_day = (
             self.historical_mode and not self.state.trading_day and not self.state.auto_pairs
         )
-        if self.broker.is_ready() and not defer_empty_historical_day:
+        # Every Stress-90 process, including an already-RUNNING restart, must first
+        # rebuild complete current-session ownership under the account lease.
+        defer_technical_activation = self.requires_technical_activation_permit
+        if (
+            self.broker.is_ready()
+            and not defer_empty_historical_day
+            and not defer_technical_activation
+        ):
             self.initialize_after_ready()
 
     def initialize_after_ready(self) -> None:
@@ -204,10 +229,13 @@ class TradingEngine:
 
     def stop(self) -> None:
         """保存期望状态、关闭 Auto 后台 worker，再关闭柜台。"""
-        self._persist()
-        if self.auto_manager is not None:
-            self.auto_manager.close()
-        self.broker.stop()
+        try:
+            self._persist()
+            if self.auto_manager is not None:
+                self.auto_manager.close()
+            self.broker.stop()
+        finally:
+            self.alerts.close()
 
     def reconcile_startup(self) -> bool:
         """本地期望持仓必须与柜台完整快照一致才允许继续。"""
@@ -226,6 +254,8 @@ class TradingEngine:
 
     def clear_kill_switch_after_reconcile(self) -> bool:
         """只有元数据、持仓和账户风险全部通过后才能解除停机。"""
+        if self.requires_technical_activation_permit:
+            return False
         if not self.broker.is_ready():
             return False
         if not self._initialized:
@@ -245,6 +275,46 @@ class TradingEngine:
         self.state.reduce_reason = ""
         self.halted = False
         self._persist()
+        return True
+
+    def activate_halted_runtime_from_permit(self, lease) -> bool:
+        """Consume the configured technical permit before one HALTED→RUNNING save."""
+        if (
+            not self.requires_technical_activation_permit
+            or not self.halted
+            or self.state.directional_daily_circuit_day
+        ):
+            return False
+        activate = getattr(self.technical_activation_authority, "activate", None)
+        if not callable(activate):
+            return False
+        record = activate(
+            state_store=self.state_store,
+            broker=self.broker,
+            lease=lease,
+        )
+        self.state = record.state
+        self.halted = self.state.kill_switch
+        return not self.halted and self.state.runtime_mode == RuntimeMode.RUNNING.value
+
+    def verify_stress90_startup_session(
+        self,
+        lease,
+        *,
+        timeout_seconds: float,
+    ) -> bool:
+        """Build the process-local complete-session capability on every startup."""
+
+        if not self.requires_technical_activation_permit:
+            return True
+        verify = getattr(self.technical_activation_authority, "verify_startup_session", None)
+        if not callable(verify):
+            return False
+        verify(
+            broker=self.broker,
+            lease=lease,
+            timeout_seconds=timeout_seconds,
+        )
         return True
 
     def on_tick(self, tick: Tick) -> None:
@@ -457,13 +527,38 @@ class TradingEngine:
 
     def _handle_order_event(self, order) -> None:
         self._record("order", order)
-        if isinstance(order, Order):
-            self.state.last_order_id = order.order_id
-            if order.active and not self.broker.owns_order(order.order_id):
-                self.emergency_stop(
-                    "unrecognized active order detected; possible external account activity"
-                )
-                return
+        if not isinstance(order, Order):
+            self.emergency_stop("invalid order event: payload is not an Order")
+            return
+        request = order.request
+        if (
+            not isinstance(order.order_id, str)
+            or not order.order_id.strip()
+            or not isinstance(request, OrderRequest)
+            or not isinstance(request.side, OrderSide)
+            or not isinstance(request.offset, Offset)
+            or not isinstance(request.order_type, OrderType)
+            or isinstance(request.volume, bool)
+            or not isinstance(request.volume, int)
+            or request.volume <= 0
+            or not isinstance(request.price, (int, float))
+            or not isfinite(float(request.price))
+            or float(request.price) <= 0.0
+            or not isinstance(order.status, OrderStatus)
+            or isinstance(order.traded, bool)
+            or not isinstance(order.traded, int)
+            or order.traded < 0
+            or order.traded > request.volume
+            or not isinstance(order.average_price, (int, float))
+            or not isfinite(float(order.average_price))
+            or float(order.average_price) < 0.0
+        ):
+            self.emergency_stop("invalid order event: order fields are invalid")
+            return
+        self.state.last_order_id = order.order_id
+        if not self.broker.owns_order(order.order_id):
+            self.emergency_stop("unrecognized order detected; possible external account activity")
+            return
         self._persist()
         self._audit_pair_balance()
 
@@ -1073,9 +1168,17 @@ class TradingEngine:
             self.journal.record(event_type, payload)
 
     def _persist(self) -> None:
-        self.state.strategy_states = {
-            pair_id: strategy.snapshot_state() for pair_id, strategy in self.strategies.items()
+        from .state import RESERVED_STRATEGY_STATE_KEYS
+
+        reserved = {
+            key: dict(value)
+            for key, value in self.state.strategy_states.items()
+            if key in RESERVED_STRATEGY_STATE_KEYS
         }
+        reserved.update(
+            {pair_id: strategy.snapshot_state() for pair_id, strategy in self.strategies.items()}
+        )
+        self.state.strategy_states = reserved
         if self.auto_manager is not None:
             self.state.auto_pairs = {
                 pair_id: asdict(self.pairs[pair_id])

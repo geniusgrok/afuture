@@ -114,3 +114,55 @@ def test_current_entry_documents_link_the_shared_glossary(path: str):
     content = (ROOT / path).read_text(encoding="utf-8")
 
     assert "glossary.md" in content
+
+
+def test_stress90_wiring_documents_preserve_activation_and_history_boundaries():
+    productionization_path = ROOT / "docs" / "stress90-live-productionization.md"
+    runbook_path = ROOT / "docs" / "stress90-live-runbook.md"
+    assert productionization_path.is_file()
+    assert runbook_path.is_file()
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    evidence = (ROOT / "docs" / "stress90-final-evidence.md").read_text(encoding="utf-8")
+    productionization = productionization_path.read_text(encoding="utf-8")
+    index = (ROOT / "docs" / "documentation-index.md").read_text(encoding="utf-8")
+
+    assert 'directional.policy = "stress90"' in readme
+    assert "前一阶段不能自动授权后一阶段" in readme
+    assert "`production_wiring=false`" in evidence
+    assert "112.100053% 不是未来收益承诺" in readme
+    assert "selection bias" in readme
+    assert "CTP raw 60m" in readme and "历史 vendor" in readme
+    for stage in (
+        "固定历史候选验证",
+        "代码 wiring 和自动化验证",
+        "多日 CTP Shadow",
+        "测试柜台订单生命周期",
+        "极小真实资金",
+        "扩大风险的人工许可",
+    ):
+        assert stage in productionization
+    assert "stress90-live-productionization.md" in index
+    assert "stress90-live-runbook.md" in index
+
+
+def test_stress90_runbook_keeps_order_incapable_steps_before_live():
+    runbook = (ROOT / "docs" / "stress90-live-runbook.md").read_text(encoding="utf-8")
+
+    ordered_markers = (
+        "afuture stress90-bootstrap",
+        "afuture status",
+        "afuture stress90-activate",
+        "afuture directional-ohlc-refresh",
+        "afuture doctor",
+        "afuture shadow",
+        "afuture stress90-oi-compare",
+        "afuture live",
+    )
+    offsets = tuple(runbook.index(marker) for marker in ordered_markers)
+    assert offsets == tuple(sorted(offsets))
+    assert "绝不自动采用 `.prev`" in runbook
+    assert "AFUTURE_STRESS90_REBASE_ACK=RESET_STRESS90_ACCOUNT_PATH" in runbook
+    shadow_cache = "--cache runtime/shadow/directional_ohlc_cache.json"
+    assert shadow_cache in runbook
+    assert runbook.index(shadow_cache) < runbook.index("afuture shadow")

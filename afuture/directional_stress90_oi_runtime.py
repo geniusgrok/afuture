@@ -13,29 +13,98 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from math import isfinite
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import Lock
 from types import MappingProxyType
+from typing import TypedDict
+from zoneinfo import ZoneInfo
 
+from .broker.base import RawMarketEvidenceError, RawMarketEvidenceFatalError
 from .directional_sessions import PRODUCT_SESSION_MANIFEST, session_bucket_for_tick
 from .directional_stress90_policy import STRESS90_POLICY, canonical_stress90_digest
 from .models import ContractInfo, Tick
 
 OI_EVIDENCE_KIND = "afuture.directional.stress90.oi-evidence"
-OI_EVIDENCE_SCHEMA_VERSION = 1
+OI_EVIDENCE_SCHEMA_VERSION = 2
+CTP_RAW_TICK_SOURCE = "ctp_raw_tick"
+FIXED_HISTORICAL_60M_SOURCE = "fixed_historical_60m"
 DEFAULT_COMPLETED_RETENTION_DAYS = 512
 MAX_COMPLETED_RETENTION_DAYS = 2_048
 MAX_EXPECTED_CONTRACTS = 5_000
 MAX_BARS_PER_CONTRACT = 16
+MAX_OI_ISSUES = 256
 _BOUNDARY_GRACE_SECONDS = 5 * 60
+_CHINA = ZoneInfo("Asia/Shanghai")
 
 
-class OiEvidenceIntegrityError(RuntimeError):
+class OiEvidenceIntegrityError(RawMarketEvidenceError):
     """Raw or persisted OI evidence cannot be trusted."""
+
+
+class Stress90EvidenceOnlyBroker:
+    """Expose market/account reads while making order capabilities unreachable."""
+
+    _ALLOWED = frozenset(
+        {
+            "account_identity_verified",
+            "contract_catalog_verified_for_day",
+            "get_account",
+            "get_account_identity_digest",
+            "get_active_orders",
+            "get_contract_catalog",
+            "get_contract_catalog_status",
+            "get_positions",
+            "get_session_trades",
+            "get_session_activity_account_identity_digest",
+            "get_trading_day",
+            "has_pending_critical_events",
+            "health_error",
+            "is_ready",
+            "owns_order",
+            "poll_events",
+            "refresh_contract_catalog",
+            "refresh_session_activity",
+            "require_session_activity_evidence_current",
+            "set_raw_tick_observer",
+            "snapshot_marker",
+            "snapshot_ready",
+            "start",
+            "stop",
+            "subscribe",
+        }
+    )
+
+    def __init__(self, source) -> None:
+        self._source = source
+
+    @property
+    def metadata_query_blocks(self) -> bool:
+        return bool(getattr(self._source, "metadata_query_blocks", True))
+
+    def __getattr__(self, name: str):
+        if name not in self._ALLOWED:
+            raise AttributeError(f"evidence-only Broker capability is unavailable: {name}")
+        return getattr(self._source, name)
+
+    def send_order(self, _request):
+        raise RuntimeError("Stress-90 evidence-only Broker cannot send orders")
+
+    def cancel_order(self, _order_id) -> None:
+        raise RuntimeError("Stress-90 evidence-only Broker cannot cancel orders")
+
+
+class _FixedHistoricalRow(TypedDict):
+    datetime: datetime
+    product: str
+    symbol: str
+    open: float
+    close: float
+    volume: float
+    hold: float
 
 
 @dataclass(frozen=True)
@@ -98,9 +167,19 @@ class InProgressOiEvidence:
 
 
 @dataclass(frozen=True)
+class ObservedTradingDayTransition:
+    """One source→target CTP day change observed without a process restart."""
+
+    source_trading_day: str
+    target_trading_day: str
+    completed_oi_evidence_digest: str
+
+
+@dataclass(frozen=True)
 class Stress90OiEvidenceState:
     completed: tuple[CompletedOiEvidence, ...] = ()
     in_progress: InProgressOiEvidence | None = None
+    observed_transitions: tuple[ObservedTradingDayTransition, ...] = ()
     raw_ticks_observed: int = 0
     duplicate_ticks: int = 0
     volume_resets: int = 0
@@ -312,6 +391,163 @@ def _completed_payload(evidence: CompletedOiEvidence) -> dict[str, object]:
     return {**_completed_unsigned_payload(evidence), "evidence_digest": evidence.evidence_digest}
 
 
+def _fixed_historical_timestamp(raw: object) -> datetime:
+    if isinstance(raw, datetime):
+        value = raw
+    elif isinstance(raw, str):
+        try:
+            value = datetime.fromisoformat(raw)
+        except ValueError as exc:
+            raise OiEvidenceIntegrityError("fixed historical 60m timestamp is invalid") from exc
+    else:
+        raise OiEvidenceIntegrityError("fixed historical 60m timestamp is invalid")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_CHINA)
+    return value.astimezone(_CHINA)
+
+
+def _fixed_historical_number(
+    raw: object,
+    *,
+    name: str,
+    positive: bool = False,
+) -> float:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not isfinite(raw):
+        raise OiEvidenceIntegrityError(f"fixed historical 60m {name} is invalid")
+    value = float(raw)
+    if value < 0.0 or (positive and value <= 0.0):
+        raise OiEvidenceIntegrityError(f"fixed historical 60m {name} is invalid")
+    return value
+
+
+def build_fixed_historical_60m_evidence(
+    trading_day: str,
+    rows: Sequence[Mapping[str, object]],
+) -> CompletedOiEvidence:
+    """Build one completed bootstrap bridge from already-verified fixed 60m rows."""
+
+    day = _valid_day(trading_day, name="fixed historical OI trading day")
+    required = {"datetime", "product", "symbol", "open", "close", "volume", "hold"}
+    normalized: list[_FixedHistoricalRow] = []
+    seen: set[tuple[datetime, str, str]] = set()
+    for raw in rows:
+        if not isinstance(raw, Mapping) or not required.issubset(raw):
+            raise OiEvidenceIntegrityError("fixed historical 60m row fields are invalid")
+        timestamp = _fixed_historical_timestamp(raw["datetime"])
+        if timestamp.strftime("%Y%m%d") != day:
+            raise OiEvidenceIntegrityError("fixed historical 60m row is outside trading day")
+        product = str(raw["product"]).upper()
+        symbol = str(raw["symbol"]).upper()
+        if product not in STRESS90_POLICY.oi_products:
+            continue
+        match = re.fullmatch(r"([A-Z]{1,4})\d{3,4}", symbol)
+        if match is None or match.group(1) != product:
+            raise OiEvidenceIntegrityError("fixed historical 60m contract identity is invalid")
+        key = (timestamp, product, symbol)
+        if key in seen:
+            raise OiEvidenceIntegrityError("fixed historical 60m rows are duplicate")
+        seen.add(key)
+        normalized.append(
+            {
+                "datetime": timestamp,
+                "product": product,
+                "symbol": symbol,
+                "open": _fixed_historical_number(raw["open"], name="open", positive=True),
+                "close": _fixed_historical_number(raw["close"], name="close", positive=True),
+                "volume": _fixed_historical_number(raw["volume"], name="volume"),
+                "hold": _fixed_historical_number(raw["hold"], name="hold"),
+            }
+        )
+    received_products = {str(row["product"]) for row in normalized}
+    missing_products = sorted(set(STRESS90_POLICY.oi_products) - received_products)
+    if missing_products:
+        raise OiEvidenceIntegrityError(
+            f"fixed historical 60m OI coverage is incomplete for {day}: missing={missing_products}"
+        )
+    by_contract: dict[tuple[str, str], list[_FixedHistoricalRow]] = {}
+    for row in normalized:
+        contract_key = (row["product"], row["symbol"])
+        by_contract.setdefault(contract_key, []).append(row)
+    contracts: dict[str, ContractOiEvidence] = {}
+    expected: dict[str, list[str]] = {product: [] for product in STRESS90_POLICY.oi_products}
+    for (product, symbol), contract_rows in sorted(by_contract.items()):
+        contract_rows.sort(key=lambda item: item["datetime"])
+        if len(contract_rows) > MAX_BARS_PER_CONTRACT:
+            raise OiEvidenceIntegrityError("fixed historical 60m bar memory bound exceeded")
+        bars = tuple(
+            OiBarEvidence(
+                session=FIXED_HISTORICAL_60M_SOURCE,
+                bucket_start=row["datetime"],
+                bucket_end=row["datetime"] + timedelta(hours=1),
+                first_open=float(row["open"]),
+                last_close=float(row["close"]),
+                first_hold=float(row["hold"]),
+                last_hold=float(row["hold"]),
+                total_volume=float(row["volume"]),
+                first_tick_timestamp=row["datetime"],
+                last_tick_timestamp=row["datetime"] + timedelta(hours=1),
+            )
+            for row in contract_rows
+        )
+        first = contract_rows[0]
+        last = contract_rows[-1]
+        contracts[symbol] = ContractOiEvidence(
+            symbol=symbol,
+            exchange=PRODUCT_SESSION_MANIFEST[product].exchange,
+            product=product,
+            trading_day=day,
+            first_open=float(first["open"]),
+            last_close=float(last["close"]),
+            first_hold=float(first["hold"]),
+            last_hold=float(last["hold"]),
+            total_volume=sum(float(row["volume"]) for row in contract_rows),
+            first_tick_timestamp=bars[0].first_tick_timestamp,
+            last_tick_timestamp=bars[-1].last_tick_timestamp,
+            last_cumulative_volume=float(last["volume"]),
+            bars=bars,
+            raw_tick_count=len(bars),
+            duplicate_tick_count=0,
+            volume_reset_count=0,
+            complete=True,
+            issues=(),
+        )
+        expected[product].append(symbol)
+
+    dominant: dict[str, str | None] = {}
+    flows: dict[str, int | None] = {}
+    for product in STRESS90_POLICY.oi_products:
+        product_contracts = [contracts[symbol] for symbol in expected[product]]
+        product_contracts.sort(key=lambda item: (-item.last_hold, -item.total_volume, item.symbol))
+        selected = product_contracts[0]
+        dominant[product] = selected.symbol
+        change = selected.last_close - selected.first_open
+        if selected.last_hold <= selected.first_hold or abs(change) <= 1e-15:
+            flows[product] = 0
+        else:
+            flows[product] = 1 if change > 0.0 else -1
+    expected_proxy = MappingProxyType(
+        {product: tuple(sorted(expected[product])) for product in STRESS90_POLICY.oi_products}
+    )
+    contract_proxy = MappingProxyType(dict(sorted(contracts.items())))
+    unsigned = CompletedOiEvidence(
+        source=FIXED_HISTORICAL_60M_SOURCE,
+        trading_day=day,
+        expected_contracts=expected_proxy,
+        received_contracts=tuple(sorted(contracts)),
+        missing_contracts=(),
+        contracts=contract_proxy,
+        dominant_symbols=MappingProxyType(dominant),
+        flows=MappingProxyType(flows),
+        complete=True,
+        issues=(),
+        evidence_digest="",
+    )
+    return replace(
+        unsigned,
+        evidence_digest=canonical_stress90_digest(_completed_unsigned_payload(unsigned)),
+    )
+
+
 def _in_progress_payload(evidence: InProgressOiEvidence | None) -> dict[str, object] | None:
     if evidence is None:
         return None
@@ -330,6 +566,14 @@ def _state_payload(state: Stress90OiEvidenceState) -> dict[str, object]:
     return {
         "completed": [_completed_payload(item) for item in state.completed],
         "in_progress": _in_progress_payload(state.in_progress),
+        "observed_transitions": [
+            {
+                "source_trading_day": item.source_trading_day,
+                "target_trading_day": item.target_trading_day,
+                "completed_oi_evidence_digest": item.completed_oi_evidence_digest,
+            }
+            for item in state.observed_transitions
+        ],
         "raw_ticks_observed": state.raw_ticks_observed,
         "duplicate_ticks": state.duplicate_ticks,
         "volume_resets": state.volume_resets,
@@ -548,7 +792,7 @@ def _completed_from_payload(raw: object) -> CompletedOiEvidence:
         issues=_string_tuple(raw["issues"], name="completed OI issues"),
         evidence_digest=str(raw["evidence_digest"]),
     )
-    if evidence.source != "ctp_raw_tick":
+    if evidence.source not in {CTP_RAW_TICK_SOURCE, FIXED_HISTORICAL_60M_SOURCE}:
         raise OiEvidenceIntegrityError("completed OI source identity is invalid")
     if evidence.received_contracts != tuple(sorted(contracts)):
         raise OiEvidenceIntegrityError("completed OI received-contract identity mismatch")
@@ -560,6 +804,13 @@ def _completed_from_payload(raw: object) -> CompletedOiEvidence:
         raise OiEvidenceIntegrityError("completed OI evidence digest mismatch")
     if evidence.complete != all(value is not None for value in evidence.flows.values()):
         raise OiEvidenceIntegrityError("completed OI completeness/flow mismatch")
+    if evidence.source == FIXED_HISTORICAL_60M_SOURCE and (
+        not evidence.complete
+        or evidence.missing_contracts
+        or set(contracts) != expected_symbols
+        or any(not contract.complete for contract in contracts.values())
+    ):
+        raise OiEvidenceIntegrityError("fixed historical 60m OI evidence is incomplete")
     return evidence
 
 
@@ -589,6 +840,7 @@ def _state_from_payload(raw: object) -> Stress90OiEvidenceState:
     if not isinstance(raw, Mapping) or set(raw) != {
         "completed",
         "in_progress",
+        "observed_transitions",
         "raw_ticks_observed",
         "duplicate_ticks",
         "volume_resets",
@@ -604,9 +856,50 @@ def _state_from_payload(raw: object) -> Stress90OiEvidenceState:
     in_progress = _in_progress_from_payload(raw["in_progress"])
     if in_progress is not None and days and in_progress.trading_day <= days[-1]:
         raise OiEvidenceIntegrityError("in-progress OI day must follow completed evidence")
+    transitions_raw = raw["observed_transitions"]
+    if not isinstance(transitions_raw, list) or len(transitions_raw) > (
+        MAX_COMPLETED_RETENTION_DAYS
+    ):
+        raise OiEvidenceIntegrityError("observed CTP day transition history is invalid")
+    completed_by_day = {item.trading_day: item for item in completed}
+    transitions: list[ObservedTradingDayTransition] = []
+    for item in transitions_raw:
+        fields = {
+            "source_trading_day",
+            "target_trading_day",
+            "completed_oi_evidence_digest",
+        }
+        if not isinstance(item, Mapping) or set(item) != fields:
+            raise OiEvidenceIntegrityError("observed CTP day transition fields are invalid")
+        source = _valid_day(
+            item["source_trading_day"],
+            name="observed source CTP trading day",
+        )
+        target = _valid_day(
+            item["target_trading_day"],
+            name="observed target CTP trading day",
+        )
+        digest = str(item["completed_oi_evidence_digest"])
+        completed_source = completed_by_day.get(source)
+        if (
+            source >= target
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or completed_source is None
+            or completed_source.evidence_digest != digest
+        ):
+            raise OiEvidenceIntegrityError("observed CTP day transition identity is invalid")
+        transitions.append(ObservedTradingDayTransition(source, target, digest))
+    transition_keys = tuple(
+        (item.source_trading_day, item.target_trading_day) for item in transitions
+    )
+    if transition_keys != tuple(sorted(set(transition_keys))):
+        raise OiEvidenceIntegrityError(
+            "observed CTP day transitions are not unique/increasing"
+        )
     state = Stress90OiEvidenceState(
         completed=completed,
         in_progress=in_progress,
+        observed_transitions=tuple(transitions),
         raw_ticks_observed=_valid_count(raw["raw_ticks_observed"], name="raw OI tick count"),
         duplicate_ticks=_valid_count(raw["duplicate_ticks"], name="duplicate OI tick count"),
         volume_resets=_valid_count(raw["volume_resets"], name="OI volume reset count"),
@@ -720,15 +1013,33 @@ class Stress90OiEvidenceStore:
 
 
 def _append_issue(issues: tuple[str, ...], issue: str) -> tuple[str, ...]:
-    return issues if issue in issues else (*issues, issue)
+    if issue in issues:
+        return issues
+    if len(issues) < MAX_OI_ISSUES:
+        return (*issues, issue)
+    marker = "issue_memory_bound_exceeded"
+    if marker in issues:
+        return issues
+    return (*issues[:-1], marker)
 
 
-def _new_bar(tick: Tick, bucket, volume_delta: float) -> OiBarEvidence:
+def _product_hint_from_futures_symbol(symbol: str) -> str | None:
+    match = re.fullmatch(r"([A-Z]{1,4})\d{3,4}", str(symbol).upper())
+    return None if match is None else match.group(1)
+
+
+def _new_bar(
+    tick: Tick,
+    bucket,
+    volume_delta: float,
+    *,
+    first_open: float | None = None,
+) -> OiBarEvidence:
     return OiBarEvidence(
         session=bucket.session,
         bucket_start=bucket.bucket_start,
         bucket_end=bucket.bucket_end,
-        first_open=float(tick.last_price),
+        first_open=float(tick.last_price if first_open is None else first_open),
         last_close=float(tick.last_price),
         first_hold=float(tick.open_interest),
         last_hold=float(tick.open_interest),
@@ -788,7 +1099,19 @@ def _finalize_day(in_progress: InProgressOiEvidence) -> CompletedOiEvidence:
     contracts: dict[str, ContractOiEvidence] = {}
     for symbol, raw in in_progress.contracts.items():
         complete, issues = _contract_boundary_complete(raw)
-        contracts[symbol] = replace(raw, complete=complete, issues=issues)
+        # The frozen batch candidate defines ``first_hold`` as the hold at the
+        # end of the first completed 60m bar, not the session-open raw Tick.
+        # Normalize the contract summary from completed bar mechanics so live
+        # flow is byte-for-byte comparable with the historical bridge.
+        contracts[symbol] = replace(
+            raw,
+            first_open=raw.bars[0].first_open,
+            first_hold=raw.bars[0].last_hold,
+            last_close=raw.bars[-1].last_close,
+            last_hold=raw.bars[-1].last_hold,
+            complete=complete,
+            issues=issues,
+        )
 
     dominant: dict[str, str | None] = {}
     flows: dict[str, int | None] = {}
@@ -811,7 +1134,7 @@ def _finalize_day(in_progress: InProgressOiEvidence) -> CompletedOiEvidence:
             flows[product] = 1 if selected.last_close > selected.first_open else -1
     complete = all(value is not None for value in flows.values())
     unsigned = CompletedOiEvidence(
-        source="ctp_raw_tick",
+        source=CTP_RAW_TICK_SOURCE,
         trading_day=in_progress.trading_day,
         expected_contracts=in_progress.expected_contracts,
         received_contracts=tuple(sorted(received)),
@@ -850,10 +1173,33 @@ class Stress90OiEvidenceAggregator:
         state = record.state if record is not None else Stress90OiEvidenceState()
         self._sequence = 0 if record is None else record.sequence
         self._completed = list(state.completed)
+        self._observed_transitions = list(state.observed_transitions)
         self._in_progress = state.in_progress
+        self._in_progress_observed_in_process = False
+        # Process-local connection proof is deliberately not restored.  A restart,
+        # disconnect, or MD login generation change must break day continuity even
+        # when the persisted in-progress bars themselves remain usable evidence.
+        self._raw_market_connected = False
+        self._raw_market_connection_generation: int | None = None
+        self._in_progress_connection_generation: int | None = None
+        self._pending_observed_transition: tuple[
+            ObservedTradingDayTransition,
+            int,
+        ] | None = None
+        self._contracts: dict[str, ContractOiEvidence] = (
+            {} if self._in_progress is None else dict(self._in_progress.contracts)
+        )
+        self._expected_symbols: frozenset[str] = (
+            frozenset()
+            if self._in_progress is None
+            else frozenset(_all_expected_symbols(self._in_progress.expected_contracts))
+        )
+        if self._in_progress is not None:
+            self._in_progress = replace(self._in_progress, contracts=self._contracts)
         self._raw_ticks_observed = state.raw_ticks_observed
         self._duplicate_ticks = state.duplicate_ticks
         self._volume_resets = state.volume_resets
+        self._contract_catalog: tuple[ContractInfo, ...] = ()
         self._dirty = False
         self._generation = 0
         self._lock = Lock()
@@ -883,18 +1229,32 @@ class Stress90OiEvidenceAggregator:
 
     def in_progress_contract(self, symbol: str) -> ContractOiEvidence:
         with self._lock:
-            if self._in_progress is None or symbol not in self._in_progress.contracts:
+            if self._in_progress is None or symbol not in self._contracts:
                 raise OiEvidenceIntegrityError(f"in-progress OI contract is unavailable: {symbol}")
-            return self._in_progress.contracts[symbol]
+            return self._contracts[symbol]
+
+    def in_progress_issues(self) -> tuple[str, ...]:
+        with self._lock:
+            return () if self._in_progress is None else self._in_progress.issues
 
     def _changed(self) -> None:
         self._dirty = True
         self._generation += 1
 
+    def _fixed_bridge_covers_day_unlocked(self, day: str) -> bool:
+        return bool(
+            self._in_progress is None
+            and self._completed
+            and day == self._completed[-1].trading_day
+            and self._completed[-1].source == FIXED_HISTORICAL_60M_SOURCE
+        )
+
     def _rollover_unlocked(
         self,
         day: str,
         expected: Mapping[str, tuple[str, ...]],
+        *,
+        observed_target_raw_tick: bool = False,
     ) -> None:
         if self._in_progress is not None:
             if day < self._in_progress.trading_day:
@@ -908,25 +1268,178 @@ class Stress90OiEvidenceAggregator:
             completed = _finalize_day(self._in_progress)
             self._completed.append(completed)
             self._completed = self._completed[-self.completed_retention_days :]
+            source_generation = self._in_progress_connection_generation
+            natural_days = (
+                datetime.strptime(day, "%Y%m%d")
+                - datetime.strptime(completed.trading_day, "%Y%m%d")
+            ).days
+            uninterrupted = bool(
+                self._in_progress_observed_in_process
+                and self._raw_market_connected
+                and source_generation is not None
+                and source_generation == self._raw_market_connection_generation
+                # A raw MD socket cannot prove that an entire intervening CTP
+                # trading day was not silently missed.  Non-adjacent civil dates
+                # therefore require a separate authoritative session manifest;
+                # until that authority is wired, fail closed rather than guessing
+                # weekends or exchange holidays.
+                and natural_days == 1
+            )
+            if uninterrupted:
+                transition = ObservedTradingDayTransition(
+                    source_trading_day=completed.trading_day,
+                    target_trading_day=day,
+                    completed_oi_evidence_digest=completed.evidence_digest,
+                )
+                if observed_target_raw_tick:
+                    self._observed_transitions.append(transition)
+                else:
+                    self._pending_observed_transition = (transition, source_generation)
+            else:
+                self._pending_observed_transition = None
+            retained_days = {item.trading_day for item in self._completed}
+            self._observed_transitions = [
+                item
+                for item in self._observed_transitions
+                if item.source_trading_day in retained_days
+            ]
         elif self._completed and day <= self._completed[-1].trading_day:
             raise OiEvidenceIntegrityError("OI trading day cannot move backward or reopen")
         self._in_progress = InProgressOiEvidence(
             trading_day=day,
             expected_contracts=expected,
-            contracts=MappingProxyType({}),
+            contracts={},
             issues=(),
         )
+        self._contracts = {}
+        self._in_progress = replace(self._in_progress, contracts=self._contracts)
+        self._expected_symbols = frozenset(_all_expected_symbols(expected))
+        self._in_progress_observed_in_process = False
+        self._in_progress_connection_generation = None
         self._changed()
+
+    def note_raw_market_connection(
+        self,
+        *,
+        connected: bool,
+        generation: int,
+    ) -> None:
+        """Record a callback-safe CTP/Sim market-stream generation boundary.
+
+        The generation is process-local authority supplied by the Broker.  It is
+        never persisted, so neither restart nor a stale evidence file can fabricate
+        uninterrupted market coverage.
+        """
+
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+            raise OiEvidenceIntegrityError("raw market connection generation is invalid")
+        if not isinstance(connected, bool):
+            raise OiEvidenceIntegrityError("raw market connection state is invalid")
+        with self._lock:
+            previous = self._raw_market_connection_generation
+            if previous is not None and generation < previous:
+                raise OiEvidenceIntegrityError("raw market connection generation moved backward")
+            changed_generation = previous is not None and generation != previous
+            interrupted = bool(
+                self._raw_market_connected and (not connected or changed_generation)
+            )
+            if interrupted and self._in_progress_observed_in_process:
+                self._mark_day_issue_unlocked("raw_market_connection_interrupted")
+            if interrupted or not connected:
+                self._pending_observed_transition = None
+            self._raw_market_connection_generation = generation
+            self._raw_market_connected = connected
+
+    def _confirm_pending_transition_unlocked(self, day: str) -> None:
+        pending = self._pending_observed_transition
+        if pending is None:
+            return
+        transition, generation = pending
+        self._pending_observed_transition = None
+        if (
+            transition.target_trading_day == day
+            and self._raw_market_connected
+            and self._raw_market_connection_generation == generation
+        ):
+            self._observed_transitions.append(transition)
 
     def set_expected_contracts(
         self,
         trading_day: str,
         contracts: Sequence[ContractInfo],
-    ) -> None:
+    ) -> tuple[str, ...]:
         day = _valid_day(trading_day, name="expected OI trading day")
-        expected = _expected_contracts(contracts, trading_day=day)
+        catalog = tuple(contracts)
+        expected = _expected_contracts(catalog, trading_day=day)
+        expected_symbols = tuple(sorted(_all_expected_symbols(expected)))
         with self._lock:
+            if self._fixed_bridge_covers_day_unlocked(day):
+                self._contract_catalog = catalog
+                return expected_symbols
             self._rollover_unlocked(day, expected)
+            self._contract_catalog = catalog
+        return expected_symbols
+
+    def refresh_contract_catalog(
+        self,
+        trading_day: str,
+        contracts: Sequence[ContractInfo],
+    ) -> None:
+        """Arm a refreshed in-memory catalog without hiding an intra-day universe change."""
+
+        day = _valid_day(trading_day, name="refreshed OI trading day")
+        catalog = tuple(contracts)
+        expected = _expected_contracts(catalog, trading_day=day)
+        with self._lock:
+            if self._fixed_bridge_covers_day_unlocked(day):
+                self._contract_catalog = catalog
+                return
+            if self._in_progress is None or day != self._in_progress.trading_day:
+                self._rollover_unlocked(day, expected)
+            elif self._in_progress.expected_contracts != expected:
+                issues = self._in_progress.issues
+                if self._in_progress.contracts:
+                    issues = _append_issue(
+                        issues,
+                        "expected_universe_changed_after_raw_ticks",
+                    )
+                self._in_progress = replace(
+                    self._in_progress,
+                    expected_contracts=expected,
+                    issues=issues,
+                )
+                self._expected_symbols = frozenset(_all_expected_symbols(expected))
+                self._changed()
+            self._contract_catalog = catalog
+
+    def note_contract_subscriptions(
+        self,
+        trading_day: str,
+        symbols: Sequence[str],
+    ) -> None:
+        """Fail the day closed when a required subscription starts after evidence began."""
+
+        day = _valid_day(trading_day, name="OI subscription trading day")
+        normalized = tuple(sorted({str(symbol).upper() for symbol in symbols if str(symbol)}))
+        if not normalized:
+            return
+        with self._lock:
+            if self._in_progress is None or self._in_progress.trading_day != day:
+                raise OiEvidenceIntegrityError(
+                    "OI contract subscription day is not the armed trading day"
+                )
+            expected = _all_expected_symbols(self._in_progress.expected_contracts)
+            if not set(normalized).issubset(expected):
+                raise OiEvidenceIntegrityError(
+                    "OI contract subscription is outside the expected universe"
+                )
+            if self._in_progress.contracts:
+                issue = "late_contract_subscription:" + ",".join(normalized)
+                self._in_progress = replace(
+                    self._in_progress,
+                    issues=_append_issue(self._in_progress.issues, issue),
+                )
+                self._changed()
 
     def _mark_day_issue_unlocked(self, issue: str) -> None:
         if self._in_progress is None:
@@ -944,15 +1457,10 @@ class Stress90OiEvidenceAggregator:
     ) -> None:
         if self._in_progress is None:
             return
-        contracts = dict(self._in_progress.contracts)
-        contracts[contract.symbol] = replace(
+        self._contracts[contract.symbol] = replace(
             contract,
             issues=_append_issue(contract.issues, issue),
             complete=False,
-        )
-        self._in_progress = replace(
-            self._in_progress,
-            contracts=MappingProxyType(dict(sorted(contracts.items()))),
         )
         self._changed()
 
@@ -969,6 +1477,9 @@ class Stress90OiEvidenceAggregator:
                 self._mark_day_issue_unlocked("invalid_raw_tick")
                 raise OiEvidenceIntegrityError(f"invalid raw OI tick: {exc}") from exc
             if contract is None:
+                product_hint = _product_hint_from_futures_symbol(tick.symbol)
+                if product_hint is not None and product_hint not in STRESS90_POLICY.oi_products:
+                    return
                 self._mark_day_issue_unlocked(f"contract_metadata_missing:{tick.symbol}")
                 raise OiEvidenceIntegrityError(f"raw OI contract metadata missing: {tick.symbol}")
             product = str(contract.product).upper()
@@ -980,21 +1491,48 @@ class Stress90OiEvidenceAggregator:
                 raise OiEvidenceIntegrityError("raw OI tick/contract identity mismatch")
             if product not in STRESS90_POLICY.oi_products:
                 return
+            if (
+                tick.source_trading_day_verified is not True
+                or (
+                    tick.source_trading_day
+                    and tick.source_trading_day != day
+                )
+            ):
+                self._mark_day_issue_unlocked("source_trading_day_unverified")
+                raise OiEvidenceIntegrityError(
+                    "raw OI source trading day is unverified"
+                )
             if tick.exchange.upper() != PRODUCT_SESSION_MANIFEST[product].exchange:
                 self._mark_day_issue_unlocked(f"contract_identity_mismatch:{tick.symbol}")
                 raise OiEvidenceIntegrityError("raw OI tick/contract identity mismatch")
             if self._in_progress is None:
-                self._mark_day_issue_unlocked("expected_contract_universe_missing")
+                if (
+                    self._completed
+                    and day > self._completed[-1].trading_day
+                    and self._contract_catalog
+                ):
+                    expected = _expected_contracts(self._contract_catalog, trading_day=day)
+                    self._rollover_unlocked(day, expected, observed_target_raw_tick=True)
+                else:
+                    self._mark_day_issue_unlocked("expected_contract_universe_missing")
+                    raise OiEvidenceIntegrityError("raw OI expected contract universe is missing")
+            in_progress = self._in_progress
+            if in_progress is None:  # pragma: no cover - rollover contract
                 raise OiEvidenceIntegrityError("raw OI expected contract universe is missing")
-            if day != self._in_progress.trading_day:
-                if day < self._in_progress.trading_day:
-                    self._mark_day_issue_unlocked(f"late_or_backward_tick:{tick.symbol}")
-                    raise OiEvidenceIntegrityError("raw OI tick trading day is backward/late")
-                prior_expected = self._in_progress.expected_contracts
-                self._rollover_unlocked(day, prior_expected)
-            expected_symbols = _all_expected_symbols(self._in_progress.expected_contracts)
+            if day != in_progress.trading_day:
+                if day < in_progress.trading_day:
+                    # A prior day may already be consumed by the next target decision.
+                    # Never revise it and never poison the current, otherwise-valid day.
+                    raise RawMarketEvidenceFatalError(
+                        "late raw Tick would revise a completed OI day"
+                    )
+                if not self._contract_catalog:
+                    self._mark_day_issue_unlocked("expected_contract_catalog_missing")
+                    raise OiEvidenceIntegrityError("raw OI expected contract catalog is missing")
+                expected = _expected_contracts(self._contract_catalog, trading_day=day)
+                self._rollover_unlocked(day, expected, observed_target_raw_tick=True)
             symbol = str(contract.symbol).upper()
-            if symbol not in expected_symbols:
+            if symbol not in self._expected_symbols:
                 self._mark_day_issue_unlocked(f"unexpected_contract:{symbol}")
                 raise OiEvidenceIntegrityError(
                     f"raw OI contract is outside expected universe: {symbol}"
@@ -1003,8 +1541,24 @@ class Stress90OiEvidenceAggregator:
             if bucket is None:
                 self._mark_day_issue_unlocked(f"outside_fixed_session:{symbol}")
                 raise OiEvidenceIntegrityError(f"raw OI tick outside fixed session: {symbol}")
+            self._confirm_pending_transition_unlocked(day)
+            self._in_progress_observed_in_process = True
+            if self._raw_market_connected:
+                generation = self._raw_market_connection_generation
+                if generation is None:  # pragma: no cover - protected by connection setter
+                    raise OiEvidenceIntegrityError(
+                        "raw market connection generation is unavailable"
+                    )
+                if self._in_progress_connection_generation is None:
+                    self._in_progress_connection_generation = generation
+                elif self._in_progress_connection_generation != generation:
+                    self._mark_day_issue_unlocked("raw_market_connection_interrupted")
 
-            previous = self._in_progress.contracts.get(symbol)
+            previous = self._contracts.get(symbol)
+            if previous is None and float(tick.volume) == 0.0:
+                # CTP can publish a pre-trade snapshot whose last price is the
+                # prior close. It is market evidence, but not a 60m bar open.
+                return
             if previous is not None and tick.timestamp < previous.last_tick_timestamp:
                 self._mark_contract_issue_unlocked(previous, "out_of_order_tick")
                 raise OiEvidenceIntegrityError(f"raw OI tick is out-of-order: {symbol}")
@@ -1018,15 +1572,10 @@ class Stress90OiEvidenceAggregator:
                     self._mark_contract_issue_unlocked(previous, "conflicting_duplicate_tick")
                     raise OiEvidenceIntegrityError(f"raw OI tick conflicts at timestamp: {symbol}")
                 self._duplicate_ticks += 1
-                contracts = dict(self._in_progress.contracts)
-                contracts[symbol] = replace(
+                self._contracts[symbol] = replace(
                     previous,
                     raw_tick_count=previous.raw_tick_count + 1,
                     duplicate_tick_count=previous.duplicate_tick_count + 1,
-                )
-                self._in_progress = replace(
-                    self._in_progress,
-                    contracts=MappingProxyType(dict(sorted(contracts.items()))),
                 )
                 self._changed()
                 return
@@ -1039,13 +1588,25 @@ class Stress90OiEvidenceAggregator:
             if reset:
                 self._volume_resets += 1
             if previous is None:
-                bars = (_new_bar(tick, bucket, volume_delta),)
+                authoritative_open = float(tick.open_price)
+                initial_issues: tuple[str, ...] = ()
+                if authoritative_open <= 0.0:
+                    authoritative_open = float(tick.last_price)
+                    initial_issues = ("authoritative_open_price_missing",)
+                bars = (
+                    _new_bar(
+                        tick,
+                        bucket,
+                        volume_delta,
+                        first_open=authoritative_open,
+                    ),
+                )
                 updated = ContractOiEvidence(
                     symbol=symbol,
                     exchange=tick.exchange.upper(),
                     product=product,
                     trading_day=day,
-                    first_open=float(tick.last_price),
+                    first_open=authoritative_open,
                     last_close=float(tick.last_price),
                     first_hold=float(tick.open_interest),
                     last_hold=float(tick.open_interest),
@@ -1058,7 +1619,7 @@ class Stress90OiEvidenceAggregator:
                     duplicate_tick_count=0,
                     volume_reset_count=0,
                     complete=False,
-                    issues=(),
+                    issues=initial_issues,
                 )
             else:
                 bars_list = list(previous.bars)
@@ -1082,18 +1643,20 @@ class Stress90OiEvidenceAggregator:
                     raw_tick_count=previous.raw_tick_count + 1,
                     volume_reset_count=previous.volume_reset_count + int(reset),
                 )
-            contracts = dict(self._in_progress.contracts)
-            contracts[symbol] = updated
-            self._in_progress = replace(
-                self._in_progress,
-                contracts=MappingProxyType(dict(sorted(contracts.items()))),
-            )
+            self._contracts[symbol] = updated
             self._changed()
 
     def _state_unlocked(self) -> Stress90OiEvidenceState:
+        in_progress = self._in_progress
+        if in_progress is not None:
+            in_progress = replace(
+                in_progress,
+                contracts=MappingProxyType(dict(sorted(self._contracts.items()))),
+            )
         return Stress90OiEvidenceState(
             completed=tuple(self._completed),
-            in_progress=self._in_progress,
+            in_progress=in_progress,
+            observed_transitions=tuple(self._observed_transitions),
             raw_ticks_observed=self._raw_ticks_observed,
             duplicate_ticks=self._duplicate_ticks,
             volume_resets=self._volume_resets,
@@ -1115,3 +1678,60 @@ class Stress90OiEvidenceAggregator:
             self._sequence = record.sequence
             if self._generation == generation:
                 self._dirty = False
+
+
+def arm_stress90_raw_evidence_collection(
+    broker,
+    aggregator: Stress90OiEvidenceAggregator,
+    *,
+    trading_day: str,
+    catalog: Sequence[ContractInfo],
+    subscription_catalog: Sequence[ContractInfo] | None = None,
+) -> tuple[str, ...]:
+    """Install pre-coalescing OI observation before subscribing the validated universe."""
+
+    set_observer = getattr(broker, "set_raw_tick_observer", None)
+    subscribe = getattr(broker, "subscribe", None)
+    if not callable(set_observer) or not callable(subscribe):
+        raise OiEvidenceIntegrityError(
+            "raw OI evidence Broker lacks observer/subscription capability"
+        )
+    expected = aggregator.set_expected_contracts(trading_day, catalog)
+    by_symbol: dict[str, ContractInfo] = {}
+    for contract in catalog:
+        if not isinstance(contract, ContractInfo):
+            raise OiEvidenceIntegrityError("raw OI evidence catalog row is invalid")
+        symbol = contract.symbol.upper()
+        if symbol in by_symbol:
+            raise OiEvidenceIntegrityError("raw OI evidence catalog has duplicate symbols")
+        by_symbol[symbol] = contract
+    subscriptions = tuple(subscription_catalog) if subscription_catalog is not None else tuple(
+        by_symbol[symbol] for symbol in expected
+    )
+    subscription_by_symbol: dict[str, ContractInfo] = {}
+    for contract in subscriptions:
+        if not isinstance(contract, ContractInfo):
+            raise OiEvidenceIntegrityError("raw OI subscription catalog row is invalid")
+        symbol = contract.symbol.upper()
+        if symbol in subscription_by_symbol:
+            raise OiEvidenceIntegrityError("raw OI subscription catalog has duplicate symbols")
+        canonical = by_symbol.get(symbol)
+        if canonical is None or canonical != contract:
+            raise OiEvidenceIntegrityError(
+                f"raw OI subscription identity is absent from catalog: {contract.symbol}"
+            )
+        subscription_by_symbol[symbol] = contract
+    missing = sorted(set(expected) - set(subscription_by_symbol))
+    if missing:
+        raise OiEvidenceIntegrityError(
+            "raw OI evidence expected catalog identities are missing: " + ",".join(missing)
+        )
+    set_observer(aggregator)
+    for symbol in sorted(subscription_by_symbol):
+        contract = subscription_by_symbol[symbol]
+        subscribe(contract.symbol, contract.exchange)
+    # ``set_expected_contracts`` declared the whole initial universe before the
+    # observer became visible.  Missing/failed subscriptions therefore remain
+    # missing coverage; recording them after individual subscribe calls would
+    # race the first raw Tick and falsely label a complete initial batch late.
+    return expected

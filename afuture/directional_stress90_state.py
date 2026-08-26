@@ -25,7 +25,7 @@ from .directional_stress90_policy import (
     step_stress90_candidate,
 )
 
-STRESS90_STATE_SCHEMA_VERSION = 1
+STRESS90_STATE_SCHEMA_VERSION = 4
 STRESS90_STATE_KIND = "afuture.directional.stress90.policy-state"
 STRESS90_SEED_SCHEMA_VERSION = 1
 STRESS90_SEED_KIND = "afuture.directional.stress90.bootstrap-seed"
@@ -354,12 +354,16 @@ class Stress90PolicyState:
     last_completed_account_day: str | None
     recent_daily_returns_for_adaptive_margin: tuple[float, ...]
     live_inception_day: str | None
+    live_inception_equity: float | None
+    live_account_identity_digest: str | None
+    live_account_epoch: str | None
 
     @classmethod
     def from_seed(
         cls,
         seed: Stress90BootstrapSeed,
         *,
+        prepared_decision: Stress90PreparedDecision | None = None,
         definition: Stress90PolicyDefinition = STRESS90_POLICY,
     ) -> Stress90PolicyState:
         if seed.policy_definition_digest != definition.policy_definition_digest:
@@ -391,12 +395,15 @@ class Stress90PolicyState:
             last_cost_approved_weights=seed.last_cost_approved_weights,
             last_survivor_weights=seed.last_survivor_weights,
             completed_concentrations=seed.completed_concentrations,
-            prepared_decision=None,
+            prepared_decision=prepared_decision,
             completed_account_wealth=1.0,
             completed_account_high_watermark=1.0,
             last_completed_account_day=None,
             recent_daily_returns_for_adaptive_margin=(),
             live_inception_day=None,
+            live_inception_equity=None,
+            live_account_identity_digest=None,
+            live_account_epoch=None,
         )
         _validate_state(state, definition)
         return state
@@ -474,6 +481,15 @@ def _decision_inputs_digest(
             "completed_oi_day": oi_day,
         }
     )
+
+
+def stress90_decision_inputs_digest(
+    inputs: Stress90DecisionInputs,
+    definition: Stress90PolicyDefinition = STRESS90_POLICY,
+) -> str:
+    """Return the canonical identity of one complete production decision input."""
+
+    return _decision_inputs_digest(inputs, definition)
 
 
 def _validate_prepared(
@@ -626,7 +642,33 @@ def _validate_state(
         raise Stress90StateIntegrityError("completed account day requires live inception day")
     if account_day is not None and inception_day is not None and account_day < inception_day:
         raise Stress90StateIntegrityError("completed account day precedes live inception")
+    inception_equity = state.live_inception_equity
+    if (inception_day is None) != (inception_equity is None):
+        raise Stress90StateIntegrityError(
+            "live inception day and equity must be initialized together"
+        )
+    if inception_equity is not None and (
+        isinstance(inception_equity, bool)
+        or not isinstance(inception_equity, (int, float))
+        or not isfinite(inception_equity)
+        or float(inception_equity) <= 0.0
+    ):
+        raise Stress90StateIntegrityError("live inception equity must be finite and positive")
     _valid_recent_returns(state.recent_daily_returns_for_adaptive_margin)
+    if state.live_account_identity_digest is not None:
+        _valid_sha256(
+            state.live_account_identity_digest,
+            name="live account identity digest",
+        )
+    if state.live_account_epoch is not None:
+        _valid_sha256(
+            state.live_account_epoch,
+            name="live account epoch",
+        )
+    if (state.live_account_identity_digest is None) != (state.live_account_epoch is None):
+        raise Stress90StateIntegrityError(
+            "live account identity and lifecycle epoch must be bound together"
+        )
     if state.prepared_decision is not None:
         _validate_prepared(state.prepared_decision, state, definition)
 
@@ -677,6 +719,9 @@ def _state_payload(state: Stress90PolicyState) -> dict[str, object]:
             state.recent_daily_returns_for_adaptive_margin
         ),
         "live_inception_day": state.live_inception_day,
+        "live_inception_equity": state.live_inception_equity,
+        "live_account_identity_digest": state.live_account_identity_digest,
+        "live_account_epoch": state.live_account_epoch,
     }
 
 
@@ -702,6 +747,9 @@ _STATE_FIELDS = {
     "last_completed_account_day",
     "recent_daily_returns_for_adaptive_margin",
     "live_inception_day",
+    "live_inception_equity",
+    "live_account_identity_digest",
+    "live_account_epoch",
 }
 
 _PREPARED_FIELDS = {
@@ -829,6 +877,19 @@ def _state_from_payload(
         live_inception_day=(
             None if raw["live_inception_day"] is None else str(raw["live_inception_day"])
         ),
+        live_inception_equity=(
+            None
+            if raw["live_inception_equity"] is None
+            else float(raw["live_inception_equity"])
+        ),
+        live_account_identity_digest=(
+            None
+            if raw["live_account_identity_digest"] is None
+            else str(raw["live_account_identity_digest"])
+        ),
+        live_account_epoch=(
+            None if raw["live_account_epoch"] is None else str(raw["live_account_epoch"])
+        ),
     )
     _validate_state(state, definition)
     return state
@@ -850,7 +911,22 @@ class Stress90PolicyStateStore:
     def previous_path(self) -> Path:
         return self.path.with_name(f"{self.path.name}.prev")
 
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_name(f"{self.path.name}.lock")
+
+    def _require_fresh_or_current(self) -> None:
+        if self.path.exists():
+            return
+        evidence = [path.name for path in (self.previous_path, self.lock_path) if path.exists()]
+        if evidence:
+            raise Stress90StateIntegrityError(
+                "current Stress-90 policy state is missing while incident evidence exists: "
+                + ", ".join(evidence)
+            )
+
     def load_record(self) -> Stress90StateRecord | None:
+        self._require_fresh_or_current()
         if not self.path.exists():
             return None
         return self._read_record(self.path)
@@ -886,7 +962,11 @@ class Stress90PolicyStateStore:
         if raw["kind"] != STRESS90_STATE_KIND:
             raise Stress90StateIntegrityError("Stress-90 state kind is invalid")
         schema = raw["schema_version"]
-        if isinstance(schema, bool) or not isinstance(schema, int) or schema != 1:
+        if (
+            isinstance(schema, bool)
+            or not isinstance(schema, int)
+            or schema != STRESS90_STATE_SCHEMA_VERSION
+        ):
             raise Stress90StateIntegrityError("Stress-90 state schema is unsupported")
         sequence = raw["sequence"]
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
@@ -906,6 +986,7 @@ class Stress90PolicyStateStore:
         expected_sequence: int | None = None,
     ) -> Stress90StateRecord:
         _validate_state(state, self.definition)
+        self._require_fresh_or_current()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         previous_bytes: bytes | None = None
         current = self.load_record()
@@ -1257,6 +1338,7 @@ def record_completed_account_day(
     trading_day: str,
     daily_return: float,
     *,
+    include_adaptive_margin: bool = True,
     definition: Stress90PolicyDefinition = STRESS90_POLICY,
 ) -> Stress90PolicyState:
     """Advance normalized completed wealth/HWM exactly once for one Broker day."""
@@ -1281,7 +1363,11 @@ def record_completed_account_day(
     if not isfinite(wealth) or wealth <= 0.0:
         raise Stress90StateIntegrityError("completed account wealth became invalid")
     high_watermark = max(state.completed_account_high_watermark, wealth)
-    recent = (*state.recent_daily_returns_for_adaptive_margin, value)[-2:]
+    if not isinstance(include_adaptive_margin, bool):
+        raise Stress90StateIntegrityError("adaptive-margin inclusion flag must be boolean")
+    recent = state.recent_daily_returns_for_adaptive_margin
+    if include_adaptive_margin:
+        recent = (*recent, value)[-2:]
     updated = replace(
         state,
         completed_account_wealth=float(wealth),
@@ -1289,6 +1375,40 @@ def record_completed_account_day(
         last_completed_account_day=day,
         recent_daily_returns_for_adaptive_margin=tuple(recent),
         live_inception_day=state.live_inception_day or day,
+        live_inception_equity=state.live_inception_equity or 1.0,
+    )
+    _validate_state(updated, definition)
+    return updated
+
+
+def bind_stress90_account_identity(
+    state: Stress90PolicyState,
+    account_identity_digest: str,
+    *,
+    account_epoch: str | None = None,
+    allow_rebind: bool = False,
+    definition: Stress90PolicyDefinition = STRESS90_POLICY,
+) -> Stress90PolicyState:
+    """Bind account soft-path state to a non-secret Broker identity."""
+
+    _validate_state(state, definition)
+    digest = _valid_sha256(account_identity_digest, name="live account identity digest")
+    existing = state.live_account_identity_digest
+    if existing is not None and existing != digest and not allow_rebind:
+        raise Stress90StateIntegrityError(
+            "Stress-90 account identity mismatch; explicit rebase is required"
+        )
+    epoch = state.live_account_epoch
+    if account_epoch is not None:
+        epoch = _valid_sha256(account_epoch, name="live account epoch")
+    if epoch is None:
+        raise Stress90StateIntegrityError(
+            "Stress-90 account binding requires an explicit lifecycle epoch"
+        )
+    updated = replace(
+        state,
+        live_account_identity_digest=digest,
+        live_account_epoch=epoch,
     )
     _validate_state(updated, definition)
     return updated
@@ -1316,6 +1436,8 @@ def rebase_stress90_account(
     no_active_orders: bool,
     reconciled: bool,
     strong_confirmation: str,
+    account_identity_digest: str | None = None,
+    account_epoch: str | None = None,
     definition: Stress90PolicyDefinition = STRESS90_POLICY,
 ) -> tuple[Stress90PolicyState, Stress90AccountRebaseAudit]:
     """Reset only account soft-path statistics after explicit lifecycle gates pass."""
@@ -1331,6 +1453,17 @@ def rebase_stress90_account(
     day = _valid_day(account_trading_day, name="Stress-90 account rebase trading day")
     if day is None:  # pragma: no cover - required by _valid_day
         raise Stress90StateIntegrityError("Stress-90 account rebase trading day is missing")
+    prior_account_days = tuple(
+        prior
+        for prior in (
+            state.last_completed_target_day,
+            state.last_completed_account_day,
+            state.live_inception_day,
+        )
+        if prior is not None
+    )
+    if any(day < prior for prior in prior_account_days):
+        raise Stress90StateIntegrityError("Stress-90 account rebase trading day moved backward")
     if (
         isinstance(account_equity, bool)
         or not isinstance(account_equity, (int, float))
@@ -1353,6 +1486,15 @@ def rebase_stress90_account(
         last_completed_account_day=None,
         recent_daily_returns_for_adaptive_margin=(),
         live_inception_day=day,
+        live_inception_equity=float(account_equity),
     )
+    if account_identity_digest is not None:
+        updated = bind_stress90_account_identity(
+            updated,
+            account_identity_digest,
+            account_epoch=account_epoch,
+            allow_rebind=True,
+            definition=definition,
+        )
     _validate_state(updated, definition)
     return updated, audit

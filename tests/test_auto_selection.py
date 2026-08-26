@@ -202,6 +202,7 @@ def test_engine_restores_persisted_auto_pair_before_reconciliation(tmp_path: Pat
 
 def test_ctp_contract_catalog_captures_raw_instrument_metadata():
     broker = CtpBroker(CtpCredentials("u", "p", "b", "td", "md", "", ""))
+    broker._trading_day = "20260825"
     broker._handle_contract_metadata(
         {
             "InstrumentID": "m2609",
@@ -213,7 +214,7 @@ def test_ctp_contract_catalog_captures_raw_instrument_metadata():
     )
     row = broker.get_contract_catalog()[0]
     assert row.symbol == "m2609"
-    assert row.product == "m"
+    assert row.product == "M"
     assert row.expiry == "2026-09-15"
 
 

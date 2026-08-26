@@ -133,6 +133,117 @@ exchanges = ["DCE"]
         load_config(live, require_ctp_credentials=False)
 
 
+def test_stress90_order_capable_config_requires_expected_ctp_account_identity(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+
+    live = _write(
+        tmp_path,
+        """
+[system]
+mode = "live"
+initial_capital = 500000
+
+[ctp]
+environment = "production"
+td_address = "tcp://trade"
+md_address = "tcp://market"
+
+[directional]
+enabled = true
+policy = "stress90"
+products = [{products}]
+""".format(products=", ".join(f'"{product}"' for product in FROZEN_PRODUCTS)),
+    )
+    for key, value in {
+        "AFUTURE_CTP_USER": "user",
+        "AFUTURE_CTP_PASSWORD": "secret",
+        "AFUTURE_CTP_BROKER": "9999",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    with pytest.raises(
+        ValueError,
+        match="AFUTURE_CTP_ACCOUNT_ID.*AFUTURE_CTP_CURRENCY_ID",
+    ):
+        load_config(live)
+
+    monkeypatch.setenv("AFUTURE_CTP_ACCOUNT_ID", "acct-01")
+    monkeypatch.setenv("AFUTURE_CTP_CURRENCY_ID", "CNY")
+    monkeypatch.setenv("AFUTURE_CTP_INVESTOR_ID", "investor-01")
+    monkeypatch.setenv("AFUTURE_CTP_INVEST_UNIT_ID", "unit-01")
+    config = load_config(live)
+    assert config.ctp is not None
+    assert config.ctp.account_id == "acct-01"
+    assert config.ctp.currency_id == "CNY"
+    assert config.ctp.investor_id == "investor-01"
+    assert config.ctp.invest_unit_id == "unit-01"
+    assert config.account_registry_path == "/var/lib/afuture/account-runtime-registry.json"
+    base_config_text = live.read_text(encoding="utf-8")
+
+    relative_registry = _write(
+        tmp_path,
+        base_config_text
+        + """
+
+[paths]
+account_registry = "runtime/account-runtime-registry.json"
+""",
+    )
+    with pytest.raises(ValueError, match="account_registry.*absolute"):
+        load_config(relative_registry)
+
+    split_registry = _write(
+        tmp_path,
+        base_config_text
+        + """
+
+[paths]
+account_registry = "/var/lib/afuture/account-runtime-registry-copy.json"
+""",
+    )
+    with pytest.raises(ValueError, match="account_registry.*fixed machine-level"):
+        load_config(split_registry)
+
+
+def test_execution_aligned_order_capable_config_remains_legacy_compatible(
+    tmp_path: Path,
+    monkeypatch,
+):
+    live = _write(
+        tmp_path,
+        """
+[system]
+mode = "live"
+initial_capital = 500000
+
+[ctp]
+environment = "production"
+td_address = "tcp://trade"
+md_address = "tcp://market"
+
+[directional]
+enabled = true
+policy = "execution_aligned"
+products = ["A"]
+""",
+    )
+    for key, value in {
+        "AFUTURE_CTP_USER": "user",
+        "AFUTURE_CTP_PASSWORD": "secret",
+        "AFUTURE_CTP_BROKER": "9999",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    config = load_config(live)
+
+    assert config.ctp is not None
+    assert config.ctp.account_id == ""
+    assert config.ctp.currency_id == ""
+
+
 def test_directional_policy_rejects_unknown_identity():
     from afuture.directional import DirectionalConfig
 

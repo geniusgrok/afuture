@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import pytest
+
+_CHINA = ZoneInfo("Asia/Shanghai")
 
 
 def _sha256(path: Path) -> str:
@@ -79,8 +83,9 @@ def _write_synthetic_archive(runtime: Path):
     pd.DataFrame(contracts).to_csv(runtime / "return_target_specific_contracts.csv", index=False)
 
     source_days = [days[days.get_loc(target_days[0]) - 1], *target_days[:-1]]
+    fixed_60m_days = [*source_days, target_days[-1]]
     bars: list[dict[str, object]] = []
-    for source_day in source_days:
+    for source_day in fixed_60m_days:
         for product in STRESS90_POLICY.oi_products:
             bars.extend(
                 [
@@ -146,6 +151,33 @@ def _refreshed_expectations(runtime: Path, old):
     )
 
 
+def _promote_synthetic_profile(monkeypatch: pytest.MonkeyPatch, expectations):
+    from dataclasses import replace
+    from types import MappingProxyType
+
+    import afuture.directional_stress90_bootstrap as bootstrap_module
+
+    original_policy = bootstrap_module.STRESS90_POLICY
+
+    class PolicyProxy:
+        historical_candidate_weight_sha256 = expectations.candidate_weight_sha256
+
+        def __init__(self, original):
+            self._original = original
+
+        def __getattr__(self, name):
+            return getattr(self._original, name)
+
+    policy = PolicyProxy(original_policy)
+    monkeypatch.setattr(
+        bootstrap_module,
+        "FIXED_STRESS90_INPUT_SHA256",
+        MappingProxyType(dict(expectations.input_sha256)),
+    )
+    monkeypatch.setattr(bootstrap_module, "STRESS90_POLICY", policy)
+    return replace(expectations, official_historical_profile=True)
+
+
 def test_dry_run_rebuilds_base_and_replays_incremental_candidate_exactly(tmp_path: Path):
     from afuture.directional_stress90_bootstrap import bootstrap_stress90
 
@@ -169,6 +201,342 @@ def test_dry_run_rebuilds_base_and_replays_incremental_candidate_exactly(tmp_pat
     assert result.seed_path is None
     assert result.state_path is None
     assert not (runtime / "stress90_bootstrap_seed.json").exists()
+
+
+def test_live_bootstrap_persists_verified_through_day_oi_bridge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from afuture.directional_activity import DirectionalActivityStore
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_stress90_bootstrap import bootstrap_stress90
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+    from afuture.directional_stress90_policy import STRESS90_POLICY
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+
+    result = bootstrap_stress90(
+        runtime_dir=runtime,
+        through_day=through,
+        expectations=expectations,
+        write_artifacts=True,
+    )
+
+    assert result.oi_evidence_path == runtime / "stress90_oi_evidence.json"
+    record = Stress90OiEvidenceStore(result.oi_evidence_path).load_required_record()
+    assert record.sequence == 1
+    assert len(record.state.completed) == 1
+    evidence = record.state.completed[0]
+    assert evidence.source == "fixed_historical_60m"
+    assert evidence.trading_day == through
+    assert evidence.complete is True
+    assert set(evidence.flows) == {"A", "C", "EG", "I", "M", "P", "PP", "TA", "Y"}
+    policy = Stress90PolicyStateStore(result.state_path).load_required()
+    assert policy.prepared_decision is not None
+    assert policy.prepared_decision.target_trading_day == through
+    assert policy.prepared_decision.daily_decision_digest == policy.last_decision_digest
+    ohlc = DirectionalOHLCCacheStore(
+        runtime / "directional_ohlc_cache.json"
+    ).load(STRESS90_POLICY.products)
+    assert ohlc is not None
+    assert ohlc.latest_date.strftime("%Y%m%d") == through
+    activity = DirectionalActivityStore(runtime / "directional_activity.json").load()
+    assert activity is not None
+    assert activity.trading_day == through
+    assert {row.product for row in activity.contracts.values()} == set(
+        STRESS90_POLICY.products
+    )
+    assert result.to_dict()["oi_evidence_path"] == str(result.oi_evidence_path)
+
+
+def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from afuture.cli import _run_stress90_oi_collect
+    from afuture.directional import DirectionalConfig
+    from afuture.directional_sessions import PRODUCT_SESSION_MANIFEST
+    from afuture.directional_stress90_bootstrap import bootstrap_stress90
+    from afuture.directional_stress90_policy import STRESS90_POLICY
+    from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+    from afuture.models import AccountSnapshot, ContractInfo
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    bootstrap_stress90(
+        runtime_dir=runtime,
+        through_day=through,
+        expectations=expectations,
+        write_artifacts=True,
+    )
+    catalog = [
+        ContractInfo(
+            f"{product}2612",
+            PRODUCT_SESSION_MANIFEST[product].exchange,
+            product,
+            "2026-12-15",
+        )
+        for product in FROZEN_PRODUCTS
+    ]
+
+    class FakeBroker:
+        instance = None
+
+        def __init__(self, _credentials) -> None:
+            type(self).instance = self
+            self.observer = None
+            self.subscriptions: list[tuple[str, str]] = []
+            self.sent = 0
+
+        def get_account_identity_digest(self) -> str:
+            return "a" * 64
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def is_ready(self) -> bool:
+            return True
+
+        def snapshot_marker(self):
+            return (0, 0)
+
+        def snapshot_ready(self, _marker) -> bool:
+            return True
+
+        def get_account(self) -> AccountSnapshot:
+            return AccountSnapshot(
+                500_000,
+                500_000,
+                500_000,
+                0,
+                0,
+                0,
+                through,
+                previous_settlement_equity=500_000,
+                settlement_verified=True,
+                settlement_id=1,
+            )
+
+        def get_trading_day(self) -> str:
+            return through
+
+        def get_positions(self):
+            return []
+
+        def get_active_orders(self):
+            return []
+
+        def get_session_trades(self):
+            return []
+
+        def owns_order(self, _order_id: str) -> bool:
+            return False
+
+        def refresh_contract_catalog(self, *, timeout_seconds: float):
+            assert timeout_seconds > 0
+            return SimpleNamespace(trading_day=through)
+
+        def contract_catalog_verified_for_day(self, day: str) -> bool:
+            return day == through
+
+        def get_contract_catalog(self):
+            return list(catalog)
+
+        def set_raw_tick_observer(self, observer) -> None:
+            self.observer = observer
+
+        def subscribe(self, symbol: str, exchange: str) -> None:
+            self.subscriptions.append((symbol, exchange))
+
+        def poll_events(self):
+            return []
+
+        def health_error(self):
+            return None
+
+        def send_order(self, _request):
+            self.sent += 1
+            raise AssertionError("raw evidence sidecar must never send")
+
+    monkeypatch.setattr("afuture.broker.ctp.CtpBroker", FakeBroker)
+    config = SimpleNamespace(
+        mode="live",
+        ctp=SimpleNamespace(environment="test"),
+        directional=DirectionalConfig(
+            enabled=True,
+            policy="stress90",
+            account_exclusive=True,
+            products=FROZEN_PRODUCTS,
+        ),
+        state_path=str(runtime / "state.json"),
+        journal_path=str(runtime / "audit.jsonl"),
+        metadata_timeout_seconds=0.1,
+    )
+    args = SimpleNamespace(
+        confirm_live=False,
+        runtime_dir=str(runtime),
+        startup_timeout=0.1,
+        snapshot_wait=0.1,
+        checkpoint_interval=0.01,
+        once=True,
+        shadow_account=False,
+    )
+
+    assert _run_stress90_oi_collect(config, args) == 0
+    broker = FakeBroker.instance
+    assert broker is not None
+    assert broker.sent == 0
+    assert broker.observer is None
+    assert len(broker.subscriptions) == len(FROZEN_PRODUCTS)
+    assert {symbol for symbol, _exchange in broker.subscriptions} == {
+        f"{product}2612" for product in STRESS90_POLICY.products
+    }
+
+
+def test_live_bootstrap_rejects_incomplete_through_day_oi_before_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    paths = [
+        runtime / "prior_two_year_broad_60m.csv",
+        runtime / "two_year_broad_60m.csv",
+    ]
+    bars = pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
+    day = pd.to_datetime(bars["datetime"]).dt.strftime("%Y%m%d")
+    bars = bars[~((day == through) & (bars["product"] == "A"))]
+    split = len(bars) // 2
+    bars.iloc[:split].to_csv(paths[0], index=False)
+    bars.iloc[split:].to_csv(paths[1], index=False)
+    expectations = _refreshed_expectations(runtime, expectations)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+
+    with pytest.raises(Stress90BootstrapError, match=rf"{through}.*missing=.*A"):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+
+    assert not (runtime / "stress90_bootstrap_seed.json").exists()
+    assert not (runtime / "stress90_policy_state.json").exists()
+    assert not (runtime / "stress90_oi_evidence.json").exists()
+
+
+def test_synthetic_bootstrap_bridge_is_consumed_once_by_first_live_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from afuture.directional import DirectionalConfig
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_sessions import PRODUCT_SESSION_MANIFEST
+    from afuture.directional_stress90_bootstrap import bootstrap_stress90
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+    from afuture.directional_stress90_policy import STRESS90_POLICY
+    from afuture.directional_stress90_runtime import Stress90DirectionalPortfolioManager
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+    from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+    from afuture.models import ContractInfo
+    from afuture.risk import RiskConfig, RiskManager
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    bootstrap = bootstrap_stress90(
+        runtime_dir=runtime,
+        through_day=through,
+        expectations=expectations,
+        write_artifacts=True,
+    )
+    through_timestamp = pd.Timestamp(datetime.strptime(through, "%Y%m%d"))
+    next_target = (through_timestamp + pd.offsets.BDay(1)).strftime("%Y%m%d")
+    index = pd.bdate_range(end=through_timestamp, periods=170)
+    close = pd.DataFrame(
+        {
+            product: [100.0 * (1.001**row) for row in range(len(index))]
+            for product in FROZEN_PRODUCTS
+        },
+        index=index,
+    )
+    ohlc_path = runtime / "directional_ohlc_cache.json"
+    DirectionalOHLCCacheStore(ohlc_path).save(FROZEN_PRODUCTS, close / 1.001, close)
+    catalog = [
+        ContractInfo(
+            f"{product}2612",
+            PRODUCT_SESSION_MANIFEST[product].exchange,
+            product,
+            "2026-12-15",
+        )
+        for product in STRESS90_POLICY.oi_products
+    ]
+
+    class Broker:
+        def __init__(self):
+            self.trading_day = through
+            self.observer = None
+
+        def get_trading_day(self):
+            return self.trading_day
+
+        def get_contract_catalog(self):
+            return list(catalog)
+
+        def set_raw_tick_observer(self, observer):
+            self.observer = observer
+
+        def subscribe(self, symbol, exchange):
+            del symbol, exchange
+
+    broker = Broker()
+    manager = Stress90DirectionalPortfolioManager(
+        DirectionalConfig(enabled=True, policy="stress90", products=FROZEN_PRODUCTS),
+        broker,
+        RiskManager(RiskConfig(margin_estimate_buffer=1.25)),
+        policy_state_path=bootstrap.state_path,
+        seed_path=bootstrap.seed_path,
+        oi_evidence_path=bootstrap.oi_evidence_path,
+        ohlc_cache_path=ohlc_path,
+    )
+
+    class Base:
+        def target_weights(self, open_prices, close_prices):
+            del open_prices, close_prices
+            return {
+                product: (1.0 if product in {"A", "AG"} else 0.0) for product in FROZEN_PRODUCTS
+            }
+
+    manager.policy = Base()
+    manager.bootstrap(through_timestamp.to_pydatetime().replace(tzinfo=_CHINA))
+    before_oi = Stress90OiEvidenceStore(bootstrap.oi_evidence_path).load_required_record()
+    broker.trading_day = next_target
+
+    first = manager._prepare_decision_for_current_day(next_target)
+    second = manager._prepare_decision_for_current_day(next_target)
+
+    after_state = Stress90PolicyStateStore(bootstrap.state_path).load_required_record()
+    after_oi = Stress90OiEvidenceStore(bootstrap.oi_evidence_path).load_required_record()
+    assert first == second
+    assert first.previous_target_trading_day == through
+    assert first.input_days == {"completed_close": through, "completed_oi": through}
+    assert after_state.sequence == 2
+    assert after_oi == before_oi
+    assert after_oi.state.completed[0].source == "fixed_historical_60m"
 
 
 def test_bootstrap_hashes_every_fixed_input_before_parsing(tmp_path: Path):

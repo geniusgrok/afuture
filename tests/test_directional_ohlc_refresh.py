@@ -26,6 +26,7 @@ def test_stress90_order_path_loads_only_verified_cache_and_requires_completed_da
         store,
         products=products,
         current_ctp_trading_day="20260525",
+        authoritative_ctp_trading_day="20260525",
         required_completed_day=close.index[-1].strftime("%Y%m%d"),
     )
     assert entry.content_digest
@@ -35,6 +36,7 @@ def test_stress90_order_path_loads_only_verified_cache_and_requires_completed_da
             store,
             products=products,
             current_ctp_trading_day="20260525",
+            authoritative_ctp_trading_day="20260525",
             required_completed_day="20260524",
         )
 
@@ -68,6 +70,18 @@ def test_explicit_refresh_is_append_only_and_rejects_current_day_or_revision(tmp
             ),
             products=products,
             current_ctp_trading_day="20260525",
+            authoritative_ctp_trading_day="20260525",
+        )
+
+    with pytest.raises(RuntimeError, match="Broker-derived"):
+        refresh_directional_ohlc_cache(
+            store,
+            provider=SimpleNamespace(
+                load=lambda _products: SimpleNamespace(open=open_prices, close=close)
+            ),
+            products=products,
+            current_ctp_trading_day="20260526",
+            authoritative_ctp_trading_day="20260525",
         )
 
     future_open = pd.concat(
@@ -123,8 +137,23 @@ def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
 
     calls = []
 
-    def fake_refresh(store, *, provider, products, current_ctp_trading_day):
-        calls.append((store.path, provider, products, current_ctp_trading_day))
+    def fake_refresh(
+        store,
+        *,
+        provider,
+        products,
+        current_ctp_trading_day,
+        authoritative_ctp_trading_day,
+    ):
+        calls.append(
+            (
+                store.path,
+                provider,
+                products,
+                current_ctp_trading_day,
+                authoritative_ctp_trading_day,
+            )
+        )
         return SimpleNamespace(
             latest_date=pd.Timestamp("2026-08-24").date(),
             row_count=170,
@@ -135,6 +164,12 @@ def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
     monkeypatch.setattr(
         "afuture.directional_ohlc_refresh.refresh_directional_ohlc_cache",
         fake_refresh,
+    )
+    from afuture.trading_day_evidence import TradingDayEvidenceStore
+
+    TradingDayEvidenceStore(tmp_path / "runtime" / "ctp_trading_day_evidence.json").save(
+        trading_day="20260825",
+        account_identity_digest="a" * 64,
     )
 
     assert (
@@ -151,5 +186,5 @@ def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
     )
     assert credential_flags == [False]
     assert calls[0][0] == tmp_path / "runtime" / "directional_ohlc_cache.json"
-    assert calls[0][2:] == (("A", "M"), "20260825")
+    assert calls[0][2:] == (("A", "M"), "20260825", "20260825")
     assert '"latest_completed_day": "20260824"' in capsys.readouterr().out

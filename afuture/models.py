@@ -160,6 +160,14 @@ class Tick:
     limit_down: float = 0.0
     volume: float = 0.0
     open_interest: float = 0.0
+    # Authoritative CTP trading-day open. Stress-90 uses this to avoid treating
+    # a zero-volume pre-trade snapshot's stale last price as the first 60m open.
+    open_price: float = 0.0
+    # CTP adapter preserves the raw market packet identity separately from the
+    # authoritative TD API day. Sim/replay ticks are equivalent injected evidence.
+    source_trading_day: str = ""
+    source_action_day: str = ""
+    source_trading_day_verified: bool = True
 
     def validate(self) -> None:
         """拒绝会导致错误成交或风险估计的异常行情。"""
@@ -178,6 +186,10 @@ class Tick:
             raise ValueError("daily price limits must be finite and non-negative")
         if self.limit_up and self.limit_down and self.limit_up <= self.limit_down:
             raise ValueError("daily price limits are invalid")
+        if not isfinite(self.open_price) or self.open_price < 0:
+            raise ValueError("open price must be finite and non-negative")
+        if not isinstance(self.source_trading_day_verified, bool):
+            raise ValueError("source trading-day verification flag must be boolean")
         activity = (self.volume, self.open_interest)
         if any(not isfinite(value) or value < 0 for value in activity):
             raise ValueError("volume/open_interest must be finite and non-negative")
@@ -350,6 +362,12 @@ class AccountSnapshot:
     realized_pnl: float
     unrealized_pnl: float
     trading_day: str
+    deposit: float = 0.0
+    withdrawal: float = 0.0
+    cash_flow_verified: bool = True
+    previous_settlement_equity: float | None = None
+    settlement_verified: bool = False
+    settlement_id: int | None = None
 
     def validate(self) -> None:
         """Reject account values that could bypass ratio-based risk comparisons."""
@@ -360,6 +378,8 @@ class AccountSnapshot:
             "margin": self.margin,
             "realized_pnl": self.realized_pnl,
             "unrealized_pnl": self.unrealized_pnl,
+            "deposit": self.deposit,
+            "withdrawal": self.withdrawal,
         }
         for name, value in values.items():
             if (
@@ -372,6 +392,33 @@ class AccountSnapshot:
             raise ValueError("account balance/equity must be positive")
         if self.available < 0 or self.margin < 0:
             raise ValueError("account available/margin must be non-negative")
+        if self.deposit < 0 or self.withdrawal < 0:
+            raise ValueError("account deposit/withdrawal must be non-negative")
+        if not isinstance(self.cash_flow_verified, bool):
+            raise ValueError("account cash-flow verification must be bool")
+        if not isinstance(self.settlement_verified, bool):
+            raise ValueError("account settlement verification must be bool")
+        if self.previous_settlement_equity is not None and (
+            isinstance(self.previous_settlement_equity, bool)
+            or not isinstance(self.previous_settlement_equity, (int, float))
+            or not isfinite(self.previous_settlement_equity)
+            or self.previous_settlement_equity <= 0
+        ):
+            raise ValueError("previous settlement equity must be finite and positive")
+        if self.settlement_verified and self.previous_settlement_equity is None:
+            raise ValueError("verified account settlement requires previous equity")
+        if self.settlement_id is not None and (
+            isinstance(self.settlement_id, bool)
+            or not isinstance(self.settlement_id, int)
+            or self.settlement_id < 0
+        ):
+            raise ValueError("account settlement id must be a non-negative integer")
+        if self.settlement_verified and self.settlement_id is None:
+            raise ValueError("verified account settlement requires settlement id")
+
+    @property
+    def net_cash_flow(self) -> float:
+        return float(self.deposit) - float(self.withdrawal)
 
 
 @dataclass(frozen=True)

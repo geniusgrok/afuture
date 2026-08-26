@@ -39,8 +39,8 @@ class MetadataPrefetcher:
             if all(symbol in self._cache for symbol in key):
                 return True
 
-        # SimBroker 的查询只是字典读取，研究/回放不需要线程化。
-        if broker.__class__.__module__.endswith(".sim"):
+        # The Broker capability, not its implementation name, declares cache-only metadata.
+        if not bool(getattr(broker, "metadata_query_blocks", True)):
             try:
                 rows = broker.get_live_contract_specs(list(key), self.timeout_seconds)
             except Exception as exc:

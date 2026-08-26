@@ -163,7 +163,7 @@ Synthetic fixture must compare every day/product at `abs(diff) <= 1e-14`, compar
 
 - [ ] **Step 9: Make evaluators delegate shared core**
 
-`tools/evaluate_directional_stress80_final.py::build_final_candidate_weights` calls `build_stress90_candidate_path(..., include_hhi=False)` for the Stress-80 candidate path; Stress-90 adds HHI account response without copying candidate formulas. Historical payload keeps `production_wiring=false`.
+`tools/evaluate_directional_stress80_final.py` function `build_final_candidate_weights` calls `build_stress90_candidate_path(..., include_hhi=False)` for the Stress-80 candidate path; Stress-90 adds HHI account response without copying candidate formulas. Historical payload keeps `production_wiring=false`.
 
 - [ ] **Step 10: Run Task 1 L2 and commit checkpoint**
 
@@ -489,10 +489,12 @@ Commit: `feat: wire Stress-90 into directional runtime`
 - Modify: `afuture/operations.py`
 - Modify: `afuture/quality.py`
 - Modify: `afuture/cli.py`
-- Create: `afuture/directional_stress90_costs.py`
-- Create: `tests/test_directional_stress90_operations.py`
-- Create: `tests/test_directional_stress90_quality.py`
-- Create: `tests/test_directional_stress90_rebase.py`
+- Create: `afuture/directional_policy_activation.py`
+- Create: `afuture/directional_stress90_oi_comparator.py`
+- Modify: `tests/test_operations.py`
+- Modify: `tests/test_directional_quality.py`
+- Create: `tests/test_directional_stress90_activation.py`
+- Modify: `tests/test_directional_stress90_oi_runtime.py`
 - Modify: `tests/test_operations.py`
 - Modify: `tests/test_cli_safety.py`
 
@@ -543,8 +545,8 @@ Require HALTED, Broker/local flat, no active orders, fresh account, reconcile, p
 Run:
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_directional_stress90_operations.py tests/test_directional_stress90_quality.py tests/test_directional_stress90_rebase.py tests/test_operations.py tests/test_cli_safety.py tests/test_quality_fee_estimate.py
-.venv/bin/python -m ruff check afuture/operations.py afuture/quality.py afuture/directional_stress90_costs.py afuture/cli.py
+.venv/bin/python -m pytest -q tests/test_operations.py tests/test_cli_safety.py tests/test_directional_quality.py tests/test_directional_stress90_activation.py tests/test_directional_stress90_oi_runtime.py
+.venv/bin/python -m ruff check afuture/operations.py afuture/quality.py afuture/directional_policy_activation.py afuture/directional_stress90_oi_comparator.py afuture/cli.py
 ```
 
 Commit: `feat: expose Stress-90 activation evidence`

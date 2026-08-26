@@ -14,8 +14,9 @@
 - [x] 减仓先于开仓，成交驱动持仓和资金记账。
 - [x] 标准与压力情景的账户模拟均未触发保证金拒绝或硬停机。
 - [x] 样本外区间已经被观察，不再标记为纯净样本外。
-- [x] 当前离线研究候选没有自动接入实盘。
+- [x] 历史 evidence 如实保留当时 `production_wiring=false`，没有倒写成当时已接入。
 - [x] 完整输入、分段结果和失败路线已保存在 [`stress90-final-evidence.md`](stress90-final-evidence.md)。
+- [ ] 在目标 workspace 用五个固定输入重新完成 Base、batch/incremental 逐日 parity，并得到 candidate SHA `8e38dbf...9f28`。
 - [ ] 新发生、此前未参与任何选择/调参的未来数据持续验证。
 - [ ] 未来显著恶化时优先降低或关闭风险，不在同一历史上无限调参。
 
@@ -31,15 +32,35 @@
 - [x] 没有为恢复历史收益而放宽单日亏损、总回撤、保证金、现金或杠杆限制。
 - [ ] 未来调整风险阈值前先取得新的 Shadow、测试柜台和小资金证据。
 
+### B.1 Stress-90 当前代码 wiring（不构成 activation）
+
+- [x] `directional.policy` 在生产配置中必须显式为 `execution_aligned` 或 `stress90`。
+- [x] `stress90` 使用独立 manager/runtime adapter；旧 `execution_aligned` state 不会静默迁移成 Stress-90。
+- [x] 普通模式保留 0.25 target scaling；Stress-90 使用 1x raw candidate，不被 `DirectionalRiskScaledPolicy` 重复包装。
+- [x] 研究 batch、bootstrap incremental 和 live runtime 共用同一纯候选 primitives；live 不导入 `tools/` 或 acceptance CLI。
+- [x] policy definition、固定历史 candidate 和 daily decision 使用三个不同 digest。
+- [x] prepared decision 在第一张订单前 exactly once 落盘；重启复用同一 decision/intent。
+- [x] 25% completed-path reserve 与 raw candidate HHI freeze 独立记录，均只冻结新风险。
+- [x] raw CTP 60m evidence 在 Tick coalescing 前采集，callback 不做阻塞式 IO。
+- [x] OHLC provider 被移出订单路径；live 只读 validated cache。
+- [x] `status`、`doctor`、Shadow quality、activation/rebase 和 vendor comparator 已接线。
+- [x] 当前 wiring 的实现边界已写入 [`stress90-live-productionization.md`](stress90-live-productionization.md)。
+- [ ] 目标机 CTP ABI、真实 callback 顺序、实盘前置和账户环境已验证。
+- [ ] 连续多日 Stress-90 Shadow 已通过。
+- [ ] 测试柜台已通过。
+- [ ] 极小真钱已通过。
+
 ## C. 配置与账户隔离
 
 - [ ] 使用固定的 50 品种范围，不为追逐近期收益随意删改。
+- [ ] 生产配置显式包含 `directional.policy = "stress90"` 和 `directional.account_exclusive = true`。
 - [ ] `directional.max_gross_leverage <= 2.0`。
 - [ ] `directional.max_contract_volume == 35` 或更低。
 - [ ] 方向组合不与固定跨期组合或 Auto 同时启用。
 - [ ] 同一账户没有手工或其他程序交易，保持账户独占假设。
 - [ ] 目标交易所和品种权限已开通。
 - [ ] `rebalance_window` 经过测试柜台验证。
+- [ ] Stress-90 不用宽泛 `rebalance_window` 追单；每个产品只在固定 session manifest 的首个 entry window 增加风险。
 - [ ] 保证金、可用资金、单日亏损和总回撤限制已按真实承受能力确认。
 
 ## D. 上一完整交易日的流动性快照
@@ -75,6 +96,20 @@
 - [ ] 完整日收益只在柜台交易日结束后写入状态。
 - [ ] 当前交易时段尚未完成的盈亏不会提前进入风险收缩判断。
 - [ ] 完整日亏损达到 2% 或两日波动达到 3% 时缩小到 25% 的规则在 Shadow 中可解释。
+
+### E.1 Stress-90 候选与 exactly-once state
+
+- [ ] `stress90_bootstrap_seed.json` 的五份 source SHA、policy digest、50/9 品种 manifest 和 through day 全部通过。
+- [ ] `stress90_policy_state.json` 的 schema、sequence、checksum、seed identity 和 `.prev` 证据全部通过；current 损坏时绝不回退。
+- [ ] 每个 target day 的 Base、OI、cost、survivor 和 daily decision digest 可重算且一致。
+- [ ] OI 支持品种严格为 `A,C,EG,I,M,P,PP,TA,Y`，其余 41 品种保持 Base target。
+- [ ] missing/incomplete OI 与合法 `flow=0` 在 status、doctor 和 state 中可区分。
+- [ ] 成本门严格使用 completed `20/3/15bp`，只阻止 entry 和同向 add。
+- [ ] survivor reallocation 不创造 support、不改方向、不超过原 gross/2x，并满足 L1/turnover/tie-break 顺序。
+- [ ] HHI 使用 raw survivor product weights，先比较 strictly-prior median 再追加；同日重复运行不会重复追加。
+- [ ] state 已有 prepared decision 时，重启和重复 `run_once()` 复用相同 digest，不重新推进 target。
+- [ ] seed 到 current target 之间没有跳过中间 target day；gap 时空仓拒绝新增风险、有仓 `REDUCE_ONLY`。
+- [ ] historical seed 没有继承回测账户收益；live wealth/HWM 从真实 inception 开始。
 
 ## F. 保证金约束、先减后开和总敞口限制
 
@@ -115,6 +150,11 @@
 - [ ] 保证金、可用资金、单日亏损和总回撤状态可解释。
 - [ ] 计划与实际换手、滑点、手续费和目标偏差有稳定记录。
 - [ ] 历史固定保证金假设与真实逐日保证金表的差异得到重点复核。
+- [ ] Stress-90 Shadow 已在 `runtime/shadow/` 单独 bootstrap/activate，policy/OI/intent/account state 不与 live 共用。
+- [ ] raw evidence expected/observed/missing contract coverage 覆盖九个 OI 品种的所有 eligible futures contracts。
+- [ ] 夜盘跨午夜、60m boundary、volume reset、duplicate/out-of-order/late Tick、rollover 和重启证据可解释。
+- [ ] CTP/vendor comparator 的 first open、last close、first/last hold、volume、dominant 和 flow 逐日可解释；没有 unexplained flow difference。
+- [ ] 每日 quality 含 Base/OI/cost/survivor、HHI/prior median、两个 freeze、全部 integer stages 和 reduction/opening plan。
 
 ## I. Doctor / 测试柜台
 
@@ -137,6 +177,9 @@
 - [ ] `REDUCE_ONLY` 只减仓。
 - [ ] 查询和报单频率不会使柜台过载。
 - [ ] Broker 保证金和手续费与合约参数及结算单一致。
+- [ ] Doctor 显示 Stress-90 policy/seed/state identity、target continuity、OHLC/OI/activity alignment、九品种 coverage 和完整 integer preview，且 `stress90_ready=true`。
+- [ ] Doctor 逐计划合约估算开仓、平昨、平今、1 tick、spread 和 depth；确定性最低成本显著高于 15bp 的合约保持 activation blocker。
+- [ ] 真实成本不兼容时使用独立命名的新矩阵重跑，没有动态修改固定 Stress-90 cost hurdle。
 
 ## J. 重启和状态真相
 
@@ -154,6 +197,11 @@
 - [ ] 最近完整日收益和单日熔断标记能正确跨重启恢复。
 - [ ] directional 没有第二份独立策略仓位可与 Broker 漂移。
 - [ ] Kill Switch 只有在全部安全条件确认后解除。
+- [ ] Stress-90 prepared decision 后、第一张订单后和部分成交后三类崩溃均复用同一 decision，并以 Broker 持仓继续收敛。
+- [ ] policy switch 只在 `HALTED`、Broker/local 空仓、无活动委托、reconcile 和强确认后完成，且完成后仍保持 kill switch。
+- [ ] 充值、出金或更换账户只通过带唯一 `--operation-id` 的 `stress90-account-rebase`；同账户有 verified nonzero cash flow，rebase 有 operator reason/audit 且完成后仍 `HALTED`。
+- [ ] activation/rebase/migrate 在 account lease 内完整审计 current/archive/sealed CTP order journal；任一损坏或 pending cleanup 都是 P0。
+- [ ] journal 达到 identity 容量时只通过 `stress90-order-journal-rollover` 封存；命令要求 HALTED、空仓、无活动委托、reconcile、强确认，且跨 epoch identity 不可重用。
 
 ## K. 账户规模与整数手数
 
@@ -175,6 +223,7 @@
 - [ ] `quality-report.directional` 每日可读。
 - [ ] 实际换手没有系统性显著高于模型假设。
 - [ ] 滑点 95 分位数没有吞掉大部分可兑现收益。
+- [ ] expected open、planned order price、actual fill、one-way realized cost、p95 cost、completion latency 和 actual/model turnover 都可审计。
 
 ## M. 极小真实资金
 
@@ -205,6 +254,12 @@
 
 - [x] 离线压力研究没有放宽 2 倍总敞口、35% 保证金、25% 可用资金、5% 单日亏损、30% 总回撤或 35 手限制。
 - [x] 失败路线保留在证据文档，没有通过事后调整参数挽救。
-- [x] 当前离线研究候选没有接入实盘。
-- [ ] 若把离线候选接入实盘，必须有独立设计，并验证启动预热、重启、陈旧数据、交易时段、换月和线上线下一致性。
+- [x] 当前代码已通过独立设计把候选接成显式可选 runtime policy；历史 evidence 仍保留当时未接线的事实。
+- [x] 代码测试覆盖启动预热、重启、陈旧数据、交易时段、换月、exactly-once 和线上/离线共享 primitives。
+- [ ] 固定五份输入在部署 workspace 可用并完成完整 Stress-90/Stress-80 矩阵复现。
+- [ ] 多日 CTP Shadow 解释历史 vendor 与 live 60m 数据源差异。
 - [ ] 不以离线年化通过为由跳过 Shadow、测试柜台、小资金或未来新数据。
+
+以下外部证据项不得因代码或 CI 绿色而勾选：目标机 CTP ABI、多日 Shadow、测试柜台、真实手续费、真实保证金、FAK 部分成交、真实断线重连、极小真钱和扩大资金。
+
+`112.100053%` 不是未来收益承诺。96-template pool 存在已观察历史 selection bias；当前新发生数据才是真正 forward evidence。准确 commissioning 命令见 [`stress90-live-runbook.md`](stress90-live-runbook.md)。

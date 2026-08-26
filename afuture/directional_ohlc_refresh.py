@@ -60,10 +60,19 @@ def refresh_directional_ohlc_cache(
     provider,
     products: tuple[str, ...],
     current_ctp_trading_day: str,
+    authoritative_ctp_trading_day: str | None = None,
 ) -> DirectionalOHLCCacheEntry:
     """Fetch outside the engine, reject revisions, and atomically append verified data."""
 
     current = _day(current_ctp_trading_day, name="current CTP trading day")
+    if authoritative_ctp_trading_day is None:
+        raise RuntimeError("Broker-derived CTP trading-day evidence is required")
+    authoritative = _day(
+        authoritative_ctp_trading_day,
+        name="Broker-derived CTP trading day",
+    )
+    if current != authoritative:
+        raise RuntimeError("requested current trading day mismatches Broker-derived evidence")
     history = provider.load(products)
     if not hasattr(history, "open") or not hasattr(history, "close"):
         raise RuntimeError("directional OHLC provider returned an invalid history")

@@ -103,6 +103,47 @@ def test_directional_restart_reconciles_matching_broker_position(tmp_path):
     assert engine.halted is False
 
 
+def test_stress90_restart_adopts_query_recovered_fills_even_when_net_position_matches(
+    tmp_path,
+):
+    class CrashRecoveryManager(_Manager):
+        def __init__(self):
+            self.calls = 0
+
+        def reconcile_authorized_crash_fills(self, local, remote, recent):
+            self.calls += 1
+            assert local == remote == []
+            assert recent == ()
+            return True, ("20260825:DCE:CTP.T-open", "20260825:DCE:CTP.T-close"), "ok"
+
+    store = StateStore(tmp_path / "state.json")
+    store.save(
+        RuntimeState(
+            trading_day="20260825",
+            day_start_equity=100000,
+            equity_high_watermark=100000,
+        )
+    )
+    broker = _Broker([])
+    manager = CrashRecoveryManager()
+    engine = DirectionalTradingEngine(
+        broker,
+        [],
+        {},
+        RiskManager(RiskConfig()),
+        store,
+        directional_manager=manager,
+    )
+    engine.start()
+
+    assert engine.reconcile_startup() is True
+    assert manager.calls == 1
+    assert engine.state.recent_trade_ids == [
+        "20260825:DCE:CTP.T-open",
+        "20260825:DCE:CTP.T-close",
+    ]
+
+
 def test_directional_restart_mismatch_fails_closed(tmp_path):
     stored = ContractPosition("A2609", "DCE", long_yesterday=2, long_price=100.0)
     remote = ContractPosition("A2609", "DCE", long_yesterday=1, long_price=100.0)

@@ -101,6 +101,31 @@ def test_policy_state_store_uses_sequence_checksum_atomic_prev_and_no_fallback(t
     assert store.load_previous_record().state == state
 
 
+@pytest.mark.parametrize("evidence_suffix", [".prev", ".lock"])
+def test_policy_state_store_missing_current_with_evidence_fails_load_and_save(
+    tmp_path: Path,
+    evidence_suffix: str,
+):
+    from afuture.directional_stress90_state import (
+        Stress90PolicyStateStore,
+        Stress90StateIntegrityError,
+    )
+
+    _seed, state = _seed_and_state()
+    path = tmp_path / "stress90_state.json"
+    evidence_path = path.with_name(f"{path.name}{evidence_suffix}")
+    evidence_path.write_bytes(b"incident evidence")
+    store = Stress90PolicyStateStore(path)
+
+    with pytest.raises(Stress90StateIntegrityError, match="current.*missing"):
+        store.load_record()
+    with pytest.raises(Stress90StateIntegrityError, match="current.*missing"):
+        store.save(state)
+
+    assert not path.exists()
+    assert evidence_path.read_bytes() == b"incident evidence"
+
+
 def test_policy_state_store_rejects_checksum_schema_sequence_and_duplicate_keys(tmp_path: Path):
     from afuture.directional_stress90_state import (
         Stress90PolicyStateStore,
@@ -124,7 +149,9 @@ def test_policy_state_store_rejects_checksum_schema_sequence_and_duplicate_keys(
     with pytest.raises(Stress90StateIntegrityError, match="schema"):
         store.load_required()
 
-    raw["schema_version"] = 1
+    from afuture.directional_stress90_state import STRESS90_STATE_SCHEMA_VERSION
+
+    raw["schema_version"] = STRESS90_STATE_SCHEMA_VERSION
     raw["sequence"] = 0
     raw["checksum"] = _checksum_envelope(raw)
     path.write_text(json.dumps(raw), encoding="utf-8")

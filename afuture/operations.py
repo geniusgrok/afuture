@@ -252,6 +252,16 @@ def _add_stress90_local_status(
     seed_path = runtime_dir / "stress90_bootstrap_seed.json"
     oi_path = runtime_dir / "stress90_oi_evidence.json"
     intent_path = runtime_dir / "stress90_execution_intent.json"
+    lifecycle_path = runtime_dir / "stress90_lifecycle_transaction.json"
+    account_registry_path = Path(
+        str(
+            getattr(
+                config,
+                "account_registry_path",
+                runtime_dir / ".account-runtime-registry.json",
+            )
+        )
+    )
     blockers: list[str] = []
     facts: dict[str, object] = {
         "policy_id": STRESS90_POLICY.policy_id,
@@ -304,6 +314,8 @@ def _add_stress90_local_status(
         "seed_path": str(seed_path),
         "oi_evidence_path": str(oi_path),
         "execution_intent_path": str(intent_path),
+        "lifecycle_transaction_path": str(lifecycle_path),
+        "account_runtime_registry_path": str(account_registry_path),
     }
     configured_risk = {
         "max_target_gross": float(config.directional.max_gross_leverage),
@@ -326,6 +338,36 @@ def _add_stress90_local_status(
         for name, value in configured_risk.items()
         if value != historical_risk[name]
     }
+
+    try:
+        from .stress90_lifecycle_transaction import Stress90LifecycleTransactionStore
+
+        lifecycle = Stress90LifecycleTransactionStore(lifecycle_path).load()
+    except (OSError, RuntimeError) as exc:
+        blockers.append("stress90_lifecycle_transaction")
+        facts["lifecycle_transaction"] = {"valid": False, "error": str(exc)}
+        report.add("stress90_lifecycle_transaction", False, str(exc))
+    else:
+        pending_lifecycle = bool(lifecycle is not None and lifecycle.status == "prepared")
+        facts["lifecycle_transaction"] = (
+            None
+            if lifecycle is None
+            else {
+                "transaction_id": lifecycle.transaction_id,
+                "operation": lifecycle.operation,
+                "status": lifecycle.status,
+                "trading_day": lifecycle.trading_day,
+            }
+        )
+        if pending_lifecycle:
+            blockers.append("stress90_lifecycle_transaction")
+        report.add(
+            "stress90_lifecycle_transaction",
+            not pending_lifecycle,
+            "no lifecycle transaction is pending"
+            if not pending_lifecycle
+            else "lifecycle transaction is pending exact CLI roll-forward",
+        )
 
     seed = None
     try:
@@ -436,6 +478,47 @@ def _add_stress90_local_status(
             f"Stress-90 state sequence {policy_record.sequence} verified",
         )
 
+    try:
+        from .account_runtime_registry import AccountRuntimeRegistry
+
+        if (
+            policy_state is None
+            or policy_state.live_account_identity_digest is None
+            or policy_state.live_account_epoch is None
+        ):
+            raise RuntimeError("Stress-90 policy account identity/epoch is missing")
+        registry_evidence = AccountRuntimeRegistry(
+            account_registry_path
+        ).require_binding_evidence(
+            policy_state.live_account_identity_digest,
+            runtime_dir.resolve(strict=False),
+            policy_state.live_account_epoch,
+        )
+    except (OSError, RuntimeError) as exc:
+        blockers.append("stress90_account_runtime_registry")
+        facts["account_runtime_registry"] = {
+            "valid": False,
+            "path": str(account_registry_path),
+            "error": str(exc),
+        }
+        report.add("stress90_account_runtime_registry", False, str(exc))
+    else:
+        facts["account_runtime_registry"] = {
+            "valid": True,
+            "path": str(account_registry_path),
+            "sequence": registry_evidence.registry_sequence,
+            "checksum": registry_evidence.registry_checksum,
+            "runtime_identity_digest": (
+                registry_evidence.binding.runtime_identity_digest
+            ),
+            "account_epoch": registry_evidence.binding.account_epoch,
+        }
+        report.add(
+            "stress90_account_runtime_registry",
+            True,
+            "machine account/runtime/epoch binding verified",
+        )
+
     ohlc = report.facts.get("directional_ohlc_cache")
     if isinstance(ohlc, dict) and ohlc.get("valid") is True:
         facts["ohlc_latest_day"] = str(ohlc.get("latest_date", "")).replace("-", "")
@@ -486,22 +569,51 @@ def _add_stress90_local_status(
         blockers.append("stress90_execution_intent")
         report.add("stress90_execution_intent_integrity", False, str(exc))
     else:
+        intent_matches_policy = bool(
+            intent_record is None
+            or (
+                policy_state is not None
+                and intent_record.effective_account_identity_digest
+                == policy_state.live_account_identity_digest
+                and intent_record.effective_account_epoch == policy_state.live_account_epoch
+            )
+        )
+        if not intent_matches_policy:
+            blockers.append("stress90_execution_intent_lifecycle")
         report.add(
             "stress90_execution_intent_integrity",
-            True,
+            intent_matches_policy,
             "no execution intent is prepared"
             if intent_record is None
-            else f"execution intent sequence {intent_record.sequence} verified",
+            else (
+                f"execution intent sequence {intent_record.sequence} verified"
+                if intent_matches_policy
+                else "execution intent account identity/epoch does not match policy state"
+            ),
         )
         if intent_record is not None:
-            facts["target_lots"] = dict(intent_record.intent.initial_margin_fitted_lots)
-            facts["execution_intent"] = {
-                "target_trading_day": intent_record.intent.target_trading_day,
-                "daily_decision_digest": intent_record.intent.daily_decision_digest,
-                "authorized_transition_products": list(
-                    intent_record.intent.authorized_transition_products
-                ),
-            }
+            facts["target_lots"] = (
+                {}
+                if intent_record.retired
+                else dict(intent_record.intent.initial_margin_fitted_lots)
+            )
+            if intent_record.retired:
+                assert intent_record.retirement is not None
+                facts["execution_intent"] = {
+                    "retired": True,
+                    "retirement_transaction_id": (intent_record.retirement.transaction_id),
+                    "account_identity_digest": (intent_record.effective_account_identity_digest),
+                    "account_epoch": intent_record.effective_account_epoch,
+                }
+            else:
+                facts["execution_intent"] = {
+                    "retired": False,
+                    "target_trading_day": intent_record.intent.target_trading_day,
+                    "daily_decision_digest": intent_record.intent.daily_decision_digest,
+                    "authorized_transition_products": list(
+                        intent_record.intent.authorized_transition_products
+                    ),
+                }
 
     if runtime_state is None:
         blockers.append("runtime_state")
@@ -553,6 +665,117 @@ def _add_stress90_local_status(
     report.facts["stress90"] = facts
 
 
+def _add_stress90_ctp_order_journal_status(report: OperationalReport, config) -> None:
+    if not config.directional.enabled or config.directional.policy != "stress90":
+        return
+    from .broker.ctp_order_journal import (
+        CtpOrderJournalIntegrityError,
+        CtpOrderSubmissionJournal,
+    )
+
+    path = Path(config.state_path).parent / "stress90_ctp_orders.json"
+    previous_path = path.with_name(path.name + ".prev")
+    journal = CtpOrderSubmissionJournal(path)
+    durable_evidence_present = bool(
+        path.exists()
+        or previous_path.exists()
+        or journal.epoch_manifest_path.exists()
+        or journal.epoch_manifest_previous_path.exists()
+        or journal.epoch_root.exists()
+        or any(path.parent.glob(f"{path.name}.archive.*.json"))
+        or any(path.parent.glob(f"{path.name}.runtime-index.*.json"))
+    )
+    facts: dict[str, object] = {
+        "path": str(path),
+        "present": path.exists(),
+        "durable_evidence_present": durable_evidence_present,
+    }
+    try:
+        audit = journal.audit_epochs() if durable_evidence_present else None
+    except (OSError, CtpOrderJournalIntegrityError) as exc:
+        facts.update({"valid": False, "error": str(exc)})
+        report.add("stress90_ctp_order_journal_integrity", False, str(exc))
+    else:
+        record = None if audit is None else audit.current_record
+        manifest = None if audit is None else audit.manifest
+        entries = () if record is None else record.all_entries
+        unresolved_entries = tuple(
+            entry for entry in entries if entry.status not in {"terminal", "aborted_before_send"}
+        )
+        fill_count = sum(len(entry.fill_keys) for entry in entries)
+        reserved_remaining = sum(
+            entry.request.volume - entry.filled_volume
+            for entry in entries
+            if entry.status != "aborted_before_send"
+        )
+        identity_source = entries[0] if entries else None
+        facts.update(
+            {
+                "valid": True,
+                "empty": record is None,
+                "sequence": 0 if record is None else record.sequence,
+                "generation_digest": "" if record is None else record.checksum,
+                "entry_count": len(entries),
+                "unresolved_entry_count": len(unresolved_entries),
+                "hot_entry_count": 0 if record is None else len(record.entries),
+                "archive_entry_count": (0 if record is None else record.archive_entry_count),
+                "archive_head_digest": (
+                    "" if record is None else (record.archive_head_checksum or "")
+                ),
+                "runtime_index_digest": (
+                    "" if record is None else (record.runtime_index_checksum or "")
+                ),
+                "order_identity_count": len(entries),
+                "order_identity_bloom_digest": (
+                    "" if record is None else (record.order_identity_bloom_digest or "")
+                ),
+                "fill_identity_count": fill_count,
+                "reserved_remaining_fill_slots": reserved_remaining,
+                "sealed_epoch_count": 0 if audit is None else audit.sealed_epoch_count,
+                "sealed_entry_count": 0 if audit is None else audit.sealed_entry_count,
+                "sealed_fill_identity_count": (
+                    0 if audit is None else audit.sealed_fill_identity_count
+                ),
+                "epoch_manifest_digest": "" if manifest is None else manifest.checksum,
+                "current_epoch_account_identity_digest": (
+                    "" if manifest is None else manifest.current_account_identity_digest
+                ),
+                "account_identity_digest": (
+                    "" if identity_source is None else identity_source.account_identity_digest
+                ),
+                "policy_id": "" if identity_source is None else identity_source.policy_id,
+                "policy_definition_digest": (
+                    "" if identity_source is None else identity_source.policy_definition_digest
+                ),
+                "products_manifest_digest": (
+                    "" if identity_source is None else identity_source.products_manifest_digest
+                ),
+            }
+        )
+        report.add(
+            "stress90_ctp_order_journal_integrity",
+            True,
+            (
+                "no CTP order journal evidence exists"
+                if audit is None
+                else "full CTP order journal cold archive chain verified"
+            ),
+        )
+        report.add(
+            "stress90_ctp_order_journal_lifecycle_ready",
+            not unresolved_entries,
+            (
+                "all durable CTP order submissions are terminal"
+                if not unresolved_entries
+                else "durable CTP order submissions remain unresolved"
+            ),
+        )
+    raw_stress = report.facts.get("stress90")
+    stress = raw_stress if isinstance(raw_stress, dict) else {}
+    stress["ctp_order_journal"] = facts
+    report.facts["stress90"] = stress
+
+
 def build_local_status(
     config,
     *,
@@ -577,11 +800,22 @@ def build_local_status(
             report.add("state_integrity", True, "current state envelope verified")
             report.facts["state"] = {"present": True, **_state_facts(state)}
     else:
-        report.add("state_integrity", True, "no current state file")
-        report.facts["state"] = {"present": False, "valid": None}
+        try:
+            store.load()
+        except (OSError, StateIntegrityError) as exc:
+            report.add("state_integrity", False, str(exc))
+            report.facts["state"] = {
+                "present": False,
+                "valid": False,
+                "error": str(exc),
+            }
+        else:
+            report.add("state_integrity", True, "no current state file or incident evidence")
+            report.facts["state"] = {"present": False, "valid": None}
 
     _add_directional_ohlc_cache_status(report, config)
     _add_stress90_local_status(report, config, state)
+    _add_stress90_ctp_order_journal_status(report, config)
 
     previous: dict[str, object] = {
         "path": str(store.previous_path),
@@ -617,6 +851,16 @@ def build_local_status(
                 "stress90_seed": runtime_dir / "stress90_bootstrap_seed.json",
                 "stress90_oi_evidence": runtime_dir / "stress90_oi_evidence.json",
                 "stress90_execution_intent": runtime_dir / "stress90_execution_intent.json",
+                "stress90_ctp_order_journal": runtime_dir / "stress90_ctp_orders.json",
+                "account_runtime_registry": Path(
+                    str(
+                        getattr(
+                            config,
+                            "account_registry_path",
+                            runtime_dir / ".account-runtime-registry.json",
+                        )
+                    )
+                ),
             }
         )
     report.facts["paths"] = {name: _path_facts(path) for name, path in paths.items()}
@@ -696,6 +940,8 @@ def _add_stress90_doctor_status(
     requested_symbols: list[str],
     metadata: dict[str, ContractSpec],
     quotes: dict[str, Tick],
+    session_trade_ownership_valid: bool,
+    session_trade_ownership_detail: str,
 ) -> None:
     if not config.directional.enabled or config.directional.policy != "stress90":
         return
@@ -770,6 +1016,50 @@ def _add_stress90_doctor_status(
 
     runtime_dir = Path(config.state_path).parent
     try:
+        generic_record = StateStore(config.state_path).load_required_record()
+    except (OSError, StateIntegrityError) as exc:
+        account_path_ready = False
+        account_path_detail = f"generic account path is unavailable: {exc}"
+    else:
+        generic_state = generic_record.state
+        persisted_prebalance = (
+            float(generic_state.day_start_equity)
+            - float(generic_state.last_account_deposit)
+            + float(generic_state.last_account_withdrawal)
+        )
+        account_path_ready = bool(
+            account.cash_flow_verified
+            and account.settlement_verified
+            and account.previous_settlement_equity is not None
+            and account.settlement_id is not None
+            and generic_state.trading_day == trading_day
+            and generic_state.last_account_trading_day == trading_day
+            and generic_state.last_account_cash_flow_verified
+            and generic_state.last_account_settlement_id == account.settlement_id
+            and generic_state.last_account_deposit == account.deposit
+            and generic_state.last_account_withdrawal == account.withdrawal
+            and persisted_prebalance == account.previous_settlement_equity
+        )
+        account_path_detail = (
+            "persisted settlement/cash-flow account path matches the fresh Broker snapshot"
+            if account_path_ready
+            else "persisted settlement/cash-flow account path is discontinuous"
+        )
+    report.add(
+        "stress90_account_path_continuity",
+        account_path_ready,
+        account_path_detail,
+    )
+    if not account_path_ready:
+        blockers.append("stress90_account_path_continuity")
+    report.add(
+        "stress90_session_trade_ownership",
+        session_trade_ownership_valid,
+        session_trade_ownership_detail,
+    )
+    if not session_trade_ownership_valid:
+        blockers.append("stress90_session_trade_ownership")
+    try:
         policy_state = Stress90PolicyStateStore(
             runtime_dir / "stress90_policy_state.json"
         ).load_required()
@@ -790,13 +1080,19 @@ def _add_stress90_doctor_status(
             ),
         }
         last_target = policy_state.last_completed_target_day
-        continuity = bool(len(trading_day) == 8 and last_target <= trading_day)
+        continuity = bool(
+            len(trading_day) == 8
+            and last_target == trading_day
+            and prepared is not None
+            and prepared.target_trading_day == trading_day
+            and prepared.daily_decision_digest == policy_state.last_decision_digest
+        )
     else:
         continuity = False
     report.add(
         "stress90_target_day_continuity",
         continuity,
-        "Stress-90 target day does not exceed current CTP day"
+        "Stress-90 persisted and prepared target exactly match current CTP day"
         if continuity
         else "Stress-90 target/current trading-day continuity is untrusted",
     )
@@ -865,9 +1161,13 @@ def _add_stress90_doctor_status(
             intent_record = Stress90ExecutionIntentStore(
                 runtime_dir / "stress90_execution_intent.json"
             ).load_record()
-            intent = None if intent_record is None else intent_record.intent
+            intent = (
+                None if intent_record is None or intent_record.retired else intent_record.intent
+            )
             persisted_lots = None
+            persisted_freeze_lots = None
             authorized_products: tuple[str, ...] = ()
+            authorized_transition_kinds = None
             if intent is not None:
                 if (
                     intent.target_trading_day != prepared.target_trading_day
@@ -875,18 +1175,24 @@ def _add_stress90_doctor_status(
                 ):
                     raise RuntimeError("execution intent disagrees with prepared decision")
                 persisted_lots = intent.initial_margin_fitted_lots
+                persisted_freeze_lots = intent.freeze_authorized_lots
                 authorized_products = intent.authorized_transition_products
+                authorized_transition_kinds = intent.authorized_transition_kinds
             stages = build_stress90_rebalance_stages(
                 account=account,
                 product_weights=prepared.survivor_weights,
                 product_ticks=product_ticks,
                 specs=metadata,
+                incumbent_ticks={
+                    symbol: quotes[symbol] for symbol in current_lots if symbol in quotes
+                },
                 current_lots=current_lots,
                 symbol_products=symbol_products,
                 max_contract_volume=min(
                     config.directional.max_contract_volume,
                     config.risk.max_contract_volume,
                 ),
+                max_gross_leverage=config.directional.max_gross_leverage,
                 max_margin_ratio=config.risk.max_margin_ratio,
                 min_available_ratio=config.risk.min_available_ratio,
                 max_daily_loss_ratio=config.risk.max_daily_loss_ratio,
@@ -896,7 +1202,9 @@ def _add_stress90_doctor_status(
                 concentration_freeze=prepared.concentration_freeze,
                 unavailable_products=unavailable_products,
                 authorized_transition_products=authorized_products,
+                authorized_transition_kinds=authorized_transition_kinds,
                 persisted_margin_fitted_lots=persisted_lots,
+                persisted_freeze_authorized_lots=persisted_freeze_lots,
             )
             ticks_by_symbol = {tick.symbol: tick for tick in quotes.values()}
 
@@ -1029,36 +1337,9 @@ def _add_stress90_doctor_status(
     if not runtime_permission:
         blockers.append("stress90_runtime_permission")
 
-    p0_names = {
-        "state_integrity",
-        "runtime_paths_writable",
-        "disk_space",
-        "broker_ready",
-        "fresh_snapshot",
-        "account_snapshot_valid",
-        "trading_day_consistent",
-        "no_active_orders",
-        "contract_catalog_available",
-        "live_metadata_complete",
-        "configured_metadata_conservative",
-        "position_reconciliation",
-        "account_risk_limits",
-        "directional_activity_ready",
-        "directional_ohlc_cache_integrity",
-        "directional_ohlc_cache_required_day",
-        "stress90_seed_integrity",
-        "stress90_policy_state_integrity",
-        "stress90_seed_state_identity",
-        "stress90_runtime_policy_identity",
-        "stress90_oi_evidence_integrity",
-        "stress90_execution_intent_integrity",
-        "stress90_live_quote_coverage",
-        "stress90_live_cost_compatibility",
-        "stress90_target_day_continuity",
-        "stress90_integer_preview",
-        "stress90_first_activation_gates",
-        "stress90_runtime_permission",
-    }
+    from .stress90_activation_permit import STRESS90_DOCTOR_INTERNAL_P0_CHECKS
+
+    p0_names = STRESS90_DOCTOR_INTERNAL_P0_CHECKS
     failures = [item.name for item in report.checks if item.name in p0_names and not item.passed]
     blockers.extend(failures)
     stress["remaining_blocker_reasons"] = list(dict.fromkeys(blockers))
@@ -1084,6 +1365,8 @@ def build_doctor_report(
     requested_symbols: list[str],
     metadata: dict[str, ContractSpec],
     quotes: dict[str, Tick] | None = None,
+    session_trade_ownership_valid: bool = False,
+    session_trade_ownership_detail: str = "Broker session trade ownership was not proven",
     min_free_bytes: int = MIN_OPERATIONAL_DISK_FREE_BYTES,
 ) -> OperationalReport:
     """Combine local evidence with an already-fresh CTP snapshot; never place orders."""
@@ -1355,5 +1638,7 @@ def build_doctor_report(
         requested_symbols=requested_symbols,
         metadata=metadata,
         quotes=dict(quotes or {}),
+        session_trade_ownership_valid=session_trade_ownership_valid,
+        session_trade_ownership_detail=session_trade_ownership_detail,
     )
     return report

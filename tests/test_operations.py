@@ -97,6 +97,49 @@ def _write_stress90_seed_state(tmp_path: Path):
     return seed_path, state_path
 
 
+def test_status_rejects_active_execution_intent_from_stale_account_epoch(
+    tmp_path: Path,
+) -> None:
+    from afuture.directional_stress90_execution import (
+        Stress90ExecutionIntentStore,
+        prepare_stress90_execution_intent,
+    )
+    from afuture.directional_stress90_state import (
+        Stress90PolicyStateStore,
+        bind_stress90_account_identity,
+    )
+
+    config = _stress90_config(tmp_path)
+    _write_stress90_seed_state(tmp_path)
+    policy_store = Stress90PolicyStateStore(tmp_path / "stress90_policy_state.json")
+    policy = policy_store.load_required_record()
+    policy_store.save(
+        bind_stress90_account_identity(
+            policy.state,
+            "b" * 64,
+            account_epoch="e" * 64,
+        ),
+        expected_sequence=policy.sequence,
+    )
+    prepare_stress90_execution_intent(
+        Stress90ExecutionIntentStore(tmp_path / "stress90_execution_intent.json"),
+        target_trading_day="20260825",
+        daily_decision_digest="a" * 64,
+        account_identity_digest="b" * 64,
+        account_epoch="f" * 64,
+        current_lots={},
+        margin_fitted_lots={},
+        symbol_products={},
+    )
+
+    report = build_local_status(config, min_free_bytes=1)
+
+    assert not _checks(report)["stress90_execution_intent_integrity"]
+    assert "stress90_execution_intent_lifecycle" in (
+        report.facts["stress90"]["remaining_blocker_reasons"]
+    )
+
+
 def _account() -> AccountSnapshot:
     return AccountSnapshot(500_000, 500_000, 440_000, 60_000, 0, 0, "20260825")
 
@@ -198,6 +241,22 @@ def test_local_status_fails_closed_on_corrupt_current_but_exposes_previous(tmp_p
     assert not _checks(report)["state_integrity"]
     assert report.facts["state"]["valid"] is False
     assert report.facts["previous_state"]["valid"] is True
+
+
+def test_local_status_fails_closed_when_current_is_missing_with_previous_evidence(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    store = StateStore(config.state_path)
+    store.save(RuntimeState(kill_switch=True))
+    store.save(RuntimeState(kill_switch=True, kill_reason="checkpoint"))
+    store.path.unlink()
+
+    report = build_local_status(config, min_free_bytes=1)
+
+    assert not report.passed
+    assert not _checks(report)["state_integrity"]
+    assert "current runtime state is missing" in report.facts["state"]["error"]
 
 
 def test_stress90_status_surfaces_policy_account_and_data_blockers(tmp_path: Path) -> None:
@@ -652,6 +711,100 @@ def test_status_and_doctor_fail_closed_on_cache_range_corruption(
     assert status.facts["directional_ohlc_cache"]["valid"] is False
     assert not _checks(doctor)["directional_ohlc_cache_integrity"]
     assert not _checks(doctor)["directional_ohlc_cache_required_day"]
+
+
+def test_status_and_doctor_full_audit_ctp_order_journal_cold_chain(
+    tmp_path: Path,
+) -> None:
+    from afuture.broker.ctp_order_journal import (
+        CtpOrderSubmissionEntry,
+        CtpOrderSubmissionJournal,
+    )
+    from afuture.directional_stress90_policy import STRESS90_POLICY
+    from afuture.models import Offset, OrderRequest, OrderSide, OrderType
+
+    config = _stress90_config(tmp_path)
+    journal_path = tmp_path / "stress90_ctp_orders.json"
+    journal = CtpOrderSubmissionJournal(journal_path)
+    entry = journal.prepare(
+        CtpOrderSubmissionEntry(
+            sequence=1,
+            account_identity_digest="c" * 64,
+            policy_id=STRESS90_POLICY.policy_id,
+            policy_definition_digest=STRESS90_POLICY.policy_definition_digest,
+            products_manifest_digest=STRESS90_POLICY.products_manifest_digest,
+            target_trading_day="20260825",
+            daily_decision_digest="d" * 64,
+            execution_intent_digest="e" * 64,
+            transition={"freeze_authorized_lots": {"m2609": 1}, "transitions": []},
+            front_id=1,
+            session_id=2,
+            order_ref=3,
+            order_id="CTP.1_2_3",
+            request=OrderRequest(
+                "m2609",
+                "DCE",
+                OrderSide.BUY,
+                Offset.OPEN,
+                1,
+                1_000.0,
+                OrderType.FAK,
+                "directional:stress90:dddddddddddd:M",
+            ),
+            status="prepared",
+        )
+    )
+    journal.update_status(entry.order_id, "aborted_before_send")
+    assert journal.compact_terminal() == 1
+
+    valid = build_local_status(config, min_free_bytes=1)
+    assert _checks(valid)["stress90_ctp_order_journal_integrity"]
+    order_facts = valid.facts["stress90"]["ctp_order_journal"]
+    assert order_facts["archive_entry_count"] == 1
+    assert order_facts["archive_head_digest"]
+    assert order_facts["valid"] is True
+
+    from afuture.broker.ctp_order_journal import CTP_ORDER_JOURNAL_EPOCH_CONFIRMATION
+
+    journal.seal_epoch(
+        transaction_id="f" * 64,
+        source_account_identity_digest="c" * 64,
+        target_account_identity_digest="c" * 64,
+        trading_day="20260825",
+        operator_reason="bounded operator archive rollover",
+        halted=True,
+        broker_flat=True,
+        local_flat=True,
+        no_active_orders=True,
+        reconciled=True,
+        strong_confirmation=CTP_ORDER_JOURNAL_EPOCH_CONFIRMATION,
+    )
+    sealed = build_local_status(config, min_free_bytes=1)
+    sealed_facts = sealed.facts["stress90"]["ctp_order_journal"]
+    assert sealed_facts["sealed_epoch_count"] == 1
+    assert sealed_facts["sealed_entry_count"] == 1
+    segment = next(
+        (tmp_path / "stress90_ctp_orders.json.epochs").glob(
+            "epoch-*/stress90_ctp_orders.json.archive.*.json"
+        )
+    )
+    segment.write_text("{}", encoding="utf-8")
+    invalid = build_doctor_report(
+        config,
+        broker_ready=True,
+        fresh_snapshot=True,
+        trading_day="20260825",
+        account=_account(),
+        positions=[],
+        active_order_count=0,
+        catalog=_catalog(),
+        requested_symbols=["m2609"],
+        metadata=config.contracts,
+        min_free_bytes=1,
+    )
+    assert not _checks(invalid)["stress90_ctp_order_journal_integrity"]
+    assert invalid.facts["stress90"]["ctp_order_journal"]["valid"] is False
+    assert invalid.facts["stress90"]["stress90_ready"] is False
 
 
 def test_doctor_passes_verified_flat_preflight(tmp_path: Path) -> None:

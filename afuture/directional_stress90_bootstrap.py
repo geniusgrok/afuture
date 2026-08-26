@@ -16,6 +16,7 @@ from hashlib import sha256
 from math import isfinite
 from pathlib import Path
 from types import MappingProxyType
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -27,7 +28,24 @@ from .directional_60m_oi_confirmation import (
 from .directional_60m_oi_reversal_confirmation import (
     apply_oi_confirmation_to_direction_changes,
 )
+from .directional_activity import (
+    ContractActivity,
+    DirectionalActivityIntegrityError,
+    DirectionalActivitySnapshot,
+    DirectionalActivityStore,
+)
 from .directional_cost_aware_no_trade import apply_cost_aware_no_trade
+from .directional_ohlc_cache import (
+    DirectionalOHLCCacheIntegrityError,
+    DirectionalOHLCCacheStore,
+)
+from .directional_sessions import PRODUCT_SESSION_MANIFEST
+from .directional_stress90_oi_runtime import (
+    OiEvidenceIntegrityError,
+    Stress90OiEvidenceState,
+    Stress90OiEvidenceStore,
+    build_fixed_historical_60m_evidence,
+)
 from .directional_stress90_policy import (
     STRESS90_POLICY,
     Stress90CandidatePath,
@@ -37,10 +55,13 @@ from .directional_stress90_policy import (
 from .directional_stress90_state import (
     FIXED_BOOTSTRAP_INPUT_NAMES,
     Stress90BootstrapSeed,
+    Stress90DecisionInputs,
     Stress90PolicyState,
     Stress90PolicyStateStore,
+    Stress90PreparedDecision,
     Stress90SeedStore,
     Stress90StateIntegrityError,
+    stress90_decision_inputs_digest,
 )
 from .directional_turnover_aware_survivor_reallocation import (
     reallocate_survivors_lexicographically,
@@ -70,6 +91,7 @@ FIXED_STRESS90_INPUT_SHA256 = MappingProxyType(
 _BASE_PARITY_ATOL = 5e-15
 _LAYER_PARITY_ATOL = 1e-14
 _HEX_DIGEST_LENGTH = 64
+_CHINA = ZoneInfo("Asia/Shanghai")
 
 
 class Stress90BootstrapError(RuntimeError):
@@ -128,6 +150,7 @@ class Stress90BootstrapResult:
     historical_candidate_parity: bool
     seed_path: Path | None
     state_path: Path | None
+    oi_evidence_path: Path | None
     candidate_path: Stress90CandidatePath
 
     def to_dict(self) -> dict[str, object]:
@@ -144,6 +167,9 @@ class Stress90BootstrapResult:
             "historical_candidate_parity": self.historical_candidate_parity,
             "seed_path": None if self.seed_path is None else str(self.seed_path),
             "state_path": None if self.state_path is None else str(self.state_path),
+            "oi_evidence_path": (
+                None if self.oi_evidence_path is None else str(self.oi_evidence_path)
+            ),
         }
 
 
@@ -284,7 +310,7 @@ def _validate_target_continuity(targets: pd.DatetimeIndex, sessions: pd.Datetime
         raise Stress90BootstrapError("bootstrap needs a completed session before first target")
 
 
-def _validate_specific_contracts(path: Path, targets: pd.DatetimeIndex) -> None:
+def _validate_specific_contracts(path: Path, targets: pd.DatetimeIndex) -> pd.DataFrame:
     frame = _read_csv(path, name="specific-contract daily evidence")
     required = {"date", "delivery", "product", "symbol", "open", "close", "volume", "hold"}
     missing = required - set(frame.columns)
@@ -322,6 +348,35 @@ def _validate_specific_contracts(path: Path, targets: pd.DatetimeIndex) -> None:
             raise Stress90BootstrapError(
                 f"specific-contract evidence lacks 50-product coverage: {target.date()}"
             )
+    return frame
+
+
+def _through_day_activity_snapshot(
+    specific_contracts: pd.DataFrame,
+    through: pd.Timestamp,
+) -> DirectionalActivitySnapshot:
+    """Build the immutable completed activity input for the first live target."""
+
+    rows = specific_contracts.loc[specific_contracts["date"] == through]
+    if rows.empty:
+        raise Stress90BootstrapError("specific-contract through-day activity is missing")
+    timestamp = through.to_pydatetime().replace(hour=15, tzinfo=_CHINA)
+    contracts: dict[str, ContractActivity] = {}
+    for row in rows.itertuples(index=False):
+        symbol = str(row.symbol).upper()
+        product = str(row.product).upper()
+        if symbol in contracts:
+            raise Stress90BootstrapError("specific-contract through-day symbols are duplicated")
+        contracts[symbol] = ContractActivity(
+            symbol=symbol,
+            exchange=PRODUCT_SESSION_MANIFEST[product].exchange,
+            product=product,
+            trading_day=through.strftime("%Y%m%d"),
+            volume=float(row.volume),
+            open_interest=float(row.hold),
+            timestamp=timestamp,
+        )
+    return DirectionalActivitySnapshot(through.strftime("%Y%m%d"), contracts)
 
 
 def _load_60m(paths: tuple[Path, Path]) -> pd.DataFrame:
@@ -464,7 +519,9 @@ def bootstrap_stress90(
     archived = _load_archived_weights(runtime / "execution_aligned_weights.csv", through)
     targets = pd.DatetimeIndex(archived.index)
     _validate_target_continuity(targets, close_prices.index)
-    _validate_specific_contracts(runtime / "return_target_specific_contracts.csv", targets)
+    specific_contracts = _validate_specific_contracts(
+        runtime / "return_target_specific_contracts.csv", targets
+    )
 
     rebuilt_full = ExecutionAlignedAggressivePolicy(STRESS90_POLICY.products).weight_history(
         open_prices, close_prices
@@ -504,25 +561,94 @@ def bootstrap_stress90(
     )
     seed_path: Path | None = None
     state_path: Path | None = None
+    oi_evidence_path: Path | None = None
     if write_artifacts:
         if not historical_parity:
             raise Stress90BootstrapError("historical candidate parity is required for live seed")
         seed_path = runtime / "stress90_bootstrap_seed.json"
         state_path = runtime / "stress90_policy_state.json"
-        if seed_path.exists() or state_path.exists():
+        oi_evidence_path = runtime / "stress90_oi_evidence.json"
+        ohlc_cache_path = runtime / "directional_ohlc_cache.json"
+        activity_path = runtime / "directional_activity.json"
+        artifact_paths = (
+            seed_path,
+            state_path,
+            oi_evidence_path,
+            ohlc_cache_path,
+            activity_path,
+        )
+        if any(path.exists() for path in artifact_paths):
             raise Stress90BootstrapError(
-                "Stress-90 bootstrap refuses to overwrite an existing seed or policy state"
+                "Stress-90 bootstrap refuses to overwrite existing live artifacts"
             )
+        through_rows = bars.loc[
+            bars["datetime"].dt.normalize() == through,
+            ["datetime", "product", "symbol", "open", "close", "volume", "hold"],
+        ]
+        try:
+            bridge = build_fixed_historical_60m_evidence(
+                through_text,
+                through_rows.to_dict(orient="records"),
+            )
+        except OiEvidenceIntegrityError as exc:
+            raise Stress90BootstrapError(str(exc)) from exc
         seed = Stress90BootstrapSeed.from_candidate_state(
             path.final_state,
             bootstrap_source_manifest=source_manifest,
             bootstrap_through_day=through_text,
             last_completed_input_day=source_days[-1].strftime("%Y%m%d"),
         )
+        final_decision = path.decisions[-1]
+        final_input_day = str(final_decision.input_days["completed_close"])
+        final_target = pd.Timestamp(targets[-1])
+        final_history = close_prices.loc[close_prices.index < final_target]
+        final_inputs = Stress90DecisionInputs(
+            previous_target_trading_day=final_input_day,
+            target_trading_day=through_text,
+            base_weights=archived.loc[final_target].to_dict(),
+            completed_close_history={
+                product: tuple(float(value) for value in final_history[product])
+                for product in STRESS90_POLICY.products
+            },
+            completed_oi_flow={
+                product: float(lagged.at[final_target, product])
+                for product in STRESS90_POLICY.oi_products
+            },
+            completed_close_day=final_input_day,
+            completed_oi_day=final_input_day,
+        )
+        prepared = Stress90PreparedDecision.from_decision(
+            final_decision,
+            previous_target_trading_day=final_input_day,
+            source_input_digest=stress90_decision_inputs_digest(final_inputs),
+        )
+        completed_open = open_prices.loc[open_prices.index <= through]
+        completed_close = close_prices.loc[close_prices.index <= through]
+        activity = _through_day_activity_snapshot(specific_contracts, through)
         try:
+            DirectionalOHLCCacheStore(ohlc_cache_path).save(
+                STRESS90_POLICY.products,
+                completed_open,
+                completed_close,
+            )
+            DirectionalActivityStore(activity_path).save(activity)
+            Stress90OiEvidenceStore(oi_evidence_path).save_state(
+                Stress90OiEvidenceState(completed=(bridge,))
+            )
             Stress90SeedStore(seed_path).save_new(seed)
-            Stress90PolicyStateStore(state_path).save(Stress90PolicyState.from_seed(seed))
-        except (OSError, Stress90StateIntegrityError) as exc:
+            Stress90PolicyStateStore(state_path).save(
+                Stress90PolicyState.from_seed(seed, prepared_decision=prepared)
+            )
+        except (
+            OSError,
+            DirectionalActivityIntegrityError,
+            DirectionalOHLCCacheIntegrityError,
+            OiEvidenceIntegrityError,
+            Stress90StateIntegrityError,
+        ) as exc:
+            for path in artifact_paths:
+                path.unlink(missing_ok=True)
+                path.with_name(f"{path.name}.prev").unlink(missing_ok=True)
             raise Stress90BootstrapError("failed to persist Stress-90 bootstrap artifacts") from exc
 
     return Stress90BootstrapResult(
@@ -538,5 +664,6 @@ def bootstrap_stress90(
         historical_candidate_parity=historical_parity,
         seed_path=seed_path,
         state_path=state_path,
+        oi_evidence_path=oi_evidence_path,
         candidate_path=path,
     )

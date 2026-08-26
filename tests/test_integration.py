@@ -714,3 +714,31 @@ def test_alert_sink_failure_is_observable_without_blocking_other_sinks(caplog):
     assert receiving_sink.events[-1]["message"] == "risk halt"
     assert "FailingSink" in caplog.text
     assert "RuntimeError" in caplog.text
+
+
+def test_engine_stop_closes_alert_workers(tmp_path: Path):
+    class CloseTrackingAlerts(AlertManager):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = False
+
+        def close(self, *, timeout_seconds: float = 1.0) -> None:
+            del timeout_seconds
+            self.closed = True
+
+    alerts = CloseTrackingAlerts()
+    specs = setup_specs()
+    broker = SimBroker(500000, specs)
+    engine = TradingEngine(
+        broker,
+        [],
+        specs,
+        RiskManager(RiskConfig()),
+        StateStore(tmp_path / "s.json"),
+        alert_manager=alerts,
+    )
+    engine.start()
+
+    engine.stop()
+
+    assert alerts.closed is True

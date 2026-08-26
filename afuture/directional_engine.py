@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
+from math import isclose, isfinite
 
 from .directional_risk import (
     DirectionalRiskResponseMode,
@@ -10,6 +12,7 @@ from .directional_risk import (
 )
 from .engine import TradingEngine
 from .models import Order, RuntimeMode, Tick, Trade
+from .state import MAX_RECENT_TRADE_IDS
 
 _DAILY_CIRCUIT_REASON = "daily loss limit reached"
 _ACCOUNT_RISK_REASONS = {
@@ -47,6 +50,52 @@ class DirectionalTradingEngine(TradingEngine):
                 )
         elif isinstance(policy, DirectionalRiskScaledPolicy):
             raise ValueError("freeze-new-risk policy cannot use target scaling wrapper")
+
+    def start(self) -> None:
+        prefixes = getattr(self.directional_manager, "runtime_order_reference_prefixes", None)
+        seed = getattr(self.broker, "seed_order_reference_prefixes", None)
+        if callable(prefixes) and callable(seed):
+            seed(prefixes())
+        super().start()
+
+    def reconcile_startup(self) -> bool:
+        remote = self.broker.get_positions()
+        local = self.state_store.positions_from_state(self.state)
+        recover = getattr(
+            self.directional_manager,
+            "reconcile_authorized_crash_fills",
+            None,
+        )
+        if not callable(recover):
+            return super().reconcile_startup()
+        try:
+            allowed, adopted_ids, detail = recover(
+                local,
+                remote,
+                tuple(self.state.recent_trade_ids),
+            )
+        except Exception as exc:
+            self.emergency_stop(f"Stress-90 crash reconciliation failed: {exc}")
+            return False
+        if not allowed:
+            self.emergency_stop(f"position reconciliation failed: {detail}")
+            return False
+        for identity in adopted_ids:
+            if identity not in self._recent_trade_id_set:
+                self._recent_trade_id_set.add(identity)
+                self.state.recent_trade_ids.append(identity)
+        while len(self.state.recent_trade_ids) > MAX_RECENT_TRADE_IDS:
+            expired = self.state.recent_trade_ids.pop(0)
+            self._recent_trade_id_set.discard(expired)
+        self.state.positions = [asdict(position) for position in remote]
+        self._sync_strategy_positions(remote)
+        self.state.reconciled = True
+        self._record(
+            "stress90_crash_fill_reconciliation",
+            {"adopted_trade_ids": list(adopted_ids), "detail": detail},
+        )
+        self._persist()
+        return True
 
     def initialize_after_ready(self) -> None:
         super().initialize_after_ready()
@@ -90,6 +139,11 @@ class DirectionalTradingEngine(TradingEngine):
                         )
                         else None
                     ),
+                    account_identity_digest=(
+                        self.broker.get_account_identity_digest()
+                        if callable(getattr(self.broker, "get_account_identity_digest", None))
+                        else ""
+                    ),
                 )
             self.directional_manager.bootstrap(self._reference_now())
             self._directional_initialized = True
@@ -103,18 +157,20 @@ class DirectionalTradingEngine(TradingEngine):
             self.emergency_stop(f"directional tick handling failed: {exc}")
             return
         super().on_tick(tick)
+
+    def _enforce_realized_gross_after_critical_boundary(self) -> bool:
         if (
             self.halted
             or not self._initialized
             or not self._directional_initialized
             or self.state.runtime_mode != RuntimeMode.RUNNING.value
         ):
-            return
+            return False
         try:
             result = self.directional_manager.enforce_realized_gross_limit(self._reference_now())
         except Exception as exc:
             self.emergency_stop(f"directional gross guard failed: {exc}")
-            return
+            return False
         if result.action not in {"hold", "wait"}:
             self._record(
                 "directional_gross_guard",
@@ -126,9 +182,26 @@ class DirectionalTradingEngine(TradingEngine):
             )
         if result.action == "reject" and self.directional_manager.has_risk():
             self.enter_reduce_only(result.reason or "directional realized gross guard rejected")
+            return False
+        return result.action in {"hold", "wait"}
 
     def run_once(self) -> None:
         super().run_once()
+        checkpoint_orders = getattr(self.broker, "checkpoint_order_submission_journal", None)
+        if callable(checkpoint_orders):
+            try:
+                checkpoint_orders()
+            except Exception as exc:
+                self.emergency_stop(f"CTP order journal checkpoint failed: {exc}")
+                return
+        acknowledge_critical = getattr(self.broker, "acknowledge_critical_events", None)
+        if callable(acknowledge_critical) and not acknowledge_critical():
+            return
+        pending_critical = getattr(self.broker, "has_pending_critical_events", None)
+        if callable(pending_critical) and pending_critical():
+            # A bounded Broker poll may not yet have delivered a fatal/unknown event.
+            # Never perform evidence advancement or strategy/order work until FIFO drains.
+            return
         checkpoint = getattr(self.directional_manager, "checkpoint_activity", None)
         if callable(checkpoint):
             try:
@@ -150,6 +223,8 @@ class DirectionalTradingEngine(TradingEngine):
             or not self._directional_initialized
             or self.state.runtime_mode != RuntimeMode.RUNNING.value
         ):
+            return
+        if not self._enforce_realized_gross_after_critical_boundary():
             return
         try:
             result = self.directional_manager.maybe_rebalance(self._reference_now())
@@ -276,6 +351,104 @@ class DirectionalTradingEngine(TradingEngine):
         old_day_start = float(self.state.day_start_equity or 0.0)
         old_last_day = str(self.state.last_account_trading_day or "")
         old_last_equity = float(self.state.last_account_equity or 0.0)
+        old_last_deposit = float(self.state.last_account_deposit or 0.0)
+        old_last_withdrawal = float(self.state.last_account_withdrawal or 0.0)
+        old_cash_flow_verified = bool(self.state.last_account_cash_flow_verified)
+        old_settlement_id = int(self.state.last_account_settlement_id)
+
+        stress90_account = (
+            getattr(self.directional_manager, "runtime_policy_id", "") == "directional.stress90"
+        )
+        stress90_new_day_start: float | None = None
+        if stress90_account and new_day and old_day and new_day != old_day:
+            continuity = getattr(
+                self.directional_manager,
+                "completed_account_day_is_contiguous",
+                None,
+            )
+            try:
+                verified_continuity = (
+                    continuity(old_day, new_day) if callable(continuity) else False
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Stress-90 trading-day gap continuity evidence is invalid"
+                ) from exc
+            if verified_continuity is not True:
+                raise RuntimeError(
+                    "Stress-90 trading-day gap lacks complete authoritative continuity evidence"
+                )
+        account_deposit = float(getattr(account, "deposit", 0.0))
+        account_withdrawal = float(getattr(account, "withdrawal", 0.0))
+        account_cash_flow_verified = bool(getattr(account, "cash_flow_verified", False))
+        if stress90_account and new_day:
+            if not account_cash_flow_verified:
+                raise RuntimeError(
+                    "Stress-90 account cash flow is unverified; explicit rebase required"
+                )
+            if new_day == old_last_day:
+                if (
+                    abs(account_deposit - old_last_deposit) > 1e-12
+                    or abs(account_withdrawal - old_last_withdrawal) > 1e-12
+                ):
+                    raise RuntimeError(
+                        "Stress-90 account cash flow changed; explicit rebase required"
+                    )
+                settlement = getattr(account, "previous_settlement_equity", None)
+                settlement_id = getattr(account, "settlement_id", None)
+                source_prebalance = old_day_start - old_last_deposit + old_last_withdrawal
+                if (
+                    old_day != old_last_day
+                    or not bool(getattr(account, "settlement_verified", False))
+                    or isinstance(settlement, bool)
+                    or not isinstance(settlement, (int, float))
+                    or not isfinite(float(settlement))
+                    or float(settlement) <= 0.0
+                    or isinstance(settlement_id, bool)
+                    or not isinstance(settlement_id, int)
+                    or settlement_id != old_settlement_id
+                    or not isfinite(source_prebalance)
+                    or source_prebalance <= 0.0
+                    or not isclose(
+                        source_prebalance,
+                        float(settlement),
+                        rel_tol=1e-12,
+                        abs_tol=1e-8,
+                    )
+                ):
+                    raise RuntimeError(
+                        "Stress-90 same-day CTP settlement lineage changed; explicit rebase required"
+                    )
+            elif old_last_day and (abs(account_deposit) > 1e-12 or abs(account_withdrawal) > 1e-12):
+                raise RuntimeError(
+                    "Stress-90 new-day account cash flow is nonzero; explicit rebase required"
+                )
+            if old_day and new_day != old_day:
+                settlement = getattr(account, "previous_settlement_equity", None)
+                settlement_id = getattr(account, "settlement_id", None)
+                if (
+                    not bool(getattr(account, "settlement_verified", False))
+                    or isinstance(settlement, bool)
+                    or not isinstance(settlement, (int, float))
+                    or not isfinite(float(settlement))
+                    or float(settlement) <= 0.0
+                    or isinstance(settlement_id, bool)
+                    or not isinstance(settlement_id, int)
+                    or old_settlement_id < 0
+                    or old_last_day != old_day
+                    or old_day_start <= 0.0
+                    or old_last_equity <= 0.0
+                ):
+                    raise RuntimeError(
+                        "Stress-90 CTP settlement evidence is invalid; explicit rebase required"
+                    )
+                stress90_new_day_start = (
+                    float(settlement) + account_deposit - account_withdrawal
+                )
+                if not isfinite(stress90_new_day_start) or stress90_new_day_start <= 0.0:
+                    raise RuntimeError(
+                        "Stress-90 current-day hard baseline is invalid; explicit rebase required"
+                    )
 
         if (
             new_day
@@ -285,22 +458,56 @@ class DirectionalTradingEngine(TradingEngine):
             and old_day_start > 0
             and old_last_equity > 0
         ):
-            completed_return = old_last_equity / old_day_start - 1.0
+            if stress90_account and not old_cash_flow_verified:
+                raise RuntimeError(
+                    "Stress-90 completed account cash flow is unverified; explicit rebase required"
+                )
+            if stress90_account:
+                if stress90_new_day_start is None:
+                    raise RuntimeError(
+                        "Stress-90 current-day hard baseline is unavailable; explicit rebase required"
+                    )
+                completed_equity = stress90_new_day_start
+            else:
+                completed_equity = old_last_equity
+            completed_return = completed_equity / old_day_start - 1.0
             recorder = getattr(
                 self.directional_manager,
                 "record_completed_account_return",
                 None,
             )
+            include_completed_return = True
             if callable(recorder):
-                recorder(old_day, completed_return)
-            values = [float(value) for value in self.state.recent_daily_returns[-1:]]
-            values.append(float(completed_return))
-            self.state.recent_daily_returns = values[-2:]
+                include_completed_return = (
+                    recorder(
+                        old_day,
+                        completed_return,
+                        completed_equity=completed_equity,
+                    )
+                    is not False
+                )
+            if include_completed_return:
+                values = [float(value) for value in self.state.recent_daily_returns[-1:]]
+                values.append(float(completed_return))
+                self.state.recent_daily_returns = values[-2:]
 
         super()._advance_trading_day(account)
+        if stress90_new_day_start is not None:
+            # The generic engine uses current equity for ordinary strategies. Stress-90
+            # must exclude current-day PnL from the 5% hard daily-loss baseline.
+            self.state.day_start_equity = stress90_new_day_start
+            self.risk_manager.set_day_start_equity(stress90_new_day_start, new_day)
         if new_day:
             self.state.last_account_equity = float(account.equity)
             self.state.last_account_trading_day = new_day
+            self.state.last_account_deposit = account_deposit
+            self.state.last_account_withdrawal = account_withdrawal
+            self.state.last_account_cash_flow_verified = account_cash_flow_verified
+            self.state.last_account_settlement_id = int(
+                getattr(account, "settlement_id", -1)
+                if getattr(account, "settlement_id", None) is not None
+                else -1
+            )
 
     def _capture_quality_trade(self, trade: Trade) -> None:
         expected = self.directional_manager.directional_order_expectation(trade.order_id)
@@ -327,6 +534,8 @@ class DirectionalTradingEngine(TradingEngine):
 
     def _handle_order_event(self, order) -> None:
         super()._handle_order_event(order)
+        if self.halted:
+            return
         if (
             isinstance(order, Order)
             and self.directional_manager.directional_order_expectation(order.order_id) is not None

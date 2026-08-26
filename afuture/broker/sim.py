@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
+from functools import wraps
 from math import ceil, isfinite
 from pathlib import Path
+from threading import RLock
 
 from ..fees import calculate_commission
 from ..models import (
@@ -23,7 +25,7 @@ from ..models import (
     Trade,
 )
 from ..position import PositionBook
-from .base import Broker
+from .base import Broker, RawMarketEvidenceError
 from .sim_state import (
     EMPTY_ACCOUNTING_HISTORY_DIGEST,
     DecodedSimBrokerState,
@@ -41,6 +43,15 @@ from .sim_state import (
     encode_sim_market_state,
     validate_sim_broker_state_transition,
 )
+
+
+def _lifecycle_locked(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lifecycle_state_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 class SimBroker(Broker):
@@ -97,6 +108,8 @@ class SimBroker(Broker):
         self._next_order_sequence = 1
         self._next_trade_sequence = 1
         self._started = False
+        self._lifecycle_state_lock = RLock()
+        self._raw_market_connection_generation = 0
         self._balance = initial_capital
         self._realized_pnl = 0.0
         self._commission = 0.0
@@ -368,12 +381,45 @@ class SimBroker(Broker):
         self._rebind_market_store()
         self._market_state_dirty = False
 
+    @_lifecycle_locked
     def start(self) -> None:
+        if self._started:
+            return
         self._started = True
+        self._raw_market_connection_generation += 1
+        self._notify_raw_market_connection(True)
 
+    @_lifecycle_locked
     def stop(self) -> None:
+        if self._started:
+            self._notify_raw_market_connection(False)
         self.checkpoint_market_state()
         self._started = False
+
+    def set_raw_tick_observer(self, observer) -> None:
+        super().set_raw_tick_observer(observer)
+        if observer is not None and self._started:
+            self._notify_raw_market_connection(True)
+
+    def _notify_raw_market_connection(self, connected: bool) -> None:
+        observer = getattr(self, "_raw_tick_observer", None)
+        callback = getattr(observer, "note_raw_market_connection", None)
+        if callable(callback):
+            callback(
+                connected=connected,
+                generation=self._raw_market_connection_generation,
+            )
+
+    @contextmanager
+    def lifecycle_state_commit_fence(self):
+        """Block all simulated account/position mutations during lifecycle CAS."""
+
+        with self._lifecycle_state_lock:
+            if self._market_batch_active:
+                raise RuntimeError(
+                    "sim lifecycle commit requires a completed market event batch"
+                )
+            yield
 
     def checkpoint_market_state(self) -> None:
         """Persist at most one dirty market snapshot at a caller-defined batch boundary."""
@@ -475,6 +521,7 @@ class SimBroker(Broker):
         """模拟柜台直接返回本地参数，便于测试元数据安全门。"""
         return {symbol: self.specs[symbol] for symbol in symbols}
 
+    @_lifecycle_locked
     def update_specs(self, specs: dict[str, ContractSpec]) -> None:
         """Install live specs, rejecting any reinterpretation of persisted truth."""
         normalized: dict[str, ContractSpec] = {}
@@ -594,6 +641,7 @@ class SimBroker(Broker):
         self._order_arrival.clear()
         self._first_fill_seq.clear()
 
+    @_lifecycle_locked
     def synchronize_trading_day(self, trading_day: str) -> None:
         """Advance durable simulated settlement before Shadow exposes a live new day."""
         normalized = self._validated_trading_day(trading_day)
@@ -633,6 +681,7 @@ class SimBroker(Broker):
             return raw
         return max(0, int(raw * self.depth_haircut))
 
+    @_lifecycle_locked
     def publish_tick(self, tick: Tick) -> None:
         tick.validate()
         trading_day = self._validated_trading_day(tick.trading_day)
@@ -649,10 +698,20 @@ class SimBroker(Broker):
                 not self._market_batch_active or not self._market_batch_truth_pending
             ):
                 raise RuntimeError("persistent active-order tick requires an explicit market batch")
-        self._notify_raw_tick_observer(
-            tick,
-            self._contract_catalog_by_symbol.get(tick.symbol),
-        )
+        try:
+            self._notify_raw_tick_observer(
+                tick,
+                self._contract_catalog_by_symbol.get(tick.symbol),
+            )
+        except RawMarketEvidenceError:
+            # The observer already made the affected evidence day incomplete.
+            # The same valid market Tick must still reach matching and the manager.
+            pass
+        except Exception as exc:
+            self._events.append(
+                BrokerEvent("broker_error", f"raw Tick observer failed: {type(exc).__name__}")
+            )
+            return
         completed_equity = (
             self._account_values()[2]
             if self._trading_day and trading_day != self._trading_day
@@ -678,6 +737,7 @@ class SimBroker(Broker):
         self._match_symbol(tick.symbol)
         self._events.append(BrokerEvent("tick", tick))
 
+    @_lifecycle_locked
     def send_order(self, request: OrderRequest) -> str:
         if not self._started:
             raise RuntimeError("sim broker is not started")
@@ -710,6 +770,7 @@ class SimBroker(Broker):
                 self._cancel_ioc_remainder(order)
         return order_id
 
+    @_lifecycle_locked
     def cancel_order(self, order_id: str) -> None:
         with self._durable_operation("cancel_order"):
             order = self._orders.get(order_id)
@@ -717,9 +778,11 @@ class SimBroker(Broker):
                 order.status = OrderStatus.CANCELLED
                 self._events.append(BrokerEvent("order", order))
 
+    @_lifecycle_locked
     def get_order(self, order_id: str) -> Order | None:
         return self._orders.get(order_id)
 
+    @_lifecycle_locked
     def owns_order(self, order_id: str) -> bool:
         """Prove current or compacted local order identity without retaining history."""
         if order_id in self._orders:
@@ -733,18 +796,21 @@ class SimBroker(Broker):
         sequence = int(sequence_text)
         return 0 < sequence < self._accounting_baseline.next_order_sequence
 
+    @_lifecycle_locked
     def get_active_orders(self) -> list[Order]:
         return [order for order in self._orders.values() if order.active]
 
     def get_trades(self) -> list[Trade]:
         return list(self._trades)
 
+    @_lifecycle_locked
     def get_session_trades(self) -> list[Trade]:
         return self.get_trades()
 
     def get_orders(self) -> list[Order]:
         return list(self._orders.values())
 
+    @_lifecycle_locked
     def get_positions(self) -> list[ContractPosition]:
         return self.position_book.all()
 
@@ -798,6 +864,7 @@ class SimBroker(Broker):
             else 0.0,
         }
 
+    @_lifecycle_locked
     def get_account(self) -> AccountSnapshot:
         unrealized, margin, equity = self._account_values()
         return AccountSnapshot(
@@ -816,6 +883,7 @@ class SimBroker(Broker):
             settlement_id=self._settlement_id,
         )
 
+    @_lifecycle_locked
     def poll_events(self) -> list[BrokerEvent]:
         events = list(self._events)
         self._events.clear()

@@ -235,6 +235,7 @@ class Stress90ProductionAcceptance:
             current_lots=current_lots or {},
             symbol_products=symbol_products,
             max_contract_volume=self.config.max_contract_volume,
+            max_gross_leverage=self.config.max_realized_gross_ratio,
             max_margin_ratio=self.config.max_margin_ratio,
             min_available_ratio=self.config.min_available_ratio,
             max_daily_loss_ratio=self.config.max_daily_loss_ratio,

@@ -68,6 +68,7 @@ log = "runtime/directional.log"
 report = "runtime/directional_report.json"
 journal = "runtime/directional_audit.jsonl"
 alert = "runtime/directional_alerts.jsonl"
+account_registry = "/var/lib/afuture/account-runtime-registry.json"
 
 [alert]
 webhook = ""

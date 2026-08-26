@@ -165,6 +165,81 @@ def test_runtime_account_day_persistence_is_idempotent_and_rejects_conflict(tmp_
         manager.record_completed_account_return("20260825", -0.11)
 
 
+def test_runtime_records_inception_segment_for_reserve_but_not_adaptive_margin(tmp_path):
+    from types import SimpleNamespace
+
+    from afuture.directional import DirectionalConfig
+    from afuture.directional_stress90_runtime import Stress90DirectionalPortfolioManager
+    from afuture.directional_stress90_state import (
+        Stress90BootstrapSeed,
+        Stress90PolicyStateStore,
+        Stress90SeedStore,
+    )
+    from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+    from afuture.risk import RiskConfig, RiskManager
+
+    state = replace(
+        _state(),
+        live_inception_day="20260825",
+        live_inception_equity=1_000_000.0,
+    )
+    seed = Stress90BootstrapSeed(
+        policy_id=state.policy_id,
+        policy_definition_digest=state.policy_definition_digest,
+        products_manifest_digest=state.products_manifest_digest,
+        supported_oi_products=state.supported_oi_products,
+        bootstrap_source_manifest=state.bootstrap_source_manifest,
+        bootstrap_through_day=state.bootstrap_through_day,
+        last_completed_input_day=state.last_completed_input_day,
+        last_completed_target_day=state.last_completed_target_day,
+        last_decision_digest=state.last_decision_digest,
+        last_oi_confirmed_weights=state.last_oi_confirmed_weights,
+        last_cost_approved_weights=state.last_cost_approved_weights,
+        last_survivor_weights=state.last_survivor_weights,
+        completed_concentrations=state.completed_concentrations,
+        bootstrap_candidate_state_digest=state.bootstrap_candidate_state_digest,
+        historical_candidate_weight_sha256=(
+            __import__(
+                "afuture.directional_stress90_policy",
+                fromlist=["STRESS90_POLICY"],
+            ).STRESS90_POLICY.historical_candidate_weight_sha256
+        ),
+        seed_digest=state.bootstrap_seed_digest,
+    )
+    seed_path = tmp_path / "seed.json"
+    state_path = tmp_path / "state.json"
+    Stress90SeedStore(seed_path).save_new(seed)
+    Stress90PolicyStateStore(state_path).save(state)
+    manager = Stress90DirectionalPortfolioManager(
+        DirectionalConfig(enabled=True, policy="stress90", products=FROZEN_PRODUCTS),
+        SimpleNamespace(),
+        RiskManager(RiskConfig(margin_estimate_buffer=1.25)),
+        policy_state_path=state_path,
+        seed_path=seed_path,
+        oi_evidence_path=tmp_path / "oi.json",
+    )
+
+    assert (
+        manager.record_completed_account_return(
+            "20260825",
+            -0.40,
+            completed_equity=740_000.0,
+        )
+        is False
+    )
+    recorded = Stress90PolicyStateStore(state_path).load_required_record()
+    assert recorded.sequence == 2
+    assert recorded.state.completed_account_wealth == pytest.approx(0.74)
+    assert recorded.state.last_completed_account_day == "20260825"
+    assert recorded.state.recent_daily_returns_for_adaptive_margin == ()
+
+    assert manager.record_completed_account_return("20260826", 0.10) is True
+    completed = Stress90PolicyStateStore(state_path).load_required_record()
+    assert completed.sequence == 3
+    assert completed.state.completed_account_wealth == pytest.approx(0.814)
+    assert completed.state.last_completed_account_day == "20260826"
+
+
 def test_sufficient_statistics_trigger_matches_full_return_list_each_day():
     from afuture.directional_drawdown_reserve_freeze import drawdown_reserve_triggered
     from afuture.directional_stress90_state import (
