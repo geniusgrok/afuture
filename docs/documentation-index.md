@@ -24,6 +24,8 @@
 - [`docs/refactoring/architecture-audit-20260825.md`](refactoring/architecture-audit-20260825.md) — 重构前的架构和正确性审计。
 - [`docs/refactoring/industrial-refactoring-report-20260825.md`](refactoring/industrial-refactoring-report-20260825.md) — 工业重构、正确性修复和验证报告。
 - [`docs/refactoring/solo-operations-hardening-report-20260825.md`](refactoring/solo-operations-hardening-report-20260825.md) — 单用户运维加固和验证报告。
+- [`docs/stress90-live-handoff-20260826.md`](stress90-live-handoff-20260826.md) — Stress-90 工程交接与审计记录，不是当前运行契约。
+- [`docs/stress90-live-continuation-prompt-20260826.md`](stress90-live-continuation-prompt-20260826.md) — Stress-90 工程续办提示与审计记录，不是当前运行契约。
 
 ## 当前开发设计与计划
 

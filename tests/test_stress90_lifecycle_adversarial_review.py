@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,6 +188,7 @@ def _run_pending_rebase(
         def __init__(self, credentials):
             self.credentials = credentials
             self.order_journal_configured = False
+            self.fence_entries = 0
 
         def configure_order_submission_journal(self, path, **identity):
             assert Path(path) == runtime_dir / "stress90_ctp_orders.json"
@@ -261,6 +263,11 @@ def _run_pending_rebase(
 
         def require_session_activity_evidence_current(self, _evidence):
             return None
+
+        @contextmanager
+        def lifecycle_state_commit_fence(self):
+            self.fence_entries += 1
+            yield
 
         def get_contract_catalog(self):
             return []

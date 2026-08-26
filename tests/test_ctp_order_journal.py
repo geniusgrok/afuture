@@ -1404,6 +1404,10 @@ def test_tracked_vnpy_ctp_adapter_consumes_reserved_ref_exactly_once(monkeypatch
             self.gateway_name = gateway_name
             self.td_api = OfficialCtpTdApi(self)
 
+    class OfficialCtpMdApi:
+        def __init__(self, gateway):
+            self.gateway = gateway
+
     modules = {
         "vnpy": ModuleType("vnpy"),
         "vnpy.event": ModuleType("vnpy.event"),
@@ -1430,6 +1434,7 @@ def test_tracked_vnpy_ctp_adapter_consumes_reserved_ref_exactly_once(monkeypatch
     modules["vnpy.trader.object"].SubscribeRequest = object
     ctp_gateway = modules["vnpy_ctp.gateway.ctp_gateway"]
     ctp_gateway.CtpGateway = OfficialCtpGateway
+    ctp_gateway.CtpMdApi = OfficialCtpMdApi
     ctp_gateway.CtpTdApi = OfficialCtpTdApi
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)

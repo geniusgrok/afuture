@@ -2130,7 +2130,7 @@ def _build_stress90_lifecycle_manager(config, broker, *, runtime_dir: Path):
         margin_estimate_buffer=STRESS90_POLICY.margin_estimate_buffer,
     )
     return Stress90DirectionalPortfolioManager(
-        config.directional,
+        replace(config.directional, policy="stress90"),
         broker,
         RiskManager(getattr(config, "risk", fallback_risk)),
         policy_state_path=runtime_dir / "stress90_policy_state.json",
@@ -2481,6 +2481,7 @@ def _run_stress90_oi_collect(config, args) -> int:
         if shadow_account
         else live_broker
     )
+    _configure_stress90_lifecycle_order_journal(source_broker, paths["runtime"])
     broker = Stress90EvidenceOnlyBroker(source_broker)
     lease = AccountExclusiveRuntimeLease(
         paths["runtime"],
@@ -2530,7 +2531,6 @@ def _run_stress90_oi_collect(config, args) -> int:
             )
         require_no_pending_stress90_lifecycle_transaction(paths["runtime"])
         _require_stress90_order_journal_full_audit(paths["runtime"])
-        _configure_stress90_lifecycle_order_journal(broker, paths["runtime"])
         if generic_record is not None:
             _seed_state_aware_ctp_broker(
                 live_broker,

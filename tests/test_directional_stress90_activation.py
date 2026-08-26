@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,20 @@ from afuture.models import RuntimeMode
 from afuture.state import RuntimeState
 
 _OPERATION_ID = "f" * 64
+
+
+def _empty_session_evidence(account_identity_digest: str, trading_day: str):
+    from afuture.broker.ctp_session_query import build_ctp_session_activity_evidence
+
+    return build_ctp_session_activity_evidence(
+        account_identity_digest=account_identity_digest,
+        trading_day=trading_day,
+        order_request_id=11,
+        trade_request_id=12,
+        orders=(),
+        trades=(),
+        critical_generation=0,
+    )
 
 
 def _halted_state() -> RuntimeState:
@@ -332,10 +347,38 @@ def test_activation_cli_commissions_fresh_flat_state_but_leaves_it_halted(
 
     seed = _write_bootstrap_artifacts(tmp_path)
     permit_store = _issue_synthetic_technical_permit(tmp_path)
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
+
+    AccountRuntimeRegistry(tmp_path / ".account-runtime-registry.json").initialize(
+        strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+    )
 
     class FakeBroker:
         def __init__(self, credentials):
             self.credentials = credentials
+            self.order_journal_configured = False
+            self.fence_entries = 0
+
+        def configure_order_submission_journal(self, _path, **_identity):
+            self.order_journal_configured = True
+
+        def refresh_session_activity(self, *, timeout_seconds):
+            assert timeout_seconds == 0.1
+            return _empty_session_evidence("b" * 64, "20260825")
+
+        def require_session_activity_evidence_current(self, evidence):
+            assert evidence == _empty_session_evidence("b" * 64, "20260825")
+
+        def set_raw_tick_observer(self, _observer):
+            return None
+
+        @contextmanager
+        def lifecycle_state_commit_fence(self):
+            self.fence_entries += 1
+            yield
 
         def seed_trade_identities(self, identities):
             assert identities == []
@@ -685,12 +728,40 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
         ),
         expected_sequence=policy_record.sequence,
     )
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / ".account-runtime-registry.json")
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+    registry.bind_new("b" * 64, tmp_path, "e" * 64, "9" * 64)
     permit_store = _issue_synthetic_technical_permit(tmp_path)
     cumulative_deposit = 100_000.0
 
     class FakeBroker:
         def __init__(self, credentials):
             self.credentials = credentials
+            self.order_journal_configured = False
+            self.fence_entries = 0
+
+        def configure_order_submission_journal(self, _path, **_identity):
+            self.order_journal_configured = True
+
+        def refresh_session_activity(self, *, timeout_seconds):
+            assert timeout_seconds == 0.1
+            return _empty_session_evidence("b" * 64, "20260825")
+
+        def require_session_activity_evidence_current(self, evidence):
+            assert evidence == _empty_session_evidence("b" * 64, "20260825")
+
+        def set_raw_tick_observer(self, _observer):
+            return None
+
+        @contextmanager
+        def lifecycle_state_commit_fence(self):
+            self.fence_entries += 1
+            yield
 
         def seed_trade_identities(self, identities):
             assert list(identities) == []
@@ -956,11 +1027,39 @@ def test_account_rebase_cli_resets_only_soft_path_and_records_operator_reason(
             -0.10,
         )
     )
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / ".account-runtime-registry.json")
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+    registry.bind_new("b" * 64, tmp_path, "e" * 64, "a" * 64)
     permit_store = _issue_synthetic_technical_permit(tmp_path)
 
     class FakeBroker:
         def __init__(self, credentials):
             self.credentials = credentials
+            self.order_journal_configured = False
+            self.fence_entries = 0
+
+        def configure_order_submission_journal(self, _path, **_identity):
+            self.order_journal_configured = True
+
+        def refresh_session_activity(self, *, timeout_seconds):
+            assert timeout_seconds == 0.1
+            return _empty_session_evidence("c" * 64, "20260826")
+
+        def require_session_activity_evidence_current(self, evidence):
+            assert evidence == _empty_session_evidence("c" * 64, "20260826")
+
+        def set_raw_tick_observer(self, _observer):
+            return None
+
+        @contextmanager
+        def lifecycle_state_commit_fence(self):
+            self.fence_entries += 1
+            yield
 
         def seed_trade_identities(self, identities):
             return None
@@ -1164,10 +1263,37 @@ def test_shadow_activation_reads_canonical_persistent_account_and_rejects_positi
         def seed_trade_identities(self, identities):
             assert list(identities) == []
 
+        def configure_order_submission_journal(self, _path, **_identity):
+            return None
+
     class FakeShadow:
         def __init__(self, live, initial_capital, **kwargs):
-            del live
+            self.live = live
+            self.fence_entries = 0
             captured.append({"initial_capital": initial_capital, **kwargs})
+
+        def configure_order_submission_journal(self, path, **identity):
+            self.live.configure_order_submission_journal(path, **identity)
+
+        def refresh_session_activity(self, *, timeout_seconds):
+            assert timeout_seconds == 0.1
+            return _empty_session_evidence(self.live.get_account_identity_digest(), "20260825")
+
+        def get_session_activity_account_identity_digest(self):
+            return self.live.get_account_identity_digest()
+
+        def require_session_activity_evidence_current(self, evidence):
+            assert evidence == _empty_session_evidence(
+                self.live.get_account_identity_digest(), "20260825"
+            )
+
+        def set_raw_tick_observer(self, _observer):
+            return None
+
+        @contextmanager
+        def lifecycle_state_commit_fence(self):
+            self.fence_entries += 1
+            yield
 
         def update_specs(self, specs):
             assert specs == {}
@@ -1254,7 +1380,7 @@ def test_shadow_activation_reads_canonical_persistent_account_and_rejects_positi
         shadow_account=True,
     )
 
-    with pytest.raises(RuntimeError, match="reconciliation failed"):
+    with pytest.raises(RuntimeError, match="crash-fill adoption failed"):
         _run_stress90_activate(config, args)
 
     assert captured == [
@@ -1332,15 +1458,43 @@ def test_shadow_rebase_reads_canonical_persistent_account_and_rejects_active_ord
         def seed_trade_identities(self, identities):
             assert list(identities) == []
 
+        def configure_order_submission_journal(self, _path, **_identity):
+            return None
+
     class FakeShadow:
         def __init__(self, live, initial_capital, **kwargs):
-            del live, initial_capital
+            self.live = live
+            self.fence_entries = 0
+            del initial_capital
             assert kwargs == {
                 "slippage_ticks": 2,
                 "latency_ticks": 3,
                 "market_impact_ticks": 4,
                 "state_path": runtime_dir / "shadow_broker_state.json",
             }
+
+        def configure_order_submission_journal(self, path, **identity):
+            self.live.configure_order_submission_journal(path, **identity)
+
+        def refresh_session_activity(self, *, timeout_seconds):
+            assert timeout_seconds == 0.1
+            return _empty_session_evidence(self.live.get_account_identity_digest(), "20260825")
+
+        def get_session_activity_account_identity_digest(self):
+            return self.live.get_account_identity_digest()
+
+        def require_session_activity_evidence_current(self, evidence):
+            assert evidence == _empty_session_evidence(
+                self.live.get_account_identity_digest(), "20260825"
+            )
+
+        def set_raw_tick_observer(self, _observer):
+            return None
+
+        @contextmanager
+        def lifecycle_state_commit_fence(self):
+            self.fence_entries += 1
+            yield
 
         def update_specs(self, specs):
             assert specs == {}

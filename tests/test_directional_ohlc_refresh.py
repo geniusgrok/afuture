@@ -40,6 +40,14 @@ def test_stress90_order_path_loads_only_verified_cache_and_requires_completed_da
             required_completed_day="20260524",
         )
 
+    with pytest.raises(RuntimeError, match="mismatches Broker-derived"):
+        load_stress90_completed_ohlc(
+            store,
+            products=products,
+            current_ctp_trading_day="20260525",
+            authoritative_ctp_trading_day="20260526",
+        )
+
 
 def test_explicit_refresh_is_append_only_and_rejects_current_day_or_revision(tmp_path):
     from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
@@ -57,6 +65,7 @@ def test_explicit_refresh_is_append_only_and_rejects_current_day_or_revision(tmp
         ),
         products=products,
         current_ctp_trading_day="20260525",
+        authoritative_ctp_trading_day="20260525",
     )
     assert refreshed.row_count == 140
 
@@ -104,6 +113,7 @@ def test_explicit_refresh_is_append_only_and_rejects_current_day_or_revision(tmp
             ),
             products=products,
             current_ctp_trading_day="20260525",
+            authoritative_ctp_trading_day="20260525",
         )
 
 

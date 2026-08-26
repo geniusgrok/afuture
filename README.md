@@ -165,6 +165,10 @@ afuture live --config config/afuture.directional-live.example.toml --confirm-liv
 # Stress-90 固定 bootstrap、无订单 OHLC 准备和显式 lifecycle（先阅读 runbook）
 afuture stress90-bootstrap --config config/afuture.directional-stress90-live.example.toml --runtime-dir runtime --through YYYYMMDD
 afuture directional-ohlc-refresh --config config/afuture.directional-stress90-live.example.toml --current-trading-day YYYYMMDD
+afuture stress90-oi-collect --help
+afuture stress90-prepare-decision --help
+afuture stress90-registry-init --help
+afuture stress90-settlement-roll-forward --help
 afuture stress90-activate --help
 afuture stress90-account-rebase --help
 afuture stress90-order-journal-rollover --help

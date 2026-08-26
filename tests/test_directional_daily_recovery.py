@@ -24,6 +24,9 @@ class _Manager:
     def maybe_rebalance(self, now):
         return DirectionalActionResult("hold")
 
+    def enforce_realized_gross_limit(self, now):
+        return DirectionalActionResult("hold")
+
     def flatten(self, now):
         self.flatten_calls += 1
         return DirectionalActionResult("reduce" if self.risk else "hold")

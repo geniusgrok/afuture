@@ -33,11 +33,20 @@ def load_stress90_completed_ohlc(
     *,
     products: tuple[str, ...],
     current_ctp_trading_day: str,
+    authoritative_ctp_trading_day: str | None = None,
     required_completed_day: str | None = None,
 ) -> DirectionalOHLCCacheEntry:
     """Load verified bytes only; no provider/network object is accepted here."""
 
     current = _day(current_ctp_trading_day, name="current CTP trading day")
+    if authoritative_ctp_trading_day is None:
+        raise RuntimeError("Broker-derived CTP trading-day evidence is required")
+    authoritative = _day(
+        authoritative_ctp_trading_day,
+        name="Broker-derived CTP trading day",
+    )
+    if current != authoritative:
+        raise RuntimeError("requested current trading day mismatches Broker-derived evidence")
     entry = store.load(products)
     if entry is None:
         raise RuntimeError("verified Stress-90 OHLC cache is missing")

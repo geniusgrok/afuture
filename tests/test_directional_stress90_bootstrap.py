@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -295,6 +296,28 @@ def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
         def get_account_identity_digest(self) -> str:
             return "a" * 64
 
+        def configure_order_submission_journal(self, path, **identity) -> None:
+            assert path == runtime / "stress90_ctp_orders.json"
+            assert identity["policy_id"] == "directional.stress90"
+
+        def refresh_session_activity(self, *, timeout_seconds: float):
+            from afuture.broker.ctp_session_query import build_ctp_session_activity_evidence
+
+            assert timeout_seconds == 0.1
+            return build_ctp_session_activity_evidence(
+                account_identity_digest="a" * 64,
+                trading_day=through,
+                order_request_id=11,
+                trade_request_id=12,
+                orders=(),
+                trades=(),
+                critical_generation=0,
+            )
+
+        def require_session_activity_evidence_current(self, evidence):
+            assert evidence.account_identity_digest == "a" * 64
+            assert evidence.trading_day == through
+
         def start(self) -> None:
             return None
 
@@ -445,7 +468,10 @@ def test_synthetic_bootstrap_bridge_is_consumed_once_by_first_live_decision(
     from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
     from afuture.directional_sessions import PRODUCT_SESSION_MANIFEST
     from afuture.directional_stress90_bootstrap import bootstrap_stress90
-    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+    from afuture.directional_stress90_oi_runtime import (
+        ObservedTradingDayTransition,
+        Stress90OiEvidenceStore,
+    )
     from afuture.directional_stress90_policy import STRESS90_POLICY
     from afuture.directional_stress90_runtime import Stress90DirectionalPortfolioManager
     from afuture.directional_stress90_state import Stress90PolicyStateStore
@@ -521,7 +547,19 @@ def test_synthetic_bootstrap_bridge_is_consumed_once_by_first_live_decision(
 
     manager.policy = Base()
     manager.bootstrap(through_timestamp.to_pydatetime().replace(tzinfo=_CHINA))
-    before_oi = Stress90OiEvidenceStore(bootstrap.oi_evidence_path).load_required_record()
+    oi_store = Stress90OiEvidenceStore(bootstrap.oi_evidence_path)
+    initial_oi = oi_store.load_required_record()
+    completed = next(item for item in initial_oi.state.completed if item.trading_day == through)
+    preseeded_transition = ObservedTradingDayTransition(
+        source_trading_day=through,
+        target_trading_day=next_target,
+        completed_oi_evidence_digest=completed.evidence_digest,
+    )
+    oi_store.save_state(
+        replace(initial_oi.state, observed_transitions=(preseeded_transition,)),
+        expected_sequence=initial_oi.sequence,
+    )
+    before_oi = oi_store.load_required_record()
     broker.trading_day = next_target
 
     first = manager._prepare_decision_for_current_day(next_target)
@@ -535,6 +573,7 @@ def test_synthetic_bootstrap_bridge_is_consumed_once_by_first_live_decision(
     assert after_state.sequence == 2
     assert after_oi == before_oi
     assert after_oi.state.completed[0].source == "fixed_historical_60m"
+    assert after_oi.state.observed_transitions == (preseeded_transition,)
 
 
 def test_bootstrap_hashes_every_fixed_input_before_parsing(tmp_path: Path):

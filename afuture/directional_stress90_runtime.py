@@ -93,6 +93,7 @@ def load_stress90_account_day_continuity_evidence(
         ohlc_store,
         products=STRESS90_POLICY.products,
         current_ctp_trading_day=current,
+        authoritative_ctp_trading_day=current,
         required_completed_day=previous,
     )
     if stress90_target_transitions(
@@ -449,6 +450,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
                 self._ohlc_cache,
                 products=STRESS90_POLICY.products,
                 current_ctp_trading_day=current,
+                authoritative_ctp_trading_day=current,
                 required_completed_day=state.last_completed_target_day,
             )
             transitions = stress90_target_transitions(
