@@ -570,16 +570,24 @@ def bootstrap_stress90(
         oi_evidence_path = runtime / "stress90_oi_evidence.json"
         ohlc_cache_path = runtime / "directional_ohlc_cache.json"
         activity_path = runtime / "directional_activity.json"
-        artifact_paths = (
+        rollback_safe_artifact_paths = (
             seed_path,
             state_path,
-            oi_evidence_path,
             ohlc_cache_path,
             activity_path,
         )
-        if any(path.exists() for path in artifact_paths):
+        if any(path.exists() for path in rollback_safe_artifact_paths):
             raise Stress90BootstrapError(
                 "Stress-90 bootstrap refuses to overwrite existing live artifacts"
+            )
+        oi_store = Stress90OiEvidenceStore(oi_evidence_path)
+        try:
+            existing_oi = oi_store.load_record()
+        except OiEvidenceIntegrityError as exc:
+            raise Stress90BootstrapError(f"existing Stress-90 OI evidence incident: {exc}") from exc
+        if existing_oi is not None:
+            raise Stress90BootstrapError(
+                "Stress-90 bootstrap refuses to overwrite existing live OI evidence"
             )
         through_rows = bars.loc[
             bars["datetime"].dt.normalize() == through,
@@ -632,13 +640,13 @@ def bootstrap_stress90(
                 completed_close,
             )
             DirectionalActivityStore(activity_path).save(activity)
-            Stress90OiEvidenceStore(oi_evidence_path).save_state(
-                Stress90OiEvidenceState(completed=(bridge,))
-            )
             Stress90SeedStore(seed_path).save_new(seed)
             Stress90PolicyStateStore(state_path).save(
                 Stress90PolicyState.from_seed(seed, prepared_decision=prepared)
             )
+            # OI lineage is the bootstrap commit point.  All prior sequence-1
+            # artifacts remain independently rollback-safe until this final write.
+            oi_store.save_state(Stress90OiEvidenceState(completed=(bridge,)))
         except (
             OSError,
             DirectionalActivityIntegrityError,
@@ -646,7 +654,10 @@ def bootstrap_stress90(
             OiEvidenceIntegrityError,
             Stress90StateIntegrityError,
         ) as exc:
-            for artifact_path in artifact_paths:
+            # Never delete OI current or sidecars once lineage creation may have
+            # started.  Seed/policy/cache/activity sequence-1 files are safe to
+            # roll back because OI is the final bootstrap authority commit.
+            for artifact_path in rollback_safe_artifact_paths:
                 artifact_path.unlink(missing_ok=True)
                 artifact_path.with_name(f"{artifact_path.name}.prev").unlink(missing_ok=True)
             raise Stress90BootstrapError("failed to persist Stress-90 bootstrap artifacts") from exc

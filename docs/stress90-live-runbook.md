@@ -392,6 +392,13 @@ schema 2 没有可验证的 predecessor checksum，不能原地升级、补写 p
 pristine 的新 evidence 路径，并从柜台 raw evidence 重新观察一个完整、权威的 counter trading
 day 后建立 schema 3 sequence 1。在该证据完成前，Stress-90 activation 持续阻断。
 
+首次 bootstrap 的 durable 顺序固定为 OHLC cache、activity、bootstrap seed、policy state，最后
+才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。OI 开始前失败时，只能回滚这些
+尚未提交的 cache/activity/seed/policy current 与 `.prev`，随后可用同一组已核验输入重试。OI
+marker/lock 创建一旦开始，异常清理绝不能删除 OI current、`.prev`、`.lineage` 或 `.lock`；若
+current 尚未形成，该 marker/lock-only 状态按 durable incident 保持 `HALTED`，不得假装普通
+bootstrap retry 可以清除或覆盖。
+
 不要删除 kill switch，绝不自动采用 `.prev`，也不要跳过 target day、改用本机日期或在异常路径发送 opening。
 
 ## 14. 扩大风险

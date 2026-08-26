@@ -251,6 +251,240 @@ def test_live_bootstrap_persists_verified_through_day_oi_bridge(
     assert result.to_dict()["oi_evidence_path"] == str(result.oi_evidence_path)
 
 
+@pytest.mark.parametrize("failure_after", ["ohlc", "activity", "seed", "policy"])
+def test_bootstrap_pre_oi_artifact_failure_rolls_back_and_retries_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_after: str,
+) -> None:
+    from afuture.directional_activity import DirectionalActivityStore
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+    from afuture.directional_stress90_state import (
+        Stress90PolicyStateStore,
+        Stress90SeedStore,
+    )
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    targets = {
+        "ohlc": (DirectionalOHLCCacheStore, "save"),
+        "activity": (DirectionalActivityStore, "save"),
+        "seed": (Stress90SeedStore, "save_new"),
+        "policy": (Stress90PolicyStateStore, "save"),
+    }
+    owner, method_name = targets[failure_after]
+    real_save = getattr(owner, method_name)
+
+    def save_then_fail(self, *args, **kwargs):
+        real_save(self, *args, **kwargs)
+        raise OSError(f"injected failure after {failure_after} write")
+
+    monkeypatch.setattr(owner, method_name, save_then_fail)
+    with pytest.raises(Stress90BootstrapError, match="failed to persist"):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+
+    oi_store = Stress90OiEvidenceStore(runtime / "stress90_oi_evidence.json")
+    assert not oi_store.path.exists()
+    assert not oi_store.previous_path.exists()
+    assert not oi_store.lineage_path.exists()
+    assert not oi_store.lock_path.exists()
+    for name in (
+        "directional_ohlc_cache.json",
+        "directional_activity.json",
+        "stress90_bootstrap_seed.json",
+        "stress90_policy_state.json",
+    ):
+        assert not (runtime / name).exists()
+
+    monkeypatch.setattr(owner, method_name, real_save)
+    result = bootstrap_stress90(
+        runtime_dir=runtime,
+        through_day=through,
+        expectations=expectations,
+        write_artifacts=True,
+    )
+    oi = Stress90OiEvidenceStore(result.oi_evidence_path).load_required_record()
+    assert oi.sequence == 1
+    assert oi.parent_checksum is None
+    assert not oi_store.previous_path.exists()
+
+
+@pytest.mark.parametrize("sidecar", ["previous", "lineage", "lock"])
+def test_bootstrap_preflight_rejects_oi_sidecar_without_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sidecar: str,
+) -> None:
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    store = Stress90OiEvidenceStore(runtime / "stress90_oi_evidence.json")
+    path = {
+        "previous": store.previous_path,
+        "lineage": store.lineage_path,
+        "lock": store.lock_path,
+    }[sidecar]
+    path.write_text("durable incident evidence", encoding="utf-8")
+
+    with pytest.raises(
+        Stress90BootstrapError,
+        match=rf"existing Stress-90 OI evidence incident.*{sidecar}",
+    ):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+
+    assert not (runtime / "directional_ohlc_cache.json").exists()
+    assert not (runtime / "directional_activity.json").exists()
+    assert not (runtime / "stress90_bootstrap_seed.json").exists()
+    assert not (runtime / "stress90_policy_state.json").exists()
+
+
+@pytest.mark.parametrize("incident", ["schema2", "invalid_chain"])
+def test_bootstrap_preflight_uses_oi_store_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    incident: str,
+) -> None:
+    import json
+
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_oi_runtime import (
+        OI_EVIDENCE_KIND,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    store = Stress90OiEvidenceStore(runtime / "stress90_oi_evidence.json")
+    if incident == "schema2":
+        unsigned = {
+            "kind": OI_EVIDENCE_KIND,
+            "schema_version": 2,
+            "sequence": 9,
+            "state": {
+                "completed": [],
+                "in_progress": None,
+                "observed_transitions": [],
+                "raw_ticks_observed": 0,
+                "duplicate_ticks": 0,
+                "volume_resets": 0,
+            },
+        }
+        checksum = hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        store.path.write_text(json.dumps({**unsigned, "checksum": checksum}), encoding="utf-8")
+        expected_error = "schema 2"
+    else:
+        first = store.save_state(Stress90OiEvidenceState())
+        store.save_state(
+            Stress90OiEvidenceState(raw_ticks_observed=1),
+            expected_sequence=first.sequence,
+        )
+        store.previous_path.unlink()
+        expected_error = "previous predecessor"
+
+    with pytest.raises(
+        Stress90BootstrapError,
+        match=rf"existing Stress-90 OI evidence incident.*{expected_error}",
+    ):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+
+
+def test_bootstrap_final_oi_failure_preserves_incident_lineage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    oi_path = runtime / "stress90_oi_evidence.json"
+    real_replace = Stress90OiEvidenceStore._atomic_replace
+
+    def fail_before_oi_current(target: Path, payload: bytes) -> None:
+        if target == oi_path:
+            raise OSError("injected failure before OI current replace")
+        real_replace(target, payload)
+
+    monkeypatch.setattr(
+        Stress90OiEvidenceStore,
+        "_atomic_replace",
+        staticmethod(fail_before_oi_current),
+    )
+    with pytest.raises(Stress90BootstrapError, match="failed to persist"):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+
+    store = Stress90OiEvidenceStore(oi_path)
+    assert not store.path.exists()
+    assert store.lineage_path.is_file()
+    assert store.lock_path.is_file()
+    for name in (
+        "directional_ohlc_cache.json",
+        "directional_activity.json",
+        "stress90_bootstrap_seed.json",
+        "stress90_policy_state.json",
+    ):
+        assert not (runtime / name).exists()
+
+    monkeypatch.setattr(
+        Stress90OiEvidenceStore,
+        "_atomic_replace",
+        staticmethod(real_replace),
+    )
+    with pytest.raises(
+        Stress90BootstrapError,
+        match="existing Stress-90 OI evidence incident.*lineage.*missing",
+    ):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+
+
 def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
