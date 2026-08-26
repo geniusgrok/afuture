@@ -485,6 +485,82 @@ class AccountRuntimeRegistry:
                             "account runtime registry lock cleanup failed"
                         ) from exc
 
+    def _claim_initial_visible_lock_unlocked(self, lock: _RegistryExclusiveLock) -> None:
+        """Claim a pristine registry's compatibility lock without accepting legacy evidence."""
+
+        if lock.visible_descriptor is not None or lock.legacy_lock_evidence:
+            raise AccountRuntimeRegistryError(
+                "account runtime registry initialization lock has surviving lineage"
+            )
+        descriptor: int | None = None
+        body_failed = False
+        flags = (
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        try:
+            try:
+                descriptor = os.open(self.lock_path, flags, 0o600)
+            except FileExistsError as exc:
+                lock.legacy_lock_evidence = True
+                raise AccountRuntimeRegistryError(
+                    "account runtime registry initialization lock is concurrent lineage evidence"
+                ) from exc
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise OSError(errno.EINVAL, "initial visible lock is not a regular file")
+            os.fsync(descriptor)
+            directory = os.open(
+                self.lock_path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            directory_body_failed = False
+            try:
+                os.fsync(directory)
+            except BaseException:
+                directory_body_failed = True
+                raise
+            finally:
+                try:
+                    os.close(directory)
+                except OSError:
+                    if not directory_body_failed:
+                        raise
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            visible = os.stat(self.lock_path, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(visible.st_mode)
+                or visible.st_dev != opened.st_dev
+                or visible.st_ino != opened.st_ino
+            ):
+                raise OSError(errno.ESTALE, "initial visible lock path was replaced")
+            lock.visible_descriptor = descriptor
+            descriptor = None
+        except AccountRuntimeRegistryError:
+            body_failed = True
+            raise
+        except OSError as exc:
+            body_failed = True
+            raise AccountRuntimeRegistryError(
+                "account runtime registry initialization lock claim failed"
+            ) from exc
+        except BaseException:
+            body_failed = True
+            raise
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    if not body_failed:
+                        raise AccountRuntimeRegistryError(
+                            "account runtime registry initialization lock cleanup failed"
+                        ) from exc
+
     def _atomic_replace(self, path: Path, payload: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -577,8 +653,6 @@ class AccountRuntimeRegistry:
         previous: AccountRuntimeRegistryRecord | None,
         bindings: tuple[AccountRuntimeBinding, ...],
     ) -> AccountRuntimeRegistryRecord:
-        if previous is None:
-            self._create_lineage_marker_unlocked()
         record = _new_record(
             sequence=1 if previous is None else previous.sequence + 1,
             parent_checksum=None if previous is None else previous.checksum,
@@ -638,8 +712,9 @@ class AccountRuntimeRegistry:
                 if current.sequence == 1 and not current.bindings:
                     return current
                 raise AccountRuntimeRegistryError("account runtime registry is already initialized")
+            self._create_lineage_marker_unlocked()
+            self._claim_initial_visible_lock_unlocked(lock)
             initialized = self._save_unlocked(None, ())
-            self._ensure_visible_lock_unlocked(lock)
             durable = self._load_unlocked(
                 required=True,
                 legacy_lock_evidence=lock.legacy_lock_evidence,

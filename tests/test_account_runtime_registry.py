@@ -6,7 +6,7 @@ import os
 import stat
 from multiprocessing import get_context
 from pathlib import Path
-from threading import BrokenBarrierError
+from threading import BrokenBarrierError, Timer
 
 import pytest
 
@@ -120,6 +120,33 @@ def _bind_account_through_alias_with_save_barrier(
         results.put("rejected")
     else:
         results.put("bound")
+
+
+def _create_and_hold_legacy_visible_lock(
+    lock_path: str,
+    start,
+    acquired,
+    release,
+) -> None:
+    start.wait(timeout=10)
+    path = Path(lock_path)
+    descriptor = os.open(
+        path,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.fsync(descriptor)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        acquired.set()
+        release.wait(timeout=10)
+    finally:
+        os.close(descriptor)
 
 
 def test_account_binding_survives_release_and_rejects_another_runtime(
@@ -564,6 +591,95 @@ def test_visible_lock_eexist_race_is_flocked_until_registry_lock_exit(
         fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
     finally:
         os.close(contender)
+
+
+def test_pristine_initialize_rejects_legacy_lock_created_after_absence_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    context = get_context("spawn")
+    start = context.Event()
+    acquired = context.Event()
+    release = context.Event()
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+    creator = context.Process(
+        target=_create_and_hold_legacy_visible_lock,
+        args=(str(registry.lock_path), start, acquired, release),
+    )
+    creator.start()
+    real_load = registry._load_unlocked
+    injected = False
+
+    def load_then_create_legacy_lock(*, required: bool, legacy_lock_evidence: bool):
+        nonlocal injected
+        record = real_load(
+            required=required,
+            legacy_lock_evidence=legacy_lock_evidence,
+        )
+        if record is None and not injected:
+            injected = True
+            start.set()
+            assert acquired.wait(timeout=10)
+        return record
+
+    monkeypatch.setattr(registry, "_load_unlocked", load_then_create_legacy_lock)
+    delayed_release = Timer(1, release.set)
+    delayed_release.start()
+    try:
+        with pytest.raises(AccountRuntimeRegistryError, match="lock.*lineage|lock.*concurrent"):
+            registry.initialize(
+                strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+            )
+    finally:
+        release.set()
+        delayed_release.cancel()
+        creator.join(timeout=10)
+
+    assert creator.exitcode == 0
+    assert not registry.path.exists()
+    assert registry.lineage_path.is_file()
+    assert registry.lock_path.is_file()
+    with pytest.raises(AccountRuntimeRegistryError, match="lineage.*missing"):
+        AccountRuntimeRegistry(registry.path).initialize(
+            strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+        )
+
+
+def test_crash_after_initial_marker_and_owned_lock_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+
+    def crash_before_current(previous, bindings):
+        assert previous is None
+        assert bindings == ()
+        assert registry.lineage_path.is_file()
+        assert registry.lock_path.is_file()
+        assert not registry.path.exists()
+        raise AccountRuntimeRegistryError("injected crash before initial current")
+
+    monkeypatch.setattr(registry, "_save_unlocked", crash_before_current)
+    with pytest.raises(AccountRuntimeRegistryError, match="crash before initial current"):
+        registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+
+    assert not registry.path.exists()
+    with pytest.raises(AccountRuntimeRegistryError, match="lineage.*missing"):
+        AccountRuntimeRegistry(registry.path).initialize(
+            strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+        )
 
 
 def test_registry_lock_setup_failure_releases_kernel_lock_descriptor(
