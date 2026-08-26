@@ -704,6 +704,7 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
         last_account_withdrawal=0.0,
         last_account_cash_flow_verified=True,
         last_account_settlement_id=42,
+        recent_daily_returns=[-0.08, 0.03],
     )
     generic_store.save(
         activate_stress90_policy(
@@ -936,6 +937,8 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
     ).load_required()
     assert prepared.operation == "reactivation"
     assert prepared.status == "prepared"
+    assert prepared.generic_target.recent_daily_returns == []
+    assert prepared.policy_target.recent_daily_returns_for_adaptive_margin == ()
     expected_intermediate_policy = (
         "execution_aligned"
         if reactivation_crash_point == "after_policy"
@@ -960,6 +963,7 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
     assert reactivated.kill_switch is True
     assert reactivated.day_start_equity == migrated.day_start_equity
     assert reactivated.equity_high_watermark == migrated.equity_high_watermark
+    assert reactivated.recent_daily_returns == []
     assert reactivated_policy.completed_account_wealth == 1.0
     assert reactivated_policy.completed_account_high_watermark == 1.0
     assert reactivated_policy.last_completed_account_day is None

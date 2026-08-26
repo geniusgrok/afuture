@@ -1535,6 +1535,101 @@ def test_lifecycle_commit_rejects_broker_without_ingress_fence() -> None:
         )
 
 
+def test_migration_registry_acknowledgement_is_exactly_once_across_state_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from afuture import stress90_lifecycle_transaction as lifecycle_module
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
+    from afuture.cli import (
+        _apply_stress90_account_runtime_registry_transition,
+        _commit_stress90_lifecycle_under_broker_fence,
+    )
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    config = SimpleNamespace(state_path=str(runtime / "state.json"))
+    registry = AccountRuntimeRegistry(runtime / ".account-runtime-registry.json")
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+    account = "a" * 64
+    epoch = "b" * 64
+    nonce = "c" * 64
+    registry.bind_new(account, runtime, epoch, "d" * 64)
+    transaction = SimpleNamespace(
+        operation="stress90_to_execution_aligned",
+        source_account_identity_digest=account,
+        account_identity_digest=account,
+        source_account_epoch=epoch,
+        policy_target=SimpleNamespace(live_account_epoch=epoch),
+        operation_nonce=nonce,
+    )
+
+    class Broker:
+        @contextmanager
+        def lifecycle_state_commit_fence(self):
+            yield
+
+    def crash_before_state_commit(*_args, **_kwargs):
+        raise OSError("injected state commit crash")
+
+    monkeypatch.setattr(
+        lifecycle_module,
+        "apply_stress90_lifecycle_transaction",
+        crash_before_state_commit,
+    )
+    with pytest.raises(OSError, match="state commit crash"):
+        _commit_stress90_lifecycle_under_broker_fence(
+            Broker(),
+            transaction_store=object(),
+            generic_store=object(),
+            policy_store=object(),
+            prepare_transaction=lambda: transaction,
+            apply_registry_transition=lambda prepared: (
+                _apply_stress90_account_runtime_registry_transition(
+                    config,
+                    runtime_dir=runtime,
+                    lifecycle_transaction=prepared,
+                )
+            ),
+            precommit_check=lambda: None,
+        )
+
+    acknowledged = registry.load_required()
+    assert acknowledged.sequence == 3
+    assert registry.require_binding(account, runtime, epoch).last_operation_id == nonce
+
+    monkeypatch.setattr(
+        lifecycle_module,
+        "apply_stress90_lifecycle_transaction",
+        lambda *_args, **_kwargs: "committed",
+    )
+    assert (
+        _commit_stress90_lifecycle_under_broker_fence(
+            Broker(),
+            transaction_store=object(),
+            generic_store=object(),
+            policy_store=object(),
+            prepare_transaction=lambda: transaction,
+            apply_registry_transition=lambda prepared: (
+                _apply_stress90_account_runtime_registry_transition(
+                    config,
+                    runtime_dir=runtime,
+                    lifecycle_transaction=prepared,
+                )
+            ),
+            precommit_check=lambda: None,
+        )
+        == "committed"
+    )
+    assert registry.load_required().sequence == acknowledged.sequence
+
+
 def test_prepared_lifecycle_cannot_erase_recovered_net_zero_fill_identity() -> None:
     from afuture.cli import _require_no_unpersisted_lifecycle_crash_fill_adoption
 

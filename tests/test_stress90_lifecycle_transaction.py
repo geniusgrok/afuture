@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import replace
 from pathlib import Path
 
@@ -1189,6 +1191,11 @@ def test_same_day_migrated_execution_aligned_state_can_only_reactivate_with_new_
     )
 
     generic_store, policy_store, generic, policy = _stores(tmp_path)
+    generic = generic_store.save(
+        replace(generic.state, recent_daily_returns=[-0.10]),
+        expected_sequence=generic.sequence,
+        expected_checksum=generic.checksum,
+    )
     policy = policy_store.save(
         replace(
             policy.state,
@@ -1216,16 +1223,19 @@ def test_same_day_migrated_execution_aligned_state_can_only_reactivate_with_new_
         expected_sequence=generic.sequence,
         expected_checksum=generic.checksum,
     )
-    target_generic = activate_stress90_policy(
-        migrated,
-        broker_flat=True,
-        local_flat=True,
-        no_active_orders=True,
-        reconciled=True,
-        bootstrap_seed_digest=policy.state.bootstrap_seed_digest,
-        account_identity_digest="b" * 64,
-        operator_reason="explicit same-day Stress-90 reactivation",
-        strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
+    target_generic = replace(
+        activate_stress90_policy(
+            migrated,
+            broker_flat=True,
+            local_flat=True,
+            no_active_orders=True,
+            reconciled=True,
+            bootstrap_seed_digest=policy.state.bootstrap_seed_digest,
+            account_identity_digest="b" * 64,
+            operator_reason="explicit same-day Stress-90 reactivation",
+            strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
+        ),
+        recent_daily_returns=[],
     )
     target_policy = replace(
         policy.state,
@@ -1264,9 +1274,177 @@ def test_same_day_migrated_execution_aligned_state_can_only_reactivate_with_new_
     assert transaction.source_account_epoch == _SOURCE_ACCOUNT_EPOCH
     assert transaction.generic_target.day_start_equity == generic.state.day_start_equity
     assert transaction.generic_target.equity_high_watermark == generic.state.equity_high_watermark
+    assert transaction.generic_target.recent_daily_returns == []
+    assert transaction.policy_target.recent_daily_returns_for_adaptive_margin == ()
     assert transaction.policy_target.completed_account_wealth == 1.0
     assert transaction.policy_target.last_completed_account_day is None
     assert transaction.policy_target.live_account_epoch != _SOURCE_ACCOUNT_EPOCH
+
+
+def test_reactivation_rejects_divergent_generic_and_policy_return_windows(
+    tmp_path: Path,
+) -> None:
+    from afuture.directional_policy_activation import (
+        DIRECTIONAL_POLICY_MIGRATION_CONFIRMATION,
+        STRESS90_ACTIVATION_CONFIRMATION,
+        activate_stress90_policy,
+        migrate_stress90_to_execution_aligned,
+    )
+    from afuture.stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        Stress90LifecycleTransactionStore,
+        derive_stress90_account_epoch,
+    )
+
+    generic_store, policy_store, generic, policy = _stores(tmp_path)
+    returns = [-0.08, 0.03]
+    generic = generic_store.save(
+        replace(generic.state, recent_daily_returns=returns),
+        expected_sequence=generic.sequence,
+        expected_checksum=generic.checksum,
+    )
+    policy = policy_store.save(
+        replace(
+            policy.state,
+            recent_daily_returns_for_adaptive_margin=tuple(returns),
+            live_inception_day="20260824",
+            live_inception_equity=700_000.0,
+        ),
+        expected_sequence=policy.sequence,
+    )
+    migrated = migrate_stress90_to_execution_aligned(
+        generic.state,
+        broker_flat=True,
+        local_flat=True,
+        no_active_orders=True,
+        reconciled=True,
+        account_identity_digest="b" * 64,
+        operator_reason="temporary migration",
+        strong_confirmation=DIRECTIONAL_POLICY_MIGRATION_CONFIRMATION,
+    )
+    generic = generic_store.save(
+        migrated,
+        expected_sequence=generic.sequence,
+        expected_checksum=generic.checksum,
+    )
+    target_generic = activate_stress90_policy(
+        migrated,
+        broker_flat=True,
+        local_flat=True,
+        no_active_orders=True,
+        reconciled=True,
+        bootstrap_seed_digest=policy.state.bootstrap_seed_digest,
+        account_identity_digest="b" * 64,
+        operator_reason="reactivate",
+        strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
+    )
+    target_policy = replace(
+        policy.state,
+        completed_account_wealth=1.0,
+        completed_account_high_watermark=1.0,
+        last_completed_account_day=None,
+        recent_daily_returns_for_adaptive_margin=(),
+        live_inception_day="20260825",
+        live_inception_equity=700_000.0,
+        live_account_epoch=derive_stress90_account_epoch(
+            operation="reactivation",
+            operation_nonce=_OPERATION_NONCE,
+            policy_source_checksum=policy.checksum,
+            account_identity_digest="b" * 64,
+            trading_day="20260825",
+        ),
+    )
+
+    with pytest.raises(Stress90LifecycleTransactionError, match="return window"):
+        Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json").begin(
+            operation="reactivation",
+            generic_source=generic,
+            policy_source=policy,
+            generic_target=target_generic,
+            policy_target=target_policy,
+            trading_day="20260825",
+            account_identity_digest="b" * 64,
+            account_snapshot=replace(_account(), withdrawal=0.0),
+            operation_nonce=_OPERATION_NONCE,
+            operator_reason="reactivate",
+        )
+
+
+def test_lifecycle_lineage_marker_prevents_deleted_coordinator_recreation(
+    tmp_path: Path,
+) -> None:
+    from afuture.stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        Stress90LifecycleTransactionStore,
+    )
+
+    _generic_store, _policy_store, generic, policy = _stores(tmp_path)
+    generic_target, policy_target = _targets(generic, policy)
+    store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
+    begin_kwargs = {
+        "operation": "account_rebase",
+        "generic_source": generic,
+        "policy_source": policy,
+        "generic_target": generic_target,
+        "policy_target": policy_target,
+        "trading_day": "20260825",
+        "account_identity_digest": "b" * 64,
+        "account_snapshot": _account(),
+        "operation_nonce": _OPERATION_NONCE,
+    }
+    store.begin(**begin_kwargs)
+
+    assert store.lineage_path.is_file()
+    store.path.unlink()
+    store.previous_path.unlink(missing_ok=True)
+
+    with pytest.raises(Stress90LifecycleTransactionError, match="lineage.*missing"):
+        store.load()
+    with pytest.raises(Stress90LifecycleTransactionError, match="lineage.*missing"):
+        store.begin(**begin_kwargs)
+
+
+@pytest.mark.parametrize("failure_target", ["marker", "parent"])
+def test_lifecycle_marker_fsync_failure_never_accepts_a_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_target: str,
+) -> None:
+    from afuture.stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        Stress90LifecycleTransactionStore,
+    )
+
+    _generic_store, _policy_store, generic, policy = _stores(tmp_path)
+    generic_target, policy_target = _targets(generic, policy)
+    store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
+    real_fsync = os.fsync
+
+    def fail_selected_fsync(descriptor: int) -> None:
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        if (failure_target == "parent") is is_directory:
+            raise OSError(f"injected {failure_target} fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_selected_fsync)
+    with pytest.raises(Stress90LifecycleTransactionError, match="lineage marker"):
+        store.begin(
+            operation="account_rebase",
+            generic_source=generic,
+            policy_source=policy,
+            generic_target=generic_target,
+            policy_target=policy_target,
+            trading_day="20260825",
+            account_identity_digest="b" * 64,
+            account_snapshot=_account(),
+            operation_nonce=_OPERATION_NONCE,
+        )
+
+    assert store.lineage_path.exists()
+    assert not store.path.exists()
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    with pytest.raises(Stress90LifecycleTransactionError, match="lineage.*missing"):
+        store.load()
 
 
 def test_rebase_cash_transition_uses_cumulative_daily_baseline_but_incremental_hwm() -> None:

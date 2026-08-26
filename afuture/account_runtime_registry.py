@@ -22,6 +22,7 @@ _F_OFD_SETLKW = getattr(fcntl, "F_OFD_SETLKW", 38)
 _MAX_ACCOUNTS = 256
 _MAX_RUNTIME_PATH = 4_096
 _MAX_OPERATION_HISTORY = 1_024
+_LINEAGE_MARKER = b'{"kind":"afuture.account-runtime-registry-lineage","schema_version":1}\n'
 PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH = Path("/var/lib/afuture/account-runtime-registry.json")
 ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION = "INITIALIZE_AFUTURE_MACHINE_ACCOUNT_REGISTRY"
 ACCOUNT_RUNTIME_TRANSFER_CONFIRMATION = "TRANSFER_STRESS90_ACCOUNT_RUNTIME"
@@ -275,6 +276,7 @@ class AccountRuntimeRegistry:
             raise AccountRuntimeRegistryError("registry path must be absolute")
         self.previous_path = self.path.with_name(self.path.name + ".prev")
         self.lock_path = self.path.with_name(self.path.name + ".lock")
+        self.lineage_path = self.path.with_name(self.path.name + ".lineage")
 
     def _read_bytes(self, path: Path) -> bytes:
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -297,14 +299,29 @@ class AccountRuntimeRegistry:
     def _load_unlocked(self, *, required: bool) -> AccountRuntimeRegistryRecord | None:
         current_exists = self._exists(self.path)
         previous_exists = self._exists(self.previous_path)
+        lineage_exists = self._exists(self.lineage_path)
         if not current_exists:
             if previous_exists:
                 raise AccountRuntimeRegistryError(
                     "account runtime registry current is missing while .prev exists"
                 )
+            if lineage_exists:
+                raise AccountRuntimeRegistryError(
+                    "account runtime registry lineage exists while current is missing"
+                )
             if required:
                 raise AccountRuntimeRegistryError("required account runtime registry is missing")
             return None
+        if not lineage_exists:
+            raise AccountRuntimeRegistryError("account runtime registry lineage marker is missing")
+        try:
+            lineage = self._read_bytes(self.lineage_path)
+        except AccountRuntimeRegistryError as exc:
+            raise AccountRuntimeRegistryError(
+                "account runtime registry lineage marker cannot be read"
+            ) from exc
+        if lineage != _LINEAGE_MARKER:
+            raise AccountRuntimeRegistryError("account runtime registry lineage marker is invalid")
         current_bytes = self._read_bytes(self.path)
         current = _decode_record(current_bytes)
         if previous_exists:
@@ -393,11 +410,45 @@ class AccountRuntimeRegistry:
                 pass
             raise AccountRuntimeRegistryError("account runtime registry replace failed") from exc
 
+    def _create_lineage_marker_unlocked(self) -> None:
+        descriptor: int | None = None
+        try:
+            flags = (
+                os.O_CREAT
+                | os.O_EXCL
+                | os.O_WRONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(self.lineage_path, flags, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = None
+                handle.write(_LINEAGE_MARKER)
+                handle.flush()
+                os.fsync(handle.fileno())
+            directory = os.open(
+                self.lineage_path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError as exc:
+            raise AccountRuntimeRegistryError(
+                "account runtime registry lineage marker creation failed"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
     def _save_unlocked(
         self,
         previous: AccountRuntimeRegistryRecord | None,
         bindings: tuple[AccountRuntimeBinding, ...],
     ) -> AccountRuntimeRegistryRecord:
+        if previous is None:
+            self._create_lineage_marker_unlocked()
         record = _new_record(
             sequence=1 if previous is None else previous.sequence + 1,
             parent_checksum=None if previous is None else previous.checksum,
@@ -696,6 +747,92 @@ class AccountRuntimeRegistry:
                 operation_history=(*binding.operation_history, operation),
             )
             return self._save_unlocked(current, tuple(bindings.values()))
+
+    def acknowledge_binding_operation(
+        self,
+        account_identity_digest: str,
+        runtime_dir: str | Path,
+        source_epoch: str,
+        operation_id: str,
+    ) -> AccountRuntimeRegistryRecord:
+        """Consume one operation nonce without changing the bound lineage."""
+
+        account = _sha(account_identity_digest, "economic account identity")
+        runtime, runtime_digest = _canonical_runtime(runtime_dir)
+        source = _sha(source_epoch, "source account runtime epoch")
+        operation = _sha(operation_id, "account runtime acknowledgement operation")
+        with self._exclusive_lock():
+            current = self._load_unlocked(required=True)
+            assert current is not None
+            bindings = {item.account_identity_digest: item for item in current.bindings}
+            binding = bindings.get(account)
+            if binding is None:
+                raise AccountRuntimeRegistryError(
+                    "account runtime acknowledgement binding is missing"
+                )
+            if (
+                binding.canonical_runtime != runtime
+                or binding.runtime_identity_digest != runtime_digest
+                or binding.account_epoch != source
+            ):
+                raise AccountRuntimeRegistryError(
+                    "account runtime acknowledgement source CAS mismatch"
+                )
+            if operation in {
+                consumed for item in bindings.values() for consumed in item.operation_history
+            }:
+                if binding.last_operation_id == operation and (
+                    self._is_exact_unchanged_binding_acknowledgement_retry(
+                        current,
+                        account,
+                        operation,
+                    )
+                ):
+                    return current
+                raise AccountRuntimeRegistryError(
+                    "account runtime acknowledgement operation was already consumed"
+                )
+            if len(binding.operation_history) >= _MAX_OPERATION_HISTORY:
+                raise AccountRuntimeRegistryError(
+                    "account runtime acknowledgement history exhausted"
+                )
+            bindings[account] = replace(
+                binding,
+                last_operation_id=operation,
+                operation_history=(*binding.operation_history, operation),
+            )
+            return self._save_unlocked(current, tuple(bindings.values()))
+
+    def _is_exact_unchanged_binding_acknowledgement_retry(
+        self,
+        current: AccountRuntimeRegistryRecord,
+        account: str,
+        operation: str,
+    ) -> bool:
+        """Prove the last registry advance only appended this acknowledgement."""
+
+        if current.sequence <= 1 or not self._exists(self.previous_path):
+            return False
+        current_bytes = self._read_bytes(self.path)
+        previous_bytes = self._read_bytes(self.previous_path)
+        if current_bytes == previous_bytes:
+            return False
+        previous = _decode_record(previous_bytes)
+        previous_bindings = {item.account_identity_digest: item for item in previous.bindings}
+        prior = previous_bindings.get(account)
+        if prior is None or len(prior.operation_history) >= _MAX_OPERATION_HISTORY:
+            return False
+        previous_bindings[account] = replace(
+            prior,
+            last_operation_id=operation,
+            operation_history=(*prior.operation_history, operation),
+        )
+        return current.bindings == tuple(
+            sorted(
+                previous_bindings.values(),
+                key=lambda item: item.account_identity_digest,
+            )
+        )
 
     def transfer_binding(
         self,

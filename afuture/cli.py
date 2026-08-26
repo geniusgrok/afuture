@@ -1611,7 +1611,12 @@ def _apply_stress90_account_runtime_registry_transition(
     if operation == "stress90_to_execution_aligned":
         if not source_epoch:
             raise RuntimeError("Stress-90 migration registry epoch is missing")
-        registry.require_binding(source_account, runtime_dir, source_epoch)
+        registry.acknowledge_binding_operation(
+            source_account,
+            runtime_dir,
+            source_epoch,
+            lifecycle_transaction.operation_nonce,
+        )
         return
     raise RuntimeError("unsupported Stress-90 account registry lifecycle operation")
 
@@ -2986,6 +2991,7 @@ def _run_stress90_activate(config, args) -> int:
             last_account_settlement_id=(
                 int(account.settlement_id) if account.settlement_id is not None else -1
             ),
+            recent_daily_returns=([] if reactivating else state.recent_daily_returns),
         )
         lifecycle_gates = {
             "broker_flat": not any(not position.empty for position in positions),

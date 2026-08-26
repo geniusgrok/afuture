@@ -360,6 +360,14 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 - CTP/vendor flow 存在未解释差异；
 - 外部 provider 失败且 verified cache 不足。
 
+`account-runtime-registry.json.lineage` 与
+`stress90_lifecycle_transaction.json.lineage` 是首次落盘时以 `O_EXCL` 创建并完成文件、
+父目录 `fsync` 的不可变 inception 证据。若 lineage marker 存在但 current 与 `.prev`
+同时缺失，必须按 durable-state-loss 事故处理：保持 `HALTED`，保全 marker、lock、runtime
+目录和外部备份，禁止重新执行 registry initialization、删除 marker、从 `.prev` 自动提升、
+或创建另一笔 lifecycle transaction。只有核验过的外部备份和单独批准的恢复流程可以处理该
+事故；普通生命周期命令会持续失败关闭。
+
 不要删除 kill switch，绝不自动采用 `.prev`，也不要跳过 target day、改用本机日期或在异常路径发送 opening。
 
 ## 14. 扩大风险

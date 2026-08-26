@@ -41,6 +41,7 @@ from .state import RuntimeState, RuntimeStateRecord, StateStore
 _KIND = "afuture.stress90.lifecycle-transaction"
 _SCHEMA = 9
 _SHA = re.compile(r"[0-9a-f]{64}")
+_LINEAGE_MARKER = b'{"kind":"afuture.stress90-lifecycle-transaction-lineage","schema_version":1}\n'
 _OPERATIONS = {
     "activation",
     "reactivation",
@@ -116,7 +117,10 @@ _MIGRATION_GENERIC_MUTABLE_FIELDS = {
     "directional_daily_circuit_day",
     "strategy_states",
 }
-_REACTIVATION_GENERIC_MUTABLE_FIELDS = _MIGRATION_GENERIC_MUTABLE_FIELDS
+_REACTIVATION_GENERIC_MUTABLE_FIELDS = {
+    *_MIGRATION_GENERIC_MUTABLE_FIELDS,
+    "recent_daily_returns",
+}
 _SETTLEMENT_GENERIC_MUTABLE_FIELDS = {
     "kill_reason",
     "trading_day",
@@ -1187,9 +1191,11 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
             raise Stress90LifecycleTransactionError(
                 "lifecycle account rebase cumulative daily-loss baseline mismatch"
             )
-        if transaction.operation == "account_rebase" and generic.recent_daily_returns:
+        if transaction.operation in {"reactivation", "account_rebase"} and (
+            generic.recent_daily_returns
+        ):
             raise Stress90LifecycleTransactionError(
-                "lifecycle account rebase must clear generic adaptive-margin returns"
+                f"lifecycle {transaction.operation} must clear generic adaptive-margin returns"
             )
         if (
             transaction.operation == "activation"
@@ -1675,6 +1681,10 @@ def _validate_operation_transition(
             raise Stress90LifecycleTransactionError(
                 "reactivation must explicitly reset only the Stress-90 soft account path"
             )
+        if generic_target.recent_daily_returns:
+            raise Stress90LifecycleTransactionError(
+                "reactivation generic and policy return windows must both be empty"
+            )
         return
     if operation == "account_rebase":
         if account_transition is None:
@@ -1779,16 +1789,35 @@ class Stress90LifecycleTransactionStore:
         self.path = Path(path).resolve(strict=False)
 
     @property
+    def lineage_path(self) -> Path:
+        return self.path.with_name(self.path.name + ".lineage")
+
+    @property
     def previous_path(self) -> Path:
         return self.path.with_name(self.path.name + ".prev")
 
     def _load_record(self) -> _TransactionRecord | None:
-        if not self.path.exists():
-            if self.previous_path.exists():
+        current_exists = self.path.exists() or self.path.is_symlink()
+        previous_exists = self.previous_path.exists() or self.previous_path.is_symlink()
+        lineage_exists = self.lineage_path.exists() or self.lineage_path.is_symlink()
+        if not current_exists:
+            if previous_exists:
                 raise Stress90LifecycleTransactionError(
                     "current lifecycle transaction is missing while .prev evidence exists"
                 )
+            if lineage_exists:
+                raise Stress90LifecycleTransactionError(
+                    "lifecycle transaction lineage exists while current is missing"
+                )
             return None
+        if not lineage_exists:
+            raise Stress90LifecycleTransactionError(
+                "lifecycle transaction lineage marker is missing"
+            )
+        if self._read_lineage_marker() != _LINEAGE_MARKER:
+            raise Stress90LifecycleTransactionError(
+                "lifecycle transaction lineage marker is invalid"
+            )
         try:
             raw = json.loads(
                 self.path.read_text(encoding="utf-8"),
@@ -2050,11 +2079,61 @@ class Stress90LifecycleTransactionStore:
         ).encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         previous_bytes = None if current is None else self.path.read_bytes()
+        if current is None:
+            self._create_lineage_marker()
         # The authoritative current replace is the single commit point. `.prev` is
         # evidence only and is never required or selected as automatic recovery input.
         self._atomic_replace(self.path, encoded)
         if previous_bytes is not None:
             self._atomic_replace(self.previous_path, previous_bytes)
+
+    def _create_lineage_marker(self) -> None:
+        descriptor: int | None = None
+        try:
+            flags = (
+                os.O_CREAT
+                | os.O_EXCL
+                | os.O_WRONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(self.lineage_path, flags, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = None
+                handle.write(_LINEAGE_MARKER)
+                handle.flush()
+                os.fsync(handle.fileno())
+            directory_fd = os.open(
+                self.path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError as exc:
+            raise Stress90LifecycleTransactionError(
+                "lifecycle transaction lineage marker creation failed"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _read_lineage_marker(self) -> bytes:
+        descriptor: int | None = None
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(self.lineage_path, flags)
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = None
+                return handle.read()
+        except OSError as exc:
+            raise Stress90LifecycleTransactionError(
+                "lifecycle transaction lineage marker cannot be read"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     @staticmethod
     def _atomic_replace(path: Path, payload: bytes) -> None:

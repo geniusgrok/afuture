@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -375,3 +377,155 @@ def test_concurrent_processes_cannot_claim_one_account_for_two_runtimes(
         "bound",
         "rejected",
     ]
+
+
+def test_registry_lineage_marker_prevents_deleted_anchor_reinitialization(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    account = "a" * 64
+    runtime = tmp_path / "runtime"
+    registry.bind_new(account, runtime, "b" * 64, "c" * 64)
+
+    assert registry.lineage_path.is_file()
+    registry.path.unlink()
+    registry.previous_path.unlink()
+
+    for operation in (
+        registry.load,
+        registry.load_required,
+        lambda: registry.initialize(
+            strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+        ),
+        lambda: registry.bind_new(account, tmp_path / "other-runtime", "d" * 64, "e" * 64),
+    ):
+        with pytest.raises(AccountRuntimeRegistryError, match="lineage.*missing"):
+            operation()
+
+
+@pytest.mark.parametrize("failure_target", ["marker", "parent"])
+def test_registry_marker_fsync_failure_never_accepts_an_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_target: str,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+    real_fsync = os.fsync
+
+    def fail_selected_fsync(descriptor: int) -> None:
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        if (failure_target == "parent") is is_directory:
+            raise OSError(f"injected {failure_target} fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_selected_fsync)
+    with pytest.raises(AccountRuntimeRegistryError, match="lineage marker"):
+        registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+
+    assert registry.lineage_path.exists()
+    assert not registry.path.exists()
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    with pytest.raises(AccountRuntimeRegistryError, match="lineage.*missing"):
+        registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+
+
+def test_registry_acknowledges_unchanged_binding_operation_exactly_once(
+    tmp_path: Path,
+) -> None:
+    registry = _initialized_registry(tmp_path / "registry.json")
+    account = "a" * 64
+    epoch = "b" * 64
+    bind_operation = "c" * 64
+    acknowledgement = "d" * 64
+    runtime = tmp_path / "runtime"
+    registry.bind_new(account, runtime, epoch, bind_operation)
+    before = registry.require_binding(account, runtime, epoch)
+
+    acknowledged = registry.acknowledge_binding_operation(
+        account,
+        runtime,
+        epoch,
+        acknowledgement,
+    )
+    exact_retry = registry.acknowledge_binding_operation(
+        account,
+        runtime,
+        epoch,
+        acknowledgement,
+    )
+    after = registry.require_binding(account, runtime, epoch)
+
+    assert acknowledged.sequence == 3
+    assert exact_retry == acknowledged
+    assert after.account_identity_digest == before.account_identity_digest
+    assert after.canonical_runtime == before.canonical_runtime
+    assert after.runtime_identity_digest == before.runtime_identity_digest
+    assert after.account_epoch == before.account_epoch
+    assert after.retired_runtime_identity_digests == before.retired_runtime_identity_digests
+    assert after.retired_account_identity_digests == before.retired_account_identity_digests
+    assert after.retired_lineage_digests == before.retired_lineage_digests
+    assert after.operation_history == (*before.operation_history, acknowledgement)
+    assert after.last_operation_id == acknowledgement
+    next_epoch = "e" * 64
+    registry.advance_epoch(account, runtime, epoch, next_epoch, "f" * 64)
+    assert (
+        acknowledgement in registry.require_binding(account, runtime, next_epoch).operation_history
+    )
+
+
+def test_registry_unchanged_binding_acknowledgement_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture import account_runtime_registry as registry_module
+    from afuture.account_runtime_registry import AccountRuntimeRegistryError
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    first_account = "1" * 64
+    second_account = "2" * 64
+    epoch = "3" * 64
+    runtime_a = tmp_path / "runtime-a"
+    runtime_b = tmp_path / "runtime-b"
+    registry.bind_new(first_account, runtime_a, epoch, "4" * 64)
+    registry.bind_new(second_account, runtime_b, epoch, "5" * 64)
+
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.acknowledge_binding_operation(second_account, runtime_b, epoch, "5" * 64)
+
+    with pytest.raises(AccountRuntimeRegistryError, match="source CAS"):
+        registry.acknowledge_binding_operation(
+            first_account,
+            runtime_a,
+            "6" * 64,
+            "7" * 64,
+        )
+
+    consumed = "8" * 64
+    registry.acknowledge_binding_operation(first_account, runtime_a, epoch, consumed)
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.acknowledge_binding_operation(second_account, runtime_b, epoch, consumed)
+
+    binding = registry.require_binding(first_account, runtime_a, epoch)
+    monkeypatch.setattr(
+        registry_module,
+        "_MAX_OPERATION_HISTORY",
+        len(binding.operation_history),
+    )
+    with pytest.raises(AccountRuntimeRegistryError, match="history exhausted"):
+        registry.acknowledge_binding_operation(
+            first_account,
+            runtime_a,
+            epoch,
+            "9" * 64,
+        )
