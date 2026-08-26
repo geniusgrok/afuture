@@ -178,11 +178,14 @@ def _run_pending_rebase(
     withdrawal: float = 1_000.0,
     operation_id: str = _OPERATION_NONCE,
     session_trades: list[Trade] | None = None,
+    fence_observations: list[str] | None = None,
 ) -> int:
     from afuture.cli import _run_stress90_account_rebase
     from afuture.directional import DirectionalConfig
     from afuture.directional_stress90_state import REBASE_CONFIRMATION
     from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+
+    observations = [] if fence_observations is None else fence_observations
 
     class FakeBroker:
         def __init__(self, credentials):
@@ -267,7 +270,11 @@ def _run_pending_rebase(
         @contextmanager
         def lifecycle_state_commit_fence(self):
             self.fence_entries += 1
-            yield
+            observations.append("enter")
+            try:
+                yield
+            finally:
+                observations.append("exit")
 
         def get_contract_catalog(self):
             return []
@@ -584,6 +591,7 @@ def test_retry_after_committed_rebase_does_not_create_a_second_transaction(
     )
     generic_sequence = generic_store.load_required_record().sequence
     policy_sequence = policy_store.load_required_record().sequence
+    fence_observations: list[str] = []
 
     assert (
         _run_pending_rebase(
@@ -591,6 +599,7 @@ def test_retry_after_committed_rebase_does_not_create_a_second_transaction(
             monkeypatch,
             active_orders=[],
             operator_reason="cash transfer",
+            fence_observations=fence_observations,
         )
         == 0
     )
@@ -600,6 +609,7 @@ def test_retry_after_committed_rebase_does_not_create_a_second_transaction(
             monkeypatch,
             active_orders=[],
             operator_reason="cash transfer",
+            fence_observations=fence_observations,
         )
         == 0
     )
@@ -610,6 +620,7 @@ def test_retry_after_committed_rebase_does_not_create_a_second_transaction(
     assert (tmp_path / "audit.jsonl").read_text(encoding="utf-8").count(
         '"event_type":"stress90_account_rebase_completed"'
     ) == 1
+    assert fence_observations == ["enter", "exit", "enter", "exit"]
 
 
 def test_account_switch_rebase_resumes_after_order_epoch_cleanup_crash(

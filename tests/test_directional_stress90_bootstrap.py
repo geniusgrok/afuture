@@ -266,6 +266,17 @@ def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
     from afuture.models import AccountSnapshot, ContractInfo
 
     runtime = tmp_path / "runtime"
+    from afuture.runtime_lease import AccountExclusiveRuntimeLease
+
+    lease_acquired = False
+    original_acquire = AccountExclusiveRuntimeLease.acquire
+
+    def acquire_then_mark(self):
+        nonlocal lease_acquired
+        original_acquire(self)
+        lease_acquired = True
+
+    monkeypatch.setattr(AccountExclusiveRuntimeLease, "acquire", acquire_then_mark)
     through, expectations = _write_synthetic_archive(runtime)
     expectations = _promote_synthetic_profile(monkeypatch, expectations)
     bootstrap_stress90(
@@ -297,6 +308,7 @@ def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
             return "a" * 64
 
         def configure_order_submission_journal(self, path, **identity) -> None:
+            assert lease_acquired
             assert path == runtime / "stress90_ctp_orders.json"
             assert identity["policy_id"] == "directional.stress90"
 

@@ -2130,7 +2130,7 @@ def _build_stress90_lifecycle_manager(config, broker, *, runtime_dir: Path):
         margin_estimate_buffer=STRESS90_POLICY.margin_estimate_buffer,
     )
     return Stress90DirectionalPortfolioManager(
-        replace(config.directional, policy="stress90"),
+        config.directional,
         broker,
         RiskManager(getattr(config, "risk", fallback_risk)),
         policy_state_path=runtime_dir / "stress90_policy_state.json",
@@ -2481,19 +2481,20 @@ def _run_stress90_oi_collect(config, args) -> int:
         if shadow_account
         else live_broker
     )
-    _configure_stress90_lifecycle_order_journal(source_broker, paths["runtime"])
-    broker = Stress90EvidenceOnlyBroker(source_broker)
     lease = AccountExclusiveRuntimeLease(
         paths["runtime"],
         source_broker.get_account_identity_digest(),
         role="stress90-oi-collect",
     )
     lease.acquire()
+    broker: Stress90EvidenceOnlyBroker | None = None
     started = False
     aggregator: Stress90OiEvidenceAggregator | None = None
     activity_tracker: DirectionalActivityTracker | None = None
     try:
         # Every local authority file is first loaded only after the account lease.
+        _configure_stress90_lifecycle_order_journal(source_broker, paths["runtime"])
+        broker = Stress90EvidenceOnlyBroker(source_broker)
         state_store._require_fresh_or_current()
         seed = Stress90SeedStore(paths["runtime"] / "stress90_bootstrap_seed.json").load_required()
         policy_record = Stress90PolicyStateStore(
@@ -2763,6 +2764,7 @@ def _run_stress90_oi_collect(config, args) -> int:
         return 0
     finally:
         if started:
+            assert broker is not None
             try:
                 broker.set_raw_tick_observer(None)
                 if aggregator is not None:

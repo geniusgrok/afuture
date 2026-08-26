@@ -847,6 +847,11 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
         shadow_account=False,
     )
 
+    monkeypatch.setattr(
+        "afuture.cli._adopt_stress90_lifecycle_crash_fills",
+        lambda _config, _broker, *, state, **_kwargs: state,
+    )
+
     with pytest.raises(RuntimeError, match="policy/account identity"):
         _run_directional_policy_migrate(config, args)
     mismatched_record = policy_store.load_required_record()
@@ -1380,7 +1385,12 @@ def test_shadow_activation_reads_canonical_persistent_account_and_rejects_positi
         shadow_account=True,
     )
 
-    with pytest.raises(RuntimeError, match="crash-fill adoption failed"):
+    monkeypatch.setattr(
+        "afuture.cli._adopt_stress90_lifecycle_crash_fills",
+        lambda _config, _broker, *, state, **_kwargs: state,
+    )
+
+    with pytest.raises(RuntimeError, match="reconciliation failed"):
         _run_stress90_activate(config, args)
 
     assert captured == [
