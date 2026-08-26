@@ -8,10 +8,15 @@ a legal zero flow and make the affected product fail closed.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import os
 import re
-from collections.abc import Mapping, Sequence
+import stat
+import struct
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -29,7 +34,7 @@ from .directional_stress90_policy import STRESS90_POLICY, canonical_stress90_dig
 from .models import ContractInfo, Tick
 
 OI_EVIDENCE_KIND = "afuture.directional.stress90.oi-evidence"
-OI_EVIDENCE_SCHEMA_VERSION = 2
+OI_EVIDENCE_SCHEMA_VERSION = 3
 CTP_RAW_TICK_SOURCE = "ctp_raw_tick"
 FIXED_HISTORICAL_60M_SOURCE = "fixed_historical_60m"
 DEFAULT_COMPLETED_RETENTION_DAYS = 512
@@ -39,6 +44,10 @@ MAX_BARS_PER_CONTRACT = 16
 MAX_OI_ISSUES = 256
 _BOUNDARY_GRACE_SECONDS = 5 * 60
 _CHINA = ZoneInfo("Asia/Shanghai")
+_F_OFD_SETLKW = getattr(fcntl, "F_OFD_SETLKW", 38)
+_OI_LINEAGE_MARKER = (
+    b'{"kind":"afuture.directional.stress90.oi-evidence-lineage","schema_version":1}\n'
+)
 
 
 class OiEvidenceIntegrityError(RawMarketEvidenceError):
@@ -190,6 +199,13 @@ class Stress90OiEvidenceRecord:
     state: Stress90OiEvidenceState
     sequence: int
     checksum: str
+    parent_checksum: str | None = None
+
+
+@dataclass
+class _OiStoreExclusiveLock:
+    legacy_lock_evidence: bool
+    visible_descriptor: int | None = None
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -908,45 +924,391 @@ def _state_from_payload(raw: object) -> Stress90OiEvidenceState:
 
 
 class Stress90OiEvidenceStore:
-    """Checksummed atomic sequence store; ``.prev`` is evidence, never fallback."""
+    """Checksummed interprocess CAS store; ``.prev`` is evidence, never fallback."""
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        raw_path = os.fspath(path)
+        if not isinstance(raw_path, str) or not raw_path:
+            raise OiEvidenceIntegrityError("OI evidence path is invalid")
+        absolute_path = os.path.abspath(raw_path)
+        canonical_parent = Path(os.path.realpath(os.path.dirname(absolute_path)))
+        self.path = canonical_parent / os.path.basename(absolute_path)
 
     @property
     def previous_path(self) -> Path:
         return self.path.with_name(f"{self.path.name}.prev")
 
-    def load_record(self) -> Stress90OiEvidenceRecord | None:
-        if not self.path.exists():
-            if self.previous_path.exists():
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_name(f"{self.path.name}.lock")
+
+    @property
+    def lineage_path(self) -> Path:
+        return self.path.with_name(f"{self.path.name}.lineage")
+
+    def _exists(self, path: Path) -> bool:
+        try:
+            return path.exists() or path.is_symlink()
+        except OSError as exc:
+            raise OiEvidenceIntegrityError("OI evidence path is invalid") from exc
+
+    @staticmethod
+    def _acquire_kernel_lock(path: Path) -> int:
+        descriptor = os.open("/dev/null", os.O_RDWR | getattr(os, "O_CLOEXEC", 0))
+        identity = sha256(f"stress90-oi-evidence:{path}".encode()).digest()
+        offset = int.from_bytes(identity[:8], "big") % ((1 << 63) - 1)
+        lock = struct.pack("hhqqi4x", fcntl.F_WRLCK, os.SEEK_SET, offset, 1, 0)
+        try:
+            fcntl.fcntl(descriptor, _F_OFD_SETLKW, lock)
+        except OSError as exc:
+            os.close(descriptor)
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                raise OiEvidenceIntegrityError("OI evidence store is locked") from exc
+            raise OiEvidenceIntegrityError("OI evidence kernel lock failed") from exc
+        return descriptor
+
+    @contextmanager
+    def _exclusive_lock(self) -> Iterator[_OiStoreExclusiveLock]:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        kernel_descriptor = self._acquire_kernel_lock(self.path)
+        lock = _OiStoreExclusiveLock(legacy_lock_evidence=False)
+        body_failed = False
+        try:
+            lock.legacy_lock_evidence = self._exists(self.lock_path)
+            durable_evidence_exists = lock.legacy_lock_evidence or any(
+                self._exists(path) for path in (self.path, self.previous_path, self.lineage_path)
+            )
+            if durable_evidence_exists:
+                self._ensure_visible_lock_unlocked(lock)
+            yield lock
+        except BaseException:
+            body_failed = True
+            raise
+        finally:
+            cleanup_error: OSError | None = None
+            if lock.visible_descriptor is not None:
+                try:
+                    os.close(lock.visible_descriptor)
+                except OSError as exc:
+                    cleanup_error = exc
+            try:
+                os.close(kernel_descriptor)
+            except OSError as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+            if cleanup_error is not None and not body_failed:
+                raise OiEvidenceIntegrityError("OI evidence lock cleanup failed") from cleanup_error
+
+    def _ensure_visible_lock_unlocked(self, lock: _OiStoreExclusiveLock) -> None:
+        if lock.visible_descriptor is not None:
+            return
+        descriptor: int | None = None
+        created = False
+        body_failed = False
+        flags = (
+            os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        try:
+            try:
+                descriptor = os.open(
+                    self.lock_path,
+                    flags | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                created = True
+            except FileExistsError:
+                descriptor = os.open(self.lock_path, flags)
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise OSError(errno.EINVAL, "OI visible lock is not a regular file")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            visible = os.stat(self.lock_path, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(visible.st_mode)
+                or visible.st_dev != opened.st_dev
+                or visible.st_ino != opened.st_ino
+            ):
+                raise OSError(errno.ESTALE, "OI visible lock path was replaced")
+            if created:
+                os.fsync(descriptor)
+                self._fsync_parent_directory(self.lock_path.parent)
+            lock.visible_descriptor = descriptor
+            descriptor = None
+        except OSError as exc:
+            body_failed = True
+            raise OiEvidenceIntegrityError("OI evidence visible lock failed") from exc
+        except BaseException:
+            body_failed = True
+            raise
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    if not body_failed:
+                        raise OiEvidenceIntegrityError(
+                            "OI evidence visible lock cleanup failed"
+                        ) from exc
+
+    def _claim_initial_visible_lock_unlocked(self, lock: _OiStoreExclusiveLock) -> None:
+        if lock.visible_descriptor is not None or lock.legacy_lock_evidence:
+            raise OiEvidenceIntegrityError("OI evidence lock is surviving lineage evidence")
+        descriptor: int | None = None
+        body_failed = False
+        flags = (
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_RDWR
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        try:
+            try:
+                descriptor = os.open(self.lock_path, flags, 0o600)
+            except FileExistsError as exc:
+                lock.legacy_lock_evidence = True
+                raise OiEvidenceIntegrityError(
+                    "OI evidence initialization lock is concurrent lineage evidence"
+                ) from exc
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise OSError(errno.EINVAL, "initial OI lock is not a regular file")
+            os.fsync(descriptor)
+            self._fsync_parent_directory(self.lock_path.parent)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            visible = os.stat(self.lock_path, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(visible.st_mode)
+                or visible.st_dev != opened.st_dev
+                or visible.st_ino != opened.st_ino
+            ):
+                raise OSError(errno.ESTALE, "initial OI lock path was replaced")
+            lock.visible_descriptor = descriptor
+            descriptor = None
+        except OiEvidenceIntegrityError:
+            body_failed = True
+            raise
+        except OSError as exc:
+            body_failed = True
+            raise OiEvidenceIntegrityError("OI evidence initialization lock failed") from exc
+        except BaseException:
+            body_failed = True
+            raise
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    if not body_failed:
+                        raise OiEvidenceIntegrityError(
+                            "OI evidence initialization lock cleanup failed"
+                        ) from exc
+
+    @staticmethod
+    def _fsync_parent_directory(path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        body_failed = False
+        try:
+            os.fsync(descriptor)
+        except BaseException:
+            body_failed = True
+            raise
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:
+                if not body_failed:
+                    raise
+
+    def _create_lineage_marker_unlocked(self) -> None:
+        descriptor: int | None = None
+        body_failed = False
+        flags = (
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_WRONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(self.lineage_path, flags, 0o600)
+            written = os.write(descriptor, _OI_LINEAGE_MARKER)
+            if written != len(_OI_LINEAGE_MARKER):
+                raise OSError(errno.EIO, "short OI lineage marker write")
+            os.fsync(descriptor)
+            self._fsync_parent_directory(self.lineage_path.parent)
+        except OSError as exc:
+            body_failed = True
+            raise OiEvidenceIntegrityError("OI evidence lineage marker creation failed") from exc
+        except BaseException:
+            body_failed = True
+            raise
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    if not body_failed:
+                        raise OiEvidenceIntegrityError(
+                            "OI evidence lineage marker cleanup failed"
+                        ) from exc
+
+    def _validate_and_refsync_lineage_marker_unlocked(self) -> None:
+        descriptor: int | None = None
+        body_failed = False
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(self.lineage_path, flags)
+            marker = os.read(descriptor, len(_OI_LINEAGE_MARKER) + 1)
+            if marker != _OI_LINEAGE_MARKER:
+                raise OiEvidenceIntegrityError("OI evidence lineage marker is invalid")
+            os.fsync(descriptor)
+            self._fsync_parent_directory(self.lineage_path.parent)
+        except OiEvidenceIntegrityError:
+            body_failed = True
+            raise
+        except OSError as exc:
+            body_failed = True
+            raise OiEvidenceIntegrityError(
+                "OI evidence lineage marker durability validation failed"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    if not body_failed:
+                        raise OiEvidenceIntegrityError(
+                            "OI evidence lineage marker cleanup failed"
+                        ) from exc
+
+    def _read_bytes(self, path: Path) -> bytes:
+        descriptor: int | None = None
+        body_failed = False
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags)
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+        except OSError as exc:
+            body_failed = True
+            raise OiEvidenceIntegrityError("OI evidence file cannot be opened or read") from exc
+        except BaseException:
+            body_failed = True
+            raise
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    if not body_failed:
+                        raise OiEvidenceIntegrityError(
+                            "OI evidence file descriptor cleanup failed"
+                        ) from exc
+
+    def _load_unlocked(
+        self,
+        *,
+        required: bool,
+        legacy_lock_evidence: bool,
+    ) -> Stress90OiEvidenceRecord | None:
+        current_exists = self._exists(self.path)
+        previous_exists = self._exists(self.previous_path)
+        lineage_exists = self._exists(self.lineage_path)
+        if not current_exists:
+            if previous_exists:
                 raise OiEvidenceIntegrityError(
                     "current Stress-90 OI evidence is missing while previous evidence exists"
                 )
+            if lineage_exists:
+                raise OiEvidenceIntegrityError(
+                    "OI evidence lineage exists while current evidence is missing"
+                )
+            if legacy_lock_evidence:
+                raise OiEvidenceIntegrityError(
+                    "OI evidence lock is surviving lineage evidence while current is missing"
+                )
+            if required:
+                raise OiEvidenceIntegrityError("required Stress-90 OI evidence is missing")
             return None
-        return self._read(self.path)
+        current_bytes = self._read_bytes(self.path)
+        current = self._decode_record(current_bytes)
+        if previous_exists:
+            previous_bytes = self._read_bytes(self.previous_path)
+            if previous_bytes == current_bytes:
+                validated = current
+            else:
+                previous = self._decode_record(previous_bytes)
+                if (
+                    previous.sequence + 1 != current.sequence
+                    or current.parent_checksum != previous.checksum
+                ):
+                    raise OiEvidenceIntegrityError("OI evidence predecessor parent chain mismatch")
+                validated = current
+        else:
+            if current.sequence != 1:
+                raise OiEvidenceIntegrityError("OI evidence previous predecessor is missing")
+            validated = current
+        if not lineage_exists:
+            raise OiEvidenceIntegrityError("OI evidence lineage marker is missing")
+        self._validate_and_refsync_lineage_marker_unlocked()
+        return validated
+
+    def load_record(self) -> Stress90OiEvidenceRecord | None:
+        with self._exclusive_lock() as lock:
+            return self._load_unlocked(
+                required=False,
+                legacy_lock_evidence=lock.legacy_lock_evidence,
+            )
 
     def load_required_record(self) -> Stress90OiEvidenceRecord:
-        record = self.load_record()
-        if record is None:
-            raise OiEvidenceIntegrityError("required Stress-90 OI evidence is missing")
-        return record
+        with self._exclusive_lock() as lock:
+            record = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=lock.legacy_lock_evidence,
+            )
+            assert record is not None
+            return record
 
     def load_previous_record(self) -> Stress90OiEvidenceRecord:
-        if not self.previous_path.exists():
-            raise OiEvidenceIntegrityError("previous Stress-90 OI evidence is missing")
-        return self._read(self.previous_path)
+        with self._exclusive_lock():
+            if not self._exists(self.previous_path):
+                raise OiEvidenceIntegrityError("previous Stress-90 OI evidence is missing")
+            return self._read(self.previous_path)
 
     def _read(self, path: Path) -> Stress90OiEvidenceRecord:
+        return self._decode_record(self._read_bytes(path))
+
+    def _decode_record(self, encoded: bytes) -> Stress90OiEvidenceRecord:
         try:
-            text = path.read_bytes().decode("utf-8")
+            text = encoded.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise OiEvidenceIntegrityError("invalid OI evidence UTF-8") from exc
         try:
             raw = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
         except json.JSONDecodeError as exc:
             raise OiEvidenceIntegrityError("invalid OI evidence JSON") from exc
-        fields = {"kind", "schema_version", "sequence", "state", "checksum"}
+        if isinstance(raw, Mapping) and raw.get("schema_version") == 2:
+            raise OiEvidenceIntegrityError(
+                "OI evidence schema 2 has no predecessor chain; a newly observed complete "
+                "authoritative counter trading day is required"
+            )
+        fields = {
+            "kind",
+            "schema_version",
+            "sequence",
+            "parent_checksum",
+            "state",
+            "checksum",
+        }
         if not isinstance(raw, Mapping) or set(raw) != fields:
             raise OiEvidenceIntegrityError("OI evidence envelope fields are invalid")
         if raw["kind"] != OI_EVIDENCE_KIND:
@@ -956,6 +1318,14 @@ class Stress90OiEvidenceStore:
         sequence = raw["sequence"]
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
             raise OiEvidenceIntegrityError("OI evidence sequence must be positive")
+        parent_checksum = raw["parent_checksum"]
+        if parent_checksum is not None and (
+            not isinstance(parent_checksum, str)
+            or re.fullmatch(r"[0-9a-f]{64}", parent_checksum) is None
+        ):
+            raise OiEvidenceIntegrityError("OI evidence parent checksum is invalid")
+        if (sequence == 1) is not (parent_checksum is None):
+            raise OiEvidenceIntegrityError("OI evidence sequence/parent checksum is invalid")
         checksum = raw["checksum"]
         unsigned = {key: value for key, value in raw.items() if key != "checksum"}
         if not isinstance(checksum, str) or checksum != _checksum(unsigned):
@@ -964,6 +1334,7 @@ class Stress90OiEvidenceStore:
             state=_state_from_payload(raw["state"]),
             sequence=sequence,
             checksum=checksum,
+            parent_checksum=parent_checksum,
         )
 
     def save_state(
@@ -975,48 +1346,66 @@ class Stress90OiEvidenceStore:
         # Round-trip validation makes every persisted object obey the same strict parser.
         payload = _state_payload(state)
         validated = _state_from_payload(payload)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        current = self.load_record()
-        current_sequence = 0 if current is None else current.sequence
-        if expected_sequence is not None and expected_sequence != current_sequence:
-            raise OiEvidenceIntegrityError("OI evidence sequence changed concurrently")
-        unsigned: dict[str, object] = {
-            "kind": OI_EVIDENCE_KIND,
-            "schema_version": OI_EVIDENCE_SCHEMA_VERSION,
-            "sequence": current_sequence + 1,
-            "state": _state_payload(validated),
-        }
-        checksum = _checksum(unsigned)
-        encoded = json.dumps(
-            {**unsigned, "checksum": checksum},
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
-        ).encode("utf-8")
-        if current is not None:
-            self._atomic_replace(self.previous_path, self.path.read_bytes())
-        self._atomic_replace(self.path, encoded)
-        return Stress90OiEvidenceRecord(validated, current_sequence + 1, checksum)
+        with self._exclusive_lock() as lock:
+            current = self._load_unlocked(
+                required=False,
+                legacy_lock_evidence=lock.legacy_lock_evidence,
+            )
+            current_sequence = 0 if current is None else current.sequence
+            if expected_sequence is not None and expected_sequence != current_sequence:
+                raise OiEvidenceIntegrityError("OI evidence sequence changed concurrently")
+            if current is None:
+                self._create_lineage_marker_unlocked()
+                self._claim_initial_visible_lock_unlocked(lock)
+            parent_checksum = None if current is None else current.checksum
+            unsigned: dict[str, object] = {
+                "kind": OI_EVIDENCE_KIND,
+                "schema_version": OI_EVIDENCE_SCHEMA_VERSION,
+                "sequence": current_sequence + 1,
+                "parent_checksum": parent_checksum,
+                "state": _state_payload(validated),
+            }
+            checksum = _checksum(unsigned)
+            encoded = json.dumps(
+                {**unsigned, "checksum": checksum},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+            if current is not None:
+                self._atomic_replace(self.previous_path, self._read_bytes(self.path))
+            self._atomic_replace(self.path, encoded)
+            return Stress90OiEvidenceRecord(
+                validated,
+                current_sequence + 1,
+                checksum,
+                parent_checksum,
+            )
 
     @staticmethod
     def _atomic_replace(target: Path, payload: bytes) -> None:
         temporary: Path | None = None
+        body_failed = False
         try:
             with NamedTemporaryFile("wb", dir=target.parent, delete=False) as handle:
                 temporary = Path(handle.name)
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            temporary.replace(target)
-            directory_descriptor = os.open(target.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_descriptor)
-            finally:
-                os.close(directory_descriptor)
+            os.replace(temporary, target)
+            Stress90OiEvidenceStore._fsync_parent_directory(target.parent)
+        except BaseException:
+            body_failed = True
+            raise
         finally:
-            if temporary is not None and temporary.exists():
-                temporary.unlink()
+            if temporary is not None:
+                try:
+                    if temporary.exists():
+                        temporary.unlink()
+                except OSError:
+                    if not body_failed:
+                        raise
 
 
 def _append_issue(issues: tuple[str, ...], issue: str) -> tuple[str, ...]:

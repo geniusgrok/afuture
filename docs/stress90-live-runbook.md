@@ -380,6 +380,18 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 legacy upgrade 才在仍持有 kernel lock 时物化 visible lock。此后每次接受既有 lineage marker
 都重新对 marker 文件和父目录执行 `fsync`；任一步失败，本次读取不得返回可用状态。
 
+`stress90_oi_evidence.json` schema 3 以 `parent_checksum` 把 current 绑定到精确的 sequence N-1
+`.prev`，并由稳定 kernel lock、持有至 CAS 结束的 visible `.lock` 和不可变 `.lineage` marker
+共同保护。sequence 1 必须没有 parent；sequence N>1 缺少或不匹配 `.prev`、current/`.prev`
+损坏、symlink、marker-only、lock-only 或 current 丢失都属于 OI durable-state incident，`.prev`
+只能用于诊断，绝不提升为 current。
+
+schema 2 没有可验证的 predecessor checksum，不能原地升级、补写 parent、重置 sequence 或从
+`.prev` 推断。部署发现 schema 2 时必须保持 `HALTED`，保全 current、`.prev`、lock、runtime
+目录和外部备份；当前代码故意不提供自动恢复。只有单独审批的部署/恢复流程可以配置真正
+pristine 的新 evidence 路径，并从柜台 raw evidence 重新观察一个完整、权威的 counter trading
+day 后建立 schema 3 sequence 1。在该证据完成前，Stress-90 activation 持续阻断。
+
 不要删除 kill switch，绝不自动采用 `.prev`，也不要跳过 target day、改用本机日期或在异常路径发送 opening。
 
 ## 14. 扩大风险

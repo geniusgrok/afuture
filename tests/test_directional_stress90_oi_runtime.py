@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import stat
 from dataclasses import replace
 from datetime import datetime
+from multiprocessing import get_context
 from pathlib import Path
+from threading import BrokenBarrierError, Timer
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -12,6 +17,143 @@ from afuture.models import ContractInfo, Tick
 
 _CHINA = ZoneInfo("Asia/Shanghai")
 _SUPPORTED = ("A", "C", "EG", "I", "M", "P", "PP", "TA", "Y")
+
+
+def _cas_oi_state_with_replace_barrier(
+    store_path: str,
+    raw_ticks_observed: int,
+    expected_sequence: int,
+    replace_barrier,
+    results,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(store_path)
+    real_replace = store._atomic_replace
+
+    def synchronized_replace(target: Path, payload: bytes) -> None:
+        if target == store.previous_path:
+            try:
+                replace_barrier.wait(timeout=3)
+            except BrokenBarrierError:
+                pass
+        real_replace(target, payload)
+
+    store._atomic_replace = synchronized_replace  # type: ignore[method-assign]
+    try:
+        record = store.save_state(
+            Stress90OiEvidenceState(raw_ticks_observed=raw_ticks_observed),
+            expected_sequence=expected_sequence,
+        )
+    except OiEvidenceIntegrityError as exc:
+        results.put(("rejected", str(exc)))
+    else:
+        results.put(("saved", record.sequence))
+
+
+def _blocking_oi_cas_writer(
+    store_path: str,
+    raw_ticks_observed: int,
+    expected_sequence: int,
+    entered_read,
+    release_read,
+    results,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(store_path)
+    blocked = False
+
+    def before_current_read(path: Path) -> None:
+        nonlocal blocked
+        if path == store.path and not blocked:
+            blocked = True
+            entered_read.set()
+            release_read.wait(timeout=10)
+
+    if hasattr(store, "_read_bytes"):
+        real_read_bytes = store._read_bytes
+
+        def blocking_read_bytes(path: Path) -> bytes:
+            before_current_read(path)
+            return real_read_bytes(path)
+
+        store._read_bytes = blocking_read_bytes  # type: ignore[method-assign]
+    else:
+        real_read = store._read
+
+        def blocking_read(path: Path):
+            before_current_read(path)
+            return real_read(path)
+
+        store._read = blocking_read  # type: ignore[method-assign]
+    try:
+        record = store.save_state(
+            Stress90OiEvidenceState(raw_ticks_observed=raw_ticks_observed),
+            expected_sequence=expected_sequence,
+        )
+    except OiEvidenceIntegrityError as exc:
+        results.put(("rejected", str(exc)))
+    else:
+        results.put(("saved", record.sequence))
+
+
+def _rewrite_oi_envelope(path: Path, **updates: object) -> None:
+    from hashlib import sha256
+
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    envelope.update(updates)
+    unsigned = {key: value for key, value in envelope.items() if key != "checksum"}
+    envelope["checksum"] = sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    path.write_text(json.dumps(envelope, sort_keys=True), encoding="utf-8")
+
+
+def _block_inside_pristine_oi_load(store_path: str, entered, release) -> None:
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+
+    store = Stress90OiEvidenceStore(store_path)
+
+    def blocked_load(*, required: bool, legacy_lock_evidence: bool):
+        assert required is False
+        assert legacy_lock_evidence is False
+        entered.set()
+        release.wait(timeout=30)
+        return None
+
+    store._load_unlocked = blocked_load  # type: ignore[method-assign]
+    store.load_record()
+
+
+def _create_and_hold_legacy_oi_lock(lock_path: str, start, acquired, release) -> None:
+    start.wait(timeout=10)
+    path = Path(lock_path)
+    descriptor = os.open(
+        path,
+        os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.fsync(descriptor)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        acquired.set()
+        release.wait(timeout=10)
+    finally:
+        os.close(descriptor)
 
 
 def _catalog(*, two_a_contracts: bool = False) -> list[ContractInfo]:
@@ -1195,32 +1337,618 @@ def test_missing_current_store_rejects_existing_previous_evidence(tmp_path: Path
         store.load_record()
 
 
-def test_oi_store_save_propagates_parent_directory_fsync_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Raw evidence rename must be directory-durable before it is acknowledged."""
+def test_oi_store_alias_writers_share_one_cas_and_parent_chain(tmp_path: Path) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    context = get_context("spawn")
+    results = context.Queue()
+    replace_barrier = context.Barrier(2)
+    parent = tmp_path / "oi-parent"
+    nested = parent / "nested"
+    nested.mkdir(parents=True)
+    canonical_path = parent / "oi.json"
+    alias_path = nested / ".." / "oi.json"
+    store = Stress90OiEvidenceStore(canonical_path)
+    first = store.save_state(Stress90OiEvidenceState())
+    lock_path = canonical_path.with_name(f"{canonical_path.name}.lock")
+    lock_path.unlink(missing_ok=True)
+    processes = [
+        context.Process(
+            target=_cas_oi_state_with_replace_barrier,
+            args=(
+                str(path),
+                raw_ticks,
+                first.sequence,
+                replace_barrier,
+                results,
+            ),
+        )
+        for path, raw_ticks in ((alias_path, 1), (canonical_path, 2))
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=15)
+
+    assert [process.exitcode for process in processes] == [0, 0]
+    outcomes = [results.get(timeout=2), results.get(timeout=2)]
+    assert sorted(outcome[0] for outcome in outcomes) == ["rejected", "saved"]
+    rejected = next(outcome for outcome in outcomes if outcome[0] == "rejected")
+    assert "concurrently" in rejected[1]
+    winner = Stress90OiEvidenceStore(canonical_path).load_required_record()
+    previous = Stress90OiEvidenceStore(canonical_path).load_previous_record()
+    assert winner.sequence == 2
+    assert previous == first
+    assert winner.parent_checksum == previous.checksum
+
+
+def test_oi_store_second_writer_blocks_before_read_critical_section(tmp_path: Path) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    context = get_context("spawn")
+    path = tmp_path / "oi.json"
+    first = Stress90OiEvidenceStore(path).save_state(Stress90OiEvidenceState())
+    first_entered = context.Event()
+    first_release = context.Event()
+    second_entered = context.Event()
+    second_release = context.Event()
+    results = context.Queue()
+    first_writer = context.Process(
+        target=_blocking_oi_cas_writer,
+        args=(str(path), 1, first.sequence, first_entered, first_release, results),
+    )
+    second_writer = context.Process(
+        target=_blocking_oi_cas_writer,
+        args=(str(path), 2, first.sequence, second_entered, second_release, results),
+    )
+    first_writer.start()
+    assert first_entered.wait(timeout=10)
+    second_writer.start()
+    second_entered_while_first_held = second_entered.wait(timeout=0.5)
+    first_release.set()
+    second_release.set()
+    first_writer.join(timeout=10)
+    second_writer.join(timeout=10)
+
+    assert second_entered_while_first_held is False
+    assert first_writer.exitcode == 0
+    assert second_writer.exitcode == 0
+    assert sorted(results.get(timeout=2)[0] for _ in range(2)) == ["rejected", "saved"]
+
+
+def test_oi_store_path_identity_normalizes_parent_aliases(tmp_path: Path) -> None:
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+
+    real_parent = tmp_path / "real"
+    nested = real_parent / "nested"
+    nested.mkdir(parents=True)
+    parent_alias = tmp_path / "parent-alias"
+    parent_alias.symlink_to(real_parent, target_is_directory=True)
+    canonical_path = real_parent / "oi.json"
+
+    canonical = Stress90OiEvidenceStore(canonical_path)
+    lexical = Stress90OiEvidenceStore(nested / ".." / "oi.json")
+    symlinked = Stress90OiEvidenceStore(parent_alias / "oi.json")
+
+    assert canonical.path == canonical_path
+    assert lexical.path == canonical_path
+    assert symlinked.path == canonical_path
+    assert lexical.lock_path == canonical.lock_path
+    assert symlinked.lineage_path == canonical.lineage_path
+
+
+def test_oi_store_schema3_chain_and_duplicate_current_prev_crash_layout(
+    tmp_path: Path,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    first = store.save_state(Stress90OiEvidenceState())
+    first_envelope = json.loads(store.path.read_text(encoding="utf-8"))
+    assert first.sequence == 1
+    assert first.parent_checksum is None
+    assert first_envelope["schema_version"] == 3
+    assert first_envelope["parent_checksum"] is None
+    assert not store.previous_path.exists()
+
+    second = store.save_state(
+        Stress90OiEvidenceState(raw_ticks_observed=1),
+        expected_sequence=first.sequence,
+    )
+    assert second.parent_checksum == first.checksum
+    assert store.load_previous_record() == first
+
+    store.previous_path.write_bytes(store.path.read_bytes())
+    assert Stress90OiEvidenceStore(store.path).load_required_record() == second
+    third = store.save_state(
+        Stress90OiEvidenceState(raw_ticks_observed=2),
+        expected_sequence=second.sequence,
+    )
+    assert third.sequence == 3
+    assert third.parent_checksum == second.checksum
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing", "wrong_sequence", "wrong_parent_checksum", "unrelated_same_sequence"],
+)
+def test_oi_store_rejects_invalid_predecessor_chain(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    first = store.save_state(Stress90OiEvidenceState())
+    store.save_state(
+        Stress90OiEvidenceState(raw_ticks_observed=1),
+        expected_sequence=first.sequence,
+    )
+    if corruption == "missing":
+        store.previous_path.unlink()
+    elif corruption == "wrong_sequence":
+        _rewrite_oi_envelope(store.previous_path, sequence=7)
+    elif corruption == "wrong_parent_checksum":
+        _rewrite_oi_envelope(store.path, parent_checksum="f" * 64)
+    else:
+        _rewrite_oi_envelope(
+            store.previous_path,
+            sequence=2,
+            parent_checksum=first.checksum,
+            state={
+                "completed": [],
+                "in_progress": None,
+                "observed_transitions": [],
+                "raw_ticks_observed": 2,
+                "duplicate_ticks": 0,
+                "volume_resets": 0,
+            },
+        )
+
+    with pytest.raises(
+        OiEvidenceIntegrityError,
+        match="previous|predecessor|parent chain|sequence/parent",
+    ):
+        Stress90OiEvidenceStore(store.path).load_required_record()
+
+
+@pytest.mark.parametrize("target", ["current", "previous"])
+def test_oi_store_rejects_symlinked_chain_files(tmp_path: Path, target: str) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    first = store.save_state(Stress90OiEvidenceState())
+    store.save_state(
+        Stress90OiEvidenceState(raw_ticks_observed=1), expected_sequence=first.sequence
+    )
+    attacked = store.path if target == "current" else store.previous_path
+    backing = attacked.with_name(f"{attacked.name}.backing")
+    attacked.replace(backing)
+    attacked.symlink_to(backing)
+
+    with pytest.raises(OiEvidenceIntegrityError, match="open|symlink"):
+        Stress90OiEvidenceStore(store.path).load_required_record()
+
+
+def test_oi_store_crash_after_previous_replace_keeps_committed_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    first = store.save_state(Stress90OiEvidenceState())
+    real_replace = store._atomic_replace
+
+    def crash_after_previous_replace(target: Path, payload: bytes) -> None:
+        real_replace(target, payload)
+        if target == store.previous_path:
+            raise OSError("injected crash after previous replace")
+
+    monkeypatch.setattr(store, "_atomic_replace", crash_after_previous_replace)
+    with pytest.raises(OSError, match="after previous replace"):
+        store.save_state(
+            Stress90OiEvidenceState(raw_ticks_observed=1),
+            expected_sequence=first.sequence,
+        )
+
+    assert Stress90OiEvidenceStore(store.path).load_required_record() == first
+    assert store.previous_path.read_bytes() == store.path.read_bytes()
+    monkeypatch.setattr(store, "_atomic_replace", real_replace)
+    retried = store.save_state(
+        Stress90OiEvidenceState(raw_ticks_observed=1),
+        expected_sequence=first.sequence,
+    )
+    assert retried.sequence == 2
+    assert retried.parent_checksum == first.checksum
+
+
+@pytest.mark.parametrize("failure_target", ["file", "parent"])
+def test_oi_store_previous_replace_fsync_failure_is_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_target: str,
+) -> None:
     import afuture.directional_stress90_oi_runtime as oi_module
     from afuture.directional_stress90_oi_runtime import (
         Stress90OiEvidenceState,
         Stress90OiEvidenceStore,
     )
 
-    calls = 0
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    first = store.save_state(Stress90OiEvidenceState())
+    real_replace = store._atomic_replace
     real_fsync = oi_module.os.fsync
+    replacing_previous = False
 
-    def fail_parent_fsync(descriptor: int) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("injected OI parent fsync failure")
+    def fail_selected_fsync(descriptor: int) -> None:
+        if replacing_previous:
+            is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+            if (failure_target == "parent") is is_directory:
+                raise OSError(f"injected previous {failure_target} fsync failure")
         real_fsync(descriptor)
 
-    monkeypatch.setattr(oi_module.os, "fsync", fail_parent_fsync)
+    def replace_with_injected_fsync(target: Path, payload: bytes) -> None:
+        nonlocal replacing_previous
+        replacing_previous = target == store.previous_path
+        try:
+            real_replace(target, payload)
+        finally:
+            replacing_previous = False
 
-    with pytest.raises(OSError, match="parent fsync"):
-        Stress90OiEvidenceStore(tmp_path / "oi.json").save_state(Stress90OiEvidenceState())
+    monkeypatch.setattr(oi_module.os, "fsync", fail_selected_fsync)
+    monkeypatch.setattr(store, "_atomic_replace", replace_with_injected_fsync)
+    with pytest.raises(OSError, match=f"previous {failure_target} fsync"):
+        store.save_state(
+            Stress90OiEvidenceState(raw_ticks_observed=1),
+            expected_sequence=first.sequence,
+        )
 
-    assert calls == 2
+    assert Stress90OiEvidenceStore(store.path).load_required_record() == first
+    monkeypatch.setattr(oi_module.os, "fsync", real_fsync)
+    retried = Stress90OiEvidenceStore(store.path).save_state(
+        Stress90OiEvidenceState(raw_ticks_observed=1),
+        expected_sequence=first.sequence,
+    )
+    assert retried.sequence == 2
+    assert retried.parent_checksum == first.checksum
+
+
+def test_oi_store_missing_lineage_and_schema2_are_explicit_blockers(tmp_path: Path) -> None:
+    from hashlib import sha256
+
+    from afuture.directional_stress90_oi_runtime import (
+        OI_EVIDENCE_KIND,
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    assert store.load_record() is None
+    assert not store.path.with_name(f"{store.path.name}.lock").exists()
+    first = store.save_state(Stress90OiEvidenceState())
+    assert first.sequence == 1
+    assert store.lineage_path.is_file()
+    assert store.lock_path.is_file()
+    store.path.unlink()
+    store.previous_path.unlink(missing_ok=True)
+    for operation in (
+        store.load_record,
+        lambda: store.save_state(Stress90OiEvidenceState(), expected_sequence=0),
+    ):
+        with pytest.raises(OiEvidenceIntegrityError, match="lineage|lock"):
+            operation()
+
+    legacy_path = tmp_path / "legacy-schema2.json"
+    legacy_unsigned = {
+        "kind": OI_EVIDENCE_KIND,
+        "schema_version": 2,
+        "sequence": 9,
+        "state": {
+            "completed": [],
+            "in_progress": None,
+            "observed_transitions": [],
+            "raw_ticks_observed": 0,
+            "duplicate_ticks": 0,
+            "volume_resets": 0,
+        },
+    }
+    legacy_checksum = sha256(
+        json.dumps(legacy_unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    legacy_path.write_text(
+        json.dumps({**legacy_unsigned, "checksum": legacy_checksum}),
+        encoding="utf-8",
+    )
+    legacy = Stress90OiEvidenceStore(legacy_path)
+    for operation in (
+        legacy.load_required_record,
+        lambda: legacy.save_state(Stress90OiEvidenceState(), expected_sequence=9),
+    ):
+        with pytest.raises(
+            OiEvidenceIntegrityError,
+            match="schema 2.*complete authoritative counter trading day",
+        ):
+            operation()
+
+
+@pytest.mark.parametrize("survivor", ["lineage", "lock"])
+def test_oi_store_each_surviving_writer_evidence_fails_closed(
+    tmp_path: Path,
+    survivor: str,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / f"{survivor}.json")
+    store.save_state(Stress90OiEvidenceState())
+    store.path.unlink()
+    if survivor == "lineage":
+        store.lock_path.unlink()
+    else:
+        store.lineage_path.unlink()
+
+    with pytest.raises(OiEvidenceIntegrityError, match=survivor):
+        Stress90OiEvidenceStore(store.path).load_record()
+    with pytest.raises(OiEvidenceIntegrityError, match=survivor):
+        Stress90OiEvidenceStore(store.path).save_state(Stress90OiEvidenceState())
+
+
+@pytest.mark.parametrize("corruption", ["missing", "tampered"])
+def test_oi_store_requires_exact_lineage_marker(tmp_path: Path, corruption: str) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    store.save_state(Stress90OiEvidenceState())
+    if corruption == "missing":
+        store.lineage_path.unlink()
+    else:
+        store.lineage_path.write_text("tampered", encoding="utf-8")
+
+    with pytest.raises(OiEvidenceIntegrityError, match="lineage marker"):
+        Stress90OiEvidenceStore(store.path).load_required_record()
+
+
+def test_killed_pristine_oi_read_leaves_no_false_lineage(tmp_path: Path) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    context = get_context("spawn")
+    entered = context.Event()
+    release = context.Event()
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    process = context.Process(
+        target=_block_inside_pristine_oi_load,
+        args=(str(store.path), entered, release),
+    )
+    process.start()
+    assert entered.wait(timeout=10)
+    process.terminate()
+    process.join(timeout=10)
+
+    assert process.exitcode is not None
+    assert not store.lock_path.exists()
+    assert not store.lineage_path.exists()
+    assert store.save_state(Stress90OiEvidenceState()).sequence == 1
+
+
+def test_pristine_oi_save_rejects_legacy_lock_created_after_absence_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    context = get_context("spawn")
+    start = context.Event()
+    acquired = context.Event()
+    release = context.Event()
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    creator = context.Process(
+        target=_create_and_hold_legacy_oi_lock,
+        args=(str(store.lock_path), start, acquired, release),
+    )
+    creator.start()
+    real_load = store._load_unlocked
+    injected = False
+
+    def load_then_create_legacy_lock(*, required: bool, legacy_lock_evidence: bool):
+        nonlocal injected
+        record = real_load(
+            required=required,
+            legacy_lock_evidence=legacy_lock_evidence,
+        )
+        if record is None and not injected:
+            injected = True
+            start.set()
+            assert acquired.wait(timeout=10)
+        return record
+
+    monkeypatch.setattr(store, "_load_unlocked", load_then_create_legacy_lock)
+    delayed_release = Timer(1, release.set)
+    delayed_release.start()
+    try:
+        with pytest.raises(OiEvidenceIntegrityError, match="lock.*lineage"):
+            store.save_state(Stress90OiEvidenceState())
+    finally:
+        release.set()
+        delayed_release.cancel()
+        creator.join(timeout=10)
+
+    assert creator.exitcode == 0
+    assert not store.path.exists()
+    assert store.lineage_path.is_file()
+    assert store.lock_path.is_file()
+    with pytest.raises(OiEvidenceIntegrityError, match="lineage.*missing"):
+        Stress90OiEvidenceStore(store.path).save_state(Stress90OiEvidenceState())
+
+
+def test_oi_visible_lock_eexist_is_held_through_critical_section(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    store.save_state(Stress90OiEvidenceState())
+    store.lock_path.unlink()
+    real_exists = store._exists
+    injected = False
+
+    def create_during_initial_check(path: Path) -> bool:
+        nonlocal injected
+        if path == store.lock_path and not injected:
+            injected = True
+            path.touch(mode=0o600)
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(store, "_exists", create_during_initial_check)
+    with store._exclusive_lock() as lock:
+        assert lock.legacy_lock_evidence is False
+        assert lock.visible_descriptor is not None
+        contender = os.open(store.lock_path, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(contender)
+
+    contender = os.open(store.lock_path, os.O_RDWR)
+    try:
+        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(contender)
+
+
+def test_oi_visible_lock_symlink_is_fail_closed(tmp_path: Path) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    store.save_state(Stress90OiEvidenceState())
+    target = tmp_path / "lock-target"
+    target.write_text("do not modify", encoding="utf-8")
+    store.lock_path.unlink()
+    store.lock_path.symlink_to(target)
+
+    with pytest.raises(OiEvidenceIntegrityError, match="visible lock"):
+        store.load_required_record()
+
+    assert target.read_text(encoding="utf-8") == "do not modify"
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["previous_malformed", "previous_duplicate", "kind", "schema", "checksum"],
+)
+def test_oi_store_rejects_malformed_or_wrong_identity_chain_records(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    first = store.save_state(Stress90OiEvidenceState())
+    store.save_state(
+        Stress90OiEvidenceState(raw_ticks_observed=1), expected_sequence=first.sequence
+    )
+    if corruption == "previous_malformed":
+        store.previous_path.write_text("{malformed", encoding="utf-8")
+    elif corruption == "previous_duplicate":
+        store.previous_path.write_text(
+            '{"kind":"a","kind":"b"}',
+            encoding="utf-8",
+        )
+    elif corruption == "kind":
+        _rewrite_oi_envelope(store.path, kind="wrong")
+    elif corruption == "schema":
+        _rewrite_oi_envelope(store.path, schema_version=4)
+    else:
+        envelope = json.loads(store.path.read_text(encoding="utf-8"))
+        envelope["checksum"] = "0" * 64
+        store.path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    with pytest.raises(OiEvidenceIntegrityError):
+        Stress90OiEvidenceStore(store.path).load_required_record()
+
+
+@pytest.mark.parametrize("failure_target", ["marker", "parent"])
+def test_oi_store_initial_lineage_fsync_failure_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_target: str,
+) -> None:
+    """The immutable inception marker must be durable before current can exist."""
+    import afuture.directional_stress90_oi_runtime as oi_module
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "oi.json")
+    real_fsync = oi_module.os.fsync
+
+    def fail_selected_fsync(descriptor: int) -> None:
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        if (failure_target == "parent") is is_directory:
+            raise OSError(f"injected OI {failure_target} fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(oi_module.os, "fsync", fail_selected_fsync)
+
+    with pytest.raises(OiEvidenceIntegrityError, match="lineage marker"):
+        store.save_state(Stress90OiEvidenceState())
+
+    assert store.lineage_path.exists()
+    assert not store.path.exists()
+    monkeypatch.setattr(oi_module.os, "fsync", real_fsync)
+    with pytest.raises(OiEvidenceIntegrityError, match="lineage.*missing"):
+        store.save_state(Stress90OiEvidenceState())
 
 
 def test_zero_order_evidence_arm_subscribes_the_exact_validated_universe() -> None:
