@@ -19,6 +19,7 @@ from tempfile import NamedTemporaryFile
 from .directional import DirectionalConfig
 from .durable_file_creation import (
     DurableFileCreationToken,
+    canonical_file_path,
     create_durable_file_exclusive,
     durable_file_lock,
 )
@@ -146,7 +147,7 @@ class DirectionalActivityStore:
     """Atomically persist verified completed and in-progress activity evidence."""
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        self.path = canonical_file_path(path)
         self._last_creation_token: DurableFileCreationToken | None = None
 
     @property
@@ -158,6 +159,12 @@ class DirectionalActivityStore:
         return self.load_state().completed
 
     def load_state(self) -> DirectionalActivityState:
+        with durable_file_lock(self.path):
+            return self.load_state_unlocked()
+
+    def load_state_unlocked(self) -> DirectionalActivityState:
+        """Decode current while the caller already holds this artifact lock."""
+
         if not self.path.exists():
             return DirectionalActivityState()
         try:

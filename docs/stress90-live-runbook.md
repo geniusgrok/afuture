@@ -400,9 +400,19 @@ visible lock 或 lineage。任何写入前必须分别通过 OHLC、
 activity、seed、policy 和 OI 自己的 store/API 校验 current 及该 store 真正拥有的 sidecar；孤儿
 policy `.prev`/`.lock`、symlink、corrupt current 或 OI sidecar-only 都是须原样保全的 incident。
 四个 prerequisite 首写必须走 owner store 的 `O_EXCL` create-only API；各 owner 的普通后续
-writer 也共享 canonical artifact-path OFD lock。OI 开始前还要用本次 create 返回的 exact
-payload digest、inode/path identity token 和 owner decoder 逐项复核；任一缺失、替换或损坏都
-不得进入 OI phase。rollback 只能删除 token 仍精确匹配的本次 sequence-1 current，并对删除
+writer 也共享 canonical artifact-path OFD lock。owner 在构造时就冻结 real-parent canonical
+path，policy `.prev`/`.lock` 只从该 canonical current 派生；运行中 retarget parent symlink 不能
+造成“锁 target-1、写 target-2”。任何 `O_EXCL` 成功后的 partial write、file/parent `fsync`、
+path/inode verify 或 descriptor close 失败，都必须用已捕获 dev/inode 只清理本次创建的精确
+文件并 `fsync` parent；identity ambiguous 或 cleanup 失败则保全 incident，并同时报告 primary
+和 cleanup diagnostics。
+
+OI 开始前按 canonical path 字典序一次性取得全部 prerequisite OFD locks，并连续持有至 owner
+unlocked decoder、exact payload/inode token 逐项复核和最终 OI CAS 完成；这是所有 aggregate
+artifact lock 的唯一全局顺序，禁止在持锁区重新取得相同 OFD lock。任一 prerequisite 缺失、
+替换或损坏都不得进入 OI phase。首次 OI save 必须显式 `expected_sequence=0`；preflight 后出现
+的 ordinary OI seq1 只能导致 bootstrap fail-closed，绝不能被采用或推进为 seq2。rollback 只能
+删除 token 仍精确匹配的本次 sequence-1 current，并对删除
 执行 parent-directory `fsync`；不得按“preflight 时不存在”推断 ownership，不得推断或删除
 store 未拥有的 `.prev`，也不得覆盖调用前或并发证据。单个 cleanup 失败或 token mismatch 须
 保留原始 persistence 异常并继续尝试其余安全 cleanup。进入最终 OI save 前即跨过不可逆边界：

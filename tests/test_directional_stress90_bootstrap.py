@@ -20,6 +20,8 @@ def _concurrent_bootstrap_worker(
     candidate_weight_sha256: str,
     pause_before_ohlc,
     release_ohlc,
+    pause_before_oi,
+    release_oi,
     done,
     results,
 ) -> None:
@@ -55,6 +57,25 @@ def _concurrent_bootstrap_worker(
             return real_save(self, *args, **kwargs)
 
         setattr(DirectionalOHLCCacheStore, method_name, pause_then_save)
+    if pause_before_oi is not None:
+        validation_name = (
+            "creation_token_matches_unlocked"
+            if hasattr(bootstrap_module, "creation_token_matches_unlocked")
+            else "creation_token_matches"
+        )
+        real_validate = getattr(bootstrap_module, validation_name)
+        paused = False
+
+        def pause_then_validate(*args, **kwargs):
+            nonlocal paused
+            if not paused:
+                paused = True
+                pause_before_oi.set()
+                if not release_oi.wait(30):
+                    raise RuntimeError("timed out waiting to release pre-OI validation")
+            return real_validate(*args, **kwargs)
+
+        setattr(bootstrap_module, validation_name, pause_then_validate)
     try:
         result = bootstrap_module.bootstrap_stress90(
             runtime_dir=runtime_text,
@@ -65,6 +86,80 @@ def _concurrent_bootstrap_worker(
         results.put(("success", str(result.oi_evidence_path)))
     except BaseException as exc:
         results.put(("error", type(exc).__name__, str(exc)))
+    finally:
+        done.set()
+
+
+def _ordinary_prerequisite_writer(kind: str, runtime_text: str, done, results) -> None:
+    from afuture.directional_activity import DirectionalActivityStore
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_stress90_policy import STRESS90_POLICY
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+
+    runtime = Path(runtime_text)
+    try:
+        if kind == "ohlc":
+            store = DirectionalOHLCCacheStore(runtime / "directional_ohlc_cache.json")
+            entry = store.load(STRESS90_POLICY.products)
+            assert entry is not None
+            store.save(entry.products, entry.open, entry.close)
+        elif kind == "activity":
+            store = DirectionalActivityStore(runtime / "directional_activity.json")
+            store.save_state(store.load_state())
+        elif kind == "policy":
+            store = Stress90PolicyStateStore(runtime / "stress90_policy_state.json")
+            record = store.load_required_record()
+            store.save(record.state, expected_sequence=record.sequence)
+        else:  # pragma: no cover - test helper contract
+            raise AssertionError(f"unsupported prerequisite writer: {kind}")
+        results.put((kind, "success"))
+    except BaseException as exc:
+        results.put((kind, "error", type(exc).__name__, str(exc)))
+    finally:
+        done.set()
+
+
+def _activity_retarget_writer(
+    path_text: str,
+    trading_day: str,
+    pause_after_lock,
+    release_write,
+    done,
+    results,
+) -> None:
+    from afuture.directional_activity import (
+        ContractActivity,
+        DirectionalActivitySnapshot,
+        DirectionalActivityStore,
+    )
+
+    store = DirectionalActivityStore(path_text)
+    if pause_after_lock is not None:
+        real_replace = store._replace_encoded
+
+        def pause_then_replace(encoded: bytes) -> None:
+            pause_after_lock.set()
+            if not release_write.wait(30):
+                raise RuntimeError("timed out waiting to release retarget writer")
+            real_replace(encoded)
+
+        store._replace_encoded = pause_then_replace
+    try:
+        activity = ContractActivity(
+            symbol="A2612",
+            exchange="DCE",
+            product="A",
+            trading_day=trading_day,
+            volume=1.0,
+            open_interest=1.0,
+            timestamp=datetime.fromisoformat(
+                f"{trading_day[:4]}-{trading_day[4:6]}-{trading_day[6:]}T15:00:00+08:00"
+            ),
+        )
+        store.save(DirectionalActivitySnapshot(trading_day, {activity.symbol: activity}))
+        results.put((trading_day, "success", str(store.path)))
+    except BaseException as exc:
+        results.put((trading_day, "error", type(exc).__name__, str(exc)))
     finally:
         done.set()
 
@@ -416,6 +511,8 @@ def test_concurrent_bootstrap_aliases_serialize_without_split_authority(
             *worker_args,
             first_paused,
             release_first,
+            None,
+            None,
             first_done,
             results,
         ),
@@ -425,6 +522,8 @@ def test_concurrent_bootstrap_aliases_serialize_without_split_authority(
         args=(
             str(symlink_alias),
             *worker_args,
+            None,
+            None,
             None,
             None,
             second_done,
@@ -468,6 +567,218 @@ def test_concurrent_bootstrap_aliases_serialize_without_split_authority(
         .sequence
         == 1
     )
+
+
+def test_bootstrap_pre_oi_prerequisite_locks_block_ordinary_writers_until_commit(
+    tmp_path: Path,
+) -> None:
+    from multiprocessing import get_context
+
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    context = get_context("spawn")
+    pre_oi_paused = context.Event()
+    release_oi = context.Event()
+    bootstrap_done = context.Event()
+    results = context.Queue()
+    bootstrap = context.Process(
+        target=_concurrent_bootstrap_worker,
+        args=(
+            str(runtime),
+            through,
+            dict(expectations.input_sha256),
+            expectations.candidate_weight_sha256,
+            None,
+            None,
+            pre_oi_paused,
+            release_oi,
+            bootstrap_done,
+            results,
+        ),
+    )
+    bootstrap.start()
+    assert pre_oi_paused.wait(20)
+
+    writer_done = {kind: context.Event() for kind in ("ohlc", "activity", "policy")}
+    writers = [
+        context.Process(
+            target=_ordinary_prerequisite_writer,
+            args=(kind, str(runtime), writer_done[kind], results),
+        )
+        for kind in writer_done
+    ]
+    for writer in writers:
+        writer.start()
+    completed_before_commit = {kind: event.wait(3) for kind, event in writer_done.items()}
+    release_oi.set()
+    bootstrap.join(30)
+    for writer in writers:
+        writer.join(30)
+
+    assert completed_before_commit == {"ohlc": False, "activity": False, "policy": False}
+    assert bootstrap.exitcode == 0
+    assert all(writer.exitcode == 0 for writer in writers)
+    outcomes = [results.get(timeout=5) for _ in range(4)]
+    assert sum(outcome[0] == "success" for outcome in outcomes) == 1, outcomes
+    assert {(outcome[0], outcome[1]) for outcome in outcomes if outcome[0] != "success"} == {
+        ("ohlc", "success"),
+        ("activity", "success"),
+        ("policy", "success"),
+    }
+    assert (
+        Stress90OiEvidenceStore(runtime / "stress90_oi_evidence.json")
+        .load_required_record()
+        .sequence
+        == 1
+    )
+    assert (
+        Stress90PolicyStateStore(runtime / "stress90_policy_state.json")
+        .load_required_record()
+        .sequence
+        == 2
+    )
+
+
+def test_bootstrap_final_oi_is_compare_and_swap_from_sequence_zero(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_oi_runtime import (
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    oi_store = Stress90OiEvidenceStore(runtime / "stress90_oi_evidence.json")
+    foreign_state = Stress90OiEvidenceState(raw_ticks_observed=7)
+    real_save_new = Stress90PolicyStateStore.save_new
+
+    def save_policy_then_create_foreign_oi(self, *args, **kwargs):
+        result = real_save_new(self, *args, **kwargs)
+        oi_store.save_state(foreign_state)
+        return result
+
+    monkeypatch.setattr(Stress90PolicyStateStore, "save_new", save_policy_then_create_foreign_oi)
+    with pytest.raises(Stress90BootstrapError, match=r"failed to persist.*sequence changed"):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+
+    oi_record = oi_store.load_required_record()
+    assert oi_record.sequence == 1
+    assert oi_record.state == foreign_state
+    assert not oi_store.previous_path.exists()
+    for name in (
+        "directional_ohlc_cache.json",
+        "directional_activity.json",
+        "stress90_bootstrap_seed.json",
+        "stress90_policy_state.json",
+    ):
+        assert (runtime / name).is_file()
+
+
+def test_owner_paths_are_frozen_to_canonical_parent_at_construction(tmp_path: Path) -> None:
+    from afuture.directional_activity import DirectionalActivityStore
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+    from afuture.directional_stress90_state import (
+        Stress90PolicyStateStore,
+        Stress90SeedStore,
+    )
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    alias = tmp_path / "runtime-alias"
+    alias.symlink_to(first, target_is_directory=True)
+    stores = (
+        DirectionalOHLCCacheStore(alias / "ohlc.json"),
+        DirectionalActivityStore(alias / "activity.json"),
+        Stress90SeedStore(alias / "seed.json"),
+        Stress90PolicyStateStore(alias / "policy.json"),
+        Stress90OiEvidenceStore(alias / "oi.json"),
+    )
+    alias.unlink()
+    alias.symlink_to(second, target_is_directory=True)
+
+    assert all(store.path.parent == first for store in stores)
+    policy = stores[3]
+    assert isinstance(policy, Stress90PolicyStateStore)
+    assert policy.previous_path.parent == first
+    assert policy.lock_path.parent == first
+
+
+def test_activity_writer_cannot_lock_one_parent_then_write_retargeted_parent(
+    tmp_path: Path,
+) -> None:
+    from multiprocessing import get_context
+
+    from afuture.directional_activity import DirectionalActivityStore
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    alias = tmp_path / "runtime-alias"
+    alias.symlink_to(first, target_is_directory=True)
+    context = get_context("spawn")
+    locked = context.Event()
+    release_first = context.Event()
+    first_done = context.Event()
+    second_done = context.Event()
+    results = context.Queue()
+    first_writer = context.Process(
+        target=_activity_retarget_writer,
+        args=(
+            str(alias / "activity.json"),
+            "20260820",
+            locked,
+            release_first,
+            first_done,
+            results,
+        ),
+    )
+    first_writer.start()
+    assert locked.wait(20)
+    alias.unlink()
+    alias.symlink_to(second, target_is_directory=True)
+    second_writer = context.Process(
+        target=_activity_retarget_writer,
+        args=(
+            str(second / "activity.json"),
+            "20260821",
+            None,
+            None,
+            second_done,
+            results,
+        ),
+    )
+    second_writer.start()
+    assert second_done.wait(20)
+    release_first.set()
+    first_writer.join(30)
+    second_writer.join(30)
+
+    assert first_writer.exitcode == 0
+    assert second_writer.exitcode == 0
+    outcomes = [results.get(timeout=5), results.get(timeout=5)]
+    assert all(outcome[1] == "success" for outcome in outcomes), outcomes
+    assert DirectionalActivityStore(first / "activity.json").load().trading_day == "20260820"
+    assert DirectionalActivityStore(second / "activity.json").load().trading_day == "20260821"
 
 
 @pytest.mark.parametrize(

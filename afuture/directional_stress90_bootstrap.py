@@ -72,8 +72,9 @@ from .durable_file_creation import (
     DurableFileCreationToken,
     DurableFileError,
     canonical_file_path,
-    creation_token_matches,
+    creation_token_matches_unlocked,
     durable_file_lock,
+    durable_file_locks,
     unlink_created_file,
 )
 from .execution_aligned_policy import ExecutionAlignedAggressivePolicy
@@ -799,26 +800,35 @@ def _bootstrap_stress90(
             )
             creation_tokens.append(policy_token)
 
-            if not all(creation_token_matches(token) for token in creation_tokens):
-                raise OSError("bootstrap prerequisite changed before OI commit")
-            reloaded_ohlc = ohlc_store.load(STRESS90_POLICY.products)
-            if (
-                reloaded_ohlc is None
-                or reloaded_ohlc.products != created_ohlc.products
-                or reloaded_ohlc.content_digest != created_ohlc.content_digest
-            ):
-                raise OSError("bootstrap OHLC prerequisite changed before OI commit")
-            if activity_store.load_state() != created_activity:
-                raise OSError("bootstrap activity prerequisite changed before OI commit")
-            if seed_store.load_required(expected_source_manifest=source_manifest) != seed:
-                raise OSError("bootstrap seed prerequisite changed before OI commit")
-            if policy_store.load_record() != created_policy:
-                raise OSError("bootstrap policy prerequisite changed before OI commit")
+            # One canonical global order avoids OFD reentrant deadlocks and keeps
+            # every prerequisite frozen continuously through the final OI CAS.
+            with durable_file_locks(token.path for token in creation_tokens):
+                if not all(creation_token_matches_unlocked(token) for token in creation_tokens):
+                    raise OSError("bootstrap prerequisite changed before OI commit")
+                reloaded_ohlc = ohlc_store.load_unlocked(STRESS90_POLICY.products)
+                if (
+                    reloaded_ohlc is None
+                    or reloaded_ohlc.products != created_ohlc.products
+                    or reloaded_ohlc.content_digest != created_ohlc.content_digest
+                ):
+                    raise OSError("bootstrap OHLC prerequisite changed before OI commit")
+                if activity_store.load_state_unlocked() != created_activity:
+                    raise OSError("bootstrap activity prerequisite changed before OI commit")
+                if (
+                    seed_store.load_required_unlocked(expected_source_manifest=source_manifest)
+                    != seed
+                ):
+                    raise OSError("bootstrap seed prerequisite changed before OI commit")
+                if policy_store.load_record_unlocked() != created_policy:
+                    raise OSError("bootstrap policy prerequisite changed before OI commit")
 
-            # OI lineage is the bootstrap commit point.  All prior sequence-1
-            # artifacts remain independently rollback-safe until this final write.
-            oi_phase_started = True
-            oi_store.save_state(Stress90OiEvidenceState(completed=(bridge,)))
+                # OI lineage is the bootstrap commit point.  expected_sequence=0
+                # forbids adopting or advancing any writer that appeared after preflight.
+                oi_phase_started = True
+                oi_store.save_state(
+                    Stress90OiEvidenceState(completed=(bridge,)),
+                    expected_sequence=0,
+                )
         except (
             OSError,
             DirectionalActivityIntegrityError,

@@ -26,6 +26,7 @@ from .directional_stress90_policy import (
 )
 from .durable_file_creation import (
     DurableFileCreationToken,
+    canonical_file_path,
     create_durable_file_exclusive,
     durable_file_lock,
 )
@@ -907,7 +908,7 @@ class Stress90PolicyStateStore:
         *,
         definition: Stress90PolicyDefinition = STRESS90_POLICY,
     ) -> None:
-        self.path = Path(path)
+        self.path = canonical_file_path(path)
         self.definition = definition
         self._last_creation_token: DurableFileCreationToken | None = None
 
@@ -934,6 +935,12 @@ class Stress90PolicyStateStore:
             )
 
     def load_record(self) -> Stress90StateRecord | None:
+        with durable_file_lock(self.path):
+            return self.load_record_unlocked()
+
+    def load_record_unlocked(self) -> Stress90StateRecord | None:
+        """Decode current while the caller already holds this artifact lock."""
+
         self._require_fresh_or_current()
         if not self.path.exists():
             return None
@@ -949,6 +956,12 @@ class Stress90PolicyStateStore:
         return self.load_required_record().state
 
     def load_previous_record(self) -> Stress90StateRecord:
+        with durable_file_lock(self.path):
+            return self.load_previous_record_unlocked()
+
+    def load_previous_record_unlocked(self) -> Stress90StateRecord:
+        """Decode `.prev` while the caller already holds the current-path lock."""
+
         if not self.previous_path.exists():
             raise Stress90StateIntegrityError("previous Stress-90 policy state is missing")
         return self._read_record(self.previous_path)
@@ -1006,7 +1019,7 @@ class Stress90PolicyStateStore:
         self._require_fresh_or_current()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         previous_bytes: bytes | None = None
-        current = self.load_record()
+        current = self.load_record_unlocked()
         current_sequence = 0 if current is None else current.sequence
         if expected_sequence is not None and expected_sequence != current_sequence:
             raise Stress90StateIntegrityError("Stress-90 state sequence changed concurrently")
@@ -1251,7 +1264,7 @@ class Stress90SeedStore:
         *,
         definition: Stress90PolicyDefinition = STRESS90_POLICY,
     ) -> None:
-        self.path = Path(path)
+        self.path = canonical_file_path(path)
         self.definition = definition
         self._last_creation_token: DurableFileCreationToken | None = None
 
@@ -1286,6 +1299,16 @@ class Stress90SeedStore:
         *,
         expected_source_manifest: Mapping[str, str] | None = None,
     ) -> Stress90BootstrapSeed:
+        with durable_file_lock(self.path):
+            return self.load_required_unlocked(expected_source_manifest=expected_source_manifest)
+
+    def load_required_unlocked(
+        self,
+        *,
+        expected_source_manifest: Mapping[str, str] | None = None,
+    ) -> Stress90BootstrapSeed:
+        """Decode seed while the caller already holds this artifact lock."""
+
         if not self.path.exists():
             raise Stress90StateIntegrityError("required Stress-90 bootstrap seed is missing")
         try:

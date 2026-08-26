@@ -21,6 +21,7 @@ import pandas as pd
 from .directional_data_validation import validate_daily_index
 from .durable_file_creation import (
     DurableFileCreationToken,
+    canonical_file_path,
     create_durable_file_exclusive,
     durable_file_lock,
 )
@@ -245,7 +246,7 @@ class DirectionalOHLCCacheStore:
     """Persist one verified open/close panel with atomic replacement."""
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        self.path = canonical_file_path(path)
         self._last_creation_token: DurableFileCreationToken | None = None
 
     @property
@@ -256,6 +257,15 @@ class DirectionalOHLCCacheStore:
         self,
         expected_products: tuple[str, ...],
     ) -> DirectionalOHLCCacheEntry | None:
+        with durable_file_lock(self.path):
+            return self.load_unlocked(expected_products)
+
+    def load_unlocked(
+        self,
+        expected_products: tuple[str, ...],
+    ) -> DirectionalOHLCCacheEntry | None:
+        """Decode current while the caller already holds this artifact lock."""
+
         if not self.path.exists():
             return None
         try:
