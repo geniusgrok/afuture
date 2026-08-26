@@ -68,6 +68,14 @@ from .directional_stress90_state import (
 from .directional_turnover_aware_survivor_reallocation import (
     reallocate_survivors_lexicographically,
 )
+from .durable_file_creation import (
+    DurableFileCreationToken,
+    DurableFileError,
+    canonical_file_path,
+    creation_token_matches,
+    durable_file_lock,
+    unlink_created_file,
+)
 from .execution_aligned_policy import ExecutionAlignedAggressivePolicy
 
 FIXED_STRESS90_INPUT_SHA256 = MappingProxyType(
@@ -544,13 +552,41 @@ def bootstrap_stress90(
 ) -> Stress90BootstrapResult:
     """Validate and replay fixed history, optionally creating immutable live artifacts."""
 
+    runtime = canonical_file_path(Path(runtime_dir) / ".stress90-bootstrap-transition").parent
+    if not write_artifacts:
+        return _bootstrap_stress90(
+            runtime=runtime,
+            through_day=through_day,
+            expectations=expectations,
+            write_artifacts=False,
+        )
+    try:
+        with durable_file_lock(runtime / ".stress90-bootstrap-transition"):
+            return _bootstrap_stress90(
+                runtime=runtime,
+                through_day=through_day,
+                expectations=expectations,
+                write_artifacts=True,
+            )
+    except DurableFileError as exc:
+        raise Stress90BootstrapError("Stress-90 bootstrap transition lock failed") from exc
+
+
+def _bootstrap_stress90(
+    *,
+    runtime: Path,
+    through_day: str,
+    expectations: Stress90BootstrapExpectations,
+    write_artifacts: bool,
+) -> Stress90BootstrapResult:
+    """Run with the canonical runtime transition lock already held for writes."""
+
     through_text, through = _canonical_through_day(through_day)
     official_profile = _is_official_profile(expectations)
     if write_artifacts and not official_profile:
         raise Stress90BootstrapError(
             "live seed/state creation requires the official immutable historical profile"
         )
-    runtime = Path(runtime_dir)
     source_manifest = _verify_source_bytes(runtime, expectations)
 
     _continuous, open_prices, close_prices = _load_continuous_panels(
@@ -745,21 +781,40 @@ def bootstrap_stress90(
         completed_open = open_prices.loc[open_prices.index <= through]
         completed_close = close_prices.loc[close_prices.index <= through]
         activity = _through_day_activity_snapshot(specific_contracts, through)
-        attempted_prerequisite_paths: list[Path] = []
+        creation_tokens: list[DurableFileCreationToken] = []
         oi_phase_started = False
         try:
-            attempted_prerequisite_paths.append(ohlc_store.path)
-            ohlc_store.save(
+            created_ohlc, ohlc_token = ohlc_store.save_new(
                 STRESS90_POLICY.products,
                 completed_open,
                 completed_close,
             )
-            attempted_prerequisite_paths.append(activity_store.path)
-            activity_store.save(activity)
-            attempted_prerequisite_paths.append(seed_store.path)
-            seed_store.save_new(seed)
-            attempted_prerequisite_paths.append(policy_store.path)
-            policy_store.save(Stress90PolicyState.from_seed(seed, prepared_decision=prepared))
+            creation_tokens.append(ohlc_token)
+            created_activity, activity_token = activity_store.save_new(activity)
+            creation_tokens.append(activity_token)
+            seed_token = seed_store.save_new(seed)
+            creation_tokens.append(seed_token)
+            created_policy, policy_token = policy_store.save_new(
+                Stress90PolicyState.from_seed(seed, prepared_decision=prepared)
+            )
+            creation_tokens.append(policy_token)
+
+            if not all(creation_token_matches(token) for token in creation_tokens):
+                raise OSError("bootstrap prerequisite changed before OI commit")
+            reloaded_ohlc = ohlc_store.load(STRESS90_POLICY.products)
+            if (
+                reloaded_ohlc is None
+                or reloaded_ohlc.products != created_ohlc.products
+                or reloaded_ohlc.content_digest != created_ohlc.content_digest
+            ):
+                raise OSError("bootstrap OHLC prerequisite changed before OI commit")
+            if activity_store.load_state() != created_activity:
+                raise OSError("bootstrap activity prerequisite changed before OI commit")
+            if seed_store.load_required(expected_source_manifest=source_manifest) != seed:
+                raise OSError("bootstrap seed prerequisite changed before OI commit")
+            if policy_store.load_record() != created_policy:
+                raise OSError("bootstrap policy prerequisite changed before OI commit")
+
             # OI lineage is the bootstrap commit point.  All prior sequence-1
             # artifacts remain independently rollback-safe until this final write.
             oi_phase_started = True
@@ -773,18 +828,27 @@ def bootstrap_stress90(
         ) as exc:
             cleanup_errors: list[str] = []
             if not oi_phase_started:
-                # These owners create only their sequence-1 current during bootstrap.
-                # Sidecars belong to their owner stores and are never inferred or erased.
-                for artifact_path in reversed(attempted_prerequisite_paths):
-                    if not owned_snapshots[artifact_path].absent:
-                        continue
+                owner_tokens = (
+                    ohlc_store.last_creation_token,
+                    activity_store.last_creation_token,
+                    seed_store.last_creation_token,
+                    policy_store.last_creation_token,
+                )
+                known_tokens = {token.path for token in creation_tokens}
+                creation_tokens.extend(
+                    token
+                    for token in owner_tokens
+                    if token is not None and token.path not in known_tokens
+                )
+                for token in reversed(creation_tokens):
                     try:
-                        if artifact_path.is_symlink():
-                            raise OSError("refusing to remove unexpected symlink")
-                        artifact_path.unlink(missing_ok=True)
+                        if not unlink_created_file(token):
+                            cleanup_errors.append(
+                                f"{token.path}: creation token no longer matches current"
+                            )
                     except OSError as cleanup_exc:
-                        cleanup_errors.append(f"{artifact_path}: {cleanup_exc}")
-            message = "failed to persist Stress-90 bootstrap artifacts"
+                        cleanup_errors.append(f"{token.path}: {cleanup_exc}")
+            message = f"failed to persist Stress-90 bootstrap artifacts: {exc}"
             if cleanup_errors:
                 message += "; rollback cleanup errors: " + "; ".join(cleanup_errors)
             raise Stress90BootstrapError(message) from exc

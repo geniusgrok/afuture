@@ -19,6 +19,11 @@ from tempfile import NamedTemporaryFile
 import pandas as pd
 
 from .directional_data_validation import validate_daily_index
+from .durable_file_creation import (
+    DurableFileCreationToken,
+    create_durable_file_exclusive,
+    durable_file_lock,
+)
 
 OHLC_CACHE_SCHEMA_VERSION = 1
 _CACHE_KIND = "afuture.directional_ohlc"
@@ -241,6 +246,11 @@ class DirectionalOHLCCacheStore:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._last_creation_token: DurableFileCreationToken | None = None
+
+    @property
+    def last_creation_token(self) -> DurableFileCreationToken | None:
+        return self._last_creation_token
 
     def load(
         self,
@@ -355,16 +365,47 @@ class DirectionalOHLCCacheStore:
         open_prices: pd.DataFrame,
         close: pd.DataFrame,
     ) -> DirectionalOHLCCacheEntry:
+        envelope, encoded = self._encoded_envelope(products, open_prices, close)
+        with durable_file_lock(self.path):
+            self._replace_encoded(encoded)
+        return self._entry_from_envelope(envelope, products)
+
+    def save_new(
+        self,
+        products: tuple[str, ...],
+        open_prices: pd.DataFrame,
+        close: pd.DataFrame,
+    ) -> tuple[DirectionalOHLCCacheEntry, DurableFileCreationToken]:
+        """Create the first cache record without overwriting concurrent evidence."""
+
+        envelope, encoded = self._encoded_envelope(products, open_prices, close)
+        try:
+            token = create_durable_file_exclusive(self.path, encoded)
+        except FileExistsError as exc:
+            raise DirectionalOHLCCacheIntegrityError(
+                "directional OHLC cache appeared concurrently"
+            ) from exc
+        self._last_creation_token = token
+        return self._entry_from_envelope(envelope, products), token
+
+    def _encoded_envelope(
+        self,
+        products: tuple[str, ...],
+        open_prices: pd.DataFrame,
+        close: pd.DataFrame,
+    ) -> tuple[dict[str, object], bytes]:
         content = self._content_from_frames(products, open_prices, close)
         content_digest = _digest(content)
-        unsigned = {
+        unsigned: dict[str, object] = {
             "schema_version": OHLC_CACHE_SCHEMA_VERSION,
             "kind": _CACHE_KIND,
             "content": content,
             "content_digest": content_digest,
         }
         envelope = {**unsigned, "checksum": _digest(unsigned)}
-        encoded = _canonical_json(envelope)
+        return envelope, _canonical_json(envelope)
+
+    def _replace_encoded(self, encoded: bytes) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
         temp: Path | None = None
@@ -378,12 +419,6 @@ class DirectionalOHLCCacheStore:
         finally:
             if temp is not None and temp.exists():
                 temp.unlink()
-        entry = self.load(products)
-        if entry is None:  # pragma: no cover - atomic replace either raises or creates the file
-            raise DirectionalOHLCCacheIntegrityError(
-                "directional OHLC cache disappeared after atomic save"
-            )
-        return entry
 
     @staticmethod
     def _content_from_frames(

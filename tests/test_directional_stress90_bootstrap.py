@@ -13,6 +13,62 @@ import pytest
 _CHINA = ZoneInfo("Asia/Shanghai")
 
 
+def _concurrent_bootstrap_worker(
+    runtime_text: str,
+    through: str,
+    input_sha256: dict[str, str],
+    candidate_weight_sha256: str,
+    pause_before_ohlc,
+    release_ohlc,
+    done,
+    results,
+) -> None:
+    from types import MappingProxyType
+
+    import afuture.directional_stress90_bootstrap as bootstrap_module
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_stress90_bootstrap import Stress90BootstrapExpectations
+
+    original_policy = bootstrap_module.STRESS90_POLICY
+
+    class PolicyProxy:
+        historical_candidate_weight_sha256 = candidate_weight_sha256
+
+        def __getattr__(self, name):
+            return getattr(original_policy, name)
+
+    bootstrap_module.FIXED_STRESS90_INPUT_SHA256 = MappingProxyType(input_sha256)
+    bootstrap_module.STRESS90_POLICY = PolicyProxy()
+    expectations = Stress90BootstrapExpectations(
+        input_sha256=input_sha256,
+        candidate_weight_sha256=candidate_weight_sha256,
+        official_historical_profile=True,
+    )
+    if pause_before_ohlc is not None:
+        method_name = "save_new" if hasattr(DirectionalOHLCCacheStore, "save_new") else "save"
+        real_save = getattr(DirectionalOHLCCacheStore, method_name)
+
+        def pause_then_save(self, *args, **kwargs):
+            pause_before_ohlc.set()
+            if not release_ohlc.wait(30):
+                raise RuntimeError("timed out waiting to release concurrent bootstrap")
+            return real_save(self, *args, **kwargs)
+
+        setattr(DirectionalOHLCCacheStore, method_name, pause_then_save)
+    try:
+        result = bootstrap_module.bootstrap_stress90(
+            runtime_dir=runtime_text,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+        results.put(("success", str(result.oi_evidence_path)))
+    except BaseException as exc:
+        results.put(("error", type(exc).__name__, str(exc)))
+    finally:
+        done.set()
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -273,10 +329,10 @@ def test_bootstrap_pre_oi_artifact_failure_rolls_back_and_retries_once(
     through, expectations = _write_synthetic_archive(runtime)
     expectations = _promote_synthetic_profile(monkeypatch, expectations)
     targets = {
-        "ohlc": (DirectionalOHLCCacheStore, "save"),
-        "activity": (DirectionalActivityStore, "save"),
+        "ohlc": (DirectionalOHLCCacheStore, "save_new"),
+        "activity": (DirectionalActivityStore, "save_new"),
         "seed": (Stress90SeedStore, "save_new"),
-        "policy": (Stress90PolicyStateStore, "save"),
+        "policy": (Stress90PolicyStateStore, "save_new"),
     }
     owner, method_name = targets[failure_after]
     real_save = getattr(owner, method_name)
@@ -318,6 +374,190 @@ def test_bootstrap_pre_oi_artifact_failure_rolls_back_and_retries_once(
     assert oi.sequence == 1
     assert oi.parent_checksum is None
     assert not oi_store.previous_path.exists()
+
+
+def test_concurrent_bootstrap_aliases_serialize_without_split_authority(
+    tmp_path: Path,
+) -> None:
+    from multiprocessing import get_context
+
+    from afuture.directional_activity import DirectionalActivityStore
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+    from afuture.directional_stress90_policy import STRESS90_POLICY
+    from afuture.directional_stress90_state import (
+        Stress90PolicyStateStore,
+        Stress90SeedStore,
+    )
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    lexical_component = tmp_path / "lexical-component"
+    lexical_component.mkdir()
+    lexical_alias = lexical_component / ".." / runtime.name
+    symlink_parent = tmp_path / "safe-parent-alias"
+    symlink_parent.symlink_to(tmp_path, target_is_directory=True)
+    symlink_alias = symlink_parent / runtime.name
+    context = get_context("spawn")
+    first_paused = context.Event()
+    release_first = context.Event()
+    first_done = context.Event()
+    second_done = context.Event()
+    results = context.Queue()
+    worker_args = (
+        through,
+        dict(expectations.input_sha256),
+        expectations.candidate_weight_sha256,
+    )
+    first = context.Process(
+        target=_concurrent_bootstrap_worker,
+        args=(
+            str(lexical_alias),
+            *worker_args,
+            first_paused,
+            release_first,
+            first_done,
+            results,
+        ),
+    )
+    second = context.Process(
+        target=_concurrent_bootstrap_worker,
+        args=(
+            str(symlink_alias),
+            *worker_args,
+            None,
+            None,
+            second_done,
+            results,
+        ),
+    )
+
+    first.start()
+    assert first_paused.wait(20)
+    second.start()
+    second_finished_while_first_was_paused = second_done.wait(10)
+    release_first.set()
+    first.join(30)
+    second.join(30)
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+    outcomes = [results.get(timeout=5), results.get(timeout=5)]
+
+    assert second_finished_while_first_was_paused is False
+    assert sum(outcome[0] == "success" for outcome in outcomes) == 1, outcomes
+    assert sum(outcome[0] == "error" for outcome in outcomes) == 1, outcomes
+    assert (
+        DirectionalOHLCCacheStore(runtime / "directional_ohlc_cache.json").load(
+            STRESS90_POLICY.products
+        )
+        is not None
+    )
+    assert DirectionalActivityStore(runtime / "directional_activity.json").load() is not None
+    Stress90SeedStore(runtime / "stress90_bootstrap_seed.json").load_required(
+        expected_source_manifest=expectations.input_sha256
+    )
+    assert (
+        Stress90PolicyStateStore(runtime / "stress90_policy_state.json")
+        .load_required_record()
+        .sequence
+        == 1
+    )
+    assert (
+        Stress90OiEvidenceStore(runtime / "stress90_oi_evidence.json")
+        .load_required_record()
+        .sequence
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("owner_path", "owner_import", "owner_name"),
+    [
+        ("directional_ohlc_cache.json", "ohlc", "DirectionalOHLCCacheStore"),
+        ("directional_activity.json", "activity", "DirectionalActivityStore"),
+        ("stress90_bootstrap_seed.json", "state", "Stress90SeedStore"),
+        ("stress90_policy_state.json", "state", "Stress90PolicyStateStore"),
+    ],
+)
+def test_bootstrap_owner_create_only_write_preserves_artifact_appearing_after_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner_path: str,
+    owner_import: str,
+    owner_name: str,
+) -> None:
+    from afuture import directional_activity, directional_ohlc_cache, directional_stress90_state
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    modules = {
+        "activity": directional_activity,
+        "ohlc": directional_ohlc_cache,
+        "state": directional_stress90_state,
+    }
+    owner = getattr(modules[owner_import], owner_name)
+    method_name = "save_new" if hasattr(owner, "save_new") else "save"
+    real_save = getattr(owner, method_name)
+    path = runtime / owner_path
+    appeared_bytes = b"artifact from a concurrent writer"
+
+    def appear_then_save(self, *args, **kwargs):
+        path.write_bytes(appeared_bytes)
+        return real_save(self, *args, **kwargs)
+
+    monkeypatch.setattr(owner, method_name, appear_then_save)
+    with pytest.raises(Stress90BootstrapError, match="failed to persist"):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+    assert path.read_bytes() == appeared_bytes
+    assert not (runtime / "stress90_oi_evidence.json").exists()
+
+
+def test_bootstrap_pre_oi_revalidation_preserves_changed_foreign_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    ohlc_path = runtime / "directional_ohlc_cache.json"
+    foreign_bytes = b"replacement from a concurrent writer"
+    method_name = "save_new" if hasattr(Stress90PolicyStateStore, "save_new") else "save"
+    real_policy_save = getattr(Stress90PolicyStateStore, method_name)
+
+    def save_policy_then_replace_ohlc(self, *args, **kwargs):
+        result = real_policy_save(self, *args, **kwargs)
+        ohlc_path.write_bytes(foreign_bytes)
+        return result
+
+    monkeypatch.setattr(Stress90PolicyStateStore, method_name, save_policy_then_replace_ohlc)
+    with pytest.raises(
+        Stress90BootstrapError,
+        match=r"prerequisite.*changed.*rollback cleanup errors",
+    ):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+    assert ohlc_path.read_bytes() == foreign_bytes
+    assert not (runtime / "stress90_oi_evidence.json").exists()
 
 
 @pytest.mark.parametrize("sidecar", ["previous", "lock"])
@@ -689,6 +929,7 @@ def test_bootstrap_cleanup_errors_do_not_mask_primary_failure_or_stop_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import afuture.directional_stress90_bootstrap as bootstrap_module
     from afuture.directional_stress90_bootstrap import (
         Stress90BootstrapError,
         bootstrap_stress90,
@@ -702,22 +943,22 @@ def test_bootstrap_cleanup_errors_do_not_mask_primary_failure_or_stop_cleanup(
     ohlc_path = runtime / "directional_ohlc_cache.json"
     activity_path = runtime / "directional_activity.json"
     real_save = Stress90SeedStore.save_new
-    real_unlink = Path.unlink
+    real_unlink = bootstrap_module.unlink_created_file
     cleanup_attempts: list[Path] = []
 
     def save_then_fail(self, *args, **kwargs):
         real_save(self, *args, **kwargs)
         raise OSError("injected primary seed persistence failure")
 
-    def unlink_with_one_failure(self, *args, **kwargs):
-        if self in {seed_path, ohlc_path, activity_path}:
-            cleanup_attempts.append(self)
-        if self == seed_path:
+    def unlink_with_one_failure(token):
+        if token.path in {seed_path, ohlc_path, activity_path}:
+            cleanup_attempts.append(token.path)
+        if token.path == seed_path:
             raise OSError("injected seed cleanup failure")
-        return real_unlink(self, *args, **kwargs)
+        return real_unlink(token)
 
     monkeypatch.setattr(Stress90SeedStore, "save_new", save_then_fail)
-    monkeypatch.setattr(Path, "unlink", unlink_with_one_failure)
+    monkeypatch.setattr(bootstrap_module, "unlink_created_file", unlink_with_one_failure)
     with pytest.raises(
         Stress90BootstrapError,
         match=r"failed to persist.*rollback cleanup errors.*seed cleanup failure",

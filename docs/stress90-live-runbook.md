@@ -393,13 +393,20 @@ pristine 的新 evidence 路径，并从柜台 raw evidence 重新观察一个�
 day 后建立 schema 3 sequence 1。在该证据完成前，Stress-90 activation 持续阻断。
 
 首次 bootstrap 的 durable 顺序固定为 OHLC cache、activity、bootstrap seed、policy state，最后
-才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。任何写入前必须分别通过 OHLC、
+才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。整个 write bootstrap 从 source
+复核、preflight snapshot、先决证据写入、OI save 到 rollback 都持有按 canonical runtime 路径
+派生的稳定 OFD kernel lock；`..` 或安全 parent-symlink alias 不能拆分临界区，dry-run 不创建
+visible lock 或 lineage。任何写入前必须分别通过 OHLC、
 activity、seed、policy 和 OI 自己的 store/API 校验 current 及该 store 真正拥有的 sidecar；孤儿
 policy `.prev`/`.lock`、symlink、corrupt current 或 OI sidecar-only 都是须原样保全的 incident。
-OI 开始前失败时，只能回滚本次调用开始前已证明不存在、且本次调用已尝试创建的
-cache/activity/seed/policy sequence-1 current；不得推断或删除这些 store 未拥有的 `.prev`，也
-不得覆盖任何调用前证据。单个 cleanup 失败须保留原始 persistence 异常并继续尝试其余安全
-cleanup。进入最终 OI save 前即跨过不可逆边界：此后任何异常（包括 current replace 后或父目录
+四个 prerequisite 首写必须走 owner store 的 `O_EXCL` create-only API；各 owner 的普通后续
+writer 也共享 canonical artifact-path OFD lock。OI 开始前还要用本次 create 返回的 exact
+payload digest、inode/path identity token 和 owner decoder 逐项复核；任一缺失、替换或损坏都
+不得进入 OI phase。rollback 只能删除 token 仍精确匹配的本次 sequence-1 current，并对删除
+执行 parent-directory `fsync`；不得按“preflight 时不存在”推断 ownership，不得推断或删除
+store 未拥有的 `.prev`，也不得覆盖调用前或并发证据。单个 cleanup 失败或 token mismatch 须
+保留原始 persistence 异常并继续尝试其余安全 cleanup。进入最终 OI save 前即跨过不可逆边界：
+此后任何异常（包括 current replace 后或父目录
 `fsync` 失败）都必须逐字节保全全部 prerequisites 和 OI current、`.prev`、`.lineage`、`.lock`。
 若 current 尚未形成，该 marker/lock-only 状态按 durable incident 保持 `HALTED`；若 current
 已替换但 durability ambiguous，同样不得由普通 bootstrap retry 清除或覆盖。

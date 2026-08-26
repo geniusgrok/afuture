@@ -24,6 +24,11 @@ from .directional_stress90_policy import (
     canonical_stress90_digest,
     step_stress90_candidate,
 )
+from .durable_file_creation import (
+    DurableFileCreationToken,
+    create_durable_file_exclusive,
+    durable_file_lock,
+)
 
 STRESS90_STATE_SCHEMA_VERSION = 4
 STRESS90_STATE_KIND = "afuture.directional.stress90.policy-state"
@@ -904,6 +909,11 @@ class Stress90PolicyStateStore:
     ) -> None:
         self.path = Path(path)
         self.definition = definition
+        self._last_creation_token: DurableFileCreationToken | None = None
+
+    @property
+    def last_creation_token(self) -> DurableFileCreationToken | None:
+        return self._last_creation_token
 
     @property
     def previous_path(self) -> Path:
@@ -983,6 +993,15 @@ class Stress90PolicyStateStore:
         *,
         expected_sequence: int | None = None,
     ) -> Stress90StateRecord:
+        with durable_file_lock(self.path):
+            return self._save_locked(state, expected_sequence=expected_sequence)
+
+    def _save_locked(
+        self,
+        state: Stress90PolicyState,
+        *,
+        expected_sequence: int | None,
+    ) -> Stress90StateRecord:
         _validate_state(state, self.definition)
         self._require_fresh_or_current()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1012,6 +1031,37 @@ class Stress90PolicyStateStore:
             self._atomic_replace(self.previous_path, previous_bytes)
         self._atomic_replace(self.path, encoded)
         return Stress90StateRecord(state=state, sequence=sequence, checksum=checksum)
+
+    def save_new(
+        self,
+        state: Stress90PolicyState,
+    ) -> tuple[Stress90StateRecord, DurableFileCreationToken]:
+        """Create sequence 1 without replacing a concurrent policy writer."""
+
+        _validate_state(state, self.definition)
+        self._require_fresh_or_current()
+        unsigned: dict[str, object] = {
+            "kind": STRESS90_STATE_KIND,
+            "schema_version": STRESS90_STATE_SCHEMA_VERSION,
+            "sequence": 1,
+            "state": _state_payload(state),
+        }
+        checksum = _checksum(unsigned)
+        encoded = json.dumps(
+            {**unsigned, "checksum": checksum},
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        try:
+            token = create_durable_file_exclusive(self.path, encoded)
+        except FileExistsError as exc:
+            raise Stress90StateIntegrityError(
+                "Stress-90 policy state appeared concurrently"
+            ) from exc
+        self._last_creation_token = token
+        return Stress90StateRecord(state=state, sequence=1, checksum=checksum), token
 
     @staticmethod
     def _atomic_replace(target: Path, payload: bytes) -> None:
@@ -1203,10 +1253,13 @@ class Stress90SeedStore:
     ) -> None:
         self.path = Path(path)
         self.definition = definition
+        self._last_creation_token: DurableFileCreationToken | None = None
 
-    def save_new(self, seed: Stress90BootstrapSeed) -> None:
-        if self.path.exists():
-            raise Stress90StateIntegrityError("Stress-90 bootstrap seed is immutable")
+    @property
+    def last_creation_token(self) -> DurableFileCreationToken | None:
+        return self._last_creation_token
+
+    def save_new(self, seed: Stress90BootstrapSeed) -> DurableFileCreationToken:
         _validate_seed(seed, self.definition)
         unsigned: dict[str, object] = {
             "kind": STRESS90_SEED_KIND,
@@ -1221,7 +1274,12 @@ class Stress90SeedStore:
             allow_nan=False,
         ).encode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        Stress90PolicyStateStore._atomic_replace(self.path, encoded)
+        try:
+            token = create_durable_file_exclusive(self.path, encoded)
+        except FileExistsError as exc:
+            raise Stress90StateIntegrityError("Stress-90 bootstrap seed is immutable") from exc
+        self._last_creation_token = token
+        return token
 
     def load_required(
         self,
