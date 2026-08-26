@@ -255,6 +255,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
     """Independent adapter; candidate targets remain 1x and soft defenses freeze only risk."""
 
     policy_risk_response_mode = DirectionalRiskResponseMode.FREEZE_NEW_RISK
+    requires_explicit_settlement_roll_forward = True
     runtime_policy_id = STRESS90_POLICY.policy_id
     runtime_policy_definition_digest = STRESS90_POLICY.policy_definition_digest
     runtime_products_manifest_digest = STRESS90_POLICY.products_manifest_digest
@@ -493,8 +494,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             observed = tuple(
                 item
                 for item in oi_record.state.observed_transitions
-                if item.source_trading_day == input_day
-                and item.target_trading_day == target_day
+                if item.source_trading_day == input_day and item.target_trading_day == target_day
             )
             if (
                 len(observed) != 1
@@ -618,9 +618,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
                 or not isfinite(float(completed_equity))
                 or float(completed_equity) <= 0.0
             ):
-                raise RuntimeError(
-                    "completed live inception equity evidence is unavailable"
-                )
+                raise RuntimeError("completed live inception equity evidence is unavailable")
             effective_return = float(completed_equity) / float(inception_equity) - 1.0
         if state.last_completed_account_day == trading_day:
             persisted_return = (
@@ -1246,11 +1244,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
                     and submission.policy_id == self.runtime_policy_id
                     and submission.policy_definition_digest == self.runtime_policy_definition_digest
                     and submission.products_manifest_digest == self.runtime_products_manifest_digest
-                    and (
-                        current_candidate_valid
-                        or known_candidate_valid
-                        or reduction_valid
-                    )
+                    and (current_candidate_valid or known_candidate_valid or reduction_valid)
                 )
                 if owned:
                     durable_request = getattr(submission, "request", None)

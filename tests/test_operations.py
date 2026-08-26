@@ -135,8 +135,9 @@ def test_status_rejects_active_execution_intent_from_stale_account_epoch(
     report = build_local_status(config, min_free_bytes=1)
 
     assert not _checks(report)["stress90_execution_intent_integrity"]
-    assert "stress90_execution_intent_lifecycle" in (
-        report.facts["stress90"]["remaining_blocker_reasons"]
+    assert (
+        "stress90_execution_intent_lifecycle"
+        in (report.facts["stress90"]["remaining_blocker_reasons"])
     )
 
 

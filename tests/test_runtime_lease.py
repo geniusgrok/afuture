@@ -125,3 +125,47 @@ def test_runtime_lease_cannot_be_bypassed_with_a_different_account_identity(tmp_
             wrong_identity.acquire()
     finally:
         first.release()
+
+
+def test_runtime_lease_symlink_alias_cannot_bypass_unlink_proof_runtime_identity(
+    tmp_path: Path,
+):
+    from afuture.runtime_lease import AccountExclusiveRuntimeLease, RuntimeLeaseError
+
+    real_runtime = tmp_path / "real-runtime"
+    real_runtime.mkdir()
+    alias_runtime = tmp_path / "alias-runtime"
+    alias_runtime.symlink_to(real_runtime, target_is_directory=True)
+    first = AccountExclusiveRuntimeLease(alias_runtime, "1" * 64, role="live")
+    switched_account = AccountExclusiveRuntimeLease(
+        real_runtime,
+        "2" * 64,
+        role="account-rebase",
+    )
+
+    first.acquire()
+    try:
+        for path in first.paths:
+            path.unlink()
+
+        with pytest.raises(RuntimeLeaseError, match="already owned"):
+            switched_account.acquire()
+    finally:
+        first.release()
+
+
+def test_runtime_lease_capability_uses_real_runtime_identity(tmp_path: Path):
+    from afuture.runtime_lease import AccountExclusiveRuntimeLease
+
+    real_runtime = tmp_path / "real-runtime"
+    real_runtime.mkdir()
+    alias_runtime = tmp_path / "alias-runtime"
+    alias_runtime.symlink_to(real_runtime, target_is_directory=True)
+    identity = "3" * 64
+    lease = AccountExclusiveRuntimeLease(alias_runtime, identity, role="live")
+
+    lease.acquire()
+    try:
+        assert lease.authorizes_technical_activation(identity, real_runtime)
+    finally:
+        lease.release()

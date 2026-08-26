@@ -361,6 +361,16 @@ class DirectionalTradingEngine(TradingEngine):
         )
         stress90_new_day_start: float | None = None
         if stress90_account and new_day and old_day and new_day != old_day:
+            if bool(
+                getattr(
+                    self.directional_manager,
+                    "requires_explicit_settlement_roll_forward",
+                    False,
+                )
+            ):
+                raise RuntimeError(
+                    "Stress-90 requires explicit settlement roll-forward before runtime day advance"
+                )
             continuity = getattr(
                 self.directional_manager,
                 "completed_account_day_is_contiguous",
@@ -442,9 +452,7 @@ class DirectionalTradingEngine(TradingEngine):
                     raise RuntimeError(
                         "Stress-90 CTP settlement evidence is invalid; explicit rebase required"
                     )
-                stress90_new_day_start = (
-                    float(settlement) + account_deposit - account_withdrawal
-                )
+                stress90_new_day_start = float(settlement) + account_deposit - account_withdrawal
                 if not isfinite(stress90_new_day_start) or stress90_new_day_start <= 0.0:
                     raise RuntimeError(
                         "Stress-90 current-day hard baseline is invalid; explicit rebase required"

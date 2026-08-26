@@ -922,10 +922,7 @@ def test_checkpoint_restores_in_progress_then_persists_rollover_once(tmp_path: P
     transition = record.state.observed_transitions[0]
     assert transition.source_trading_day == "20260825"
     assert transition.target_trading_day == "20260826"
-    assert (
-        transition.completed_oi_evidence_digest
-        == record.state.completed[-1].evidence_digest
-    )
+    assert transition.completed_oi_evidence_digest == record.state.completed[-1].evidence_digest
     assert record.state.in_progress is not None
     assert record.state.in_progress.trading_day == "20260826"
 
@@ -1181,6 +1178,51 @@ def test_corrupt_current_store_fails_without_automatic_prev_fallback(tmp_path: P
     assert store.load_previous_record().sequence == 1
 
 
+def test_missing_current_store_rejects_existing_previous_evidence(tmp_path: Path):
+    """Losing current must not silently reset a previously initialized lineage."""
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    store = Stress90OiEvidenceStore(tmp_path / "stress90_oi_evidence.json")
+    store.save_state(Stress90OiEvidenceState())
+    store.save_state(Stress90OiEvidenceState())
+    store.path.unlink()
+
+    with pytest.raises(OiEvidenceIntegrityError, match="current.*missing.*previous"):
+        store.load_record()
+
+
+def test_oi_store_save_propagates_parent_directory_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Raw evidence rename must be directory-durable before it is acknowledged."""
+    import afuture.directional_stress90_oi_runtime as oi_module
+    from afuture.directional_stress90_oi_runtime import (
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+    )
+
+    calls = 0
+    real_fsync = oi_module.os.fsync
+
+    def fail_parent_fsync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected OI parent fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(oi_module.os, "fsync", fail_parent_fsync)
+
+    with pytest.raises(OSError, match="parent fsync"):
+        Stress90OiEvidenceStore(tmp_path / "oi.json").save_state(Stress90OiEvidenceState())
+
+    assert calls == 2
+
+
 def test_zero_order_evidence_arm_subscribes_the_exact_validated_universe() -> None:
     from afuture.directional_stress90_oi_runtime import (
         Stress90OiEvidenceAggregator,
@@ -1214,8 +1256,7 @@ def test_zero_order_evidence_arm_subscribes_the_exact_validated_universe() -> No
 
     assert broker.observer is aggregator
     assert set(broker.subscriptions) == {
-        (contract.symbol, contract.exchange)
-        for contract in catalog
+        (contract.symbol, contract.exchange) for contract in catalog
     }
     assert expected == tuple(sorted(contract.symbol for contract in catalog))
 

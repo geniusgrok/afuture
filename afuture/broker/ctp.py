@@ -209,9 +209,7 @@ class CtpBroker(Broker):
         self._pending_order_journal_fills: dict[str, dict[str, CtpOrderFillEvidence]] = {}
         self._order_journal_policy_identity: tuple[str, str, str] | None = None
         self._stress90_session_startup_required = False
-        self._stress90_session_startup_capability: (
-            _Stress90SessionStartupCapability | None
-        ) = None
+        self._stress90_session_startup_capability: _Stress90SessionStartupCapability | None = None
         self._last_account: AccountSnapshot | None = None
         self._raw_market_connection_lock = Lock()
         self._raw_market_connection_generation = 0
@@ -249,9 +247,7 @@ class CtpBroker(Broker):
             "trade": CtpSessionQueryAccumulator("trade"),
         }
         self._session_query_events: dict[str, Event] = {}
-        self._session_query_results: dict[
-            str, tuple[CtpSessionOrder | CtpSessionTrade, ...]
-        ] = {}
+        self._session_query_results: dict[str, tuple[CtpSessionOrder | CtpSessionTrade, ...]] = {}
         self._session_query_errors: dict[str, str] = {}
         self._session_query_request_ids: dict[str, int] = {}
         self._session_query_sticky_error = ""
@@ -432,17 +428,10 @@ class CtpBroker(Broker):
                             "CTP lifecycle commit requires a quiescent critical boundary"
                         )
                 if self._account_evidence_pair_incomplete():
-                    raise RuntimeError(
-                        "CTP lifecycle commit account evidence pair is incomplete"
-                    )
+                    raise RuntimeError("CTP lifecycle commit account evidence pair is incomplete")
                 with self._session_query_state_lock:
-                    if (
-                        self._session_query_callbacks_inflight
-                        or self._session_query_sticky_error
-                    ):
-                        raise RuntimeError(
-                            "CTP lifecycle commit session evidence is not quiescent"
-                        )
+                    if self._session_query_callbacks_inflight or self._session_query_sticky_error:
+                        raise RuntimeError("CTP lifecycle commit session evidence is not quiescent")
                 if self._lifecycle_commit_fence_active:
                     raise RuntimeError("CTP lifecycle commit fence is already active")
                 self._lifecycle_commit_fence_active = True
@@ -824,18 +813,10 @@ class CtpBroker(Broker):
                 identity = self._afuture_raw_market_identity
                 self._afuture_raw_market_identity = None
                 if isinstance(identity, dict):
-                    tick._afuture_trading_day = str(
-                        identity.get("trading_day", "") or ""
-                    )
-                    tick._afuture_action_day = str(
-                        identity.get("action_day", "") or ""
-                    )
-                    tick._afuture_instrument_id = str(
-                        identity.get("instrument_id", "") or ""
-                    )
-                    tick._afuture_exchange_id = str(
-                        identity.get("exchange_id", "") or ""
-                    )
+                    tick._afuture_trading_day = str(identity.get("trading_day", "") or "")
+                    tick._afuture_action_day = str(identity.get("action_day", "") or "")
+                    tick._afuture_instrument_id = str(identity.get("instrument_id", "") or "")
+                    tick._afuture_exchange_id = str(identity.get("exchange_id", "") or "")
                 super().on_tick(tick)
 
         self._runtime = {
@@ -869,9 +850,7 @@ class CtpBroker(Broker):
         gateway._afuture_account_cash_flow_callback = self._handle_account_cash_flow
         gateway._afuture_session_query_callback = self._handle_session_query_response
         gateway._afuture_critical_ingress_callback = self._mark_critical_upstream_pending
-        gateway._afuture_raw_market_connection_callback = (
-            self._handle_raw_market_connection_state
-        )
+        gateway._afuture_raw_market_connection_callback = self._handle_raw_market_connection_state
         self._event_engine.register(runtime["EVENT_TICK"], self._on_tick)
         self._event_engine.register(runtime["EVENT_ORDER"], self._on_order)
         self._event_engine.register(runtime["EVENT_TRADE"], self._on_trade)
@@ -1397,9 +1376,7 @@ class CtpBroker(Broker):
                 try:
                     with self._critical_order_submission_scope():
                         try:
-                            self.require_stress90_session_startup_capability_current(
-                                consume=True
-                            )
+                            self.require_stress90_session_startup_capability_current(consume=True)
                         except RuntimeError as exc:
                             raise _CriticalSubmissionBoundaryError(
                                 "CTP session proof changed before official send"
@@ -1693,9 +1670,7 @@ class CtpBroker(Broker):
             if late:
                 self._set_session_query_sticky_error(self._session_query_sticky_error)
                 return
-            self._set_session_query_sticky_error(
-                f"CTP session query callback failed: {exc}"
-            )
+            self._set_session_query_sticky_error(f"CTP session query callback failed: {exc}")
             return
         if completed is not None:
             late = False
@@ -1837,12 +1812,8 @@ class CtpBroker(Broker):
                 trading_day=trading_day,
                 deadline=deadline,
             )
-            orders = tuple(
-                row for row in raw_orders if isinstance(row, CtpSessionOrder)
-            )
-            trades = tuple(
-                row for row in raw_trades if isinstance(row, CtpSessionTrade)
-            )
+            orders = tuple(row for row in raw_orders if isinstance(row, CtpSessionOrder))
+            trades = tuple(row for row in raw_trades if isinstance(row, CtpSessionTrade))
             if len(orders) != len(raw_orders) or len(trades) != len(raw_trades):
                 raise RuntimeError("CTP session query returned mixed row types")
             with self._critical_barrier_lock:
@@ -1861,9 +1832,7 @@ class CtpBroker(Broker):
                         or self.get_account_identity_digest() != account_digest
                         or final_generation != generation
                     ):
-                        raise RuntimeError(
-                            "CTP order/trade activity changed during complete query"
-                        )
+                        raise RuntimeError("CTP order/trade activity changed during complete query")
                     return build_ctp_session_activity_evidence(
                         account_identity_digest=account_digest,
                         trading_day=trading_day,
@@ -1897,8 +1866,7 @@ class CtpBroker(Broker):
         )
         fills = {
             order_id: tuple(
-                ctp_order_fill_evidence(evidence.trading_day, trade)
-                for trade in trades
+                ctp_order_fill_evidence(evidence.trading_day, trade) for trade in trades
             )
             for order_id, trades in plan.fill_trades
         }
@@ -1918,12 +1886,9 @@ class CtpBroker(Broker):
         traded_by_order: dict[str, int] = {}
         notional_by_order: dict[str, float] = {}
         for trade in plan.session_trades:
-            traded_by_order[trade.order_id] = (
-                traded_by_order.get(trade.order_id, 0) + trade.volume
-            )
+            traded_by_order[trade.order_id] = traded_by_order.get(trade.order_id, 0) + trade.volume
             notional_by_order[trade.order_id] = (
-                notional_by_order.get(trade.order_id, 0.0)
-                + trade.price * trade.volume
+                notional_by_order.get(trade.order_id, 0.0) + trade.price * trade.volume
             )
         recovered_orders: dict[str, Order] = {}
         status_map = {
@@ -1948,9 +1913,7 @@ class CtpBroker(Broker):
                 request=entry.request,
                 status=status_map[row.order_status],
                 traded=traded,
-                average_price=(
-                    0.0 if traded == 0 else notional_by_order[row.order_id] / traded
-                ),
+                average_price=(0.0 if traded == 0 else notional_by_order[row.order_id] / traded),
             )
         with self._critical_barrier_lock:
             with self._session_query_ingress_lock:
@@ -1987,9 +1950,7 @@ class CtpBroker(Broker):
         with self._contract_catalog_refresh_state_lock:
             sticky_error = self._contract_catalog_sticky_error
         return bool(
-            not sticky_error
-            and snapshot is not None
-            and snapshot.trading_day == trading_day
+            not sticky_error and snapshot is not None and snapshot.trading_day == trading_day
         )
 
     def _handle_contract_catalog_response(
@@ -2014,18 +1975,10 @@ class CtpBroker(Broker):
         failure = ""
         active_request_id = self._contract_catalog_accumulator.active_request_id
         with self._contract_catalog_refresh_state_lock:
-            bootstrap_registration_open = (
-                self._contract_catalog_bootstrap_registration_open
-            )
+            bootstrap_registration_open = self._contract_catalog_bootstrap_registration_open
         unregistered_generation = bool(
-            (
-                active_request_id is None
-                and not bootstrap_registration_open
-            )
-            or (
-                active_request_id is not None
-                and active_request_id != int(request_id)
-            )
+            (active_request_id is None and not bootstrap_registration_open)
+            or (active_request_id is not None and active_request_id != int(request_id))
         )
         try:
             if self._contract_catalog_accumulator.active_request_id is None:
@@ -2052,9 +2005,8 @@ class CtpBroker(Broker):
                 current_day = self.get_trading_day()
             except RuntimeError:
                 current_day = ""
-            if (
-                not unregistered_generation
-                and not self.contract_catalog_verified_for_day(current_day)
+            if not unregistered_generation and not self.contract_catalog_verified_for_day(
+                current_day
             ):
                 self._enqueue_critical(BrokerEvent("broker_error", f"CTP contract catalog: {exc}"))
             snapshot = None
@@ -2301,28 +2253,14 @@ class CtpBroker(Broker):
         try:
             raw = event.data
             authoritative_day = self.get_trading_day()
-            source_day_raw = str(
-                getattr(raw, "_afuture_trading_day", "") or ""
-            ).strip()
-            action_day_raw = str(
-                getattr(raw, "_afuture_action_day", "") or ""
-            ).strip()
-            source_symbol = str(
-                getattr(raw, "_afuture_instrument_id", "") or ""
-            ).strip()
-            source_exchange = str(
-                getattr(raw, "_afuture_exchange_id", "") or ""
-            ).strip()
-            source_day = (
-                self._validate_trading_day(source_day_raw) if source_day_raw else ""
-            )
-            action_day = (
-                self._validate_trading_day(action_day_raw) if action_day_raw else ""
-            )
+            source_day_raw = str(getattr(raw, "_afuture_trading_day", "") or "").strip()
+            action_day_raw = str(getattr(raw, "_afuture_action_day", "") or "").strip()
+            source_symbol = str(getattr(raw, "_afuture_instrument_id", "") or "").strip()
+            source_exchange = str(getattr(raw, "_afuture_exchange_id", "") or "").strip()
+            source_day = self._validate_trading_day(source_day_raw) if source_day_raw else ""
+            action_day = self._validate_trading_day(action_day_raw) if action_day_raw else ""
             if source_day and source_day != authoritative_day:
-                raise ValueError(
-                    "CTP raw Tick source trading day is stale or not authoritative"
-                )
+                raise ValueError("CTP raw Tick source trading day is stale or not authoritative")
             if source_symbol and source_symbol.upper() != str(raw.symbol).upper():
                 raise ValueError("CTP raw Tick source instrument identity mismatch")
             if source_exchange and source_exchange.upper() != str(raw.exchange.value).upper():
@@ -2709,8 +2647,7 @@ class CtpBroker(Broker):
             else [self._convert_trade(raw) for raw in self._main_engine.get_all_trades()]
         )
         merged: dict[tuple[str, str], Trade] = {
-            (trade.exchange, trade.trade_id): trade
-            for trade in self._recovered_session_trades
+            (trade.exchange, trade.trade_id): trade for trade in self._recovered_session_trades
         }
         for trade in raw_trades:
             key = (trade.exchange, trade.trade_id)

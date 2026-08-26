@@ -59,6 +59,7 @@ class DirectionalPortfolioManager:
     """Translate directional targets into concrete orders through shared hard risk gates."""
 
     policy_risk_response_mode = DirectionalRiskResponseMode.TARGET_SCALE
+    requires_explicit_settlement_roll_forward = False
 
     def __init__(
         self,

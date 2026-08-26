@@ -893,9 +893,7 @@ def _state_from_payload(raw: object) -> Stress90OiEvidenceState:
         (item.source_trading_day, item.target_trading_day) for item in transitions
     )
     if transition_keys != tuple(sorted(set(transition_keys))):
-        raise OiEvidenceIntegrityError(
-            "observed CTP day transitions are not unique/increasing"
-        )
+        raise OiEvidenceIntegrityError("observed CTP day transitions are not unique/increasing")
     state = Stress90OiEvidenceState(
         completed=completed,
         in_progress=in_progress,
@@ -921,6 +919,10 @@ class Stress90OiEvidenceStore:
 
     def load_record(self) -> Stress90OiEvidenceRecord | None:
         if not self.path.exists():
+            if self.previous_path.exists():
+                raise OiEvidenceIntegrityError(
+                    "current Stress-90 OI evidence is missing while previous evidence exists"
+                )
             return None
         return self._read(self.path)
 
@@ -1007,6 +1009,11 @@ class Stress90OiEvidenceStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary.replace(target)
+            directory_descriptor = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
         finally:
             if temporary is not None and temporary.exists():
                 temporary.unlink()
@@ -1182,10 +1189,13 @@ class Stress90OiEvidenceAggregator:
         self._raw_market_connected = False
         self._raw_market_connection_generation: int | None = None
         self._in_progress_connection_generation: int | None = None
-        self._pending_observed_transition: tuple[
-            ObservedTradingDayTransition,
-            int,
-        ] | None = None
+        self._pending_observed_transition: (
+            tuple[
+                ObservedTradingDayTransition,
+                int,
+            ]
+            | None
+        ) = None
         self._contracts: dict[str, ContractOiEvidence] = (
             {} if self._in_progress is None else dict(self._in_progress.contracts)
         )
@@ -1340,9 +1350,7 @@ class Stress90OiEvidenceAggregator:
             if previous is not None and generation < previous:
                 raise OiEvidenceIntegrityError("raw market connection generation moved backward")
             changed_generation = previous is not None and generation != previous
-            interrupted = bool(
-                self._raw_market_connected and (not connected or changed_generation)
-            )
+            interrupted = bool(self._raw_market_connected and (not connected or changed_generation))
             if interrupted and self._in_progress_observed_in_process:
                 self._mark_day_issue_unlocked("raw_market_connection_interrupted")
             if interrupted or not connected:
@@ -1491,17 +1499,11 @@ class Stress90OiEvidenceAggregator:
                 raise OiEvidenceIntegrityError("raw OI tick/contract identity mismatch")
             if product not in STRESS90_POLICY.oi_products:
                 return
-            if (
-                tick.source_trading_day_verified is not True
-                or (
-                    tick.source_trading_day
-                    and tick.source_trading_day != day
-                )
+            if tick.source_trading_day_verified is not True or (
+                tick.source_trading_day and tick.source_trading_day != day
             ):
                 self._mark_day_issue_unlocked("source_trading_day_unverified")
-                raise OiEvidenceIntegrityError(
-                    "raw OI source trading day is unverified"
-                )
+                raise OiEvidenceIntegrityError("raw OI source trading day is unverified")
             if tick.exchange.upper() != PRODUCT_SESSION_MANIFEST[product].exchange:
                 self._mark_day_issue_unlocked(f"contract_identity_mismatch:{tick.symbol}")
                 raise OiEvidenceIntegrityError("raw OI tick/contract identity mismatch")
@@ -1705,8 +1707,10 @@ def arm_stress90_raw_evidence_collection(
         if symbol in by_symbol:
             raise OiEvidenceIntegrityError("raw OI evidence catalog has duplicate symbols")
         by_symbol[symbol] = contract
-    subscriptions = tuple(subscription_catalog) if subscription_catalog is not None else tuple(
-        by_symbol[symbol] for symbol in expected
+    subscriptions = (
+        tuple(subscription_catalog)
+        if subscription_catalog is not None
+        else tuple(by_symbol[symbol] for symbol in expected)
     )
     subscription_by_symbol: dict[str, ContractInfo] = {}
     for contract in subscriptions:

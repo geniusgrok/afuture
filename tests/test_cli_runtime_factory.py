@@ -84,9 +84,7 @@ def _write_bound_stress90_policy(runtime_dir, registry_path):
     )
     Stress90PolicyStateStore(runtime_dir / "stress90_policy_state.json").save(state)
     registry = AccountRuntimeRegistry(registry_path)
-    registry.initialize(
-        strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
-    )
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
     registry.bind_new("1" * 64, runtime_dir, "3" * 64, "4" * 64)
     return state
 

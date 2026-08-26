@@ -6,10 +6,34 @@ import pytest
 from afuture.state import RuntimeState, StateIntegrityError, StateStore
 
 
+def test_state_save_propagates_parent_directory_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A renamed lifecycle participant is not durable until its directory fsyncs."""
+    import afuture.state as state_module
+
+    calls = 0
+    real_fsync = state_module.os.fsync
+
+    def fail_parent_fsync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected runtime-state parent fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(state_module.os, "fsync", fail_parent_fsync)
+
+    with pytest.raises(OSError, match="parent fsync"):
+        StateStore(tmp_path / "state.json").save(RuntimeState())
+
+    assert calls == 2
+
+
 def write_envelope(
     path: Path,
     *,
-    schema_version: object = 2,
+    schema_version: object = 3,
     sequence: object = 1,
     state: object | None = None,
 ) -> None:
@@ -81,7 +105,7 @@ def test_load_rejects_malformed_envelope(
 @pytest.mark.parametrize(
     ("schema_version", "sequence", "message"),
     [
-        (3, 1, "newer than this program"),
+        (4, 1, "newer than this program"),
         (0, 1, "schema version must be a positive integer"),
         (2, 0, "sequence must be a positive integer"),
         (2, -1, "sequence must be a positive integer"),
@@ -334,7 +358,7 @@ def test_save_migrates_valid_legacy_state(tmp_path: Path) -> None:
     store.save(state)
 
     raw = json.loads(path.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 2
+    assert raw["schema_version"] == 3
     assert raw["sequence"] == 1
     assert raw["state"]["kill_switch"] is True
 

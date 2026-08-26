@@ -878,9 +878,7 @@ def _state_from_payload(
             None if raw["live_inception_day"] is None else str(raw["live_inception_day"])
         ),
         live_inception_equity=(
-            None
-            if raw["live_inception_equity"] is None
-            else float(raw["live_inception_equity"])
+            None if raw["live_inception_equity"] is None else float(raw["live_inception_equity"])
         ),
         live_account_identity_digest=(
             None
@@ -1025,6 +1023,11 @@ class Stress90PolicyStateStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary.replace(target)
+            directory_descriptor = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
         finally:
             if temporary is not None and temporary.exists():
                 temporary.unlink()

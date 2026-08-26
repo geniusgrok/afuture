@@ -487,9 +487,7 @@ def _add_stress90_local_status(
             or policy_state.live_account_epoch is None
         ):
             raise RuntimeError("Stress-90 policy account identity/epoch is missing")
-        registry_evidence = AccountRuntimeRegistry(
-            account_registry_path
-        ).require_binding_evidence(
+        registry_evidence = AccountRuntimeRegistry(account_registry_path).require_binding_evidence(
             policy_state.live_account_identity_digest,
             runtime_dir.resolve(strict=False),
             policy_state.live_account_epoch,
@@ -508,9 +506,7 @@ def _add_stress90_local_status(
             "path": str(account_registry_path),
             "sequence": registry_evidence.registry_sequence,
             "checksum": registry_evidence.registry_checksum,
-            "runtime_identity_digest": (
-                registry_evidence.binding.runtime_identity_digest
-            ),
+            "runtime_identity_digest": (registry_evidence.binding.runtime_identity_digest),
             "account_epoch": registry_evidence.binding.account_epoch,
         }
         report.add(

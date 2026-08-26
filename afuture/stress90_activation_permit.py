@@ -528,9 +528,7 @@ def collect_stress90_activation_evidence(
     from .stress90_session_authority import Stress90SessionOwnershipProof
 
     if not isinstance(session_activity_proof, Stress90SessionOwnershipProof):
-        raise Stress90ActivationPermitIntegrityError(
-            "complete session activity proof is missing"
-        )
+        raise Stress90ActivationPermitIntegrityError("complete session activity proof is missing")
     if (
         session_activity_proof.evidence.trading_day != day
         or _session_trades_digest(

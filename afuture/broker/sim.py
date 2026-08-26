@@ -416,9 +416,7 @@ class SimBroker(Broker):
 
         with self._lifecycle_state_lock:
             if self._market_batch_active:
-                raise RuntimeError(
-                    "sim lifecycle commit requires a completed market event batch"
-                )
+                raise RuntimeError("sim lifecycle commit requires a completed market event batch")
             yield
 
     def checkpoint_market_state(self) -> None:

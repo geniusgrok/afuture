@@ -3003,8 +3003,7 @@ class CtpOrderSubmissionJournal:
             current_candidates = [
                 entry
                 for entry in current_entries
-                if entry.account_identity_digest == account
-                and entry.target_trading_day == day
+                if entry.account_identity_digest == account and entry.target_trading_day == day
             ]
             candidates = list(current_candidates)
             if manifest is not None:
@@ -3019,9 +3018,7 @@ class CtpOrderSubmissionJournal:
                     )
             result = tuple(sorted(candidates, key=lambda item: item.order_id))
             if len({entry.order_id for entry in result}) != len(result):
-                raise CtpOrderJournalIntegrityError(
-                    "duplicate CTP lifecycle ownership identity"
-                )
+                raise CtpOrderJournalIntegrityError("duplicate CTP lifecycle ownership identity")
             return CtpOrderJournalLifecycleView(
                 entries=result,
                 current_order_ids=frozenset(entry.order_id for entry in current_candidates),

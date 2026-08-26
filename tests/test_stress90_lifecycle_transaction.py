@@ -222,9 +222,7 @@ def test_account_rebase_rejects_retained_generic_adaptive_margin_returns(
     generic_target, policy_target = _targets(generic, policy)
 
     with pytest.raises(Stress90LifecycleTransactionError, match="adaptive-margin"):
-        Stress90LifecycleTransactionStore(
-            tmp_path / "stress90_lifecycle_transaction.json"
-        ).begin(
+        Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json").begin(
             operation="account_rebase",
             generic_source=generic,
             policy_source=policy,
@@ -442,9 +440,7 @@ def test_settlement_roll_forward_rejects_current_day_cash_flow_for_explicit_reba
     )
 
     with pytest.raises(Stress90LifecycleTransactionError, match="cash flow.*rebase"):
-        Stress90LifecycleTransactionStore(
-            tmp_path / "stress90_lifecycle_transaction.json"
-        ).begin(
+        Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json").begin(
             operation="settlement_roll_forward",
             generic_source=generic,
             policy_source=policy,
@@ -1199,9 +1195,9 @@ def test_same_day_migrated_execution_aligned_state_can_only_reactivate_with_new_
             completed_account_wealth=0.90,
             completed_account_high_watermark=1.0,
             last_completed_account_day="20260824",
-                recent_daily_returns_for_adaptive_margin=(-0.10,),
-                live_inception_day="20260824",
-                live_inception_equity=700_000.0,
+            recent_daily_returns_for_adaptive_margin=(-0.10,),
+            live_inception_day="20260824",
+            live_inception_equity=700_000.0,
         ),
         expected_sequence=policy.sequence,
     )

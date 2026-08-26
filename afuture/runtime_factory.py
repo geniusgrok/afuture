@@ -17,9 +17,7 @@ def _require_stress90_account_runtime_binding(config, broker, runtime_dir: Path)
     )
     from .directional_stress90_state import Stress90PolicyStateStore
 
-    policy = Stress90PolicyStateStore(
-        runtime_dir / "stress90_policy_state.json"
-    ).load_required()
+    policy = Stress90PolicyStateStore(runtime_dir / "stress90_policy_state.json").load_required()
     account = policy.live_account_identity_digest
     epoch = policy.live_account_epoch
     if account is None or epoch is None:
@@ -34,9 +32,7 @@ def _require_stress90_account_runtime_binding(config, broker, runtime_dir: Path)
         getattr(config, "mode", None) == "live"
         and registry_path != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH
     ):
-        raise RuntimeError(
-            "Stress-90 lineage runtime requires the fixed machine account registry"
-        )
+        raise RuntimeError("Stress-90 lineage runtime requires the fixed machine account registry")
     return AccountRuntimeRegistry(registry_path).require_binding_evidence(
         account,
         runtime_dir,
@@ -78,8 +74,7 @@ def _is_stress90_migrated_execution_aligned_state(state_store) -> bool:
         set(marker) != expected_fields
         or marker.get("policy_id") != "execution_aligned"
         or marker.get("policy_definition_digest") != ""
-        or marker.get("products_manifest_digest")
-        != STRESS90_POLICY.products_manifest_digest
+        or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
         or marker.get("account_identity_digest") != policy.live_account_identity_digest
         or not isinstance(marker.get("operator_reason"), str)
         or not str(marker.get("operator_reason", "")).strip()
@@ -199,9 +194,7 @@ def build_runtime_engine(
                 None,
             )
             if not callable(require_session_capability):
-                raise RuntimeError(
-                    "Stress-90 Broker lacks the complete-session startup capability"
-                )
+                raise RuntimeError("Stress-90 Broker lacks the complete-session startup capability")
             require_session_capability()
             common["technical_activation_authority"] = Stress90TechnicalActivationAuthority(
                 runtime_dir,

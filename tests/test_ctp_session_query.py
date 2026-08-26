@@ -247,6 +247,35 @@ def test_complete_session_store_rejects_duplicate_json_keys_and_broken_prev_chai
         chain_store.load_required_record()
 
 
+def test_complete_session_store_accepts_exact_duplicate_prev_after_interrupted_save(
+    tmp_path: Path,
+) -> None:
+    """A crash after rotating current to .prev must not hide authoritative current."""
+    from afuture.broker.ctp_session_query import (
+        CtpSessionActivityEvidenceStore,
+        build_ctp_session_activity_evidence,
+    )
+
+    evidence = build_ctp_session_activity_evidence(
+        account_identity_digest="a" * 64,
+        trading_day="20260825",
+        order_request_id=11,
+        trade_request_id=21,
+        orders=(),
+        trades=(),
+        critical_generation=0,
+    )
+    store = CtpSessionActivityEvidenceStore(tmp_path / "session.json")
+    store.save(evidence)
+    authoritative = store.save(evidence)
+
+    # Simulate save(sequence=3) crashing after copying current sequence=2 to
+    # .prev but before replacing current with sequence=3.
+    store.previous_path.write_bytes(store.path.read_bytes())
+
+    assert store.load_required_record() == authoritative
+
+
 def test_session_ownership_joins_trade_via_exchange_order_sys_to_durable_order() -> None:
     from types import SimpleNamespace
 

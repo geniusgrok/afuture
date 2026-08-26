@@ -314,6 +314,11 @@ class StateStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             temp_path.replace(target)
+            directory_descriptor = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
         finally:
             if temp_path is not None and temp_path.exists():
                 temp_path.unlink()

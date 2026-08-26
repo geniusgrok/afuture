@@ -261,9 +261,7 @@ def test_ctp_session_query_captures_remote_order_created_between_query_kinds() -
             broker._handle_session_query_response("order", row, {}, request_id, True)
             return 0
 
-    broker._main_engine = SimpleNamespace(
-        get_gateway=lambda _name: SimpleNamespace(td_api=TdApi())
-    )
+    broker._main_engine = SimpleNamespace(get_gateway=lambda _name: SimpleNamespace(td_api=TdApi()))
 
     evidence = broker.refresh_session_activity(timeout_seconds=0.1)
 
@@ -290,9 +288,7 @@ def test_ctp_refresh_session_activity_rejects_normal_order_callback_race() -> No
             broker._handle_session_query_response("trade", None, {}, request_id, True)
             return 0
 
-    broker._main_engine = SimpleNamespace(
-        get_gateway=lambda _name: SimpleNamespace(td_api=TdApi())
-    )
+    broker._main_engine = SimpleNamespace(get_gateway=lambda _name: SimpleNamespace(td_api=TdApi()))
 
     with pytest.raises(RuntimeError, match="changed during complete query"):
         broker.refresh_session_activity(timeout_seconds=0.1)
@@ -358,9 +354,7 @@ def test_ctp_refresh_session_activity_rejects_late_row_after_last() -> None:
             broker._handle_session_query_response("trade", None, {}, request_id, True)
             return 0
 
-    broker._main_engine = SimpleNamespace(
-        get_gateway=lambda _name: SimpleNamespace(td_api=TdApi())
-    )
+    broker._main_engine = SimpleNamespace(get_gateway=lambda _name: SimpleNamespace(td_api=TdApi()))
 
     with pytest.raises(RuntimeError, match="late response after completion"):
         broker.refresh_session_activity(timeout_seconds=0.1)

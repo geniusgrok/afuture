@@ -14,9 +14,7 @@ def _initialized_registry(path: Path):
     )
 
     registry = AccountRuntimeRegistry(path)
-    registry.initialize(
-        strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
-    )
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
     return registry
 
 
@@ -98,9 +96,9 @@ def test_account_binding_survives_release_and_rejects_another_runtime(
 
     assert exact_retry == first
     assert exact_retry.sequence == 2
-    assert AccountRuntimeRegistry(path).require_binding(account, runtime_a, epoch).account_epoch == (
-        epoch
-    )
+    assert AccountRuntimeRegistry(path).require_binding(
+        account, runtime_a, epoch
+    ).account_epoch == (epoch)
     with pytest.raises(AccountRuntimeRegistryError, match="different runtime"):
         AccountRuntimeRegistry(path).bind_new(
             account,

@@ -78,9 +78,7 @@ def _seeded_stress90_runtime(runtime_dir: Path, *, account_identity: str = "b" *
         )
     )
     registry = AccountRuntimeRegistry(runtime_dir / ".account-runtime-registry.json")
-    registry.initialize(
-        strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
-    )
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
     registry.bind_new(
         account_identity,
         runtime_dir,

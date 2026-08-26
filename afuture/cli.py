@@ -196,7 +196,9 @@ def build_parser() -> argparse.ArgumentParser:
     stress90_oi_collect.add_argument("--startup-timeout", type=float, default=60.0)
     stress90_oi_collect.add_argument("--snapshot-wait", type=float, default=12.0)
     stress90_oi_collect.add_argument("--checkpoint-interval", type=float, default=0.1)
-    stress90_oi_collect.add_argument("--once", action="store_true", help="只执行一个批次用于安全检查")
+    stress90_oi_collect.add_argument(
+        "--once", action="store_true", help="只执行一个批次用于安全检查"
+    )
     stress90_oi_collect.add_argument(
         "--shadow-account",
         action="store_true",
@@ -1190,9 +1192,7 @@ def _run_doctor(config, args) -> int:
     except (OSError, ValueError):
         state = None
     lease = None
-    stress90_doctor = bool(
-        config.directional.enabled and config.directional.policy == "stress90"
-    )
+    stress90_doctor = bool(config.directional.enabled and config.directional.policy == "stress90")
     if stress90_doctor:
         from .runtime_lease import AccountExclusiveRuntimeLease
 
@@ -1340,9 +1340,7 @@ def _run_doctor(config, args) -> int:
             from .stress90_activation_permit import issue_stress90_doctor_permit
 
             if session_activity_proof is None:
-                raise RuntimeError(
-                    "Stress-90 Doctor permit requires complete CTP session evidence"
-                )
+                raise RuntimeError("Stress-90 Doctor permit requires complete CTP session evidence")
             _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
             issue_stress90_doctor_permit(
                 report=report,
@@ -1361,8 +1359,8 @@ def _run_doctor(config, args) -> int:
                     "AFUTURE_STRESS90_ACTIVATION_PERMIT_ACK",
                     "",
                 ),
-                    account_registry_path=_stress90_account_registry_path(config),
-                )
+                account_registry_path=_stress90_account_registry_path(config),
+            )
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         return 0 if issue_permit or report.passed else 2
     finally:
@@ -1508,9 +1506,7 @@ def _validate_stress90_lifecycle_config(config) -> None:
         raise ValueError("Stress-90 lifecycle commands require the frozen 50-product universe")
     registry_path = _stress90_account_registry_path(config)
     if not registry_path.is_absolute():
-        raise ValueError(
-            "Stress-90 lifecycle commands require an absolute account_registry_path"
-        )
+        raise ValueError("Stress-90 lifecycle commands require an absolute account_registry_path")
     if (
         getattr(config, "account_registry_path", None) is not None
         and registry_path != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH
@@ -1524,9 +1520,7 @@ def _stress90_account_registry_path(config) -> Path:
         return Path(str(configured))
     # Direct-construction compatibility for old replay/test objects. load_config()
     # always supplies the fixed machine-level path for real live commands.
-    return Path(config.state_path).resolve(strict=False).parent / (
-        ".account-runtime-registry.json"
-    )
+    return Path(config.state_path).resolve(strict=False).parent / (".account-runtime-registry.json")
 
 
 @contextmanager
@@ -1674,9 +1668,7 @@ def _stress90_evidence_collection_catalog(
             continue
         expected_exchange = PRODUCT_SESSION_MANIFEST[product].exchange
         if exchange != expected_exchange:
-            raise RuntimeError(
-                f"Stress-90 evidence catalog exchange mismatch: {contract.symbol}"
-            )
+            raise RuntimeError(f"Stress-90 evidence catalog exchange mismatch: {contract.symbol}")
         symbol = str(contract.symbol).upper()
         match = re.fullmatch(r"([A-Z]{1,4})\d{3,4}", symbol)
         if match is None or match.group(1) != product:
@@ -1849,13 +1841,12 @@ def _require_lifecycle_session_trade_ownership(
     from .stress90_session_authority import (
         establish_stress90_session_ownership,
     )
+
     return establish_stress90_session_ownership(
         broker,
         runtime_dir=runtime_dir,
         timeout_seconds=timeout_seconds,
-        recover_crash_window=callable(
-            getattr(broker, "recover_stress90_session_activity", None)
-        ),
+        recover_crash_window=callable(getattr(broker, "recover_stress90_session_activity", None)),
     )
 
 
@@ -2025,9 +2016,9 @@ def _require_empty_session_before_account_epoch_cleanup(
     if not isinstance(local_trades, list) or local_trades:
         raise RuntimeError("account epoch cleanup requires an empty local target session")
     ownership_digest = validate_ctp_session_activity_ownership(evidence, ())
-    CtpSessionActivityEvidenceStore(
-        runtime_dir / "stress90_ctp_session_evidence.json"
-    ).save(evidence)
+    CtpSessionActivityEvidenceStore(runtime_dir / "stress90_ctp_session_evidence.json").save(
+        evidence
+    )
     require_current(evidence)
     account = broker.get_account()
     trading_day = broker.get_trading_day()
@@ -2250,8 +2241,7 @@ def _require_no_unpersisted_lifecycle_crash_fill_adoption(
     if adopted_state == persisted_state:
         return
     pending = bool(
-        pending_lifecycle is not None
-        and getattr(pending_lifecycle, "status", "") == "prepared"
+        pending_lifecycle is not None and getattr(pending_lifecycle, "status", "") == "prepared"
     )
     detail = "prepared lifecycle coordinator" if pending else "lifecycle preparation"
     raise RuntimeError(
@@ -2504,9 +2494,7 @@ def _run_stress90_oi_collect(config, args) -> int:
     try:
         # Every local authority file is first loaded only after the account lease.
         state_store._require_fresh_or_current()
-        seed = Stress90SeedStore(
-            paths["runtime"] / "stress90_bootstrap_seed.json"
-        ).load_required()
+        seed = Stress90SeedStore(paths["runtime"] / "stress90_bootstrap_seed.json").load_required()
         policy_record = Stress90PolicyStateStore(
             paths["runtime"] / "stress90_policy_state.json"
         ).load_required_record()
@@ -2528,8 +2516,7 @@ def _run_stress90_oi_collect(config, args) -> int:
                 or not generic_state.reconciled
             ):
                 raise RuntimeError(
-                    "Stress-90 evidence collection requires HALTED, kill-switched, "
-                    "reconciled state"
+                    "Stress-90 evidence collection requires HALTED, kill-switched, reconciled state"
                 )
             if policy_record.state.live_account_identity_digest is None:
                 raise RuntimeError(
@@ -2609,9 +2596,7 @@ def _run_stress90_oi_collect(config, args) -> int:
 
         # A fresh/restarted collector may begin only at the next observed session.  A
         # persisted in-progress day proves continuity across a process restart.
-        oi_store = Stress90OiEvidenceStore(
-            paths["runtime"] / "stress90_oi_evidence.json"
-        )
+        oi_store = Stress90OiEvidenceStore(paths["runtime"] / "stress90_oi_evidence.json")
         oi_record = oi_store.load_required_record()
         anchor = (
             oi_record.state.in_progress.trading_day
@@ -2619,9 +2604,9 @@ def _run_stress90_oi_collect(config, args) -> int:
             else oi_record.state.completed[-1].trading_day
         )
         if trading_day > anchor:
-            ohlc = DirectionalOHLCCacheStore(
-                paths["runtime"] / "directional_ohlc_cache.json"
-            ).load(STRESS90_POLICY.products)
+            ohlc = DirectionalOHLCCacheStore(paths["runtime"] / "directional_ohlc_cache.json").load(
+                STRESS90_POLICY.products
+            )
             if ohlc is None:
                 raise RuntimeError("Stress-90 evidence collection OHLC continuity is missing")
             transitions = stress90_target_transitions(
@@ -3067,6 +3052,7 @@ def _run_stress90_activate(config, args) -> int:
             Stress90ActivationPermitStore(
                 paths["runtime"] / "stress90_activation_permit.json"
             ).invalidate(f"Stress-90 policy {lifecycle_operation} changed bound runtime identity")
+
             def prepare_pending_activation():
                 if reactivating:
                     _retire_stress90_execution_intent_for_reactivation(
@@ -3076,9 +3062,7 @@ def _run_stress90_activate(config, args) -> int:
                         local_flat=not any(not position.empty for position in local_positions),
                         no_active_orders=not active_orders,
                         reconciled=reconciliation.matched,
-                        activation_confirmation=os.environ[
-                            "AFUTURE_STRESS90_ACTIVATION_ACK"
-                        ],
+                        activation_confirmation=os.environ["AFUTURE_STRESS90_ACTIVATION_ACK"],
                         rebase_confirmation=os.environ["AFUTURE_STRESS90_REBASE_ACK"],
                     )
                 return pending_lifecycle
@@ -3187,6 +3171,7 @@ def _run_stress90_activate(config, args) -> int:
                     live_inception_day=trading_day,
                     live_inception_equity=float(account.equity),
                 )
+
         def prepare_fresh_activation():
             prepared = lifecycle_store.begin(
                 operation=lifecycle_operation,
@@ -3208,9 +3193,7 @@ def _run_stress90_activate(config, args) -> int:
                     local_flat=not any(not position.empty for position in local_positions),
                     no_active_orders=not active_orders,
                     reconciled=reconciliation.matched,
-                    activation_confirmation=os.environ[
-                        "AFUTURE_STRESS90_ACTIVATION_ACK"
-                    ],
+                    activation_confirmation=os.environ["AFUTURE_STRESS90_ACTIVATION_ACK"],
                     rebase_confirmation=os.environ["AFUTURE_STRESS90_REBASE_ACK"],
                 )
             return prepared
@@ -3390,9 +3373,7 @@ def _require_stress90_order_journal_rollover_cutoff(
     if tuple(getattr(session_evidence, "orders", ())) or tuple(
         getattr(session_evidence, "trades", ())
     ):
-        raise RuntimeError(
-            "Stress-90 order journal rollover requires an empty current CTP session"
-        )
+        raise RuntimeError("Stress-90 order journal rollover requires an empty current CTP session")
     days = tuple(str(getattr(entry, "target_trading_day", "")) for entry in entries)
     if any(not day or day >= current_trading_day for day in days):
         raise RuntimeError(
@@ -3507,7 +3488,7 @@ def _run_stress90_order_journal_rollover(config, args) -> int:
             raise RuntimeError(
                 "Stress-90 order journal rollover requires flat Broker/local state, "
                 "no active orders and completed reconciliation"
-        )
+            )
         account_identity = broker.get_account_identity_digest()
         _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
         order_journal = CtpOrderSubmissionJournal(paths["runtime"] / "stress90_ctp_orders.json")
@@ -3764,12 +3745,8 @@ def _run_stress90_account_rebase(config, args) -> int:
                     lifecycle_transaction=preexisting_lifecycle,
                     trading_day=cleanup_trading_day,
                     operator_reason=preexisting_lifecycle.operator_reason,
-                    broker_flat=not any(
-                        not position.empty for position in cleanup_positions
-                    ),
-                    local_flat=not any(
-                        not position.empty for position in cleanup_local_positions
-                    ),
+                    broker_flat=not any(not position.empty for position in cleanup_positions),
+                    local_flat=not any(not position.empty for position in cleanup_local_positions),
                     no_active_orders=not cleanup_active_orders,
                     reconciled=cleanup_reconciliation.matched,
                 )
@@ -3941,9 +3918,7 @@ def _run_stress90_account_rebase(config, args) -> int:
                 generic_store=store,
                 policy_store=policy_store,
                 prepare_transaction=(
-                    (lambda: pending_lifecycle)
-                    if account_switched
-                    else prepare_pending_rebase
+                    (lambda: pending_lifecycle) if account_switched else prepare_pending_rebase
                 ),
                 apply_registry_transition=lambda transaction: (
                     _apply_stress90_account_runtime_registry_transition(
@@ -4084,20 +4059,16 @@ def _run_stress90_account_rebase(config, args) -> int:
             generic_rebased,
             account_identity_digest=account_identity_digest,
         )
+
         def precheck_fresh_rebase() -> None:
             _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
             if account_day_continuity is not None:
                 current_continuity = _require_stress90_account_day_continuity(
                     runtime_dir=paths["runtime"],
                     completed_account_day=account_day_continuity.completed_account_day,
-                    current_ctp_trading_day=(
-                        account_day_continuity.current_ctp_trading_day
-                    ),
+                    current_ctp_trading_day=(account_day_continuity.current_ctp_trading_day),
                 )
-                if (
-                    current_continuity.continuity_digest
-                    != account_day_continuity.continuity_digest
-                ):
+                if current_continuity.continuity_digest != account_day_continuity.continuity_digest:
                     raise RuntimeError("Stress-90 account-day continuity evidence changed")
             _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
 
@@ -4181,9 +4152,7 @@ def _run_stress90_account_rebase(config, args) -> int:
             generic_store=store,
             policy_store=policy_store,
             prepare_transaction=(
-                (lambda: prepared_lifecycle)
-                if account_switched
-                else prepare_fresh_rebase
+                (lambda: prepared_lifecycle) if account_switched else prepare_fresh_rebase
             ),
             apply_registry_transition=lambda transaction: (
                 _apply_stress90_account_runtime_registry_transition(

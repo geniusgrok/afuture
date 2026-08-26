@@ -29,7 +29,7 @@ class AccountExclusiveRuntimeLease:
             raise RuntimeLeaseError("account lease identity must be a lowercase SHA-256")
         if not isinstance(role, str) or not role.strip():
             raise RuntimeLeaseError("account lease role is required")
-        runtime = Path(os.path.abspath(os.path.normpath(runtime_dir)))
+        runtime = Path(os.path.realpath(runtime_dir))
         global_path = Path(tempfile.gettempdir()) / (
             f"afuture-account-{account_identity_digest}.lock"
         )
@@ -127,7 +127,7 @@ class AccountExclusiveRuntimeLease:
     ) -> bool:
         """Prove this live object still holds the exact account/runtime lease."""
 
-        runtime = Path(os.path.abspath(os.path.normpath(runtime_dir)))
+        runtime = Path(os.path.realpath(runtime_dir))
         runtime_digest = sha256(f"runtime:{runtime}".encode()).hexdigest()
         return bool(
             self._handles

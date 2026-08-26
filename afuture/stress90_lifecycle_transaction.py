@@ -358,9 +358,7 @@ def _scoped_account_evidence_payload(
         return dict(evidence)
     if scope == "settlement_snapshot":
         return {key: evidence[key] for key in sorted(_SETTLEMENT_EVIDENCE_FIELDS)}
-    raise Stress90LifecycleTransactionError(
-        "Stress-90 lifecycle account evidence scope is invalid"
-    )
+    raise Stress90LifecycleTransactionError("Stress-90 lifecycle account evidence scope is invalid")
 
 
 def stress90_lifecycle_account_transition(
@@ -531,9 +529,7 @@ def stress90_lifecycle_account_transition(
                 "account rebase hard drawdown baseline is missing"
             )
         day_start = cumulative_day_start
-        rebase_source_hwm = (
-            max(source_hwm, settlement) if not same_account_day else source_hwm
-        )
+        rebase_source_hwm = max(source_hwm, settlement) if not same_account_day else source_hwm
         high_watermark = max(
             equity,
             rebase_source_hwm + deposit_delta - withdrawal_delta,
@@ -628,9 +624,7 @@ def build_stress90_settlement_roll_forward_targets(
         recent_returns = [*recent_returns[-1:], completed_return]
     generic_target = replace(
         generic_source,
-        kill_reason=(
-            "Stress-90 settlement rolled forward; doctor/Shadow gates remain required"
-        ),
+        kill_reason=("Stress-90 settlement rolled forward; doctor/Shadow gates remain required"),
         trading_day=current_day,
         day_start_equity=transition.day_start_equity,
         equity_high_watermark=transition.equity_high_watermark,
@@ -830,9 +824,7 @@ def _transaction_payload(transaction: Stress90LifecycleTransaction) -> dict[str,
         "account_evidence": dict(transaction.account_evidence),
         "account_evidence_digest": transaction.account_evidence_digest,
         "account_day_continuity_digest": transaction.account_day_continuity_digest,
-        "account_day_continuity_source_day": (
-            transaction.account_day_continuity_source_day
-        ),
+        "account_day_continuity_source_day": (transaction.account_day_continuity_source_day),
         "verified_deposit_delta": transaction.verified_deposit_delta,
         "verified_withdrawal_delta": transaction.verified_withdrawal_delta,
         "generic_source_sequence": transaction.generic_source_sequence,
@@ -1040,9 +1032,7 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
         transaction.account_day_continuity_source_day
         and transaction.account_day_continuity_source_day >= transaction.trading_day
     ):
-        raise Stress90LifecycleTransactionError(
-            "lifecycle account-day continuity did not advance"
-        )
+        raise Stress90LifecycleTransactionError("lifecycle account-day continuity did not advance")
 
     if transaction.operation == "settlement_roll_forward":
         if (
@@ -1061,10 +1051,8 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
         if (
             set(marker) != _STRESS90_MARKER_FIELDS
             or marker.get("policy_id") != STRESS90_POLICY.policy_id
-            or marker.get("policy_definition_digest")
-            != STRESS90_POLICY.policy_definition_digest
-            or marker.get("products_manifest_digest")
-            != STRESS90_POLICY.products_manifest_digest
+            or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
+            or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
             or marker.get("bootstrap_seed_digest") != policy.bootstrap_seed_digest
         ):
             raise Stress90LifecycleTransactionError(
@@ -1106,12 +1094,8 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
             )
         return
 
-    if (
-        transaction.operation not in {"account_rebase", "settlement_roll_forward"}
-        and (
-            transaction.account_day_continuity_digest
-            or transaction.account_day_continuity_source_day
-        )
+    if transaction.operation not in {"account_rebase", "settlement_roll_forward"} and (
+        transaction.account_day_continuity_digest or transaction.account_day_continuity_source_day
     ):
         raise Stress90LifecycleTransactionError(
             "non-settlement lifecycle transaction contains continuity evidence"
@@ -1344,9 +1328,8 @@ def _validate_begin_source_invariants(
             "lifecycle source is not HALTED/reconciled for the requested operation"
         )
     try:
-        if (
-            operation != "settlement_roll_forward"
-            and any(not ContractPosition(**item).empty for item in generic.positions)
+        if operation != "settlement_roll_forward" and any(
+            not ContractPosition(**item).empty for item in generic.positions
         ):
             raise Stress90LifecycleTransactionError("lifecycle source must be locally flat")
     except (TypeError, ValueError) as exc:
@@ -1439,9 +1422,7 @@ def _validate_begin_source_invariants(
         "activation",
         "settlement_roll_forward",
         "stress90_to_execution_aligned",
-    } and (
-        source_account_identity != account_identity_digest
-    ):
+    } and (source_account_identity != account_identity_digest):
         raise Stress90LifecycleTransactionError("lifecycle source account identity mismatch")
     if operation == "activation":
         raise Stress90LifecycleTransactionError(
@@ -1558,12 +1539,10 @@ def _validate_operation_transition(
             or generic_target.trading_day != trading_day
             or generic_target.last_account_trading_day != trading_day
             or generic_target.day_start_equity != expected_generic.day_start_equity
-            or generic_target.equity_high_watermark
-            != expected_generic.equity_high_watermark
+            or generic_target.equity_high_watermark != expected_generic.equity_high_watermark
             or generic_target.last_account_equity != expected_generic.last_account_equity
             or generic_target.last_account_deposit != expected_generic.last_account_deposit
-            or generic_target.last_account_withdrawal
-            != expected_generic.last_account_withdrawal
+            or generic_target.last_account_withdrawal != expected_generic.last_account_withdrawal
             or generic_target.last_account_cash_flow_verified
             is not expected_generic.last_account_cash_flow_verified
             or generic_target.last_account_settlement_id
@@ -1881,9 +1860,7 @@ class Stress90LifecycleTransactionStore:
                 "lifecycle account snapshot/trading day mismatch"
             )
         account_evidence_scope = (
-            "settlement_snapshot"
-            if operation == "settlement_roll_forward"
-            else "account_snapshot"
+            "settlement_snapshot" if operation == "settlement_roll_forward" else "account_snapshot"
         )
         account_evidence = _account_snapshot_evidence_payload(
             account_snapshot,
@@ -1899,8 +1876,7 @@ class Stress90LifecycleTransactionStore:
             operation == "account_rebase"
             and generic_source is not None
             and generic_source.state.trading_day != normalized_day
-            and policy_source.state.live_account_identity_digest
-            == normalized_account_identity
+            and policy_source.state.live_account_identity_digest == normalized_account_identity
         )
         requires_continuity = bool(
             operation == "settlement_roll_forward" or same_account_cross_day_rebase

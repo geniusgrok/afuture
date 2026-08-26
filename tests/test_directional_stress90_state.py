@@ -101,6 +101,32 @@ def test_policy_state_store_uses_sequence_checksum_atomic_prev_and_no_fallback(t
     assert store.load_previous_record().state == state
 
 
+def test_policy_state_save_propagates_parent_directory_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Policy state rename durability is part of the lifecycle commit contract."""
+    import afuture.directional_stress90_state as state_module
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+
+    _seed, state = _seed_and_state()
+    calls = 0
+    real_fsync = state_module.os.fsync
+
+    def fail_parent_fsync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected policy-state parent fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(state_module.os, "fsync", fail_parent_fsync)
+
+    with pytest.raises(OSError, match="parent fsync"):
+        Stress90PolicyStateStore(tmp_path / "stress90_state.json").save(state)
+
+    assert calls == 2
+
+
 @pytest.mark.parametrize("evidence_suffix", [".prev", ".lock"])
 def test_policy_state_store_missing_current_with_evidence_fails_load_and_save(
     tmp_path: Path,

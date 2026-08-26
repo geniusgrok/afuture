@@ -52,9 +52,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise CtpSessionQueryIntegrityError(
-                f"duplicate CTP session evidence JSON key: {key}"
-            )
+            raise CtpSessionQueryIntegrityError(f"duplicate CTP session evidence JSON key: {key}")
         result[key] = value
     return result
 
@@ -322,9 +320,7 @@ def normalize_ctp_session_order(
         investor_id=identity[1],
         invest_unit_id=identity[2],
         trading_day=identity[3],
-        instrument_id=_nonempty(
-            raw.get("InstrumentID"), name="CTP session order instrument"
-        ),
+        instrument_id=_nonempty(raw.get("InstrumentID"), name="CTP session order instrument"),
         exchange_id=exchange,
         order_sys_id=order_sys_id,
         front_id=front_id,
@@ -379,15 +375,11 @@ def normalize_ctp_session_trade(
         investor_id=identity[1],
         invest_unit_id=identity[2],
         trading_day=identity[3],
-        instrument_id=_nonempty(
-            raw.get("InstrumentID"), name="CTP session trade instrument"
-        ),
+        instrument_id=_nonempty(raw.get("InstrumentID"), name="CTP session trade instrument"),
         exchange_id=exchange,
         trade_id=_nonempty(raw.get("TradeID"), name="CTP session TradeID"),
         order_sys_id=order_sys_id,
-        order_ref=_positive_int(
-            raw.get("OrderRef"), name="CTP session trade OrderRef"
-        ),
+        order_ref=_positive_int(raw.get("OrderRef"), name="CTP session trade OrderRef"),
         side=_ctp_side(raw.get("Direction")),
         offset=_ctp_offset(raw.get("OffsetFlag")),
         volume=_positive_int(raw.get("Volume"), name="CTP session trade volume"),
@@ -640,9 +632,10 @@ def build_ctp_session_activity_evidence(
     critical_generation: int,
     query_ingress_generation: int = 0,
 ) -> CtpSessionActivityEvidence:
-    if not isinstance(account_identity_digest, str) or _SHA.fullmatch(
-        account_identity_digest
-    ) is None:
+    if (
+        not isinstance(account_identity_digest, str)
+        or _SHA.fullmatch(account_identity_digest) is None
+    ):
         raise CtpSessionQueryIntegrityError("CTP session account digest is invalid")
     day = _day(trading_day)
     order_request = _request_id(order_request_id)
@@ -737,9 +730,7 @@ def validate_ctp_session_activity_ownership(
     for order in evidence.orders:
         entry = entries.get(order.order_id)
         if entry is None:
-            raise CtpSessionQueryIntegrityError(
-                f"unknown CTP session order: {order.order_id}"
-            )
+            raise CtpSessionQueryIntegrityError(f"unknown CTP session order: {order.order_id}")
         request = getattr(entry, "request", None)
         if (
             getattr(entry, "front_id", None) != order.front_id
@@ -868,21 +859,13 @@ def plan_ctp_session_journal_recovery(
             not isinstance(order_id, str)
             or not order_id
             or order_id in entries
-            or getattr(entry, "account_identity_digest", None)
-            != evidence.account_identity_digest
+            or getattr(entry, "account_identity_digest", None) != evidence.account_identity_digest
             or getattr(entry, "target_trading_day", None) != evidence.trading_day
         ):
-            raise CtpSessionQueryIntegrityError(
-                "durable CTP recovery journal identity is invalid"
-            )
+            raise CtpSessionQueryIntegrityError("durable CTP recovery journal identity is invalid")
         entries[order_id] = entry
-    mutable_order_ids = (
-        frozenset(entries) if current_order_ids is None else current_order_ids
-    )
-    if (
-        not isinstance(mutable_order_ids, frozenset)
-        or not mutable_order_ids.issubset(entries)
-    ):
+    mutable_order_ids = frozenset(entries) if current_order_ids is None else current_order_ids
+    if not isinstance(mutable_order_ids, frozenset) or not mutable_order_ids.issubset(entries):
         raise CtpSessionQueryIntegrityError("current CTP recovery epoch identity is invalid")
     if any(
         getattr(entry, "status", None) != "terminal"
@@ -899,9 +882,7 @@ def plan_ctp_session_journal_recovery(
     for order in evidence.orders:
         entry = entries.get(order.order_id)
         if entry is None:
-            raise CtpSessionQueryIntegrityError(
-                f"unknown CTP session order: {order.order_id}"
-            )
+            raise CtpSessionQueryIntegrityError(f"unknown CTP session order: {order.order_id}")
         request = getattr(entry, "request", None)
         if (
             getattr(entry, "front_id", None) != order.front_id
@@ -983,9 +964,7 @@ def plan_ctp_session_journal_recovery(
             )
         trade = row.to_domain_trade(order_id)
         canonical = ctp_order_fill_evidence(evidence.trading_day, trade)
-        persisted = {
-            item.key: item for item in tuple(getattr(entry, "fill_evidence", ()))
-        }
+        persisted = {item.key: item for item in tuple(getattr(entry, "fill_evidence", ()))}
         if canonical.key in persisted:
             if persisted[canonical.key] != canonical:
                 raise CtpSessionQueryIntegrityError(
@@ -1003,9 +982,7 @@ def plan_ctp_session_journal_recovery(
         queried_volume[order_id] = queried_volume.get(order_id, 0) + row.volume
 
     durable_fill_keys = {
-        key
-        for entry in entries.values()
-        for key in tuple(getattr(entry, "fill_keys", ()))
+        key for entry in entries.values() for key in tuple(getattr(entry, "fill_keys", ()))
     }
     missing = sorted(durable_fill_keys - observed_fill_keys)
     if missing:
@@ -1014,9 +991,7 @@ def plan_ctp_session_journal_recovery(
         )
     for order_id, order in query_orders.items():
         volume = queried_volume.get(order_id, 0)
-        request_volume = int(
-            getattr(getattr(entries[order_id], "request", None), "volume", 0)
-        )
+        request_volume = int(getattr(getattr(entries[order_id], "request", None), "volume", 0))
         if volume != order.volume_traded:
             raise CtpSessionQueryIntegrityError(
                 f"CTP recovery query trade volume mismatch: {order_id}"
@@ -1097,7 +1072,8 @@ class CtpSessionActivityEvidenceStore:
     def load_required_record(self) -> CtpSessionActivityEvidenceRecord:
         if not self.path.exists():
             raise CtpSessionQueryIntegrityError("required CTP session evidence is missing")
-        current = self._decode(self.path.read_bytes())
+        current_payload = self.path.read_bytes()
+        current = self._decode(current_payload)
         if current.sequence == 1:
             if self.previous_path.exists():
                 raise CtpSessionQueryIntegrityError(
@@ -1106,7 +1082,10 @@ class CtpSessionActivityEvidenceStore:
             return current
         if not self.previous_path.exists():
             raise CtpSessionQueryIntegrityError("previous CTP session evidence is missing")
-        previous = self._decode(self.previous_path.read_bytes())
+        previous_payload = self.previous_path.read_bytes()
+        previous = self._decode(previous_payload)
+        if current_payload == previous_payload:
+            return current
         if (
             current.sequence != previous.sequence + 1
             or current.parent_checksum != previous.checksum

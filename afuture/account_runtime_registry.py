@@ -22,12 +22,8 @@ _F_OFD_SETLKW = getattr(fcntl, "F_OFD_SETLKW", 38)
 _MAX_ACCOUNTS = 256
 _MAX_RUNTIME_PATH = 4_096
 _MAX_OPERATION_HISTORY = 1_024
-PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH = Path(
-    "/var/lib/afuture/account-runtime-registry.json"
-)
-ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION = (
-    "INITIALIZE_AFUTURE_MACHINE_ACCOUNT_REGISTRY"
-)
+PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH = Path("/var/lib/afuture/account-runtime-registry.json")
+ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION = "INITIALIZE_AFUTURE_MACHINE_ACCOUNT_REGISTRY"
 ACCOUNT_RUNTIME_TRANSFER_CONFIRMATION = "TRANSFER_STRESS90_ACCOUNT_RUNTIME"
 
 
@@ -110,12 +106,8 @@ def _binding_payload(binding: AccountRuntimeBinding) -> dict[str, object]:
         "account_epoch": binding.account_epoch,
         "last_operation_id": binding.last_operation_id,
         "operation_history": list(binding.operation_history),
-        "retired_runtime_identity_digests": list(
-            binding.retired_runtime_identity_digests
-        ),
-        "retired_account_identity_digests": list(
-            binding.retired_account_identity_digests
-        ),
+        "retired_runtime_identity_digests": list(binding.retired_runtime_identity_digests),
+        "retired_account_identity_digests": list(binding.retired_account_identity_digests),
         "retired_lineage_digests": list(binding.retired_lineage_digests),
     }
 
@@ -154,9 +146,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise AccountRuntimeRegistryError(
-                f"duplicate account runtime registry key: {key}"
-            )
+            raise AccountRuntimeRegistryError(f"duplicate account runtime registry key: {key}")
         result[key] = value
     return result
 
@@ -263,11 +253,9 @@ def _decode_record(data: bytes) -> AccountRuntimeRegistryRecord:
     if not isinstance(bindings_raw, list) or len(bindings_raw) > _MAX_ACCOUNTS:
         raise AccountRuntimeRegistryError("account runtime registry bindings are invalid")
     bindings = tuple(_decode_binding(item) for item in bindings_raw)
-    if (
-        tuple(item.account_identity_digest for item in bindings)
-        != tuple(sorted(item.account_identity_digest for item in bindings))
-        or len({item.account_identity_digest for item in bindings}) != len(bindings)
-    ):
+    if tuple(item.account_identity_digest for item in bindings) != tuple(
+        sorted(item.account_identity_digest for item in bindings)
+    ) or len({item.account_identity_digest for item in bindings}) != len(bindings):
         raise AccountRuntimeRegistryError("account runtime registry binding order is invalid")
     checksum = _sha(raw["checksum"], "account runtime registry checksum")
     expected_checksum = _digest(
@@ -352,7 +340,9 @@ class AccountRuntimeRegistry:
             os.close(descriptor)
             if exc.errno in {errno.EACCES, errno.EAGAIN}:
                 raise AccountRuntimeRegistryError("account runtime registry is locked") from exc
-            raise AccountRuntimeRegistryError("account runtime registry kernel lock failed") from exc
+            raise AccountRuntimeRegistryError(
+                "account runtime registry kernel lock failed"
+            ) from exc
         return descriptor
 
     @contextmanager
@@ -361,8 +351,8 @@ class AccountRuntimeRegistry:
         kernel_descriptor = self._acquire_kernel_lock(self.path)
         visible_descriptor: int | None = None
         try:
-            flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(
-                os, "O_NOFOLLOW", 0
+            flags = (
+                os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             )
             visible_descriptor = os.open(self.lock_path, flags, 0o600)
             fcntl.flock(visible_descriptor, fcntl.LOCK_EX)
@@ -423,13 +413,16 @@ class AccountRuntimeRegistry:
         }
         if previous is not None:
             self._atomic_replace(self.previous_path, self._read_bytes(self.path))
-        self._atomic_replace(self.path, json.dumps(
-            payload,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-            allow_nan=False,
-        ).encode("utf-8"))
+        self._atomic_replace(
+            self.path,
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8"),
+        )
         return record
 
     def load(self) -> AccountRuntimeRegistryRecord | None:
@@ -454,9 +447,7 @@ class AccountRuntimeRegistry:
             if current is not None:
                 if current.sequence == 1 and not current.bindings:
                     return current
-                raise AccountRuntimeRegistryError(
-                    "account runtime registry is already initialized"
-                )
+                raise AccountRuntimeRegistryError("account runtime registry is already initialized")
             return self._save_unlocked(None, ())
 
     def bind_new(
@@ -473,9 +464,7 @@ class AccountRuntimeRegistry:
         with self._exclusive_lock():
             current = self._load_unlocked(required=True)
             assert current is not None
-            bindings = {
-                item.account_identity_digest: item for item in current.bindings
-            }
+            bindings = {item.account_identity_digest: item for item in current.bindings}
             existing = bindings.get(account)
             if existing is not None:
                 if existing.runtime_identity_digest != runtime_digest:
@@ -503,9 +492,7 @@ class AccountRuntimeRegistry:
                 for retired in item.retired_runtime_identity_digests
             }
             retired_lineages = {
-                retired
-                for item in bindings.values()
-                for retired in item.retired_lineage_digests
+                retired for item in bindings.values() for retired in item.retired_lineage_digests
             }
             if (
                 account in retired_accounts
@@ -572,16 +559,13 @@ class AccountRuntimeRegistry:
                 and target_binding.runtime_identity_digest == runtime_digest
                 and target_binding.account_epoch == target
                 and target_binding.last_operation_id == operation
-                and source_account
-                in target_binding.retired_account_identity_digests
+                and source_account in target_binding.retired_account_identity_digests
                 and source_lineage in target_binding.retired_lineage_digests
             ):
                 return current
             source_binding = bindings.get(source_account)
             if source_binding is None:
-                raise AccountRuntimeRegistryError(
-                    "account switch source binding is missing"
-                )
+                raise AccountRuntimeRegistryError("account switch source binding is missing")
             if target_binding is not None:
                 raise AccountRuntimeRegistryError(
                     "account switch target already has an active binding"
@@ -591,21 +575,13 @@ class AccountRuntimeRegistry:
                 or source_binding.runtime_identity_digest != runtime_digest
                 or source_binding.account_epoch != source
             ):
-                raise AccountRuntimeRegistryError(
-                    "account switch source CAS mismatch"
-                )
+                raise AccountRuntimeRegistryError("account switch source CAS mismatch")
             if target_lineage in source_binding.retired_lineage_digests:
-                raise AccountRuntimeRegistryError(
-                    "account switch target lineage is retired"
-                )
+                raise AccountRuntimeRegistryError("account switch target lineage is retired")
             if operation in {
-                consumed
-                for item in bindings.values()
-                for consumed in item.operation_history
+                consumed for item in bindings.values() for consumed in item.operation_history
             }:
-                raise AccountRuntimeRegistryError(
-                    "account switch operation was already consumed"
-                )
+                raise AccountRuntimeRegistryError("account switch operation was already consumed")
             if any(
                 len(items) >= _MAX_OPERATION_HISTORY
                 for items in (
@@ -614,13 +590,9 @@ class AccountRuntimeRegistry:
                     source_binding.retired_lineage_digests,
                 )
             ):
-                raise AccountRuntimeRegistryError(
-                    "account switch lineage history exhausted"
-                )
+                raise AccountRuntimeRegistryError("account switch lineage history exhausted")
             retired_accounts = tuple(
-                dict.fromkeys(
-                    (*source_binding.retired_account_identity_digests, source_account)
-                )
+                dict.fromkeys((*source_binding.retired_account_identity_digests, source_account))
             )
             bindings.pop(source_account)
             bindings[target_account] = replace(
@@ -790,9 +762,7 @@ class AccountRuntimeRegistry:
                 or binding.runtime_identity_digest != source_runtime_digest
                 or binding.account_epoch != source
             ):
-                raise AccountRuntimeRegistryError(
-                    "account runtime transfer source CAS mismatch"
-                )
+                raise AccountRuntimeRegistryError("account runtime transfer source CAS mismatch")
             if (
                 operation in binding.operation_history
                 or target_runtime_digest in binding.retired_runtime_identity_digests
@@ -802,8 +772,7 @@ class AccountRuntimeRegistry:
                 )
             if (
                 len(binding.operation_history) >= _MAX_OPERATION_HISTORY
-                or len(binding.retired_runtime_identity_digests)
-                >= _MAX_OPERATION_HISTORY
+                or len(binding.retired_runtime_identity_digests) >= _MAX_OPERATION_HISTORY
             ):
                 raise AccountRuntimeRegistryError("account runtime transfer history exhausted")
             bindings[account] = replace(

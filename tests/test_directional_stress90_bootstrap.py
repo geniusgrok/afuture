@@ -238,17 +238,15 @@ def test_live_bootstrap_persists_verified_through_day_oi_bridge(
     assert policy.prepared_decision is not None
     assert policy.prepared_decision.target_trading_day == through
     assert policy.prepared_decision.daily_decision_digest == policy.last_decision_digest
-    ohlc = DirectionalOHLCCacheStore(
-        runtime / "directional_ohlc_cache.json"
-    ).load(STRESS90_POLICY.products)
+    ohlc = DirectionalOHLCCacheStore(runtime / "directional_ohlc_cache.json").load(
+        STRESS90_POLICY.products
+    )
     assert ohlc is not None
     assert ohlc.latest_date.strftime("%Y%m%d") == through
     activity = DirectionalActivityStore(runtime / "directional_activity.json").load()
     assert activity is not None
     assert activity.trading_day == through
-    assert {row.product for row in activity.contracts.values()} == set(
-        STRESS90_POLICY.products
-    )
+    assert {row.product for row in activity.contracts.values()} == set(STRESS90_POLICY.products)
     assert result.to_dict()["oi_evidence_path"] == str(result.oi_evidence_path)
 
 

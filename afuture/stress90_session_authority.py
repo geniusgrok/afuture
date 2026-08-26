@@ -114,9 +114,9 @@ def establish_stress90_session_ownership(
             )
 
     try:
-        CtpSessionActivityEvidenceStore(
-            runtime / "stress90_ctp_session_evidence.json"
-        ).save(evidence)
+        CtpSessionActivityEvidenceStore(runtime / "stress90_ctp_session_evidence.json").save(
+            evidence
+        )
     except (OSError, CtpSessionQueryIntegrityError) as exc:
         raise RuntimeError("lifecycle complete session evidence persistence failed") from exc
     require_current = getattr(broker, "require_session_activity_evidence_current", None)

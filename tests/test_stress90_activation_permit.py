@@ -144,9 +144,7 @@ def _write_activation_evidence(runtime_dir: Path):
     )
 
     registry = AccountRuntimeRegistry(runtime_dir / ".account-runtime-registry.json")
-    registry.initialize(
-        strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
-    )
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
     registry.bind_new(
         account_identity,
         runtime_dir,

@@ -325,6 +325,40 @@ def test_stress90_completed_return_uses_ctp_settlement_not_last_intraday_snapsho
     assert engine.state.day_start_equity == 75_000.0
 
 
+def test_stress90_production_manager_requires_explicit_settlement_roll_forward(
+    tmp_path,
+):
+    """Next-day PreBalance cannot prove no funding arrived after the last D snapshot."""
+    _broker, manager, engine = _engine(tmp_path)
+    manager.runtime_policy_id = "directional.stress90"
+    manager.requires_explicit_settlement_roll_forward = True
+    engine.state.trading_day = "20260824"
+    engine.state.day_start_equity = 100_000.0
+    engine.state.last_account_trading_day = "20260824"
+    engine.state.last_account_equity = 95_000.0
+    engine.state.last_account_cash_flow_verified = True
+    engine.state.last_account_settlement_id = 10
+    next_account = AccountSnapshot(
+        105_000.0,
+        105_000.0,
+        105_000.0,
+        0.0,
+        0.0,
+        0.0,
+        "20260825",
+        previous_settlement_equity=105_000.0,
+        settlement_verified=True,
+        settlement_id=11,
+    )
+
+    with pytest.raises(RuntimeError, match="explicit settlement roll-forward"):
+        engine._advance_trading_day(next_account)
+
+    assert manager.completed_account_returns == []
+    assert engine.state.trading_day == "20260824"
+    assert engine.state.day_start_equity == 100_000.0
+
+
 def test_stress90_partial_inception_day_is_not_added_to_adaptive_margin_returns(tmp_path):
     _broker, manager, engine = _engine(tmp_path)
     manager.runtime_policy_id = "directional.stress90"
