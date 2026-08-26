@@ -368,6 +368,13 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 或创建另一笔 lifecycle transaction。只有核验过的外部备份和单独批准的恢复流程可以处理该
 事故；普通生命周期命令会持续失败关闭。
 
+从 marker 引入前版本升级时，必须保留原 current、`.prev` 和 registry `.lock`。首次持锁
+读取会先验证完整 envelope/checksum 及可用的 current/`.prev` 链，再一次性创建 marker；
+该步骤不推断账户 authority，也不改变交易状态或经济参数。旧 current 缺失、链损坏，或只剩
+旧 registry `.lock` 时绝不升级并持续失败关闭。marker 文件或父目录 `fsync` 报错的本次调用
+一律失败；若 marker 已完整可读，重试仍会先重新验证 current，若 marker 为部分/异常内容则按
+事故处理，禁止手工补写或删除。
+
 不要删除 kill switch，绝不自动采用 `.prev`，也不要跳过 target day、改用本机日期或在异常路径发送 opening。
 
 ## 14. 扩大风险

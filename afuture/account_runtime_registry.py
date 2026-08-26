@@ -296,7 +296,12 @@ class AccountRuntimeRegistry:
         except OSError as exc:
             raise AccountRuntimeRegistryError("account runtime registry path is invalid") from exc
 
-    def _load_unlocked(self, *, required: bool) -> AccountRuntimeRegistryRecord | None:
+    def _load_unlocked(
+        self,
+        *,
+        required: bool,
+        legacy_lock_evidence: bool,
+    ) -> AccountRuntimeRegistryRecord | None:
         current_exists = self._exists(self.path)
         previous_exists = self._exists(self.previous_path)
         lineage_exists = self._exists(self.lineage_path)
@@ -309,19 +314,13 @@ class AccountRuntimeRegistry:
                 raise AccountRuntimeRegistryError(
                     "account runtime registry lineage exists while current is missing"
                 )
+            if legacy_lock_evidence:
+                raise AccountRuntimeRegistryError(
+                    "account runtime registry lock is surviving lineage evidence"
+                )
             if required:
                 raise AccountRuntimeRegistryError("required account runtime registry is missing")
             return None
-        if not lineage_exists:
-            raise AccountRuntimeRegistryError("account runtime registry lineage marker is missing")
-        try:
-            lineage = self._read_bytes(self.lineage_path)
-        except AccountRuntimeRegistryError as exc:
-            raise AccountRuntimeRegistryError(
-                "account runtime registry lineage marker cannot be read"
-            ) from exc
-        if lineage != _LINEAGE_MARKER:
-            raise AccountRuntimeRegistryError("account runtime registry lineage marker is invalid")
         current_bytes = self._read_bytes(self.path)
         current = _decode_record(current_bytes)
         if previous_exists:
@@ -330,20 +329,41 @@ class AccountRuntimeRegistry:
                 # A crash after replacing .prev but before replacing current leaves
                 # two byte-identical copies of the last committed record.  Current
                 # remains authoritative; this is not fallback or a state advance.
-                return current
-        if current.sequence == 1:
+                validated = current
+            else:
+                validated = None
+        else:
+            validated = None
+        if validated is None and current.sequence == 1:
             if previous_exists:
                 raise AccountRuntimeRegistryError("unexpected registry .prev for sequence 1")
-            return current
-        if not previous_exists:
-            raise AccountRuntimeRegistryError("account runtime registry .prev evidence is missing")
-        previous = _decode_record(previous_bytes)
-        if (
-            previous.sequence + 1 != current.sequence
-            or current.parent_checksum != previous.checksum
-        ):
-            raise AccountRuntimeRegistryError("account runtime registry parent chain mismatch")
-        return current
+            validated = current
+        if validated is None:
+            if not previous_exists:
+                raise AccountRuntimeRegistryError(
+                    "account runtime registry .prev evidence is missing"
+                )
+            previous = _decode_record(previous_bytes)
+            if (
+                previous.sequence + 1 != current.sequence
+                or current.parent_checksum != previous.checksum
+            ):
+                raise AccountRuntimeRegistryError("account runtime registry parent chain mismatch")
+            validated = current
+        if lineage_exists:
+            try:
+                lineage = self._read_bytes(self.lineage_path)
+            except AccountRuntimeRegistryError as exc:
+                raise AccountRuntimeRegistryError(
+                    "account runtime registry lineage marker cannot be read"
+                ) from exc
+            if lineage != _LINEAGE_MARKER:
+                raise AccountRuntimeRegistryError(
+                    "account runtime registry lineage marker is invalid"
+                )
+        else:
+            self._create_lineage_marker_unlocked()
+        return validated
 
     @staticmethod
     def _acquire_kernel_lock(path: Path) -> int:
@@ -363,17 +383,18 @@ class AccountRuntimeRegistry:
         return descriptor
 
     @contextmanager
-    def _exclusive_lock(self) -> Iterator[None]:
+    def _exclusive_lock(self) -> Iterator[bool]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         kernel_descriptor = self._acquire_kernel_lock(self.path)
         visible_descriptor: int | None = None
+        visible_preexisting = self._exists(self.lock_path)
         try:
             flags = (
                 os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             )
             visible_descriptor = os.open(self.lock_path, flags, 0o600)
             fcntl.flock(visible_descriptor, fcntl.LOCK_EX)
-            yield
+            yield visible_preexisting
         except OSError as exc:
             raise AccountRuntimeRegistryError("account runtime registry lock failed") from exc
         finally:
@@ -382,7 +403,27 @@ class AccountRuntimeRegistry:
                     fcntl.flock(visible_descriptor, fcntl.LOCK_UN)
                 finally:
                     os.close(visible_descriptor)
-            os.close(kernel_descriptor)
+            try:
+                if not visible_preexisting and not any(
+                    self._exists(path)
+                    for path in (self.path, self.previous_path, self.lineage_path)
+                ):
+                    try:
+                        self.lock_path.unlink()
+                        directory = os.open(
+                            self.lock_path.parent,
+                            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                        )
+                        try:
+                            os.fsync(directory)
+                        finally:
+                            os.close(directory)
+                    except OSError as exc:
+                        raise AccountRuntimeRegistryError(
+                            "pristine account runtime registry lock cleanup failed"
+                        ) from exc
+            finally:
+                os.close(kernel_descriptor)
 
     def _atomic_replace(self, path: Path, payload: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -477,12 +518,18 @@ class AccountRuntimeRegistry:
         return record
 
     def load(self) -> AccountRuntimeRegistryRecord | None:
-        with self._exclusive_lock():
-            return self._load_unlocked(required=False)
+        with self._exclusive_lock() as legacy_lock_evidence:
+            return self._load_unlocked(
+                required=False,
+                legacy_lock_evidence=legacy_lock_evidence,
+            )
 
     def load_required(self) -> AccountRuntimeRegistryRecord:
-        with self._exclusive_lock():
-            record = self._load_unlocked(required=True)
+        with self._exclusive_lock() as legacy_lock_evidence:
+            record = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=legacy_lock_evidence,
+            )
             assert record is not None
             return record
 
@@ -493,8 +540,11 @@ class AccountRuntimeRegistry:
             raise AccountRuntimeRegistryError(
                 "account runtime registry initialization confirmation is invalid"
             )
-        with self._exclusive_lock():
-            current = self._load_unlocked(required=False)
+        with self._exclusive_lock() as legacy_lock_evidence:
+            current = self._load_unlocked(
+                required=False,
+                legacy_lock_evidence=legacy_lock_evidence,
+            )
             if current is not None:
                 if current.sequence == 1 and not current.bindings:
                     return current
@@ -512,8 +562,11 @@ class AccountRuntimeRegistry:
         runtime, runtime_digest = _canonical_runtime(runtime_dir)
         epoch = _sha(account_epoch, "account runtime epoch")
         operation = _sha(operation_id, "account runtime operation")
-        with self._exclusive_lock():
-            current = self._load_unlocked(required=True)
+        with self._exclusive_lock() as legacy_lock_evidence:
+            current = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=legacy_lock_evidence,
+            )
             assert current is not None
             bindings = {item.account_identity_digest: item for item in current.bindings}
             existing = bindings.get(account)
@@ -599,8 +652,11 @@ class AccountRuntimeRegistry:
             )
         source_lineage = _lineage_digest(source_account, runtime_digest, source)
         target_lineage = _lineage_digest(target_account, runtime_digest, target)
-        with self._exclusive_lock():
-            current = self._load_unlocked(required=True)
+        with self._exclusive_lock() as legacy_lock_evidence:
+            current = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=legacy_lock_evidence,
+            )
             assert current is not None
             bindings = {item.account_identity_digest: item for item in current.bindings}
             target_binding = bindings.get(target_account)
@@ -681,8 +737,11 @@ class AccountRuntimeRegistry:
         account = _sha(account_identity_digest, "economic account identity")
         runtime, runtime_digest = _canonical_runtime(runtime_dir)
         epoch = None if account_epoch is None else _sha(account_epoch, "account runtime epoch")
-        with self._exclusive_lock():
-            record = self._load_unlocked(required=True)
+        with self._exclusive_lock() as legacy_lock_evidence:
+            record = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=legacy_lock_evidence,
+            )
             assert record is not None
             binding = next(
                 (item for item in record.bindings if item.account_identity_digest == account),
@@ -720,8 +779,11 @@ class AccountRuntimeRegistry:
         operation = _sha(operation_id, "account runtime operation")
         if source == target:
             raise AccountRuntimeRegistryError("account runtime epoch CAS requires a new epoch")
-        with self._exclusive_lock():
-            current = self._load_unlocked(required=True)
+        with self._exclusive_lock() as legacy_lock_evidence:
+            current = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=legacy_lock_evidence,
+            )
             assert current is not None
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
@@ -761,8 +823,11 @@ class AccountRuntimeRegistry:
         runtime, runtime_digest = _canonical_runtime(runtime_dir)
         source = _sha(source_epoch, "source account runtime epoch")
         operation = _sha(operation_id, "account runtime acknowledgement operation")
-        with self._exclusive_lock():
-            current = self._load_unlocked(required=True)
+        with self._exclusive_lock() as legacy_lock_evidence:
+            current = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=legacy_lock_evidence,
+            )
             assert current is not None
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
@@ -879,8 +944,11 @@ class AccountRuntimeRegistry:
         operation = _sha(operation_id, "account runtime transfer operation")
         if source_runtime_digest == target_runtime_digest or source == target:
             raise AccountRuntimeRegistryError("account runtime transfer must change lineage")
-        with self._exclusive_lock():
-            current = self._load_unlocked(required=True)
+        with self._exclusive_lock() as legacy_lock_evidence:
+            current = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=legacy_lock_evidence,
+            )
             assert current is not None
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)

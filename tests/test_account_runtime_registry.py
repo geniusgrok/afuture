@@ -529,3 +529,137 @@ def test_registry_unchanged_binding_acknowledgement_fails_closed(
             epoch,
             "9" * 64,
         )
+
+
+def test_surviving_legacy_lock_prevents_missing_registry_reinitialization(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    registry.bind_new("a" * 64, tmp_path / "runtime-a", "b" * 64, "c" * 64)
+    registry.path.unlink()
+    registry.previous_path.unlink()
+    registry.lineage_path.unlink()
+    assert registry.lock_path.exists()
+
+    with pytest.raises(AccountRuntimeRegistryError, match="lock.*lineage"):
+        registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+    with pytest.raises(AccountRuntimeRegistryError, match="lock.*lineage"):
+        registry.bind_new("a" * 64, tmp_path / "runtime-b", "d" * 64, "e" * 64)
+    assert not registry.path.exists()
+
+
+def test_pristine_registry_read_does_not_leave_false_lineage(tmp_path: Path) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+
+    assert registry.load() is None
+    assert not registry.lock_path.exists()
+    initialized = registry.initialize(
+        strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+    )
+
+    assert initialized.sequence == 1
+    assert registry.lock_path.exists()
+
+
+def test_valid_legacy_registry_records_upgrade_lineage_once(tmp_path: Path) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistry
+
+    sequence_one = _initialized_registry(tmp_path / "sequence-one.json")
+    sequence_one.lineage_path.unlink()
+    upgraded_one = AccountRuntimeRegistry(sequence_one.path).load_required()
+    assert upgraded_one.sequence == 1
+    assert sequence_one.lineage_path.is_file()
+
+    chained = _initialized_registry(tmp_path / "chained.json")
+    chained.bind_new("a" * 64, tmp_path / "runtime", "b" * 64, "c" * 64)
+    chained.advance_epoch(
+        "a" * 64,
+        tmp_path / "runtime",
+        "b" * 64,
+        "d" * 64,
+        "e" * 64,
+    )
+    chained.lineage_path.unlink()
+    upgraded_chain = AccountRuntimeRegistry(chained.path).load_required()
+    assert upgraded_chain.sequence == 3
+    assert chained.lineage_path.is_file()
+
+    duplicate = _initialized_registry(tmp_path / "duplicate.json")
+    duplicate.bind_new("1" * 64, tmp_path / "duplicate-runtime", "2" * 64, "3" * 64)
+    duplicate.advance_epoch(
+        "1" * 64,
+        tmp_path / "duplicate-runtime",
+        "2" * 64,
+        "4" * 64,
+        "5" * 64,
+    )
+    duplicate.previous_path.write_bytes(duplicate.path.read_bytes())
+    duplicate.lineage_path.unlink()
+    upgraded_duplicate = AccountRuntimeRegistry(duplicate.path).load_required()
+    assert upgraded_duplicate.sequence == 3
+    assert duplicate.lineage_path.is_file()
+
+
+def test_invalid_legacy_registry_chain_never_upgrades_lineage(tmp_path: Path) -> None:
+    from afuture import account_runtime_registry as registry_module
+    from afuture.account_runtime_registry import (
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    runtime = tmp_path / "runtime"
+    registry.bind_new("a" * 64, runtime, "b" * 64, "c" * 64)
+    registry.advance_epoch("a" * 64, runtime, "b" * 64, "d" * 64, "e" * 64)
+    registry.lineage_path.unlink()
+    previous = json.loads(registry.previous_path.read_text(encoding="utf-8"))
+    previous["parent_checksum"] = "f" * 64
+    unsigned = {key: value for key, value in previous.items() if key != "checksum"}
+    previous["checksum"] = registry_module._digest(unsigned)
+    registry.previous_path.write_text(json.dumps(previous), encoding="utf-8")
+
+    with pytest.raises(AccountRuntimeRegistryError, match="parent chain"):
+        AccountRuntimeRegistry(registry.path).load_required()
+    assert not registry.lineage_path.exists()
+
+
+@pytest.mark.parametrize("failure_target", ["marker", "parent"])
+def test_legacy_registry_upgrade_fsync_failure_does_not_return_a_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_target: str,
+) -> None:
+    from afuture.account_runtime_registry import (
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    original = registry.path.read_bytes()
+    registry.lineage_path.unlink()
+    real_fsync = os.fsync
+
+    def fail_selected_fsync(descriptor: int) -> None:
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        if (failure_target == "parent") is is_directory:
+            raise OSError(f"injected legacy upgrade {failure_target} fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_selected_fsync)
+    with pytest.raises(AccountRuntimeRegistryError, match="lineage marker"):
+        AccountRuntimeRegistry(registry.path).load_required()
+
+    assert registry.path.read_bytes() == original
+    assert registry.lineage_path.exists()
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    assert AccountRuntimeRegistry(registry.path).load_required().sequence == 1

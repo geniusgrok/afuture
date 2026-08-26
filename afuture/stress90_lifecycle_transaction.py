@@ -1810,27 +1810,75 @@ class Stress90LifecycleTransactionStore:
                     "lifecycle transaction lineage exists while current is missing"
                 )
             return None
-        if not lineage_exists:
+        current_bytes = self._read_record_bytes(self.path, "current")
+        current = self._decode_record_bytes(current_bytes, "current")
+        if previous_exists:
+            previous_bytes = self._read_record_bytes(self.previous_path, "previous")
+            if previous_bytes != current_bytes:
+                previous = self._decode_record_bytes(previous_bytes, "previous")
+                if previous.sequence >= current.sequence:
+                    raise Stress90LifecycleTransactionError(
+                        "previous lifecycle transaction sequence is not older than current"
+                    )
+                if previous.sequence + 1 == current.sequence:
+                    self._validate_adjacent_records(previous, current)
+        if current.sequence == 1 and current.transaction.status != "prepared":
             raise Stress90LifecycleTransactionError(
-                "lifecycle transaction lineage marker is missing"
+                "initial lifecycle transaction must be prepared"
             )
-        if self._read_lineage_marker() != _LINEAGE_MARKER:
+        if lineage_exists:
+            if self._read_lineage_marker() != _LINEAGE_MARKER:
+                raise Stress90LifecycleTransactionError(
+                    "lifecycle transaction lineage marker is invalid"
+                )
+        else:
+            self._create_lineage_marker()
+        return current
+
+    @staticmethod
+    def _validate_adjacent_records(
+        previous: _TransactionRecord,
+        current: _TransactionRecord,
+    ) -> None:
+        previous_transaction = previous.transaction
+        current_transaction = current.transaction
+        if previous_transaction.transaction_id == current_transaction.transaction_id:
+            if previous_transaction.status != "prepared" or current_transaction != replace(
+                previous_transaction, status="committed"
+            ):
+                raise Stress90LifecycleTransactionError(
+                    "previous lifecycle transaction commit transition is invalid"
+                )
+            return
+        if previous_transaction.status != "committed" or current_transaction.status != "prepared":
             raise Stress90LifecycleTransactionError(
-                "lifecycle transaction lineage marker is invalid"
+                "previous lifecycle transaction successor is invalid"
             )
+
+    @staticmethod
+    def _read_record_bytes(path: Path, label: str) -> bytes:
         try:
-            raw = json.loads(
-                self.path.read_text(encoding="utf-8"),
-                object_pairs_hook=_reject_duplicate_keys,
-            )
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            with os.fdopen(descriptor, "rb") as handle:
+                return handle.read()
+        except OSError as exc:
+            raise Stress90LifecycleTransactionError(
+                f"{label} lifecycle transaction cannot be read"
+            ) from exc
+
+    @staticmethod
+    def _decode_record_bytes(data: bytes, label: str) -> _TransactionRecord:
+        try:
+            raw = json.loads(data.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise Stress90LifecycleTransactionError(
-                "invalid Stress-90 lifecycle transaction JSON"
+                f"invalid {label} Stress-90 lifecycle transaction JSON"
             ) from exc
         fields = {"kind", "schema_version", "sequence", "transaction", "checksum"}
         if not isinstance(raw, Mapping) or set(raw) != fields:
             raise Stress90LifecycleTransactionError(
-                "Stress-90 lifecycle transaction envelope is invalid"
+                f"{label} Stress-90 lifecycle transaction envelope is invalid"
             )
         if raw["kind"] != _KIND or raw["schema_version"] != _SCHEMA:
             raise Stress90LifecycleTransactionError(
