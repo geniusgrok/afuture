@@ -351,18 +351,11 @@ class AccountRuntimeRegistry:
                 raise AccountRuntimeRegistryError("account runtime registry parent chain mismatch")
             validated = current
         if lineage_exists:
-            try:
-                lineage = self._read_bytes(self.lineage_path)
-            except AccountRuntimeRegistryError as exc:
-                raise AccountRuntimeRegistryError(
-                    "account runtime registry lineage marker cannot be read"
-                ) from exc
-            if lineage != _LINEAGE_MARKER:
-                raise AccountRuntimeRegistryError(
-                    "account runtime registry lineage marker is invalid"
-                )
+            self._validate_and_refsync_lineage_marker_unlocked()
         else:
             self._create_lineage_marker_unlocked()
+        if not legacy_lock_evidence:
+            self._materialize_visible_lock_unlocked()
         return validated
 
     @staticmethod
@@ -389,11 +382,10 @@ class AccountRuntimeRegistry:
         visible_descriptor: int | None = None
         visible_preexisting = self._exists(self.lock_path)
         try:
-            flags = (
-                os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-            )
-            visible_descriptor = os.open(self.lock_path, flags, 0o600)
-            fcntl.flock(visible_descriptor, fcntl.LOCK_EX)
+            if visible_preexisting:
+                flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                visible_descriptor = os.open(self.lock_path, flags)
+                fcntl.flock(visible_descriptor, fcntl.LOCK_EX)
             yield visible_preexisting
         except OSError as exc:
             raise AccountRuntimeRegistryError("account runtime registry lock failed") from exc
@@ -403,27 +395,7 @@ class AccountRuntimeRegistry:
                     fcntl.flock(visible_descriptor, fcntl.LOCK_UN)
                 finally:
                     os.close(visible_descriptor)
-            try:
-                if not visible_preexisting and not any(
-                    self._exists(path)
-                    for path in (self.path, self.previous_path, self.lineage_path)
-                ):
-                    try:
-                        self.lock_path.unlink()
-                        directory = os.open(
-                            self.lock_path.parent,
-                            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-                        )
-                        try:
-                            os.fsync(directory)
-                        finally:
-                            os.close(directory)
-                    except OSError as exc:
-                        raise AccountRuntimeRegistryError(
-                            "pristine account runtime registry lock cleanup failed"
-                        ) from exc
-            finally:
-                os.close(kernel_descriptor)
+            os.close(kernel_descriptor)
 
     def _atomic_replace(self, path: Path, payload: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -478,6 +450,65 @@ class AccountRuntimeRegistry:
         except OSError as exc:
             raise AccountRuntimeRegistryError(
                 "account runtime registry lineage marker creation failed"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _validate_and_refsync_lineage_marker_unlocked(self) -> None:
+        descriptor: int | None = None
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(self.lineage_path, flags)
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = None
+                lineage = handle.read()
+                if lineage != _LINEAGE_MARKER:
+                    raise AccountRuntimeRegistryError(
+                        "account runtime registry lineage marker is invalid"
+                    )
+                os.fsync(handle.fileno())
+            directory = os.open(
+                self.lineage_path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError as exc:
+            raise AccountRuntimeRegistryError(
+                "account runtime registry lineage marker durability validation failed"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def _materialize_visible_lock_unlocked(self) -> None:
+        descriptor: int | None = None
+        try:
+            flags = (
+                os.O_CREAT
+                | os.O_EXCL
+                | os.O_RDWR
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(self.lock_path, flags, 0o600)
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            directory = os.open(
+                self.lock_path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError as exc:
+            raise AccountRuntimeRegistryError(
+                "account runtime registry visible lock materialization failed"
             ) from exc
         finally:
             if descriptor is not None:
@@ -549,7 +580,10 @@ class AccountRuntimeRegistry:
                 if current.sequence == 1 and not current.bindings:
                     return current
                 raise AccountRuntimeRegistryError("account runtime registry is already initialized")
-            return self._save_unlocked(None, ())
+            initialized = self._save_unlocked(None, ())
+            if not legacy_lock_evidence:
+                self._materialize_visible_lock_unlocked()
+            return initialized
 
     def bind_new(
         self,

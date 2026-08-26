@@ -67,6 +67,26 @@ def _claim_account_runtime(
         results.put("bound")
 
 
+def _block_inside_pristine_registry_load(
+    registry_path: str,
+    entered,
+    release,
+) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistry
+
+    registry = AccountRuntimeRegistry(registry_path)
+
+    def blocked_load(*, required: bool, legacy_lock_evidence: bool):
+        assert required is False
+        assert legacy_lock_evidence is False
+        entered.set()
+        release.wait(timeout=30)
+        return None
+
+    registry._load_unlocked = blocked_load  # type: ignore[method-assign]
+    registry.load()
+
+
 def test_account_binding_survives_release_and_rejects_another_runtime(
     tmp_path: Path,
 ) -> None:
@@ -571,6 +591,36 @@ def test_pristine_registry_read_does_not_leave_false_lineage(tmp_path: Path) -> 
     assert registry.lock_path.exists()
 
 
+def test_killed_pristine_registry_read_never_leaves_visible_lineage_lock(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
+
+    context = get_context("spawn")
+    entered = context.Event()
+    release = context.Event()
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+    process = context.Process(
+        target=_block_inside_pristine_registry_load,
+        args=(str(registry.path), entered, release),
+    )
+    process.start()
+    assert entered.wait(timeout=10)
+
+    process.terminate()
+    process.join(timeout=10)
+
+    assert process.exitcode is not None
+    assert not registry.lock_path.exists()
+    initialized = registry.initialize(
+        strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+    )
+    assert initialized.sequence == 1
+
+
 def test_valid_legacy_registry_records_upgrade_lineage_once(tmp_path: Path) -> None:
     from afuture.account_runtime_registry import AccountRuntimeRegistry
 
@@ -661,5 +711,34 @@ def test_legacy_registry_upgrade_fsync_failure_does_not_return_a_record(
 
     assert registry.path.read_bytes() == original
     assert registry.lineage_path.exists()
-    monkeypatch.setattr(os, "fsync", real_fsync)
+    retried_targets: list[str] = []
+
+    def record_retry_fsync(descriptor: int) -> None:
+        retried_targets.append("parent" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "marker")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_retry_fsync)
     assert AccountRuntimeRegistry(registry.path).load_required().sequence == 1
+    assert {"marker", "parent"}.issubset(retried_targets)
+
+
+@pytest.mark.parametrize("failure_target", ["marker", "parent"])
+def test_existing_registry_marker_refsync_failure_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_target: str,
+) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistryError
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    real_fsync = os.fsync
+
+    def fail_selected_fsync(descriptor: int) -> None:
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        if (failure_target == "parent") is is_directory:
+            raise OSError(f"injected existing marker {failure_target} fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_selected_fsync)
+    with pytest.raises(AccountRuntimeRegistryError, match="lineage marker.*durability"):
+        registry.load_required()

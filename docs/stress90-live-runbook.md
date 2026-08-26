@@ -375,6 +375,11 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 一律失败；若 marker 已完整可读，重试仍会先重新验证 current，若 marker 为部分/异常内容则按
 事故处理，禁止手工补写或删除。
 
+完全 pristine、没有任何 durable evidence 的 registry 只取得稳定 kernel lock，不创建 visible
+`.lock`；因此进程在只读检查中被终止不会制造 false lineage。首次成功 initialization 或已验证
+legacy upgrade 才在仍持有 kernel lock 时物化 visible lock。此后每次接受既有 lineage marker
+都重新对 marker 文件和父目录执行 `fsync`；任一步失败，本次读取不得返回可用状态。
+
 不要删除 kill switch，绝不自动采用 `.prev`，也不要跳过 target day、改用本机日期或在异常路径发送 opening。
 
 ## 14. 扩大风险

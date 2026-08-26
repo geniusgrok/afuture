@@ -1639,8 +1639,112 @@ def test_legacy_lifecycle_upgrade_fsync_failure_does_not_return_a_transaction(
 
     assert store.path.read_bytes() == original
     assert store.lineage_path.exists()
-    monkeypatch.setattr(os, "fsync", real_fsync)
+    retried_targets: list[str] = []
+
+    def record_retry_fsync(descriptor: int) -> None:
+        retried_targets.append("parent" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "marker")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_retry_fsync)
     assert Stress90LifecycleTransactionStore(store.path).load_required() == prepared
+    assert {"marker", "parent"}.issubset(retried_targets)
+
+
+@pytest.mark.parametrize("failure_target", ["marker", "parent"])
+def test_existing_lifecycle_marker_refsync_failure_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_target: str,
+) -> None:
+    from afuture.stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        Stress90LifecycleTransactionStore,
+    )
+
+    _generic_store, _policy_store, generic, policy = _stores(tmp_path)
+    generic_target, policy_target = _targets(generic, policy)
+    store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
+    store.begin(
+        operation="account_rebase",
+        generic_source=generic,
+        policy_source=policy,
+        generic_target=generic_target,
+        policy_target=policy_target,
+        trading_day="20260825",
+        account_identity_digest="b" * 64,
+        account_snapshot=_account(),
+        operation_nonce=_OPERATION_NONCE,
+    )
+    real_fsync = os.fsync
+
+    def fail_selected_fsync(descriptor: int) -> None:
+        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+        if (failure_target == "parent") is is_directory:
+            raise OSError(f"injected existing marker {failure_target} fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_selected_fsync)
+    with pytest.raises(Stress90LifecycleTransactionError, match="lineage marker.*durability"):
+        store.load_required()
+
+
+@pytest.mark.parametrize(
+    ("current_sequence", "current_status", "previous_sequence"),
+    [
+        (2, "prepared", None),
+        (3, "committed", 1),
+        (4, "committed", 2),
+    ],
+)
+def test_lifecycle_rejects_impossible_sequence_status_parity(
+    tmp_path: Path,
+    current_sequence: int,
+    current_status: str,
+    previous_sequence: int | None,
+) -> None:
+    from afuture import stress90_lifecycle_transaction as lifecycle_module
+    from afuture.stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        Stress90LifecycleTransactionStore,
+        apply_stress90_lifecycle_transaction,
+    )
+
+    generic_store, policy_store, generic, policy = _stores(tmp_path)
+    generic_target, policy_target = _targets(generic, policy)
+    store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
+    store.begin(
+        operation="account_rebase",
+        generic_source=generic,
+        policy_source=policy,
+        generic_target=generic_target,
+        policy_target=policy_target,
+        trading_day="20260825",
+        account_identity_digest="b" * 64,
+        account_snapshot=_account(),
+        operation_nonce=_OPERATION_NONCE,
+    )
+    if current_status == "committed":
+        apply_stress90_lifecycle_transaction(
+            store,
+            generic_store=generic_store,
+            policy_store=policy_store,
+        )
+
+    def rewrite_sequence(path: Path, sequence: int) -> None:
+        envelope = json.loads(path.read_text(encoding="utf-8"))
+        envelope["sequence"] = sequence
+        unsigned = {key: value for key, value in envelope.items() if key != "checksum"}
+        envelope["checksum"] = lifecycle_module._digest(unsigned)
+        path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    rewrite_sequence(store.path, current_sequence)
+    if previous_sequence is None:
+        store.previous_path.unlink(missing_ok=True)
+    else:
+        rewrite_sequence(store.previous_path, previous_sequence)
+
+    with pytest.raises(Stress90LifecycleTransactionError, match="sequence/status parity"):
+        Stress90LifecycleTransactionStore(store.path).load_required()
 
 
 def test_real_prepared_migration_retries_after_registry_acknowledgement_crash(

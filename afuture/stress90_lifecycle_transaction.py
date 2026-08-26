@@ -1827,10 +1827,7 @@ class Stress90LifecycleTransactionStore:
                 "initial lifecycle transaction must be prepared"
             )
         if lineage_exists:
-            if self._read_lineage_marker() != _LINEAGE_MARKER:
-                raise Stress90LifecycleTransactionError(
-                    "lifecycle transaction lineage marker is invalid"
-                )
+            self._validate_and_refsync_lineage_marker()
         else:
             self._create_lineage_marker()
         return current
@@ -1891,11 +1888,17 @@ class Stress90LifecycleTransactionStore:
             raise Stress90LifecycleTransactionError(
                 "Stress-90 lifecycle transaction checksum mismatch"
             )
-        return _TransactionRecord(
+        record = _TransactionRecord(
             transaction=_decode_transaction(raw["transaction"]),
             sequence=sequence,
             checksum=checksum,
         )
+        expected_status = "prepared" if sequence % 2 == 1 else "committed"
+        if record.transaction.status != expected_status:
+            raise Stress90LifecycleTransactionError(
+                f"{label} lifecycle transaction sequence/status parity is invalid"
+            )
+        return record
 
     def load(self) -> Stress90LifecycleTransaction | None:
         record = self._load_record()
@@ -2167,17 +2170,29 @@ class Stress90LifecycleTransactionStore:
             if descriptor is not None:
                 os.close(descriptor)
 
-    def _read_lineage_marker(self) -> bytes:
+    def _validate_and_refsync_lineage_marker(self) -> None:
         descriptor: int | None = None
         try:
             flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(self.lineage_path, flags)
             with os.fdopen(descriptor, "rb") as handle:
                 descriptor = None
-                return handle.read()
+                if handle.read() != _LINEAGE_MARKER:
+                    raise Stress90LifecycleTransactionError(
+                        "lifecycle transaction lineage marker is invalid"
+                    )
+                os.fsync(handle.fileno())
+            directory_fd = os.open(
+                self.path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         except OSError as exc:
             raise Stress90LifecycleTransactionError(
-                "lifecycle transaction lineage marker cannot be read"
+                "lifecycle transaction lineage marker durability validation failed"
             ) from exc
         finally:
             if descriptor is not None:
