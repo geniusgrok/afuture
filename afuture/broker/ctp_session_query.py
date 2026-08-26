@@ -77,36 +77,51 @@ def _nonempty(raw: object, *, name: str) -> str:
 
 
 def _positive_int(raw: object, *, name: str) -> int:
-    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+    if type(raw) is int:
+        if raw <= 0:
+            raise CtpSessionQueryIntegrityError(f"{name} is invalid")
+        return raw
+    elif type(raw) is str:
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise CtpSessionQueryIntegrityError(f"{name} is invalid") from exc
+    else:
         raise CtpSessionQueryIntegrityError(f"{name} is invalid")
-    try:
-        value = int(raw)
-    except (TypeError, ValueError) as exc:
-        raise CtpSessionQueryIntegrityError(f"{name} is invalid") from exc
-    if value <= 0 or str(value) != str(raw):
+    if value <= 0 or str(value) != raw:
         raise CtpSessionQueryIntegrityError(f"{name} is invalid")
     return value
 
 
 def _nonnegative_int(raw: object, *, name: str) -> int:
-    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+    if type(raw) is int:
+        if raw < 0:
+            raise CtpSessionQueryIntegrityError(f"{name} is invalid")
+        return raw
+    elif type(raw) is str:
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise CtpSessionQueryIntegrityError(f"{name} is invalid") from exc
+    else:
         raise CtpSessionQueryIntegrityError(f"{name} is invalid")
-    try:
-        value = int(raw)
-    except (TypeError, ValueError) as exc:
-        raise CtpSessionQueryIntegrityError(f"{name} is invalid") from exc
-    if value < 0 or str(value) != str(raw):
+    if value < 0 or str(value) != raw:
         raise CtpSessionQueryIntegrityError(f"{name} is invalid")
     return value
 
 
 def _positive_float(raw: object, *, name: str) -> float:
-    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
-        raise CtpSessionQueryIntegrityError(f"{name} is invalid")
-    try:
+    if type(raw) is int:
         value = float(raw)
-    except (TypeError, ValueError) as exc:
-        raise CtpSessionQueryIntegrityError(f"{name} is invalid") from exc
+    elif type(raw) is float:
+        value = raw
+    elif type(raw) is str:
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise CtpSessionQueryIntegrityError(f"{name} is invalid") from exc
+    else:
+        raise CtpSessionQueryIntegrityError(f"{name} is invalid")
     if not isfinite(value) or value <= 0.0:
         raise CtpSessionQueryIntegrityError(f"{name} is invalid")
     return value
@@ -1154,16 +1169,12 @@ class CtpSessionActivityEvidenceStore:
         critical_generation: object = evidence_raw.get("critical_generation")
         query_ingress_generation: object = evidence_raw.get("query_ingress_generation")
         if (
-            not isinstance(account_identity_digest, str)
-            or not isinstance(trading_day, str)
-            or isinstance(order_request_id, bool)
-            or not isinstance(order_request_id, int)
-            or isinstance(trade_request_id, bool)
-            or not isinstance(trade_request_id, int)
-            or isinstance(critical_generation, bool)
-            or not isinstance(critical_generation, int)
-            or isinstance(query_ingress_generation, bool)
-            or not isinstance(query_ingress_generation, int)
+            type(account_identity_digest) is not str
+            or type(trading_day) is not str
+            or type(order_request_id) is not int
+            or type(trade_request_id) is not int
+            or type(critical_generation) is not int
+            or type(query_ingress_generation) is not int
         ):
             raise CtpSessionQueryIntegrityError("CTP session evidence payload is invalid")
         identity = {

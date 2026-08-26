@@ -77,6 +77,33 @@ class _SpoofedPositiveFloat:
         return 1.0
 
 
+class _HookedIntegerSubclass(int):
+    def __int__(self) -> int:
+        raise RuntimeError("hook ran")
+
+    def __str__(self) -> str:
+        raise RuntimeError("hook ran")
+
+
+class _HookedFloatSubclass(float):
+    def __float__(self) -> float:
+        raise RuntimeError("hook ran")
+
+    def __str__(self) -> str:
+        raise RuntimeError("hook ran")
+
+
+class _HookedStringSubclass(str):
+    def __int__(self) -> int:
+        raise RuntimeError("hook ran")
+
+    def __float__(self) -> float:
+        raise RuntimeError("hook ran")
+
+    def __str__(self) -> str:
+        raise RuntimeError("hook ran")
+
+
 def test_ctp_numeric_decoders_reject_nonprimitive_conversion_hooks() -> None:
     """Persisted/CTP evidence must not execute arbitrary numeric conversion hooks."""
 
@@ -90,6 +117,37 @@ def test_ctp_numeric_decoders_reject_nonprimitive_conversion_hooks() -> None:
         _positive_int(_SpoofedPositiveInteger(), name="request id")
     with pytest.raises(CtpSessionQueryIntegrityError, match="price"):
         _positive_float(_SpoofedPositiveFloat(), name="price")
+
+
+def test_ctp_numeric_decoders_reject_builtin_subclass_conversion_hooks() -> None:
+    """CTP evidence accepts exact primitives, not subclasses with executable hooks."""
+
+    from afuture.broker.ctp_session_query import (
+        CtpSessionQueryAccumulator,
+        CtpSessionQueryIntegrityError,
+        _nonnegative_int,
+        _positive_float,
+        _positive_int,
+    )
+
+    with pytest.raises(CtpSessionQueryIntegrityError, match="request id"):
+        _positive_int(_HookedIntegerSubclass(1), name="request id")
+    with pytest.raises(CtpSessionQueryIntegrityError, match="price"):
+        _positive_float(_HookedFloatSubclass(1.0), name="price")
+    with pytest.raises(CtpSessionQueryIntegrityError, match="quantity"):
+        _positive_int(_HookedStringSubclass("1"), name="quantity")
+    with pytest.raises(CtpSessionQueryIntegrityError, match="ErrorID"):
+        _nonnegative_int(_HookedIntegerSubclass(0), name="ErrorID")
+
+    accumulator = CtpSessionQueryAccumulator("order")
+    accumulator.begin(11, **_identity())
+    with pytest.raises(CtpSessionQueryIntegrityError, match="error payload"):
+        accumulator.observe(
+            11,
+            None,
+            {"ErrorID": _HookedIntegerSubclass(1)},
+            last=True,
+        )
 
 
 def test_request_bound_empty_query_requires_explicit_last() -> None:
