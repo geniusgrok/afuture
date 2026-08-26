@@ -1296,6 +1296,10 @@ class Stress90OiEvidenceAggregator:
                 and natural_days == 1
             )
             if uninterrupted:
+                if source_generation is None:
+                    raise OiEvidenceIntegrityError(
+                        "OI observed transition source generation is missing"
+                    )
                 transition = ObservedTradingDayTransition(
                     source_trading_day=completed.trading_day,
                     target_trading_day=day,

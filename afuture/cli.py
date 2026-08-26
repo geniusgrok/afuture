@@ -36,6 +36,7 @@ from .research import AcceptanceGate, ResearchConfig, WalkForwardRunner
 from .sample_store import MarketSampleStore
 from .scanner import SpreadScanner
 from .state import RuntimeState, StateStore
+from .stress90_session_authority import Stress90SessionOwnershipProof
 
 _LIVE_ACK = "I_UNDERSTAND_FUTURES_RISK"
 _RECOVERY_ACK = "I_VERIFIED_CTP_POSITIONS"
@@ -1217,8 +1218,8 @@ def _run_doctor(config, args) -> int:
         _wait_until_ready(broker, args.startup_timeout)
         wait_for_fresh_snapshot(broker, args.snapshot_wait)
         session_trades: list[Trade] = []
-        session_activity_proof = None
-        mechanical = None
+        session_activity_proof: Stress90SessionOwnershipProof | None = None
+        mechanical: _LifecycleMechanicalSnapshot | None = None
         try:
             mechanical = _require_lifecycle_mechanical_snapshot(
                 broker,
@@ -1339,7 +1340,7 @@ def _run_doctor(config, args) -> int:
         if issue_permit:
             from .stress90_activation_permit import issue_stress90_doctor_permit
 
-            if session_activity_proof is None:
+            if session_activity_proof is None or mechanical is None:
                 raise RuntimeError("Stress-90 Doctor permit requires complete CTP session evidence")
             _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
             issue_stress90_doctor_permit(
@@ -1835,7 +1836,7 @@ def _require_lifecycle_session_trade_ownership(
     *,
     runtime_dir: Path,
     timeout_seconds: float,
-):
+) -> Stress90SessionOwnershipProof:
     """Persist complete request-bound CTP truth and reject every unknown identity."""
 
     from .stress90_session_authority import (
@@ -1961,7 +1962,7 @@ def _require_account_switch_target_epoch_current(
 
 @dataclass(frozen=True)
 class _LifecycleMechanicalSnapshot:
-    session_proof: object
+    session_proof: Stress90SessionOwnershipProof
     account: AccountSnapshot
     trading_day: str
     positions: tuple[ContractPosition, ...]
@@ -3731,7 +3732,7 @@ def _run_stress90_account_rebase(config, args) -> int:
                 cleanup_local_positions = store.positions_from_state(state)
                 cleanup_reconciliation = compare_positions(
                     cleanup_local_positions,
-                    cleanup_positions,
+                    list(cleanup_positions),
                 )
                 _require_lifecycle_resume_safety(
                     state,

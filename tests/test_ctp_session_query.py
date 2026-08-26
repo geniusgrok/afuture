@@ -64,6 +64,34 @@ def _trade(**overrides) -> dict[str, object]:
     return row
 
 
+class _SpoofedPositiveInteger:
+    def __int__(self) -> int:
+        return 1
+
+    def __str__(self) -> str:
+        return "1"
+
+
+class _SpoofedPositiveFloat:
+    def __float__(self) -> float:
+        return 1.0
+
+
+def test_ctp_numeric_decoders_reject_nonprimitive_conversion_hooks() -> None:
+    """Persisted/CTP evidence must not execute arbitrary numeric conversion hooks."""
+
+    from afuture.broker.ctp_session_query import (
+        CtpSessionQueryIntegrityError,
+        _positive_float,
+        _positive_int,
+    )
+
+    with pytest.raises(CtpSessionQueryIntegrityError, match="request id"):
+        _positive_int(_SpoofedPositiveInteger(), name="request id")
+    with pytest.raises(CtpSessionQueryIntegrityError, match="price"):
+        _positive_float(_SpoofedPositiveFloat(), name="price")
+
+
 def test_request_bound_empty_query_requires_explicit_last() -> None:
     from afuture.broker.ctp_session_query import CtpSessionQueryAccumulator
 

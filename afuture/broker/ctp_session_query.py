@@ -16,6 +16,7 @@ from threading import Lock
 from zoneinfo import ZoneInfo
 
 from ..models import Offset, OrderSide, OrderType, Trade
+from .ctp_order_journal import CtpOrderSubmissionEntry
 
 _KIND = "afuture.ctp.session-activity-evidence"
 _SCHEMA_VERSION = 3
@@ -76,7 +77,7 @@ def _nonempty(raw: object, *, name: str) -> str:
 
 
 def _positive_int(raw: object, *, name: str) -> int:
-    if isinstance(raw, bool):
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
         raise CtpSessionQueryIntegrityError(f"{name} is invalid")
     try:
         value = int(raw)
@@ -88,7 +89,7 @@ def _positive_int(raw: object, *, name: str) -> int:
 
 
 def _nonnegative_int(raw: object, *, name: str) -> int:
-    if isinstance(raw, bool):
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
         raise CtpSessionQueryIntegrityError(f"{name} is invalid")
     try:
         value = int(raw)
@@ -100,7 +101,7 @@ def _nonnegative_int(raw: object, *, name: str) -> int:
 
 
 def _positive_float(raw: object, *, name: str) -> float:
-    if isinstance(raw, bool):
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
         raise CtpSessionQueryIntegrityError(f"{name} is invalid")
     try:
         value = float(raw)
@@ -454,8 +455,11 @@ class CtpSessionQueryAccumulator:
             if request != self._active_request_id:
                 raise self._fail_unlocked("CTP session query request id mismatch")
             try:
-                error_id = int((error or {}).get("ErrorID", 0))
-            except (TypeError, ValueError) as exc:
+                error_id = _nonnegative_int(
+                    (error or {}).get("ErrorID", 0),
+                    name="CTP session query ErrorID",
+                )
+            except CtpSessionQueryIntegrityError as exc:
                 raise self._fail_unlocked("CTP session query error payload is invalid") from exc
             if error_id:
                 message = str((error or {}).get("ErrorMsg", "")).strip()
@@ -656,13 +660,13 @@ def build_ctp_session_activity_evidence(
         raise CtpSessionQueryIntegrityError("CTP session evidence rows must be tuples")
     if len(orders) > _MAX_ROWS or len(trades) > _MAX_ROWS:
         raise CtpSessionQueryIntegrityError("CTP session evidence exceeds row bound")
-    canonical_orders = tuple(
+    canonical_orders: tuple[CtpSessionOrder, ...] = tuple(
         sorted(
             (_validated_order(row, trading_day=day) for row in orders),
             key=lambda row: row.identity,
         )
     )
-    canonical_trades = tuple(
+    canonical_trades: tuple[CtpSessionTrade, ...] = tuple(
         sorted(
             (_validated_trade(row, trading_day=day) for row in trades),
             key=lambda row: row.identity,
@@ -673,9 +677,8 @@ def build_ctp_session_activity_evidence(
     if len({row.identity for row in canonical_trades}) != len(canonical_trades):
         raise CtpSessionQueryIntegrityError("CTP session trade evidence contains duplicate rows")
     row_identities = {
-        (row.broker_id, row.investor_id, row.invest_unit_id)
-        for row in (*canonical_orders, *canonical_trades)
-    }
+        (row.broker_id, row.investor_id, row.invest_unit_id) for row in canonical_orders
+    } | {(row.broker_id, row.investor_id, row.invest_unit_id) for row in canonical_trades}
     if len(row_identities) > 1:
         raise CtpSessionQueryIntegrityError("CTP session row account identities mismatch")
     order_payload = [_order_payload(row) for row in canonical_orders]
@@ -711,11 +714,11 @@ def build_ctp_session_activity_evidence(
 
 def validate_ctp_session_activity_ownership(
     evidence: CtpSessionActivityEvidence,
-    journal_entries: tuple[object, ...],
+    journal_entries: tuple[CtpOrderSubmissionEntry, ...],
 ) -> str:
     """Join complete query truth to durable order ids and exact fill identities."""
 
-    entries: dict[str, object] = {}
+    entries: dict[str, CtpOrderSubmissionEntry] = {}
     for entry in journal_entries:
         order_id = getattr(entry, "order_id", None)
         if not isinstance(order_id, str) or not order_id or order_id in entries:
@@ -724,19 +727,19 @@ def validate_ctp_session_activity_ownership(
             raise CtpSessionQueryIntegrityError("CTP session journal account identity mismatch")
         entries[order_id] = entry
 
-    joined_orders: dict[tuple[str, str], object] = {}
+    joined_orders: dict[tuple[str, str], CtpOrderSubmissionEntry] = {}
     observed_order_ids: set[str] = set()
     ownership_rows: list[dict[str, str]] = []
     for order in evidence.orders:
-        entry = entries.get(order.order_id)
-        if entry is None:
+        order_entry = entries.get(order.order_id)
+        if order_entry is None:
             raise CtpSessionQueryIntegrityError(f"unknown CTP session order: {order.order_id}")
-        request = getattr(entry, "request", None)
+        request = getattr(order_entry, "request", None)
         if (
-            getattr(entry, "front_id", None) != order.front_id
-            or getattr(entry, "session_id", None) != order.session_id
-            or getattr(entry, "order_ref", None) != order.order_ref
-            or getattr(entry, "target_trading_day", None) != evidence.trading_day
+            getattr(order_entry, "front_id", None) != order.front_id
+            or getattr(order_entry, "session_id", None) != order.session_id
+            or getattr(order_entry, "order_ref", None) != order.order_ref
+            or getattr(order_entry, "target_trading_day", None) != evidence.trading_day
             or getattr(request, "symbol", None) != order.instrument_id
             or str(getattr(request, "exchange", "")).upper() != order.exchange_id
             or getattr(request, "side", None) is not order.side
@@ -748,7 +751,7 @@ def validate_ctp_session_activity_ownership(
             raise CtpSessionQueryIntegrityError(
                 f"CTP session order/journal identity mismatch: {order.order_id}"
             )
-        if getattr(entry, "status", None) == "aborted_before_send":
+        if getattr(order_entry, "status", None) == "aborted_before_send":
             raise CtpSessionQueryIntegrityError(
                 f"aborted CTP journal order appeared in complete query: {order.order_id}"
             )
@@ -756,7 +759,7 @@ def validate_ctp_session_activity_ownership(
             raise CtpSessionQueryIntegrityError(
                 f"active CTP session order blocks lifecycle operation: {order.order_id}"
             )
-        if getattr(entry, "status", None) != "terminal":
+        if getattr(order_entry, "status", None) != "terminal":
             raise CtpSessionQueryIntegrityError(
                 f"CTP session order/journal status mismatch: {order.order_id}"
             )
@@ -765,7 +768,7 @@ def validate_ctp_session_activity_ownership(
             sys_identity = (order.exchange_id, order.order_sys_id)
             if sys_identity in joined_orders:
                 raise CtpSessionQueryIntegrityError("duplicate CTP OrderSysID identity")
-            joined_orders[sys_identity] = entry
+            joined_orders[sys_identity] = order_entry
         ownership_rows.append(
             {
                 "kind": "order",
@@ -774,7 +777,7 @@ def validate_ctp_session_activity_ownership(
             }
         )
 
-    relevant_entries: list[object] = []
+    relevant_entries: list[CtpOrderSubmissionEntry] = []
     for entry in entries.values():
         if (
             getattr(entry, "target_trading_day", None) == evidence.trading_day
@@ -790,19 +793,19 @@ def validate_ctp_session_activity_ownership(
     observed_fill_keys: set[str] = set()
     queried_volume: dict[str, int] = {}
     for trade in evidence.trades:
-        entry = joined_orders.get((trade.exchange_id, trade.order_sys_id))
-        if entry is None:
+        trade_entry = joined_orders.get((trade.exchange_id, trade.order_sys_id))
+        if trade_entry is None:
             raise CtpSessionQueryIntegrityError(
                 f"CTP session trade OrderSysID is unknown: {trade.order_sys_id}"
             )
-        request = getattr(entry, "request", None)
+        request = getattr(trade_entry, "request", None)
         if (
-            getattr(entry, "order_ref", None) != trade.order_ref
+            getattr(trade_entry, "order_ref", None) != trade.order_ref
             or getattr(request, "symbol", None) != trade.instrument_id
             or str(getattr(request, "exchange", "")).upper() != trade.exchange_id
             or getattr(request, "side", None) is not trade.side
             or getattr(request, "offset", None) is not trade.offset
-            or trade.fill_key not in tuple(getattr(entry, "fill_keys", ()))
+            or trade.fill_key not in tuple(getattr(trade_entry, "fill_keys", ()))
         ):
             raise CtpSessionQueryIntegrityError(
                 f"CTP session trade/journal identity mismatch: {trade.identity}"
@@ -815,13 +818,13 @@ def validate_ctp_session_activity_ownership(
                 f"CTP session trade exceeds durable limit: {trade.identity}"
             )
         observed_fill_keys.add(trade.fill_key)
-        order_id = str(entry.order_id)
+        order_id = str(trade_entry.order_id)
         queried_volume[order_id] = queried_volume.get(order_id, 0) + trade.volume
         ownership_rows.append(
             {
                 "kind": "trade",
                 "query_identity": trade.identity,
-                "order_id": str(entry.order_id),
+                "order_id": str(trade_entry.order_id),
             }
         )
     for order in evidence.orders:
@@ -844,7 +847,7 @@ def validate_ctp_session_activity_ownership(
 
 def plan_ctp_session_journal_recovery(
     evidence: CtpSessionActivityEvidence,
-    journal_entries: tuple[object, ...],
+    journal_entries: tuple[CtpOrderSubmissionEntry, ...],
     *,
     current_order_ids: frozenset[str] | None = None,
 ) -> CtpSessionJournalRecoveryPlan:
@@ -852,7 +855,7 @@ def plan_ctp_session_journal_recovery(
 
     from .ctp_order_journal import ctp_order_fill_evidence
 
-    entries: dict[str, object] = {}
+    entries: dict[str, CtpOrderSubmissionEntry] = {}
     for entry in journal_entries:
         order_id = getattr(entry, "order_id", None)
         if (
@@ -875,19 +878,19 @@ def plan_ctp_session_journal_recovery(
         raise CtpSessionQueryIntegrityError("sealed CTP recovery entry is not terminal")
 
     observed_order_ids: set[str] = set()
-    sys_entries: dict[tuple[str, str], object] = {}
+    sys_entries: dict[tuple[str, str], CtpOrderSubmissionEntry] = {}
     status_updates: dict[str, str] = {}
     active_order_ids: list[str] = []
     query_orders: dict[str, CtpSessionOrder] = {}
     for order in evidence.orders:
-        entry = entries.get(order.order_id)
-        if entry is None:
+        order_entry = entries.get(order.order_id)
+        if order_entry is None:
             raise CtpSessionQueryIntegrityError(f"unknown CTP session order: {order.order_id}")
-        request = getattr(entry, "request", None)
+        request = getattr(order_entry, "request", None)
         if (
-            getattr(entry, "front_id", None) != order.front_id
-            or getattr(entry, "session_id", None) != order.session_id
-            or getattr(entry, "order_ref", None) != order.order_ref
+            getattr(order_entry, "front_id", None) != order.front_id
+            or getattr(order_entry, "session_id", None) != order.session_id
+            or getattr(order_entry, "order_ref", None) != order.order_ref
             or getattr(request, "symbol", None) != order.instrument_id
             or str(getattr(request, "exchange", "")).upper() != order.exchange_id
             or getattr(request, "side", None) is not order.side
@@ -899,7 +902,7 @@ def plan_ctp_session_journal_recovery(
             raise CtpSessionQueryIntegrityError(
                 f"CTP recovery order/journal economics mismatch: {order.order_id}"
             )
-        current_status = getattr(entry, "status", None)
+        current_status = getattr(order_entry, "status", None)
         if current_status == "aborted_before_send":
             raise CtpSessionQueryIntegrityError(
                 f"aborted CTP order appeared in complete query: {order.order_id}"
@@ -919,7 +922,7 @@ def plan_ctp_session_journal_recovery(
             sys_key = (order.exchange_id, order.order_sys_id)
             if sys_key in sys_entries:
                 raise CtpSessionQueryIntegrityError("duplicate CTP recovery OrderSysID")
-            sys_entries[sys_key] = entry
+            sys_entries[sys_key] = order_entry
 
     for entry in entries.values():
         order_id = str(entry.order_id)
@@ -938,15 +941,15 @@ def plan_ctp_session_journal_recovery(
     session_trades: list[Trade] = []
     queried_volume: dict[str, int] = {}
     for row in evidence.trades:
-        entry = sys_entries.get((row.exchange_id, row.order_sys_id))
-        if entry is None:
+        trade_entry = sys_entries.get((row.exchange_id, row.order_sys_id))
+        if trade_entry is None:
             raise CtpSessionQueryIntegrityError(
                 f"CTP recovery trade OrderSysID is unknown: {row.order_sys_id}"
             )
-        order_id = str(entry.order_id)
-        request = getattr(entry, "request", None)
+        order_id = str(trade_entry.order_id)
+        request = getattr(trade_entry, "request", None)
         if (
-            getattr(entry, "order_ref", None) != row.order_ref
+            getattr(trade_entry, "order_ref", None) != row.order_ref
             or getattr(request, "symbol", None) != row.instrument_id
             or str(getattr(request, "exchange", "")).upper() != row.exchange_id
             or getattr(request, "side", None) is not row.side
@@ -964,7 +967,7 @@ def plan_ctp_session_journal_recovery(
             )
         trade = row.to_domain_trade(order_id)
         canonical = ctp_order_fill_evidence(evidence.trading_day, trade)
-        persisted = {item.key: item for item in tuple(getattr(entry, "fill_evidence", ()))}
+        persisted = {item.key: item for item in tuple(getattr(trade_entry, "fill_evidence", ()))}
         if canonical.key in persisted:
             if persisted[canonical.key] != canonical:
                 raise CtpSessionQueryIntegrityError(
@@ -1144,6 +1147,25 @@ class CtpSessionActivityEvidenceStore:
         evidence_raw = raw["evidence"]
         if not isinstance(evidence_raw, dict):
             raise CtpSessionQueryIntegrityError("CTP session evidence payload is invalid")
+        account_identity_digest: object = evidence_raw.get("account_identity_digest")
+        trading_day: object = evidence_raw.get("trading_day")
+        order_request_id: object = evidence_raw.get("order_request_id")
+        trade_request_id: object = evidence_raw.get("trade_request_id")
+        critical_generation: object = evidence_raw.get("critical_generation")
+        query_ingress_generation: object = evidence_raw.get("query_ingress_generation")
+        if (
+            not isinstance(account_identity_digest, str)
+            or not isinstance(trading_day, str)
+            or isinstance(order_request_id, bool)
+            or not isinstance(order_request_id, int)
+            or isinstance(trade_request_id, bool)
+            or not isinstance(trade_request_id, int)
+            or isinstance(critical_generation, bool)
+            or not isinstance(critical_generation, int)
+            or isinstance(query_ingress_generation, bool)
+            or not isinstance(query_ingress_generation, int)
+        ):
+            raise CtpSessionQueryIntegrityError("CTP session evidence payload is invalid")
         identity = {
             "broker_id": "",
             "investor_id": "",
@@ -1191,14 +1213,14 @@ class CtpSessionActivityEvidenceStore:
                 ) from exc
         del identity
         evidence = build_ctp_session_activity_evidence(
-            account_identity_digest=evidence_raw.get("account_identity_digest"),
-            trading_day=evidence_raw.get("trading_day"),
-            order_request_id=evidence_raw.get("order_request_id"),
-            trade_request_id=evidence_raw.get("trade_request_id"),
+            account_identity_digest=account_identity_digest,
+            trading_day=trading_day,
+            order_request_id=order_request_id,
             orders=tuple(orders),
             trades=tuple(trades),
-            critical_generation=evidence_raw.get("critical_generation"),
-            query_ingress_generation=evidence_raw.get("query_ingress_generation"),
+            trade_request_id=trade_request_id,
+            critical_generation=critical_generation,
+            query_ingress_generation=query_ingress_generation,
         )
         if _evidence_payload(evidence) != evidence_raw:
             raise CtpSessionQueryIntegrityError("CTP session evidence digest mismatch")

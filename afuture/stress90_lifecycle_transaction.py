@@ -379,15 +379,19 @@ def stress90_lifecycle_account_transition(
         raise Stress90LifecycleTransactionError(
             "account transition requires an account lifecycle operation"
         )
-    evidence = _account_snapshot_evidence_payload(
+    _account_snapshot_evidence_payload(
         account_snapshot,
         account_identity_digest="0" * 64,
     )
-    day = str(evidence["trading_day"])
-    deposit = float(evidence["deposit"])
-    withdrawal = float(evidence["withdrawal"])
-    settlement = float(evidence["previous_settlement_equity"])
-    equity = float(evidence["equity"])
+    settlement_raw = account_snapshot.previous_settlement_equity
+    settlement_id = account_snapshot.settlement_id
+    if settlement_raw is None or settlement_id is None:
+        raise Stress90LifecycleTransactionError("lifecycle account settlement evidence is missing")
+    day = _day(account_snapshot.trading_day)
+    deposit = float(account_snapshot.deposit)
+    withdrawal = float(account_snapshot.withdrawal)
+    settlement = float(settlement_raw)
+    equity = float(account_snapshot.equity)
     cumulative_day_start = settlement + deposit - withdrawal
     if not isfinite(cumulative_day_start) or cumulative_day_start <= 0.0:
         raise Stress90LifecycleTransactionError(
@@ -416,8 +420,12 @@ def stress90_lifecycle_account_transition(
         raise Stress90LifecycleTransactionError(
             "lifecycle source day identity is missing or inconsistent"
         )
-    source_settlement_id = int(generic_source.last_account_settlement_id)
-    if not generic_source.last_account_cash_flow_verified or source_settlement_id < 0:
+    source_settlement_id = generic_source.last_account_settlement_id
+    if (
+        source_settlement_id is None
+        or not generic_source.last_account_cash_flow_verified
+        or source_settlement_id < 0
+    ):
         raise Stress90LifecycleTransactionError(
             "lifecycle source settlement/cash-flow evidence is unverified"
         )
@@ -478,7 +486,7 @@ def stress90_lifecycle_account_transition(
             - float(generic_source.last_account_deposit)
             + float(generic_source.last_account_withdrawal)
         )
-        evidence_settlement_id = int(evidence["settlement_id"])
+        evidence_settlement_id = settlement_id
         if (
             source_settlement_id != evidence_settlement_id
             or not isfinite(source_prebalance)
@@ -590,9 +598,10 @@ def build_stress90_settlement_roll_forward_targets(
             "settlement roll-forward live inception path is missing or inconsistent"
         )
     settlement = account_snapshot.previous_settlement_equity
-    if settlement is None:  # validated by the account transition; defensive typing
+    settlement_id = account_snapshot.settlement_id
+    if settlement is None or settlement_id is None:
         raise Stress90LifecycleTransactionError(
-            "settlement roll-forward previous settlement is missing"
+            "settlement roll-forward settlement evidence is missing"
         )
     inception_equity = policy_source.live_inception_equity
     partial_inception_day = source_day == inception_day
@@ -634,7 +643,7 @@ def build_stress90_settlement_roll_forward_targets(
         last_account_deposit=float(account_snapshot.deposit),
         last_account_withdrawal=float(account_snapshot.withdrawal),
         last_account_cash_flow_verified=bool(account_snapshot.cash_flow_verified),
-        last_account_settlement_id=int(account_snapshot.settlement_id),
+        last_account_settlement_id=settlement_id,
         directional_daily_circuit_day="",
         recent_daily_returns=recent_returns,
     )
@@ -684,20 +693,13 @@ def _require_migration_account_continuity(
 
 
 def _account_snapshot_from_evidence(evidence: Mapping[str, object]) -> AccountSnapshot:
-    return AccountSnapshot(
-        balance=evidence["balance"],
-        equity=evidence["equity"],
-        available=evidence["available"],
-        margin=evidence["margin"],
-        realized_pnl=evidence["realized_pnl"],
-        unrealized_pnl=evidence["unrealized_pnl"],
-        trading_day=evidence["trading_day"],
-        deposit=evidence["deposit"],
-        withdrawal=evidence["withdrawal"],
-        cash_flow_verified=evidence["cash_flow_verified"],
-        previous_settlement_equity=evidence["previous_settlement_equity"],
-        settlement_verified=evidence["settlement_verified"],
-        settlement_id=evidence["settlement_id"],
+    account_identity_digest = _sha(
+        evidence.get("account_identity_digest"),
+        "account identity",
+    )
+    return _decode_account_snapshot_evidence(
+        evidence,
+        account_identity_digest=account_identity_digest,
     )
 
 
@@ -705,7 +707,7 @@ def _decode_account_snapshot_evidence(
     raw: object,
     *,
     account_identity_digest: str,
-) -> dict[str, object]:
+) -> AccountSnapshot:
     fields = {
         "account_identity_digest",
         "balance",
@@ -726,34 +728,42 @@ def _decode_account_snapshot_evidence(
         raise Stress90LifecycleTransactionError(
             "Stress-90 lifecycle account evidence fields are invalid"
         )
-    if raw["account_identity_digest"] != account_identity_digest:
+    if _sha(raw["account_identity_digest"], "account identity") != account_identity_digest:
         raise Stress90LifecycleTransactionError(
             "Stress-90 lifecycle account evidence identity mismatch"
         )
-    try:
-        account = AccountSnapshot(
-            balance=raw["balance"],
-            equity=raw["equity"],
-            available=raw["available"],
-            margin=raw["margin"],
-            realized_pnl=raw["realized_pnl"],
-            unrealized_pnl=raw["unrealized_pnl"],
-            trading_day=raw["trading_day"],
-            deposit=raw["deposit"],
-            withdrawal=raw["withdrawal"],
-            cash_flow_verified=raw["cash_flow_verified"],
-            previous_settlement_equity=raw["previous_settlement_equity"],
-            settlement_verified=raw["settlement_verified"],
-            settlement_id=raw["settlement_id"],
-        )
-    except TypeError as exc:
-        raise Stress90LifecycleTransactionError(
-            "Stress-90 lifecycle account evidence is invalid"
-        ) from exc
-    return _account_snapshot_evidence_payload(
+    previous_settlement_raw = raw["previous_settlement_equity"]
+    previous_settlement_equity = (
+        None
+        if previous_settlement_raw is None
+        else _finite_float(previous_settlement_raw, "previous settlement equity")
+    )
+    if previous_settlement_equity is not None and previous_settlement_equity <= 0.0:
+        raise Stress90LifecycleTransactionError("Stress-90 lifecycle account evidence is invalid")
+    settlement_id_raw = raw["settlement_id"]
+    settlement_id = (
+        None if settlement_id_raw is None else _nonnegative_int(settlement_id_raw, "settlement id")
+    )
+    account = AccountSnapshot(
+        balance=_finite_float(raw["balance"], "balance"),
+        equity=_finite_float(raw["equity"], "equity"),
+        available=_nonnegative_finite(raw["available"], "available"),
+        margin=_nonnegative_finite(raw["margin"], "margin"),
+        realized_pnl=_finite_float(raw["realized_pnl"], "realized pnl"),
+        unrealized_pnl=_finite_float(raw["unrealized_pnl"], "unrealized pnl"),
+        trading_day=_day(raw["trading_day"]),
+        deposit=_nonnegative_finite(raw["deposit"], "deposit"),
+        withdrawal=_nonnegative_finite(raw["withdrawal"], "withdrawal"),
+        cash_flow_verified=_boolean(raw["cash_flow_verified"], "cash-flow verification"),
+        previous_settlement_equity=previous_settlement_equity,
+        settlement_verified=_boolean(raw["settlement_verified"], "settlement verification"),
+        settlement_id=settlement_id,
+    )
+    _account_snapshot_evidence_payload(
         account,
         account_identity_digest=account_identity_digest,
     )
+    return account
 
 
 def stress90_lifecycle_account_evidence_digest(
@@ -911,8 +921,12 @@ def _decode_transaction(raw: object) -> Stress90LifecycleTransaction:
             "Stress-90 lifecycle account evidence scope is invalid"
         )
     account_identity = _sha(raw["account_identity_digest"], "account identity")
-    account_evidence = _decode_account_snapshot_evidence(
+    account_snapshot = _decode_account_snapshot_evidence(
         raw["account_evidence"],
+        account_identity_digest=account_identity,
+    )
+    account_evidence = _account_snapshot_evidence_payload(
+        account_snapshot,
         account_identity_digest=account_identity,
     )
     account_evidence_digest = _sha(raw["account_evidence_digest"], "account evidence digest")

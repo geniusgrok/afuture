@@ -646,9 +646,9 @@ def bootstrap_stress90(
             OiEvidenceIntegrityError,
             Stress90StateIntegrityError,
         ) as exc:
-            for path in artifact_paths:
-                path.unlink(missing_ok=True)
-                path.with_name(f"{path.name}.prev").unlink(missing_ok=True)
+            for artifact_path in artifact_paths:
+                artifact_path.unlink(missing_ok=True)
+                artifact_path.with_name(f"{artifact_path.name}.prev").unlink(missing_ok=True)
             raise Stress90BootstrapError("failed to persist Stress-90 bootstrap artifacts") from exc
 
     return Stress90BootstrapResult(
