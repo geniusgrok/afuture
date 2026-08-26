@@ -393,11 +393,16 @@ pristine 的新 evidence 路径，并从柜台 raw evidence 重新观察一个�
 day 后建立 schema 3 sequence 1。在该证据完成前，Stress-90 activation 持续阻断。
 
 首次 bootstrap 的 durable 顺序固定为 OHLC cache、activity、bootstrap seed、policy state，最后
-才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。OI 开始前失败时，只能回滚这些
-尚未提交的 cache/activity/seed/policy current 与 `.prev`，随后可用同一组已核验输入重试。OI
-marker/lock 创建一旦开始，异常清理绝不能删除 OI current、`.prev`、`.lineage` 或 `.lock`；若
-current 尚未形成，该 marker/lock-only 状态按 durable incident 保持 `HALTED`，不得假装普通
-bootstrap retry 可以清除或覆盖。
+才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。任何写入前必须分别通过 OHLC、
+activity、seed、policy 和 OI 自己的 store/API 校验 current 及该 store 真正拥有的 sidecar；孤儿
+policy `.prev`/`.lock`、symlink、corrupt current 或 OI sidecar-only 都是须原样保全的 incident。
+OI 开始前失败时，只能回滚本次调用开始前已证明不存在、且本次调用已尝试创建的
+cache/activity/seed/policy sequence-1 current；不得推断或删除这些 store 未拥有的 `.prev`，也
+不得覆盖任何调用前证据。单个 cleanup 失败须保留原始 persistence 异常并继续尝试其余安全
+cleanup。进入最终 OI save 前即跨过不可逆边界：此后任何异常（包括 current replace 后或父目录
+`fsync` 失败）都必须逐字节保全全部 prerequisites 和 OI current、`.prev`、`.lineage`、`.lock`。
+若 current 尚未形成，该 marker/lock-only 状态按 durable incident 保持 `HALTED`；若 current
+已替换但 durability ambiguous，同样不得由普通 bootstrap retry 清除或覆盖。
 
 不要删除 kill switch，绝不自动采用 `.prev`，也不要跳过 target day、改用本机日期或在异常路径发送 opening。
 

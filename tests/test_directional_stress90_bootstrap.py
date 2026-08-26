@@ -320,6 +320,116 @@ def test_bootstrap_pre_oi_artifact_failure_rolls_back_and_retries_once(
     assert not oi_store.previous_path.exists()
 
 
+@pytest.mark.parametrize("sidecar", ["previous", "lock"])
+def test_bootstrap_preflight_preserves_orphan_policy_sidecar_on_every_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sidecar: str,
+) -> None:
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    store = Stress90PolicyStateStore(runtime / "stress90_policy_state.json")
+    incident_path = store.previous_path if sidecar == "previous" else store.lock_path
+    incident_bytes = f"preexisting policy {sidecar} incident".encode()
+    incident_path.write_bytes(incident_bytes)
+    evidence_name = "prev" if sidecar == "previous" else "lock"
+
+    for _ in range(2):
+        with pytest.raises(
+            Stress90BootstrapError,
+            match=rf"existing Stress-90 policy state incident.*{evidence_name}",
+        ):
+            bootstrap_stress90(
+                runtime_dir=runtime,
+                through_day=through,
+                expectations=expectations,
+                write_artifacts=True,
+            )
+        assert incident_path.read_bytes() == incident_bytes
+        assert not store.path.exists()
+        assert not (runtime / "directional_ohlc_cache.json").exists()
+        assert not (runtime / "directional_activity.json").exists()
+        assert not (runtime / "stress90_bootstrap_seed.json").exists()
+        assert not (runtime / "stress90_oi_evidence.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("owner", "filename"),
+    [
+        ("OHLC cache", "directional_ohlc_cache.json"),
+        ("activity", "directional_activity.json"),
+        ("bootstrap seed", "stress90_bootstrap_seed.json"),
+        ("policy state", "stress90_policy_state.json"),
+    ],
+)
+def test_bootstrap_preflight_validates_corrupt_prerequisite_through_owning_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str,
+    filename: str,
+) -> None:
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    path = runtime / filename
+    corrupt = b"{not-json"
+    path.write_bytes(corrupt)
+
+    with pytest.raises(
+        Stress90BootstrapError,
+        match=rf"existing Stress-90 {owner} incident",
+    ):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+    assert path.read_bytes() == corrupt
+
+
+def test_bootstrap_preflight_rejects_dangling_policy_sidecar_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    store = Stress90PolicyStateStore(runtime / "stress90_policy_state.json")
+    store.lock_path.symlink_to(runtime / "missing-policy-lock-target")
+
+    for _ in range(2):
+        with pytest.raises(
+            Stress90BootstrapError,
+            match=r"existing Stress-90 policy state incident.*symlink.*lock",
+        ):
+            bootstrap_stress90(
+                runtime_dir=runtime,
+                through_day=through,
+                expectations=expectations,
+                write_artifacts=True,
+            )
+        assert store.lock_path.is_symlink()
+
+
 @pytest.mark.parametrize("sidecar", ["previous", "lineage", "lock"])
 def test_bootstrap_preflight_rejects_oi_sidecar_without_current(
     tmp_path: Path,
@@ -466,7 +576,7 @@ def test_bootstrap_final_oi_failure_preserves_incident_lineage(
         "stress90_bootstrap_seed.json",
         "stress90_policy_state.json",
     ):
-        assert not (runtime / name).exists()
+        assert (runtime / name).is_file()
 
     monkeypatch.setattr(
         Stress90OiEvidenceStore,
@@ -483,6 +593,148 @@ def test_bootstrap_final_oi_failure_preserves_incident_lineage(
             expectations=expectations,
             write_artifacts=True,
         )
+
+
+@pytest.mark.parametrize("failure_point", ["after-current-replace", "current-parent-fsync"])
+def test_bootstrap_ambiguous_oi_commit_preserves_all_prerequisites_byte_exact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    import os
+
+    import afuture.directional_stress90_oi_runtime as oi_runtime
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    oi_path = runtime / "stress90_oi_evidence.json"
+    prerequisite_paths = tuple(
+        runtime / name
+        for name in (
+            "directional_ohlc_cache.json",
+            "directional_activity.json",
+            "stress90_bootstrap_seed.json",
+            "stress90_policy_state.json",
+        )
+    )
+    before_oi: dict[Path, bytes] = {}
+    real_save_state = Stress90OiEvidenceStore.save_state
+    real_replace = os.replace
+    real_fsync_parent = Stress90OiEvidenceStore._fsync_parent_directory
+    current_replaced = False
+
+    def save_state_with_snapshot(self, *args, **kwargs):
+        before_oi.update({path: path.read_bytes() for path in prerequisite_paths})
+        return real_save_state(self, *args, **kwargs)
+
+    def replace_then_maybe_fail(source, target):
+        nonlocal current_replaced
+        real_replace(source, target)
+        if Path(target) == oi_path:
+            current_replaced = True
+            if failure_point == "after-current-replace":
+                raise OSError("injected failure after OI current replace")
+
+    def fsync_parent_then_maybe_fail(path: Path) -> None:
+        if current_replaced and failure_point == "current-parent-fsync":
+            raise OSError("injected failure at OI current parent fsync")
+        real_fsync_parent(path)
+
+    monkeypatch.setattr(Stress90OiEvidenceStore, "save_state", save_state_with_snapshot)
+    monkeypatch.setattr(oi_runtime.os, "replace", replace_then_maybe_fail)
+    monkeypatch.setattr(
+        Stress90OiEvidenceStore,
+        "_fsync_parent_directory",
+        staticmethod(fsync_parent_then_maybe_fail),
+    )
+
+    with pytest.raises(Stress90BootstrapError, match="failed to persist"):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+
+    assert before_oi
+    assert {path: path.read_bytes() for path in prerequisite_paths} == before_oi
+    store = Stress90OiEvidenceStore(oi_path)
+    assert store.path.is_file()
+    assert store.lineage_path.is_file()
+    assert store.lock_path.is_file()
+
+    monkeypatch.setattr(oi_runtime.os, "replace", real_replace)
+    monkeypatch.setattr(
+        Stress90OiEvidenceStore,
+        "_fsync_parent_directory",
+        staticmethod(real_fsync_parent),
+    )
+    with pytest.raises(Stress90BootstrapError, match="refuses to overwrite existing live"):
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+    assert {path: path.read_bytes() for path in prerequisite_paths} == before_oi
+
+
+def test_bootstrap_cleanup_errors_do_not_mask_primary_failure_or_stop_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        bootstrap_stress90,
+    )
+    from afuture.directional_stress90_state import Stress90SeedStore
+
+    runtime = tmp_path / "runtime"
+    through, expectations = _write_synthetic_archive(runtime)
+    expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    seed_path = runtime / "stress90_bootstrap_seed.json"
+    ohlc_path = runtime / "directional_ohlc_cache.json"
+    activity_path = runtime / "directional_activity.json"
+    real_save = Stress90SeedStore.save_new
+    real_unlink = Path.unlink
+    cleanup_attempts: list[Path] = []
+
+    def save_then_fail(self, *args, **kwargs):
+        real_save(self, *args, **kwargs)
+        raise OSError("injected primary seed persistence failure")
+
+    def unlink_with_one_failure(self, *args, **kwargs):
+        if self in {seed_path, ohlc_path, activity_path}:
+            cleanup_attempts.append(self)
+        if self == seed_path:
+            raise OSError("injected seed cleanup failure")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Stress90SeedStore, "save_new", save_then_fail)
+    monkeypatch.setattr(Path, "unlink", unlink_with_one_failure)
+    with pytest.raises(
+        Stress90BootstrapError,
+        match=r"failed to persist.*rollback cleanup errors.*seed cleanup failure",
+    ) as caught:
+        bootstrap_stress90(
+            runtime_dir=runtime,
+            through_day=through,
+            expectations=expectations,
+            write_artifacts=True,
+        )
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert str(caught.value.__cause__) == "injected primary seed persistence failure"
+    assert set(cleanup_attempts) == {seed_path, ohlc_path, activity_path}
+    assert seed_path.is_file()
+    assert not ohlc_path.exists()
+    assert not activity_path.exists()
 
 
 def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(

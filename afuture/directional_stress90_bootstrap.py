@@ -9,6 +9,8 @@ dry runs and can never be promoted accidentally.
 
 from __future__ import annotations
 
+import os
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -96,6 +98,44 @@ _CHINA = ZoneInfo("Asia/Shanghai")
 
 class Stress90BootstrapError(RuntimeError):
     """The historical bootstrap evidence cannot be trusted or replayed."""
+
+
+@dataclass(frozen=True)
+class _OwnedPathSnapshot:
+    """Pre-bootstrap identity and bytes for one owner-declared durable path."""
+
+    kind: str
+    payload: bytes | str | None
+
+    @property
+    def absent(self) -> bool:
+        return self.kind == "missing"
+
+
+def _snapshot_owned_path(path: Path) -> _OwnedPathSnapshot:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return _OwnedPathSnapshot("missing", None)
+    if stat.S_ISLNK(metadata.st_mode):
+        return _OwnedPathSnapshot("symlink", os.readlink(path))
+    if not stat.S_ISREG(metadata.st_mode):
+        return _OwnedPathSnapshot("non-regular", None)
+    return _OwnedPathSnapshot("regular", path.read_bytes())
+
+
+def _require_supported_owned_paths(
+    *,
+    owner: str,
+    paths: Mapping[str, Path],
+    snapshots: Mapping[Path, _OwnedPathSnapshot],
+) -> None:
+    for role, path in paths.items():
+        snapshot = snapshots[path]
+        if snapshot.kind in {"symlink", "non-regular"}:
+            raise Stress90BootstrapError(
+                f"existing Stress-90 {owner} incident: {snapshot.kind} {role} path is not supported"
+            )
 
 
 @dataclass(frozen=True)
@@ -570,17 +610,49 @@ def bootstrap_stress90(
         oi_evidence_path = runtime / "stress90_oi_evidence.json"
         ohlc_cache_path = runtime / "directional_ohlc_cache.json"
         activity_path = runtime / "directional_activity.json"
-        rollback_safe_artifact_paths = (
-            seed_path,
-            state_path,
-            ohlc_cache_path,
-            activity_path,
-        )
-        if any(path.exists() for path in rollback_safe_artifact_paths):
-            raise Stress90BootstrapError(
-                "Stress-90 bootstrap refuses to overwrite existing live artifacts"
-            )
+        ohlc_store = DirectionalOHLCCacheStore(ohlc_cache_path)
+        activity_store = DirectionalActivityStore(activity_path)
+        seed_store = Stress90SeedStore(seed_path)
+        policy_store = Stress90PolicyStateStore(state_path)
         oi_store = Stress90OiEvidenceStore(oi_evidence_path)
+
+        owned_paths = {
+            "OHLC cache": {"current": ohlc_store.path},
+            "activity": {"current": activity_store.path},
+            "bootstrap seed": {"current": seed_store.path},
+            "policy state": {
+                "current": policy_store.path,
+                "previous": policy_store.previous_path,
+                "lock": policy_store.lock_path,
+            },
+            "OI evidence": {
+                "current": oi_store.path,
+                "previous": oi_store.previous_path,
+                "lineage": oi_store.lineage_path,
+                "lock": oi_store.lock_path,
+            },
+        }
+        try:
+            owned_snapshots = {
+                path: _snapshot_owned_path(path)
+                for paths in owned_paths.values()
+                for path in paths.values()
+            }
+        except OSError as exc:
+            raise Stress90BootstrapError(
+                "failed to snapshot existing Stress-90 bootstrap artifacts"
+            ) from exc
+
+        for owner, paths in owned_paths.items():
+            _require_supported_owned_paths(
+                owner=owner,
+                paths=paths,
+                snapshots=owned_snapshots,
+            )
+
+        # OI is the bootstrap commit authority.  Inspect it first so an
+        # ambiguous final write is reported as the durable OI incident rather
+        # than as an ordinary prerequisite overwrite.
         try:
             existing_oi = oi_store.load_record()
         except OiEvidenceIntegrityError as exc:
@@ -588,6 +660,46 @@ def bootstrap_stress90(
         if existing_oi is not None:
             raise Stress90BootstrapError(
                 "Stress-90 bootstrap refuses to overwrite existing live OI evidence"
+            )
+
+        try:
+            existing_ohlc = ohlc_store.load(STRESS90_POLICY.products)
+        except DirectionalOHLCCacheIntegrityError as exc:
+            raise Stress90BootstrapError(f"existing Stress-90 OHLC cache incident: {exc}") from exc
+        if existing_ohlc is not None:
+            raise Stress90BootstrapError(
+                "Stress-90 bootstrap refuses to overwrite existing live OHLC cache"
+            )
+
+        try:
+            activity_store.load_state()
+        except DirectionalActivityIntegrityError as exc:
+            raise Stress90BootstrapError(f"existing Stress-90 activity incident: {exc}") from exc
+        if not owned_snapshots[activity_store.path].absent:
+            raise Stress90BootstrapError(
+                "Stress-90 bootstrap refuses to overwrite existing live activity"
+            )
+
+        if not owned_snapshots[seed_store.path].absent:
+            try:
+                seed_store.load_required(expected_source_manifest=source_manifest)
+            except Stress90StateIntegrityError as exc:
+                raise Stress90BootstrapError(
+                    f"existing Stress-90 bootstrap seed incident: {exc}"
+                ) from exc
+            raise Stress90BootstrapError(
+                "Stress-90 bootstrap refuses to overwrite existing live bootstrap seed"
+            )
+
+        try:
+            existing_policy = policy_store.load_record()
+        except Stress90StateIntegrityError as exc:
+            raise Stress90BootstrapError(
+                f"existing Stress-90 policy state incident: {exc}"
+            ) from exc
+        if existing_policy is not None:
+            raise Stress90BootstrapError(
+                "Stress-90 bootstrap refuses to overwrite existing live policy state"
             )
         through_rows = bars.loc[
             bars["datetime"].dt.normalize() == through,
@@ -633,19 +745,24 @@ def bootstrap_stress90(
         completed_open = open_prices.loc[open_prices.index <= through]
         completed_close = close_prices.loc[close_prices.index <= through]
         activity = _through_day_activity_snapshot(specific_contracts, through)
+        attempted_prerequisite_paths: list[Path] = []
+        oi_phase_started = False
         try:
-            DirectionalOHLCCacheStore(ohlc_cache_path).save(
+            attempted_prerequisite_paths.append(ohlc_store.path)
+            ohlc_store.save(
                 STRESS90_POLICY.products,
                 completed_open,
                 completed_close,
             )
-            DirectionalActivityStore(activity_path).save(activity)
-            Stress90SeedStore(seed_path).save_new(seed)
-            Stress90PolicyStateStore(state_path).save(
-                Stress90PolicyState.from_seed(seed, prepared_decision=prepared)
-            )
+            attempted_prerequisite_paths.append(activity_store.path)
+            activity_store.save(activity)
+            attempted_prerequisite_paths.append(seed_store.path)
+            seed_store.save_new(seed)
+            attempted_prerequisite_paths.append(policy_store.path)
+            policy_store.save(Stress90PolicyState.from_seed(seed, prepared_decision=prepared))
             # OI lineage is the bootstrap commit point.  All prior sequence-1
             # artifacts remain independently rollback-safe until this final write.
+            oi_phase_started = True
             oi_store.save_state(Stress90OiEvidenceState(completed=(bridge,)))
         except (
             OSError,
@@ -654,13 +771,23 @@ def bootstrap_stress90(
             OiEvidenceIntegrityError,
             Stress90StateIntegrityError,
         ) as exc:
-            # Never delete OI current or sidecars once lineage creation may have
-            # started.  Seed/policy/cache/activity sequence-1 files are safe to
-            # roll back because OI is the final bootstrap authority commit.
-            for artifact_path in rollback_safe_artifact_paths:
-                artifact_path.unlink(missing_ok=True)
-                artifact_path.with_name(f"{artifact_path.name}.prev").unlink(missing_ok=True)
-            raise Stress90BootstrapError("failed to persist Stress-90 bootstrap artifacts") from exc
+            cleanup_errors: list[str] = []
+            if not oi_phase_started:
+                # These owners create only their sequence-1 current during bootstrap.
+                # Sidecars belong to their owner stores and are never inferred or erased.
+                for artifact_path in reversed(attempted_prerequisite_paths):
+                    if not owned_snapshots[artifact_path].absent:
+                        continue
+                    try:
+                        if artifact_path.is_symlink():
+                            raise OSError("refusing to remove unexpected symlink")
+                        artifact_path.unlink(missing_ok=True)
+                    except OSError as cleanup_exc:
+                        cleanup_errors.append(f"{artifact_path}: {cleanup_exc}")
+            message = "failed to persist Stress-90 bootstrap artifacts"
+            if cleanup_errors:
+                message += "; rollback cleanup errors: " + "; ".join(cleanup_errors)
+            raise Stress90BootstrapError(message) from exc
 
     return Stress90BootstrapResult(
         source_manifest=source_manifest,
