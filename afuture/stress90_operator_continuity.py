@@ -1062,17 +1062,40 @@ class Stress90OperatorContinuityStore:
                 "operator continuity operation ID was reused for a different request"
             )
         if current is not None:
-            if (
-                evidence.source_ctp_trading_day != current.evidence.target_ctp_trading_day
-                or evidence.source_trading_day_evidence_sequence
-                != current.target_trading_day_evidence_sequence
-                or evidence.source_trading_day_evidence_checksum
+            direct_continuation = bool(
+                evidence.source_ctp_trading_day == current.evidence.target_ctp_trading_day
+                and evidence.source_trading_day_evidence_sequence
+                == current.target_trading_day_evidence_sequence
+                and evidence.source_trading_day_evidence_checksum
+                == current.target_trading_day_evidence_checksum
+                and evidence.source_account_registry_receipt_digest
+                == current.target_registry_receipt_digest
+                and evidence.account_identity_digest == current.evidence.account_identity_digest
+                and evidence.account_epoch == current.evidence.account_epoch
+                and evidence.canonical_runtime == current.evidence.canonical_runtime
+                and evidence.canonical_runtime_digest == current.evidence.canonical_runtime_digest
+            )
+            same_account_rebase_reanchor = bool(
+                evidence.account_identity_digest == current.evidence.account_identity_digest
+                and evidence.canonical_runtime == current.evidence.canonical_runtime
+                and evidence.canonical_runtime_digest == current.evidence.canonical_runtime_digest
+                and evidence.account_epoch != current.evidence.account_epoch
+                and evidence.source_ctp_trading_day >= current.evidence.target_ctp_trading_day
+                and evidence.source_trading_day_evidence_sequence
+                > current.target_trading_day_evidence_sequence
+                and evidence.source_trading_day_evidence_checksum
                 != current.target_trading_day_evidence_checksum
-                or evidence.source_account_registry_receipt_digest
+                and evidence.source_account_registry_receipt_digest
                 != current.target_registry_receipt_digest
-            ):
+                and evidence.source_generic_state_sequence
+                > current.evidence.source_generic_state_sequence
+                and evidence.source_policy_state_sequence
+                > current.evidence.source_policy_state_sequence
+            )
+            if not direct_continuation and not same_account_rebase_reanchor:
                 raise Stress90OperatorContinuityError(
-                    "operator continuity source does not match the current receipt chain"
+                    "operator continuity source does not match the current receipt chain or a "
+                    "verified same-account rebase reanchor"
                 )
         self._create_lineage_marker()
         record = _new_record(
