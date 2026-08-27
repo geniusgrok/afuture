@@ -51,6 +51,10 @@ jobs:
           if not block.startswith('replace_once('):
               raise RuntimeError('shared activation signature patch is not replace_once')
           block = block.replace('replace_once(', 'replace_all(', 1)
+          block = block.replace(
+              'risk_overlay_digest: str,\\n    operator_reason: str,\\n',
+              'risk_overlay_digest: str = "",\\n    operator_reason: str,\\n',
+          )
           block = block[:-2] + '    minimum=2,\n)\n'
           text = text[:start] + block + text[end:]
 
@@ -66,11 +70,13 @@ jobs:
           start, end = call_bounds(text, marker_needle)
           marker_patch = r'''replace_once(
               "afuture/directional_policy_activation.py",
-              '        "bootstrap_seed_digest": bootstrap_seed_digest,\n        "account_identity_digest": account_identity_digest,\n        "operator_reason": operator_reason.strip(),\n',
+              '        "bootstrap_seed_digest": bootstrap_seed_digest,\n        "account_identity_digest": account_identity_digest,\n        "operator_reason": operator_reason.strip(),\n    }\n',
               '        "bootstrap_seed_digest": bootstrap_seed_digest,\n'
               '        "account_identity_digest": account_identity_digest,\n'
-              '        "risk_overlay_digest": risk_overlay_digest,\n'
-              '        "operator_reason": operator_reason.strip(),\n',
+              '        "operator_reason": operator_reason.strip(),\n'
+              '    }\n'
+              '    if risk_overlay_digest:\n'
+              '        marker["risk_overlay_digest"] = risk_overlay_digest\n',
           )
           '''.replace('          ', '')
           text = text[:start] + marker_patch + text[end:]
@@ -127,6 +133,10 @@ jobs:
                   'text = text[:idx] + transition_block.lstrip("\\n") + text[idx:]',
               '    "tests/test_directional_policy_activation.py",':
                   '    "tests/test_directional_stress90_activation.py",\n    "tests/test_stress90_lifecycle_transaction.py",',
+              '    "    if _SHA256.fullmatch(risk_overlay_digest or \\"\\") is None:\\n"':
+                  '    "    if risk_overlay_digest and _SHA256.fullmatch(risk_overlay_digest or \\"\\") is None:\\n"',
+              '    "    account_epoch: str,\\n    risk_overlay_digest: str,\\n    current_lots: Mapping[str, int],\\n",':
+                  '    "    account_epoch: str,\\n    risk_overlay_digest: str = \\"0000000000000000000000000000000000000000000000000000000000000000\\",\\n    current_lots: Mapping[str, int],\\n",',
           }
           for old, new in replacements.items():
               if text.count(old) != 1:
