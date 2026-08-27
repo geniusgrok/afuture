@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -330,7 +333,7 @@ def test_pending_cleanup_failure_restores_or_retains_a_durable_blocker(
         nonlocal directory_fsyncs
         if stat.S_ISDIR(os.fstat(descriptor).st_mode):
             directory_fsyncs += 1
-            if directory_fsyncs == 4 or (restoration_fsync_failure and directory_fsyncs == 5):
+            if directory_fsyncs == 7 or (restoration_fsync_failure and directory_fsyncs == 8):
                 real_fsync(descriptor)
                 raise OSError(f"injected directory fsync {directory_fsyncs}")
         real_fsync(descriptor)
@@ -340,10 +343,123 @@ def test_pending_cleanup_failure_restores_or_retains_a_durable_blocker(
     with pytest.raises(DirectionalOHLCCacheIntegrityError, match=expected):
         store.save(products, open_prices, close)
 
-    assert directory_fsyncs >= 5
+    assert directory_fsyncs >= 8
     assert store.pending_path.exists() or store.cleanup_guard_path.exists()
     with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending"):
         store.load(products)
+
+
+@pytest.mark.parametrize(
+    ("crash_directory_fsync", "expected_blocker"),
+    [(4, "cleanup"), (6, "terminal")],
+)
+def test_process_death_after_last_witness_unlink_leaves_fresh_context_blocked(
+    tmp_path: Path,
+    crash_directory_fsync: int,
+    expected_blocker: str,
+) -> None:
+    from afuture.directional_ohlc_cache import (
+        DirectionalOHLCCacheIntegrityError,
+        DirectionalOHLCCacheStore,
+    )
+    from afuture.directional_ohlc_refresh import refresh_directional_ohlc_cache
+
+    products = ("A", "M")
+    open_prices, close = _frames(products)
+    cache_path = tmp_path / "directional_ohlc_cache.json"
+    observation_path = tmp_path / "cleanup-boundary.json"
+    DirectionalOHLCCacheStore(cache_path).save(
+        products,
+        open_prices.iloc[:-1],
+        close.iloc[:-1],
+    )
+    crash_script = """
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+
+cache_path = Path(sys.argv[1])
+observation_path = Path(sys.argv[2])
+crash_directory_fsync = int(sys.argv[3])
+products = ("A", "M")
+index = pd.date_range("2026-01-01", periods=140, freq="D")
+values = [[100.0 + row + column for column in range(2)] for row in range(140)]
+close = pd.DataFrame(values, index=index, columns=products)
+store = DirectionalOHLCCacheStore(cache_path)
+real_fsync = os.fsync
+directory_fsyncs = 0
+
+def terminate_before_cleanup_directory_fsync(descriptor: int) -> None:
+    global directory_fsyncs
+    if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        directory_fsyncs += 1
+        if directory_fsyncs == crash_directory_fsync:
+            observation_path.write_text(
+                json.dumps(
+                    {
+                        "directory_fsyncs": directory_fsyncs,
+                        "pending": store.pending_path.exists(),
+                        "cleanup": store.cleanup_guard_path.exists(),
+                        "terminal": store.terminal_guard_path.exists(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os._exit(91)
+    real_fsync(descriptor)
+
+os.fsync = terminate_before_cleanup_directory_fsync
+store.save(products, close - 1.0, close)
+os._exit(92)
+"""
+
+    crashed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            crash_script,
+            str(cache_path),
+            str(observation_path),
+            str(crash_directory_fsync),
+        ],
+        check=False,
+    )
+
+    assert crashed.returncode == 91
+    observation = json.loads(observation_path.read_text(encoding="utf-8"))
+    assert observation["directory_fsyncs"] == crash_directory_fsync
+    assert observation[expected_blocker] is True
+    assert any(observation[name] for name in ("pending", "cleanup", "terminal"))
+    reopened = DirectionalOHLCCacheStore(cache_path)
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending"):
+        reopened.load(products)
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending"):
+        reopened.save(products, open_prices, close)
+
+    provider_calls = 0
+
+    def provider_factory():
+        nonlocal provider_calls
+        provider_calls += 1
+        return SimpleNamespace(
+            load=lambda _products: SimpleNamespace(open=open_prices, close=close)
+        )
+
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending"):
+        refresh_directional_ohlc_cache(
+            reopened,
+            provider_factory=provider_factory,
+            products=products,
+            current_ctp_trading_day="20260525",
+            authoritative_ctp_trading_day="20260525",
+        )
+    assert provider_calls == 0
 
 
 def test_cache_refresh_cli_reacquires_lease_when_authoritative_account_changes(

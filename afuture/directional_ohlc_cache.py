@@ -262,6 +262,14 @@ class DirectionalOHLCCacheStore:
     def cleanup_guard_path(self) -> Path:
         return self.pending_path.with_name(self.pending_path.name + ".cleanup")
 
+    @property
+    def terminal_guard_path(self) -> Path:
+        return self.pending_path.with_name(self.pending_path.name + ".terminal")
+
+    @property
+    def completion_path(self) -> Path:
+        return self.pending_path.with_name(self.pending_path.name + ".complete")
+
     @contextmanager
     def authority(self) -> Iterator[Path]:
         """Hold canonical ownership from path validation through durable commit."""
@@ -275,7 +283,11 @@ class DirectionalOHLCCacheStore:
             yield canonical
 
     def _require_safe_paths_unlocked(self) -> None:
-        for witness_path in (self.pending_path, self.cleanup_guard_path):
+        for witness_path in (
+            self.pending_path,
+            self.cleanup_guard_path,
+            self.terminal_guard_path,
+        ):
             try:
                 pending = os.lstat(witness_path)
             except FileNotFoundError:
@@ -650,41 +662,88 @@ class DirectionalOHLCCacheStore:
         payload: bytes,
     ) -> None:
         try:
-            visible = os.stat(self.pending_path, follow_symlinks=False)
-            if not stat.S_ISREG(visible.st_mode) or (visible.st_dev, visible.st_ino) != identity:
-                raise OSError("pending witness identity changed")
+            self._require_witness_identity_unlocked(
+                self.pending_path,
+                identity,
+                "pending witness",
+            )
             os.link(
                 self.pending_path,
                 self.cleanup_guard_path,
                 follow_symlinks=False,
             )
-            guard = os.stat(self.cleanup_guard_path, follow_symlinks=False)
-            if not stat.S_ISREG(guard.st_mode) or (guard.st_dev, guard.st_ino) != identity:
-                raise OSError("pending cleanup guard identity changed")
+            self._require_witness_identity_unlocked(
+                self.cleanup_guard_path,
+                identity,
+                "pending cleanup guard",
+            )
             self._fsync_parent()
             os.unlink(self.pending_path)
-            try:
-                os.unlink(self.cleanup_guard_path)
-                self._fsync_parent()
-            except BaseException as cleanup_exc:
-                if not self.cleanup_guard_path.exists():
-                    try:
-                        self._create_witness_unlocked(self.cleanup_guard_path, payload)
-                    except BaseException as restoration_exc:
-                        failure = DirectionalOHLCCacheIntegrityError(
-                            "directional OHLC pending witness cleanup restoration failed "
-                            f"after cleanup failure: {cleanup_exc!r}"
-                        )
-                        raise failure from restoration_exc
-                raise
+            self._fsync_parent()
+            os.link(
+                self.cleanup_guard_path,
+                self.terminal_guard_path,
+                follow_symlinks=False,
+            )
+            self._require_witness_identity_unlocked(
+                self.terminal_guard_path,
+                identity,
+                "pending terminal guard",
+            )
+            self._fsync_parent()
+            os.unlink(self.cleanup_guard_path)
+            self._fsync_parent()
+            os.replace(self.terminal_guard_path, self.completion_path)
+            self._require_witness_identity_unlocked(
+                self.completion_path,
+                identity,
+                "pending completion receipt",
+            )
+            self._fsync_parent()
         except BaseException as exc:
-            if isinstance(exc, DirectionalOHLCCacheIntegrityError) and (
-                "restoration failed" in str(exc)
-            ):
-                raise
+            try:
+                blocker_exists = self._blocking_witness_exists_unlocked()
+            except BaseException as inspection_exc:
+                failure = DirectionalOHLCCacheIntegrityError(
+                    "directional OHLC pending witness cleanup restoration failed "
+                    f"after cleanup failure: {exc!r}"
+                )
+                raise failure from inspection_exc
+            if not blocker_exists:
+                try:
+                    self._create_witness_unlocked(self.cleanup_guard_path, payload)
+                except BaseException as restoration_exc:
+                    failure = DirectionalOHLCCacheIntegrityError(
+                        "directional OHLC pending witness cleanup restoration failed "
+                        f"after cleanup failure: {exc!r}"
+                    )
+                    raise failure from restoration_exc
             raise DirectionalOHLCCacheIntegrityError(
                 "directional OHLC pending witness cleanup failed; witness preserved"
             ) from exc
+
+    def _require_witness_identity_unlocked(
+        self,
+        path: Path,
+        identity: tuple[int, int],
+        label: str,
+    ) -> None:
+        visible = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISREG(visible.st_mode) or (visible.st_dev, visible.st_ino) != identity:
+            raise OSError(f"{label} identity changed")
+
+    def _blocking_witness_exists_unlocked(self) -> bool:
+        for path in (
+            self.pending_path,
+            self.cleanup_guard_path,
+            self.terminal_guard_path,
+        ):
+            try:
+                os.lstat(path)
+            except FileNotFoundError:
+                continue
+            return True
+        return False
 
     def _require_descriptor_current_unlocked(self, descriptor: int) -> None:
         opened = os.fstat(descriptor)
