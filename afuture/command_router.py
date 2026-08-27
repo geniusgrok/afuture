@@ -116,16 +116,16 @@ def _run_new(command: str, argv: list[str]) -> int:
 
             config = load_config(args.config, require_ctp_credentials=False)
             _require_stress90_config(config, command)
-            result = create_stress90_bundle(
+            bundle_result = create_stress90_bundle(
                 runtime_dir=args.runtime_dir,
                 output_path=args.output,
             )
             _canonical_print(
                 {
                     "created": True,
-                    "production_ready": result.production_ready,
-                    "bundle_digest": result.bundle_digest,
-                    "archive_sha256": result.archive_sha256,
+                    "production_ready": bundle_result.production_ready,
+                    "bundle_digest": bundle_result.bundle_digest,
+                    "archive_sha256": bundle_result.archive_sha256,
                     "orders_sent": 0,
                     "cancels_sent": 0,
                 }
@@ -134,13 +134,16 @@ def _run_new(command: str, argv: list[str]) -> int:
         if command == "stress90-bundle-verify":
             from .stress90_bootstrap_bundle import verify_stress90_bundle
 
-            result = verify_stress90_bundle(args.bundle, require_production=True)
+            bundle_verification = verify_stress90_bundle(
+                args.bundle,
+                require_production=True,
+            )
             _canonical_print(
                 {
                     "passed": True,
-                    "production_ready": result.production_ready,
-                    "bundle_digest": result.bundle_digest,
-                    "archive_sha256": result.archive_sha256,
+                    "production_ready": bundle_verification.production_ready,
+                    "bundle_digest": bundle_verification.bundle_digest,
+                    "archive_sha256": bundle_verification.archive_sha256,
                     "orders_sent": 0,
                     "cancels_sent": 0,
                 }
@@ -200,26 +203,26 @@ def _run_new(command: str, argv: list[str]) -> int:
                 shadow=bool(args.shadow_account),
                 explicit=args.runtime_dir,
             )
-            result = require_matching_deployment(
+            deployment_result = require_matching_deployment(
                 config=config,
                 config_path=args.config,
                 runtime_dir=runtime,
                 account_registry_path=config.account_registry_path,
                 expected_role="shadow" if args.shadow_account else "live",
             )
-            _canonical_print(result.to_dict())
+            _canonical_print(deployment_result.to_dict())
             return 0
         if command == "backup-runtime":
             from .runtime_backup import backup_runtime
 
             config = load_config(args.config, require_ctp_credentials=False)
             _require_stress90_config(config, command)
-            result = backup_runtime(
+            backup_result = backup_runtime(
                 config=config,
                 config_path=args.config,
                 output_path=args.output,
             )
-            _canonical_print(result.to_dict())
+            _canonical_print(backup_result.to_dict())
             return 0
         if command == "verify-backup":
             from .runtime_backup import verify_backup_archive
@@ -229,13 +232,13 @@ def _run_new(command: str, argv: list[str]) -> int:
         if command == "restore-runtime":
             from .runtime_backup import restore_runtime
 
-            result = restore_runtime(
+            restore_result = restore_runtime(
                 backup_path=args.backup,
                 runtime_dir=args.runtime_dir,
                 account_registry_path=args.account_registry_path,
                 registry_staging_path=args.registry_staging_path,
             )
-            _canonical_print(result)
+            _canonical_print(restore_result)
             return 0
         raise RuntimeError(f"unhandled routed command: {command}")
     except Exception as exc:
