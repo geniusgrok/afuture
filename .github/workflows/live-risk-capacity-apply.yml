@@ -23,6 +23,44 @@ jobs:
           python-version: "3.10"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]" -c constraints/core-dev.txt
+      - name: Patch runner for duplicate activation signatures
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/live-risk-capacity-apply.py')
+          lines = path.read_text(encoding='utf-8').splitlines()
+
+          def enclosing_call(index: int) -> tuple[int, int]:
+              start = index
+              while start >= 0 and lines[start].strip() not in {'replace_once(', 'replace_all('}:
+                  start -= 1
+              if start < 0:
+                  raise RuntimeError('replacement call start not found')
+              depth = 0
+              for end in range(start, len(lines)):
+                  depth += lines[end].count('(') - lines[end].count(')')
+                  if end > start and depth == 0:
+                      return start, end
+              raise RuntimeError('replacement call end not found')
+
+          first = next(
+              i for i, line in enumerate(lines)
+              if 'bootstrap_seed_digest: str,\\n    account_identity_digest: str,\\n    operator_reason: str,\\n' in line
+          )
+          start, end = enclosing_call(first)
+          lines[start] = lines[start].replace('replace_once(', 'replace_all(')
+          lines.insert(end, '    minimum=2,')
+
+          later = next(
+              i for i, line in enumerate(lines)
+              if 'account_identity_digest: str,\\n    operator_reason: str,\\n    activation_confirmation: str,\\n' in line
+          )
+          start2, end2 = enclosing_call(later)
+          del lines[start2:end2 + 1]
+
+          path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
       - name: Apply TDD implementation and focused verification
         run: python .github/live-risk-capacity-apply.py
       - name: Commit verified checkpoint and remove runner
