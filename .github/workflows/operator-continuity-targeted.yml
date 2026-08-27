@@ -49,6 +49,7 @@ jobs:
       - name: Targeted quality
         run: |
           if [ -f afuture/stress90_operator_continuity.py ]; then
+            python -m ruff check --fix afuture/stress90_operator_continuity.py tests/test_stress90_operator_continuity.py
             python -m ruff check afuture/stress90_operator_continuity.py tests/test_stress90_operator_continuity.py
             python -m mypy afuture/stress90_operator_continuity.py
           fi
