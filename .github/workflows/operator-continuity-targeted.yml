@@ -24,6 +24,13 @@ jobs:
       - name: Apply development patch when present
         run: |
           if [ -f tools/operator_continuity_patch.py ]; then
+            python - <<'PY'
+          from pathlib import Path
+          path = Path("tools/operator_continuity_patch.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace("    if new in text:\n", "    if new and new in text:\n", 1)
+          path.write_text(text, encoding="utf-8")
+          PY
             python tools/operator_continuity_patch.py
           fi
       - name: Targeted tests
