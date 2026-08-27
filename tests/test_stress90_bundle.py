@@ -85,7 +85,11 @@ def test_archive_rejects_unknown_member() -> None:
 
 
 def test_archive_rejects_member_and_total_size_limits() -> None:
-    from afuture.secure_archive import ArchiveSecurityError, create_deterministic_archive, read_deterministic_archive
+    from afuture.secure_archive import (
+        ArchiveSecurityError,
+        create_deterministic_archive,
+        read_deterministic_archive,
+    )
 
     payload = create_deterministic_archive({"a": b"1234", "b": b"5678"})
     with pytest.raises(ArchiveSecurityError, match="member.*size"):
@@ -105,9 +109,15 @@ def test_archive_rejects_member_and_total_size_limits() -> None:
 
 
 def test_archive_rejects_truncation_append_and_tamper() -> None:
-    from afuture.secure_archive import ArchiveSecurityError, create_deterministic_archive, read_deterministic_archive
+    from afuture.secure_archive import (
+        ArchiveSecurityError,
+        create_deterministic_archive,
+        read_deterministic_archive,
+    )
 
-    payload = create_deterministic_archive({"manifest.json": b'{"a":1}', "seed.json": b"seed"})
+    payload = create_deterministic_archive(
+        {"manifest.json": b'{"a":1}', "seed.json": b"seed"}
+    )
     variants = [
         payload[:-512],
         payload + b"garbage",
@@ -122,8 +132,9 @@ def test_archive_rejects_truncation_append_and_tamper() -> None:
 
 
 def test_bundle_rejects_non_official_expectations(tmp_path: Path) -> None:
-    from afuture.directional_stress90_bootstrap import Stress90BootstrapExpectations
     from afuture.stress90_bundle import Stress90BundleError, create_stress90_bundle
+
+    from afuture.directional_stress90_bootstrap import Stress90BootstrapExpectations
 
     expectations = Stress90BootstrapExpectations(
         input_sha256={
@@ -158,7 +169,11 @@ def test_test_fixture_bundle_is_never_production_ready(tmp_path: Path) -> None:
 
 
 def test_production_verify_rejects_test_fixture_bundle(tmp_path: Path) -> None:
-    from afuture.stress90_bundle import Stress90BundleError, build_test_fixture_bundle, verify_stress90_bundle
+    from afuture.stress90_bundle import (
+        Stress90BundleError,
+        build_test_fixture_bundle,
+        verify_stress90_bundle,
+    )
 
     path = tmp_path / "fixture.tar"
     build_test_fixture_bundle(path)
@@ -167,7 +182,11 @@ def test_production_verify_rejects_test_fixture_bundle(tmp_path: Path) -> None:
 
 
 def test_bundle_install_rejects_nonempty_runtime(tmp_path: Path) -> None:
-    from afuture.stress90_bundle import Stress90BundleError, build_test_fixture_bundle, install_stress90_bundle
+    from afuture.stress90_bundle import (
+        Stress90BundleError,
+        build_test_fixture_bundle,
+        install_stress90_bundle,
+    )
 
     bundle = tmp_path / "fixture.tar"
     build_test_fixture_bundle(bundle)
