@@ -40,6 +40,7 @@ class DirectionalConfig:
     products: tuple[str, ...] = ()
     exchanges: tuple[str, ...] = ("DCE", "CZCE", "SHFE", "INE")
     max_gross_leverage: float = MAX_GROSS_LEVERAGE
+    live_risk_scale: float = 1.0
     min_days_to_expiry: int = 20
     min_volume: float = 1000.0
     min_open_interest: float = 5000.0
@@ -65,11 +66,14 @@ class DirectionalConfig:
             require_integer(getattr(self, field_name), f"directional.{field_name}")
         for field_name in (
             "max_gross_leverage",
+            "live_risk_scale",
             "min_volume",
             "min_open_interest",
             "signal_max_age_hours",
         ):
             require_finite_number(getattr(self, field_name), f"directional.{field_name}")
+        if not 0.0 < self.live_risk_scale <= 1.0:
+            raise ValueError("directional.live_risk_scale must be finite and in (0, 1]")
         if not self.enabled:
             return
         if self.policy not in {"", "execution_aligned", "stress90"}:

@@ -22,27 +22,28 @@ products = [
 ]
 exchanges = ["DCE", "CZCE", "SHFE", "INE"]
 max_gross_leverage = 2.0
+live_risk_scale = 0.05
 min_days_to_expiry = 20
 min_volume = 1000
 min_open_interest = 5000
-max_contract_volume = 35
+max_contract_volume = 1
 # Stress-90 applies the immutable per-product first-entry manifest; this compatibility
 # window is retained for legacy manager validation and is not an entry-chasing license.
 rebalance_window = "20:55-09:10"
 signal_max_age_hours = 96
 
 [risk]
-max_margin_ratio = 0.35
-max_daily_loss_ratio = 0.05
-max_total_drawdown_ratio = 0.30
+max_margin_ratio = 0.10
+max_daily_loss_ratio = 0.01
+max_total_drawdown_ratio = 0.05
 max_open_pairs = 1
-max_contract_volume = 35
+max_contract_volume = 1
 max_quote_age_seconds = 10
 max_leg_skew_seconds = 2.0
 expiry_blackout_days = 5
-min_available_ratio = 0.25
+min_available_ratio = 0.80
 margin_estimate_buffer = 1.25
-max_orders_per_minute = 60
+max_orders_per_minute = 10
 min_depth_multiple = 2.0
 max_bid_ask_ticks = 4
 limit_distance_ticks = 3

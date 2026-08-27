@@ -129,6 +129,15 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="只读检查本地运行状态、证据文件和磁盘空间")
     status.add_argument("--config", required=True)
 
+    capacity = sub.add_parser(
+        "stress90-capacity-report", help="零报单诊断 Stress-90 账户容量与整数代表性"
+    )
+    capacity.add_argument("--config", required=True)
+    capacity.add_argument("--confirm-live", action="store_true")
+    capacity.add_argument("--output", default="")
+    capacity.add_argument("--startup-timeout", type=float, default=60.0)
+    capacity.add_argument("--snapshot-wait", type=float, default=12.0)
+
     stress90_bootstrap = sub.add_parser(
         "stress90-bootstrap",
         help="从五个固定输入重放并创建不可变 Stress-90 seed/state",
@@ -1413,6 +1422,108 @@ def _run_doctor(config, args) -> int:
             lease.release()
 
 
+def _run_stress90_capacity_report(config, args) -> int:
+    """Build a fresh CTP-backed Stress-90 capacity report with no write capability."""
+
+    from .broker.ctp import CtpBroker
+    from .directional_activity import (
+        DirectionalActivityStore,
+        select_contracts_from_activity,
+        validate_directional_activity_snapshot,
+    )
+    from .operations import build_doctor_report
+    from .stress90_capacity import build_stress90_capacity_payload
+
+    _validate_stress90_lifecycle_config(config)
+    _require_production_confirmation(config, args)
+    broker = CtpBroker(config.ctp)
+    broker.start()
+    try:
+        _wait_until_ready(broker, args.startup_timeout)
+        wait_for_fresh_snapshot(broker, args.snapshot_wait)
+        account = broker.get_account()
+        account.validate()
+        trading_day = broker.get_trading_day()
+        if account.trading_day != trading_day:
+            raise RuntimeError("capacity report account/CTP trading day mismatch")
+        catalog = broker.get_contract_catalog()
+        positions = broker.get_positions()
+        active_orders = broker.get_active_orders()
+        snapshot = DirectionalActivityStore(
+            Path(config.state_path).with_name("directional_activity.json")
+        ).load()
+        if snapshot is None:
+            raise RuntimeError("capacity report requires completed directional activity")
+        validate_directional_activity_snapshot(snapshot)
+        catalog_by_symbol = {item.symbol: item for item in catalog}
+        preferred = {
+            catalog_by_symbol[position.symbol].product.upper(): position.symbol
+            for position in positions
+            if not position.empty and position.symbol in catalog_by_symbol
+        }
+        selected = select_contracts_from_activity(
+            config.directional,
+            catalog,
+            snapshot,
+            datetime.strptime(trading_day, "%Y%m%d").date(),
+            preferred_symbols=preferred,
+        )
+        selected_symbols = {item.symbol for item in selected.values()}
+        selected_symbols.update(position.symbol for position in positions if not position.empty)
+        symbols = sorted(selected_symbols)
+        quotes = _collect_doctor_quotes(
+            broker,
+            {
+                symbol: catalog_by_symbol[symbol]
+                for symbol in symbols
+                if symbol in catalog_by_symbol
+            },
+            trading_day=trading_day,
+            timeout_seconds=args.snapshot_wait,
+        )
+        metadata = broker.get_live_contract_specs(symbols, config.metadata_timeout_seconds)
+        session_valid = False
+        session_detail = "read-only complete session ownership evidence is unavailable"
+        try:
+            refresh = broker.refresh_session_activity
+            evidence = refresh(timeout_seconds=max(0.1, float(args.snapshot_wait)))
+            from .broker.ctp_session_query import validate_ctp_session_activity_ownership
+
+            local_session_trades = tuple(broker.get_session_trades())
+            validate_ctp_session_activity_ownership(evidence, local_session_trades)
+            session_valid = True
+            session_detail = "read-only complete CTP session activity ownership verified"
+        except Exception as exc:
+            session_detail = f"read-only session ownership failed: {exc}"
+        report = build_doctor_report(
+            config,
+            broker_ready=broker.is_ready(),
+            fresh_snapshot=True,
+            trading_day=trading_day,
+            account=account,
+            positions=positions,
+            active_order_count=len(active_orders),
+            catalog=catalog,
+            requested_symbols=symbols,
+            metadata=metadata,
+            quotes=quotes,
+            session_trade_ownership_valid=session_valid,
+            session_trade_ownership_detail=session_detail,
+        )
+        payload = build_stress90_capacity_payload(
+            report,
+            account_identity_digest=broker.get_account_identity_digest(),
+            ctp_trading_day=trading_day,
+        )
+        if args.output:
+            _write_json(payload, args.output)
+        else:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if payload["hard_safety_passed"] else 2
+    finally:
+        broker.stop()
+
+
 def _run_status(config) -> int:
     """Print local operational facts without initializing logging or a broker."""
     from .operations import build_local_status
@@ -1702,6 +1813,11 @@ def _apply_stress90_account_runtime_registry_transition(
     source_epoch = lifecycle_transaction.source_account_epoch
     target_epoch = lifecycle_transaction.policy_target.live_account_epoch
     operation = lifecycle_transaction.operation
+    if operation == "risk_overlay_reactivation":
+        registry.require_binding(
+            target_account, runtime_dir, lifecycle_transaction.policy_target.live_account_epoch
+        )
+        return
     if operation == "activation":
         if source_epoch or not target_epoch:
             raise RuntimeError("Stress-90 activation registry lineage is invalid")
@@ -1759,6 +1875,9 @@ def _apply_stress90_trading_day_evidence_transition(
 
     account = lifecycle_transaction.account_identity_digest
     epoch = lifecycle_transaction.policy_target.live_account_epoch
+    if lifecycle_transaction.operation == "risk_overlay_reactivation":
+        # No account/runtime lineage changed; existing TDE remains authoritative.
+        return
     if not account or not epoch:
         raise RuntimeError("Stress-90 lifecycle evidence target identity is missing")
     registry = AccountRuntimeRegistry(_stress90_account_registry_path(config))
@@ -3483,6 +3602,257 @@ def _run_stress90_oi_collect(config, args) -> int:
         lease.release()
 
 
+def _stress90_risk_overlay_reactivation_required(config, args) -> bool:
+    from .stress90_risk_overlay import stress90_risk_overlay_digest
+
+    paths = _stress90_lifecycle_paths(
+        config,
+        args.runtime_dir,
+        shadow_account=bool(getattr(args, "shadow_account", False)),
+    )
+    record = StateStore(paths["state"]).load_record()
+    if record is None:
+        return False
+    marker = record.state.strategy_states.get("directional_policy_identity")
+    return bool(
+        isinstance(marker, dict)
+        and marker.get("policy_id") == "stress90"
+        and marker.get("risk_overlay_digest")
+        != stress90_risk_overlay_digest(config.directional, config.risk)
+    )
+
+
+def _run_stress90_risk_overlay_reactivation(config, args) -> int:
+    from .broker.ctp import CtpBroker
+    from .directional_policy_activation import rebind_stress90_risk_overlay_identity
+    from .directional_stress90_execution import Stress90ExecutionIntentStore
+    from .directional_stress90_state import Stress90PolicyStateStore, Stress90SeedStore
+    from .journal import AuditJournal
+    from .reconcile import compare_positions
+    from .runtime_lease import AccountExclusiveRuntimeLease
+    from .stress90_activation_permit import Stress90ActivationPermitStore
+    from .stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        Stress90LifecycleTransactionStore,
+        require_matching_stress90_lifecycle_account_evidence,
+    )
+    from .stress90_risk_overlay import stress90_risk_overlay_digest
+
+    operation_nonce = _require_lifecycle_operation_nonce(args)
+    shadow_account = bool(getattr(args, "shadow_account", False))
+    paths = _stress90_lifecycle_paths(
+        config,
+        args.runtime_dir,
+        shadow_account=shadow_account,
+    )
+    store = StateStore(paths["state"])
+    policy_store = Stress90PolicyStateStore(paths["runtime"] / "stress90_policy_state.json")
+    seed_store = Stress90SeedStore(paths["runtime"] / "stress90_bootstrap_seed.json")
+    lifecycle_store = Stress90LifecycleTransactionStore(
+        paths["runtime"] / "stress90_lifecycle_transaction.json"
+    )
+    live_broker = CtpBroker(config.ctp)
+    broker = (
+        _build_persistent_shadow_broker(
+            config,
+            live_broker,
+            paths["runtime"] / "shadow_broker_state.json",
+        )
+        if shadow_account
+        else live_broker
+    )
+    account_identity = broker.get_account_identity_digest()
+    lease = AccountExclusiveRuntimeLease(
+        paths["runtime"], account_identity, role="stress90-risk-overlay-reactivation"
+    )
+    lease.acquire()
+    try:
+        state_record = store.load_required_record()
+        if state_record.legacy:
+            raise RuntimeError("risk-overlay reactivation rejects legacy generic state")
+        state = state_record.state
+        policy_record = policy_store.load_required_record()
+        seed = seed_store.load_required()
+        if policy_record.state.bootstrap_seed_digest != seed.seed_digest:
+            raise RuntimeError("risk-overlay reactivation seed/policy identity mismatch")
+        if (
+            policy_record.state.live_account_identity_digest != account_identity
+            or policy_record.state.live_account_epoch is None
+        ):
+            raise RuntimeError("risk-overlay reactivation account lineage mismatch")
+        current_digest = stress90_risk_overlay_digest(config.directional, config.risk)
+        marker = state.strategy_states.get("directional_policy_identity")
+        if not isinstance(marker, dict) or marker.get("policy_id") != "stress90":
+            raise RuntimeError("risk-overlay reactivation requires activated Stress-90 identity")
+        if marker.get("risk_overlay_digest") == current_digest:
+            raise RuntimeError("Stress-90 risk overlay is already bound to current configuration")
+        _require_stress90_account_runtime_registry_binding(
+            config,
+            runtime_dir=paths["runtime"],
+            broker=broker,
+            policy_state=policy_record.state,
+        )
+        _require_stress90_order_journal_full_audit(paths["runtime"])
+        _configure_stress90_lifecycle_order_journal(broker, paths["runtime"])
+        _seed_state_aware_ctp_broker(
+            live_broker,
+            None if shadow_account else state,
+            reject_ambiguous=not shadow_account,
+        )
+        broker.start()
+    except BaseException:
+        try:
+            broker.stop()
+        finally:
+            lease.release()
+        raise
+    try:
+        _wait_until_ready(broker, args.startup_timeout)
+        wait_for_fresh_snapshot(broker, args.snapshot_wait)
+        mechanical = _require_lifecycle_mechanical_snapshot(
+            broker,
+            runtime_dir=paths["runtime"],
+            timeout_seconds=max(0.1, float(args.snapshot_wait)),
+        )
+        account = mechanical.account
+        trading_day = mechanical.trading_day
+        positions = list(mechanical.positions)
+        active_orders = list(mechanical.active_orders)
+        _require_verified_lifecycle_account_snapshot(
+            account, operation="Stress-90 risk-overlay reactivation"
+        )
+        local_positions = store.positions_from_state(state)
+        reconciliation = compare_positions(local_positions, positions)
+        _require_lifecycle_resume_safety(
+            state,
+            broker_positions=positions,
+            local_positions=local_positions,
+            active_orders=active_orders,
+            reconciliation_matched=reconciliation.matched,
+            operation="Stress-90 risk-overlay reactivation",
+        )
+        if (
+            trading_day != state.trading_day
+            or state.last_account_trading_day != trading_day
+            or account.trading_day != trading_day
+            or float(account.equity) != float(state.last_account_equity)
+            or float(account.deposit) != float(state.last_account_deposit)
+            or float(account.withdrawal) != float(state.last_account_withdrawal)
+            or account.settlement_id != state.last_account_settlement_id
+        ):
+            raise RuntimeError("risk-overlay reactivation fresh account snapshot changed")
+        intent_record = Stress90ExecutionIntentStore(
+            paths["runtime"] / "stress90_execution_intent.json"
+        ).load_record()
+        if (
+            intent_record is not None
+            and not intent_record.retired
+            and intent_record.intent.target_trading_day >= trading_day
+        ):
+            raise RuntimeError(
+                "risk-overlay reactivation is blocked by a current/future execution intent; converge or retire it under existing semantics first"
+            )
+        target = rebind_stress90_risk_overlay_identity(
+            state,
+            risk_overlay_digest=current_digest,
+            operator_reason=args.operator_reason,
+        )
+        existing = lifecycle_store.load()
+        if existing is not None and existing.status == "prepared":
+            if (
+                existing.operation != "risk_overlay_reactivation"
+                or existing.operation_nonce != operation_nonce
+                or existing.account_identity_digest != account_identity
+                or existing.trading_day != trading_day
+            ):
+                raise Stress90LifecycleTransactionError(
+                    "pending lifecycle transaction does not match risk-overlay reactivation"
+                )
+            require_matching_stress90_lifecycle_account_evidence(
+                existing, account, account_identity_digest=account_identity
+            )
+            _require_lifecycle_operator_reason(existing, args.operator_reason)
+            pending = existing
+        else:
+            pending = None
+        _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
+        Stress90ActivationPermitStore(
+            paths["runtime"] / "stress90_activation_permit.json"
+        ).invalidate("Stress-90 risk overlay configuration changed")
+
+        def prepare():
+            if pending is not None:
+                return pending
+            return lifecycle_store.begin(
+                operation="risk_overlay_reactivation",
+                generic_source=state_record,
+                policy_source=policy_record,
+                generic_target=target,
+                policy_target=policy_record.state,
+                trading_day=trading_day,
+                account_identity_digest=account_identity,
+                account_snapshot=account,
+                operation_nonce=operation_nonce,
+                operator_reason=args.operator_reason,
+            )
+
+        completed = _commit_stress90_lifecycle_under_broker_fence(
+            broker,
+            transaction_store=lifecycle_store,
+            generic_store=store,
+            policy_store=policy_store,
+            prepare_transaction=prepare,
+            apply_registry_transition=lambda transaction: (
+                _apply_stress90_account_runtime_registry_transition(
+                    config,
+                    runtime_dir=paths["runtime"],
+                    lifecycle_transaction=transaction,
+                )
+            ),
+            apply_evidence_transition=lambda transaction: (
+                _apply_stress90_trading_day_evidence_transition(
+                    config,
+                    runtime_dir=paths["runtime"],
+                    lifecycle_transaction=transaction,
+                )
+            ),
+            precommit_check=lambda: _require_lifecycle_mechanical_snapshot_current(
+                broker, mechanical
+            ),
+        )
+        _record_lifecycle_completion_once(
+            AuditJournal(paths["journal"]),
+            "stress90_risk_overlay_reactivation_completed",
+            completed.transaction_id,
+            {
+                "trading_day": trading_day,
+                "operation_nonce": completed.operation_nonce,
+                "account_identity_digest": account_identity,
+                "risk_overlay_digest": current_digest,
+                "kill_switch_remains_active": True,
+            },
+        )
+        print(
+            json.dumps(
+                {
+                    "reactivated": True,
+                    "risk_overlay_only": True,
+                    "risk_overlay_digest": current_digest,
+                    "runtime_mode": RuntimeMode.HALTED.value,
+                    "kill_switch": True,
+                    "orders_sent": 0,
+                    "cancels_sent": 0,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    finally:
+        broker.stop()
+        lease.release()
+
+
 def _run_stress90_activate(config, args) -> int:
     """Explicitly bind generic runtime state to one immutable bootstrap identity."""
 
@@ -3520,6 +3890,8 @@ def _run_stress90_activate(config, args) -> int:
             "AFUTURE_STRESS90_ACTIVATION_ACK=I_CONFIRM_STRESS90_POLICY_ACTIVATION"
         )
     operation_nonce = _require_lifecycle_operation_nonce(args)
+    if _stress90_risk_overlay_reactivation_required(config, args):
+        return _run_stress90_risk_overlay_reactivation(config, args)
     shadow_account = bool(getattr(args, "shadow_account", False))
     paths = _stress90_lifecycle_paths(
         config,
@@ -3699,6 +4071,8 @@ def _run_stress90_activate(config, args) -> int:
             ),
             recent_daily_returns=([] if reactivating else state.recent_daily_returns),
         )
+        from .stress90_risk_overlay import stress90_risk_overlay_digest
+
         lifecycle_gates = {
             "broker_flat": not any(not position.empty for position in positions),
             "local_flat": not any(not position.empty for position in local_positions),
@@ -3706,6 +4080,7 @@ def _run_stress90_activate(config, args) -> int:
             "reconciled": reconciliation.matched,
             "bootstrap_seed_digest": seed.seed_digest,
             "account_identity_digest": account_identity_digest,
+            "risk_overlay_digest": stress90_risk_overlay_digest(config.directional, config.risk),
             "operator_reason": args.operator_reason,
         }
         if coordinator_reactivation:
@@ -6281,6 +6656,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return _run_doctor(config, args)
+
+    if args.command == "stress90-capacity-report":
+        return _run_stress90_capacity_report(config, args)
 
     if args.command == "stress90-activate":
         return _run_stress90_activate(config, args)

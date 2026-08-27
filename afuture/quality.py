@@ -123,6 +123,17 @@ class ExecutionQualityRecorder:
         stress90_reduction_plan: dict[str, int],
         stress90_opening_plan: dict[str, int],
         stress90_decision_digest: str,
+        stress90_risk_overlay_digest: str = "",
+        stress90_execution_intent_digest: str = "",
+        stress90_live_risk_scale: float = 1.0,
+        stress90_scaled_target: dict[str, float] | None = None,
+        stress90_scaled_integer_target: dict[str, int] | None = None,
+        stress90_raw_gross: float = 0.0,
+        stress90_scaled_gross: float = 0.0,
+        stress90_raw_turnover: float = 0.0,
+        stress90_scaled_turnover: float = 0.0,
+        stress90_scale_tracking_error: float = 0.0,
+        stress90_scale_zeroed_products: tuple[str, ...] = (),
     ) -> None:
         """Record the complete candidate-to-order transformation for one target day."""
 
@@ -163,6 +174,24 @@ class ExecutionQualityRecorder:
                     for name, values in lots.items()
                 },
                 "stress90_decision_digest": str(stress90_decision_digest),
+                "stress90_risk_overlay_digest": str(stress90_risk_overlay_digest),
+                "stress90_execution_intent_digest": str(stress90_execution_intent_digest),
+                "stress90_live_risk_scale": float(stress90_live_risk_scale),
+                "stress90_scaled_target": {
+                    str(key): float(value) for key, value in (stress90_scaled_target or {}).items()
+                },
+                "stress90_scaled_integer_target": {
+                    str(key): int(value)
+                    for key, value in (stress90_scaled_integer_target or {}).items()
+                },
+                "stress90_raw_gross": float(stress90_raw_gross),
+                "stress90_scaled_gross": float(stress90_scaled_gross),
+                "stress90_raw_turnover": float(stress90_raw_turnover),
+                "stress90_scaled_turnover": float(stress90_scaled_turnover),
+                "stress90_scale_tracking_error": float(stress90_scale_tracking_error),
+                "stress90_scale_zeroed_products": [
+                    str(item) for item in stress90_scale_zeroed_products
+                ],
             }
         )
 
@@ -341,6 +370,43 @@ class ExecutionQualityRecorder:
                 "median_completion_latency_ms": median(d_latency) if d_latency else 0.0,
                 "partial_count": sum(int(row.get("partial_count", 0)) for row in d_cycles),
                 "rejected_count": sum(int(row.get("rejected_count", 0)) for row in d_cycles),
+                "risk_overlay_digests": sorted(
+                    {
+                        str(row.get("stress90_risk_overlay_digest"))
+                        for row in stress90_decisions
+                        if row.get("stress90_risk_overlay_digest")
+                    }
+                ),
+                "execution_intent_digests": sorted(
+                    {
+                        str(row.get("stress90_execution_intent_digest"))
+                        for row in stress90_decisions
+                        if row.get("stress90_execution_intent_digest")
+                    }
+                ),
+                "raw_target_gross_total": sum(
+                    float(row.get("stress90_raw_gross", 0.0)) for row in stress90_decisions
+                ),
+                "scaled_target_gross_total": sum(
+                    float(row.get("stress90_scaled_gross", 0.0)) for row in stress90_decisions
+                ),
+                "raw_turnover_notional": sum(
+                    float(row.get("stress90_raw_turnover", 0.0)) for row in stress90_decisions
+                ),
+                "scaled_turnover_notional": sum(
+                    float(row.get("stress90_scaled_turnover", 0.0)) for row in stress90_decisions
+                ),
+                "scale_induced_tracking_error_total": sum(
+                    float(row.get("stress90_scale_tracking_error", 0.0))
+                    for row in stress90_decisions
+                ),
+                "scale_induced_zeroed_products": sorted(
+                    {
+                        str(product)
+                        for row in stress90_decisions
+                        for product in row.get("stress90_scale_zeroed_products", [])
+                    }
+                ),
             },
         }
 

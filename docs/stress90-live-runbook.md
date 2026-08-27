@@ -603,3 +603,20 @@ store 未拥有的 `.prev`，也不得覆盖调用前或并发证据。单个 cl
 扩大风险必须在极小真钱跨多个新发生交易日后由人工批准，并复核 actual cost、tracking error、concentration、partial/reject、latency、turnover、margin 和 drawdown。`112.100053%` 不是未来收益承诺，96-template pool 存在已观察历史 selection bias；新发生数据才是真正 forward evidence。
 
 即使以上代码和离线验证全部通过，只要目标机 CTP、Shadow、测试柜台和极小真钱证据未完成，结论仍是：**Stress-90 live wiring 已完成，但真实资金 activation gate 尚未完成。**
+
+## Commissioning scale, overlay reactivation and capacity report
+
+The repository live example now starts at `live_risk_scale=0.05` with one-lot caps and a materially tighter account envelope. This is only an execution-chain commissioning baseline. `live_risk_scale=1.0` retains current production sizing semantics; any smaller value multiplies survivor product weights before integer conversion, so a sufficiently small account/scale may legitimately produce an all-zero target.
+
+After changing scale or any bound risk field, do not start live. Keep `HALTED`, kill switch on, Broker/local flat, no active orders, and run a fresh reconcile. Then use `stress90-activate` with the normal strong activation confirmation and a new 64-hex operation id. The same lifecycle coordinator records a risk-overlay-only reactivation and invalidates the prior technical permit. Current/future execution intent blocks the rebind rather than being reinterpreted.
+
+Run the capacity diagnostic before Doctor permit issuance:
+
+```bash
+afuture stress90-capacity-report \
+  --config /secure/path/afuture.directional-stress90.toml \
+  --confirm-live \
+  --output /secure/path/stress90-capacity.json
+```
+
+The command sends and cancels zero orders. Exit code `2` means hard safety evidence failed. Review raw/scaled weights and gross, raw/scaled/margin/freeze/final lots, real fee/margin/tick/spread cost, 15bp compatibility, margin/cash ratios, clipped products, concentration and tracking error. Portfolio representation warnings are diagnostic only and never expand risk or product scope.

@@ -101,3 +101,9 @@ afuture recover-state \
 - 账户权益或可用资金出现无法解释的变化。
 
 生产上线前的逐项证据要求见 [`production-checklist.md`](production-checklist.md)。
+
+## Stress-90 risk overlay mismatch or capacity failure
+
+If status/Doctor reports `stress90_risk_overlay_identity` failed, do not delete state or edit the bound digest. Stop the runtime, keep it HALTED/kill-switched, finish or retire any current execution intent under its original digest, verify Broker/local flatness and zero active orders, reconcile, then run the explicit `stress90-activate` lifecycle to bind the new overlay. A smaller scale is still an identity change because old orders must retain their original interpretation.
+
+If `stress90-capacity-report` exits `2`, inspect `hard_safety_failures`, `risk_manager_preview`, missing contract capacity/cost evidence and clipped products. Missing margin or all-zero commission evidence is not treated as zero cost. Integer zeroing can be a valid safe target; it is not a reason to enlarge scale automatically.

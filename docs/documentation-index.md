@@ -83,3 +83,7 @@
 - [`docs/archive/development/specs/2026-08-25-solo-operations-hardening-design.md`](archive/development/specs/2026-08-25-solo-operations-hardening-design.md)
 
 开发记录可能包含未完成任务、草案代码或已被替代的假设。发生冲突时，以当前权威文档和当前研究证据为准。
+
+### Stress-90 commissioning diagnostics
+
+Risk-scale configuration and overlay identity are specified in `configuration.md` and `live-trading.md`; operational sequencing and the zero-order `stress90-capacity-report` are in `stress90-live-runbook.md`; production gates are in `production-checklist.md`; mismatch/fail-closed recovery is in `troubleshooting.md`.

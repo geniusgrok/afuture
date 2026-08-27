@@ -283,3 +283,9 @@ Stress-90 每个 target day 另记录 Base/OI/cost/survivor、HHI/prior median�
 当前离线压力研究结果来自固定历史输入和确定性账户模拟。它没有覆盖多年完整盘口排队、柜台限流、断线、逐日保证金、实际结算费率和极端行情冲击。后续代码已经完成可选 runtime wiring，但这不会改变历史证据中当时 `production_wiring=false` 的事实，也不会自动补齐现场证据。
 
 完整离线结果见 [`stress90-final-evidence.md`](stress90-final-evidence.md)，当前代码边界见 [`stress90-live-productionization.md`](stress90-live-productionization.md)，准确操作顺序见 [`stress90-live-runbook.md`](stress90-live-runbook.md)。`112.100053%` 不是未来收益承诺，96-template pool 存在已观察历史 selection bias；真实资金上线条件以 [`production-checklist.md`](production-checklist.md) 为准。
+
+## Stress-90 risk-overlay change control
+
+Never edit Stress-90 live risk fields under a RUNNING process. A configured/bound risk-overlay digest mismatch blocks live startup and invalidates the meaning of an old technical permit. To rebind, stop in `HALTED` with kill switch enabled, require Broker/local flatness, zero active orders and a fresh reconcile, then run the existing `stress90-activate` command with a new operation id and activation confirmation. The lifecycle coordinator changes only the overlay marker for this case; account epoch, strategy returns and historical candidate identity are not reset.
+
+Before first money, run `stress90-capacity-report`. It performs no order or cancel calls and does not checkpoint generic/policy/intent state. Missing real margin or commission evidence is a hard failure. Representation warnings never loosen hard risk limits or automatically increase scale.

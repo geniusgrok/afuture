@@ -267,3 +267,14 @@
 以下外部证据项不得因代码或 CI 绿色而勾选：目标机 CTP ABI、多日 Shadow、测试柜台、真实手续费、真实保证金、FAK 部分成交、真实断线重连、极小真钱和扩大资金。
 
 `112.100053%` 不是未来收益承诺。96-template pool 存在已观察历史 selection bias；当前新发生数据才是真正 forward evidence。准确 commissioning 命令见 [`stress90-live-runbook.md`](stress90-live-runbook.md)。
+
+## Stress-90 commissioning overlay and account capacity
+
+- [ ] `status` and `doctor` show identical configured and bound risk-overlay digests.
+- [ ] `directional.live_risk_scale` is an intentional commissioning value; no value above `1` is accepted.
+- [ ] Any risk-overlay change was rebound only from `HALTED`, kill-switch=true, Broker/local flat, zero active orders and fresh reconciliation.
+- [ ] A prior same-day execution intent was not reinterpreted under a new overlay.
+- [ ] `stress90-capacity-report` returned `orders_sent=0` and `cancels_sent=0` using real CTP margin/commission evidence.
+- [ ] One-lot notional, buffered long/short margin, one-tick/spread cost and 15bp compatibility were reviewed for every selected non-zero product.
+- [ ] Integer zeroing, margin/funding clipping, HHI/drawdown freezes, product HHI, largest product share and tracking error are acceptable for commissioning.
+- [ ] The commissioning example was adjusted from measured one-lot stress and actual account equity; no warning was used to relax hard risk.

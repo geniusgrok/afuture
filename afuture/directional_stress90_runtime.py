@@ -51,6 +51,10 @@ from .execution_aligned_runtime import ExecutionAlignedDirectionalPortfolioManag
 from .metadata import validate_contract_metadata
 from .models import Offset, Order, OrderRequest, OrderSide
 from .position import PositionBook
+from .stress90_risk_overlay import (
+    scale_stress90_product_weights,
+    stress90_risk_overlay_digest,
+)
 
 
 class Stress90DataUnavailableError(RuntimeError):
@@ -291,6 +295,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
         if (config.policy or "stress90") != "stress90":
             raise ValueError("Stress-90 manager policy identity mismatch")
         _validate_hard_risk_envelope(config, risk_manager.config)
+        self.risk_overlay_digest = stress90_risk_overlay_digest(config, risk_manager.config)
         self.policy_state_store = Stress90PolicyStateStore(policy_state_path)
         self.seed_store = Stress90SeedStore(seed_path)
         self.execution_intent_store = Stress90ExecutionIntentStore(
@@ -692,6 +697,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             product_weights=prepared.survivor_weights,
             product_ticks=product_ticks,
             specs=specs,
+            live_risk_scale=self.config.live_risk_scale,
             incumbent_ticks={
                 symbol: self._ticks[symbol] for symbol in current_lots if symbol in self._ticks
             },
@@ -720,7 +726,9 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             persisted_freeze_authorized_lots=persisted_freeze_authorized_lots,
         )
 
-    def _record_stress90_quality(self, prepared, stages: Stress90LotStages) -> None:
+    def _record_stress90_quality(
+        self, prepared, stages: Stress90LotStages, *, current_lots, intent
+    ) -> None:
         if self.quality is None:
             return
         has_decision = getattr(self.quality, "has_stress90_decision", None)
@@ -734,6 +742,39 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             0.0,
             1.0
             - float(state.completed_account_wealth) / float(state.completed_account_high_watermark),
+        )
+        scaled_weights = scale_stress90_product_weights(
+            prepared.survivor_weights, self.config.live_risk_scale
+        )
+        ticks_by_symbol = dict(self._ticks)
+        lot_notionals = {
+            symbol: float(ticks_by_symbol[symbol].mid_price) * float(self._specs[symbol].multiplier)
+            for symbol in set(stages.raw_integer_lots)
+            | set(stages.scaled_integer_lots)
+            | set(current_lots)
+            if symbol in ticks_by_symbol and symbol in self._specs
+        }
+        raw_turnover = sum(
+            abs(stages.raw_integer_lots.get(symbol, 0) - int(current_lots.get(symbol, 0)))
+            * lot_notionals.get(symbol, 0.0)
+            for symbol in set(stages.raw_integer_lots) | set(current_lots)
+        )
+        scaled_turnover = sum(
+            abs(stages.scaled_integer_lots.get(symbol, 0) - int(current_lots.get(symbol, 0)))
+            * lot_notionals.get(symbol, 0.0)
+            for symbol in set(stages.scaled_integer_lots) | set(current_lots)
+        )
+        selected_products = {
+            item.product.upper()
+            for item in self._catalog
+            if item.symbol in stages.scaled_integer_lots
+        }
+        zeroed = tuple(
+            sorted(
+                product
+                for product, value in scaled_weights.items()
+                if abs(value) > 1e-15 and product not in selected_products
+            )
         )
         record_decision(
             target_trading_day=prepared.target_trading_day,
@@ -755,6 +796,22 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             stress90_reduction_plan=stages.reductions,
             stress90_opening_plan=stages.openings,
             stress90_decision_digest=prepared.daily_decision_digest,
+            stress90_risk_overlay_digest=self.risk_overlay_digest,
+            stress90_execution_intent_digest=intent.source_digest,
+            stress90_live_risk_scale=self.config.live_risk_scale,
+            stress90_scaled_target=scaled_weights,
+            stress90_scaled_integer_target=stages.scaled_integer_lots,
+            stress90_raw_gross=sum(
+                abs(float(value)) for value in prepared.survivor_weights.values()
+            ),
+            stress90_scaled_gross=sum(abs(float(value)) for value in scaled_weights.values()),
+            stress90_raw_turnover=raw_turnover,
+            stress90_scaled_turnover=scaled_turnover,
+            stress90_scale_tracking_error=sum(
+                abs(float(prepared.survivor_weights[product]) - scaled_weights[product])
+                for product in scaled_weights
+            ),
+            stress90_scale_zeroed_products=zeroed,
         )
 
     def maybe_rebalance(self, now: datetime) -> DirectionalActionResult:
@@ -820,6 +877,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
                         authorization_kind == "candidate"
                         and intent_record is not None
                         and intent_matches_account(intent_record.intent)
+                        and intent_record.intent.risk_overlay_digest == self.risk_overlay_digest
                         and intent_record.intent.target_trading_day == current
                         and getattr(identity, "daily_decision_digest", None)
                         == intent_record.intent.daily_decision_digest
@@ -862,6 +920,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
                         and (
                             intent_record is None
                             or not intent_matches_account(intent_record.intent)
+                            or intent_record.intent.risk_overlay_digest != self.risk_overlay_digest
                             or entry.daily_decision_digest
                             != intent_record.intent.daily_decision_digest
                             or entry.execution_intent_digest != intent_record.intent.source_digest
@@ -987,6 +1046,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             daily_decision_digest=prepared.daily_decision_digest,
             account_identity_digest=account_identity,
             account_epoch=account_epoch,
+            risk_overlay_digest=self.risk_overlay_digest,
             current_lots=current_lots,
             margin_fitted_lots=initial.margin_fitted_lots,
             freeze_authorized_lots=initial.final_frozen_lots,
@@ -1068,7 +1128,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             entry_blocked_products=blocked_products,
         )
         self._last_lot_stages = stages
-        self._record_stress90_quality(prepared, stages)
+        self._record_stress90_quality(prepared, stages, current_lots=current_lots, intent=intent)
         target_gross = sum(abs(float(value)) for value in prepared.survivor_weights.values())
         signal_day = str(prepared.input_days["completed_close"])
         if stages.reductions:

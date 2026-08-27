@@ -13,13 +13,17 @@ STRESS90_ACTIVATION_CONFIRMATION = "I_CONFIRM_STRESS90_POLICY_ACTIVATION"
 DIRECTIONAL_POLICY_MIGRATION_CONFIRMATION = "I_CONFIRM_DIRECTIONAL_POLICY_MIGRATION"
 POLICY_IDENTITY_STATE_KEY = "directional_policy_identity"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_STRESS90_MARKER_FIELDS = {
+_LEGACY_STRESS90_MARKER_FIELDS = {
     "policy_id",
     "policy_definition_digest",
     "products_manifest_digest",
     "bootstrap_seed_digest",
     "account_identity_digest",
     "operator_reason",
+}
+_STRESS90_MARKER_FIELDS = {
+    *_LEGACY_STRESS90_MARKER_FIELDS,
+    "risk_overlay_digest",
 }
 _EXECUTION_ALIGNED_MARKER_FIELDS = {
     "policy_id",
@@ -44,6 +48,7 @@ def activate_stress90_policy(
     reconciled: bool,
     bootstrap_seed_digest: str,
     account_identity_digest: str,
+    risk_overlay_digest: str = "",
     operator_reason: str,
     strong_confirmation: str,
 ) -> RuntimeState:
@@ -71,6 +76,8 @@ def activate_stress90_policy(
         raise RuntimeError("Stress-90 activation bootstrap identity is invalid")
     if _SHA256.fullmatch(account_identity_digest or "") is None:
         raise RuntimeError("Stress-90 activation account identity is invalid")
+    if risk_overlay_digest and _SHA256.fullmatch(risk_overlay_digest or "") is None:
+        raise RuntimeError("Stress-90 activation risk overlay identity is invalid")
 
     existing_marker = state.strategy_states.get(POLICY_IDENTITY_STATE_KEY)
     if existing_marker is not None:
@@ -81,7 +88,10 @@ def activate_stress90_policy(
         # immutable definition, bootstrap, product universe, or account differs.
         existing_policy_id = existing_marker.get("policy_id")
         if existing_policy_id == STRESS90_POLICY.policy_id:
-            if set(existing_marker) != _STRESS90_MARKER_FIELDS:
+            if set(existing_marker) not in (
+                _STRESS90_MARKER_FIELDS,
+                _LEGACY_STRESS90_MARKER_FIELDS,
+            ):
                 raise RuntimeError("Stress-90 policy identity marker is invalid")
             require_directional_policy_identity(
                 state,
@@ -133,6 +143,8 @@ def activate_stress90_policy(
         "account_identity_digest": account_identity_digest,
         "operator_reason": operator_reason.strip(),
     }
+    if risk_overlay_digest:
+        marker["risk_overlay_digest"] = risk_overlay_digest
     strategy_states = {key: dict(value) for key, value in state.strategy_states.items()}
     strategy_states[POLICY_IDENTITY_STATE_KEY] = marker
     return replace(
@@ -150,6 +162,7 @@ def require_directional_policy_identity(
     products_manifest_digest: str = "",
     bootstrap_seed_digest: str | None = None,
     account_identity_digest: str | None = None,
+    risk_overlay_digest: str | None = None,
 ) -> None:
     """Fail closed on switches; only legacy execution-aligned state may lack a marker."""
 
@@ -180,6 +193,13 @@ def require_directional_policy_identity(
         raise RuntimeError(
             "directional policy bootstrap identity mismatch; explicit activation is required"
         )
+    if risk_overlay_digest is not None:
+        if _SHA256.fullmatch(risk_overlay_digest or "") is None:
+            raise RuntimeError("directional risk overlay identity is invalid")
+        if marker.get("risk_overlay_digest") != risk_overlay_digest:
+            raise RuntimeError(
+                "directional risk overlay identity mismatch; explicit HALTED activation/reactivation is required"
+            )
     if account_identity_digest is not None:
         if _SHA256.fullmatch(account_identity_digest or "") is None:
             raise RuntimeError("directional Broker account identity is unavailable")
@@ -187,6 +207,53 @@ def require_directional_policy_identity(
             raise RuntimeError(
                 "directional account identity mismatch; explicit HALTED rebase is required"
             )
+
+
+def rebind_stress90_risk_overlay_identity(
+    state: RuntimeState,
+    *,
+    risk_overlay_digest: str,
+    operator_reason: str,
+) -> RuntimeState:
+    """Rebind only the production risk overlay after the existing HALTED lifecycle gates."""
+
+    if (
+        state.runtime_mode != RuntimeMode.HALTED.value
+        or not state.kill_switch
+        or not state.reconciled
+    ):
+        raise RuntimeError("Stress-90 risk overlay reactivation requires HALTED reconciled state")
+    if _SHA256.fullmatch(risk_overlay_digest or "") is None:
+        raise RuntimeError("Stress-90 risk overlay reactivation digest is invalid")
+    if not isinstance(operator_reason, str) or not operator_reason.strip():
+        raise RuntimeError("Stress-90 risk overlay reactivation operator reason is required")
+    marker = state.strategy_states.get(POLICY_IDENTITY_STATE_KEY)
+    if (
+        not isinstance(marker, dict)
+        or set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
+        or marker.get("policy_id") != STRESS90_POLICY.policy_id
+        or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
+        or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
+        or _SHA256.fullmatch(str(marker.get("bootstrap_seed_digest", ""))) is None
+        or _SHA256.fullmatch(str(marker.get("account_identity_digest", ""))) is None
+    ):
+        raise RuntimeError("Stress-90 risk overlay source identity is invalid")
+    strategy_states = {key: dict(value) for key, value in state.strategy_states.items()}
+    strategy_states[POLICY_IDENTITY_STATE_KEY] = {
+        **marker,
+        "risk_overlay_digest": risk_overlay_digest,
+        "operator_reason": operator_reason.strip(),
+    }
+    return replace(
+        state,
+        strategy_states=strategy_states,
+        kill_switch=True,
+        kill_reason="Stress-90 risk overlay rebound; fresh Doctor permit remains required",
+        runtime_mode=RuntimeMode.HALTED.value,
+        reconciled=True,
+        metadata_verified=False,
+        directional_daily_circuit_day="",
+    )
 
 
 def rebind_stress90_runtime_account_identity(
@@ -203,7 +270,7 @@ def rebind_stress90_runtime_account_identity(
     marker = state.strategy_states.get(POLICY_IDENTITY_STATE_KEY)
     if (
         not isinstance(marker, dict)
-        or set(marker) != _STRESS90_MARKER_FIELDS
+        or set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
         or marker.get("policy_id") != STRESS90_POLICY.policy_id
         or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
         or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
@@ -248,7 +315,7 @@ def migrate_stress90_to_execution_aligned(
     marker = state.strategy_states.get(POLICY_IDENTITY_STATE_KEY)
     if (
         not isinstance(marker, dict)
-        or set(marker) != _STRESS90_MARKER_FIELDS
+        or set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
         or marker.get("policy_id") != STRESS90_POLICY.policy_id
         or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
         or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
@@ -289,6 +356,7 @@ def reactivate_stress90_policy(
     reconciled: bool,
     bootstrap_seed_digest: str,
     account_identity_digest: str,
+    risk_overlay_digest: str = "",
     operator_reason: str,
     activation_confirmation: str,
     rebase_confirmation: str,
@@ -325,6 +393,7 @@ def reactivate_stress90_policy(
         reconciled=reconciled,
         bootstrap_seed_digest=bootstrap_seed_digest,
         account_identity_digest=account_identity_digest,
+        risk_overlay_digest=risk_overlay_digest,
         operator_reason=operator_reason,
         strong_confirmation=activation_confirmation,
     )

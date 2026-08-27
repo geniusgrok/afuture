@@ -45,6 +45,7 @@ _LINEAGE_MARKER = b'{"kind":"afuture.stress90-lifecycle-transaction-lineage","sc
 _OPERATIONS = {
     "activation",
     "reactivation",
+    "risk_overlay_reactivation",
     "account_rebase",
     "settlement_roll_forward",
     "stress90_to_execution_aligned",
@@ -63,13 +64,17 @@ _SETTLEMENT_EVIDENCE_FIELDS = {
 }
 _POLICY_IDENTITY_STATE_KEY = "directional_policy_identity"
 _CRASH_FILL_RECOVERY_STATE_KEY = "stress90_crash_fill_recovery"
-_STRESS90_MARKER_FIELDS = {
+_LEGACY_STRESS90_MARKER_FIELDS = {
     "policy_id",
     "policy_definition_digest",
     "products_manifest_digest",
     "bootstrap_seed_digest",
     "account_identity_digest",
     "operator_reason",
+}
+_STRESS90_MARKER_FIELDS = {
+    *_LEGACY_STRESS90_MARKER_FIELDS,
+    "risk_overlay_digest",
 }
 _EXECUTION_ALIGNED_MARKER_FIELDS = {
     "policy_id",
@@ -111,6 +116,12 @@ _REBASE_GENERIC_MUTABLE_FIELDS = {
     "last_trade_id",
     "recent_trade_ids",
     "recent_daily_returns",
+}
+_RISK_OVERLAY_REACTIVATION_GENERIC_MUTABLE_FIELDS = {
+    "kill_reason",
+    "metadata_verified",
+    "directional_daily_circuit_day",
+    "strategy_states",
 }
 _MIGRATION_GENERIC_MUTABLE_FIELDS = {
     "kill_reason",
@@ -1068,7 +1079,7 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
                 "settlement roll-forward account lineage/continuity invariant mismatch"
             )
         if (
-            set(marker) != _STRESS90_MARKER_FIELDS
+            set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
             or marker.get("policy_id") != STRESS90_POLICY.policy_id
             or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
             or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
@@ -1120,6 +1131,48 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
             "non-settlement lifecycle transaction contains continuity evidence"
         )
 
+    if transaction.operation == "risk_overlay_reactivation":
+        if (
+            not transaction.source_account_epoch
+            or policy.live_account_epoch != transaction.source_account_epoch
+            or transaction.source_account_identity_digest != account_identity
+            or policy.live_account_identity_digest != account_identity
+            or set(marker) != _STRESS90_MARKER_FIELDS
+            or marker.get("policy_id") != STRESS90_POLICY.policy_id
+            or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
+            or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
+            or marker.get("bootstrap_seed_digest") != policy.bootstrap_seed_digest
+            or _SHA.fullmatch(str(marker.get("risk_overlay_digest", ""))) is None
+            or marker.get("operator_reason") != transaction.operator_reason
+            or transaction.verified_deposit_delta != 0.0
+            or transaction.verified_withdrawal_delta != 0.0
+        ):
+            raise Stress90LifecycleTransactionError(
+                "risk-overlay reactivation lifecycle identity mismatch"
+            )
+        evidence = transaction.account_evidence
+        if (
+            str(evidence["trading_day"]) != transaction.trading_day
+            or generic.trading_day != transaction.trading_day
+            or generic.last_account_trading_day != transaction.trading_day
+            or generic.last_account_equity
+            != _finite_float(evidence["equity"], "account evidence equity")
+            or generic.last_account_deposit
+            != _nonnegative_finite(evidence["deposit"], "account evidence deposit")
+            or generic.last_account_withdrawal
+            != _nonnegative_finite(evidence["withdrawal"], "account evidence withdrawal")
+            or generic.last_account_cash_flow_verified
+            is not _boolean(
+                evidence["cash_flow_verified"], "account evidence cash-flow verification"
+            )
+            or generic.last_account_settlement_id
+            != _nonnegative_int(evidence["settlement_id"], "account evidence settlement identity")
+        ):
+            raise Stress90LifecycleTransactionError(
+                "risk-overlay reactivation account snapshot no longer matches persisted state"
+            )
+        return
+
     if transaction.operation in {"activation", "reactivation", "account_rebase"}:
         if transaction.operation == "activation" and transaction.source_account_epoch:
             raise Stress90LifecycleTransactionError(
@@ -1133,7 +1186,7 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
                 "reactivation/account rebase source account epoch is missing"
             )
         if (
-            set(marker) != _STRESS90_MARKER_FIELDS
+            set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
             or marker.get("policy_id") != STRESS90_POLICY.policy_id
             or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
             or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
@@ -1369,6 +1422,24 @@ def _validate_begin_source_invariants(
             "lifecycle source policy identity marker is invalid"
         )
 
+    if operation == "risk_overlay_reactivation":
+        if (
+            set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
+            or marker.get("policy_id") != STRESS90_POLICY.policy_id
+            or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
+            or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
+            or marker.get("bootstrap_seed_digest") != source_policy.bootstrap_seed_digest
+            or marker.get("account_identity_digest") != account_identity_digest
+            or source_policy.live_account_identity_digest != account_identity_digest
+            or not source_policy.live_account_epoch
+            or generic.trading_day != trading_day
+            or generic.last_account_trading_day != trading_day
+        ):
+            raise Stress90LifecycleTransactionError(
+                "risk-overlay reactivation requires exact same-account Stress-90 lineage"
+            )
+        return account_identity_digest
+
     if operation == "reactivation":
         if (
             set(marker) != _MIGRATED_EXECUTION_ALIGNED_MARKER_FIELDS
@@ -1428,7 +1499,7 @@ def _validate_begin_source_invariants(
 
     source_account_identity = source_policy.live_account_identity_digest
     if (
-        set(marker) != _STRESS90_MARKER_FIELDS
+        set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
         or marker.get("policy_id") != STRESS90_POLICY.policy_id
         or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
         or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
@@ -1666,6 +1737,52 @@ def _validate_operation_transition(
         raise Stress90LifecycleTransactionError(
             f"{operation} requires an existing generic runtime source"
         )
+    if operation == "risk_overlay_reactivation":
+        if account_transition is not None or policy_target != source_policy:
+            raise Stress90LifecycleTransactionError(
+                "risk-overlay reactivation cannot alter Stress-90 policy/account state"
+            )
+        _require_only_allowed_delta(
+            generic_source.state,
+            generic_target,
+            allowed_fields=_RISK_OVERLAY_REACTIVATION_GENERIC_MUTABLE_FIELDS,
+            label="risk-overlay reactivation generic target",
+        )
+        _require_other_strategy_states_unchanged(
+            generic_source.state,
+            generic_target,
+            label="risk-overlay reactivation",
+            operation_nonce=operation_nonce,
+        )
+        source_marker = generic_source.state.strategy_states.get(_POLICY_IDENTITY_STATE_KEY)
+        target_marker = generic_target.strategy_states.get(_POLICY_IDENTITY_STATE_KEY)
+        if not isinstance(source_marker, dict) or not isinstance(target_marker, dict):
+            raise Stress90LifecycleTransactionError("risk-overlay marker transition is invalid")
+        source_without_overlay = {
+            key: value
+            for key, value in source_marker.items()
+            if key not in {"risk_overlay_digest", "operator_reason"}
+        }
+        target_without_overlay = {
+            key: value
+            for key, value in target_marker.items()
+            if key not in {"risk_overlay_digest", "operator_reason"}
+        }
+        if (
+            source_without_overlay != target_without_overlay
+            or set(target_marker) != _STRESS90_MARKER_FIELDS
+            or _SHA.fullmatch(str(target_marker.get("risk_overlay_digest", ""))) is None
+            or target_marker.get("risk_overlay_digest") == source_marker.get("risk_overlay_digest")
+            or target_marker.get("operator_reason") is None
+            or not str(target_marker["operator_reason"]).strip()
+            or generic_target.positions != generic_source.state.positions
+            or generic_target.recent_daily_returns != generic_source.state.recent_daily_returns
+        ):
+            raise Stress90LifecycleTransactionError(
+                "risk-overlay reactivation changed forbidden state"
+            )
+        return
+
     if operation == "reactivation":
         if account_transition is None:
             raise Stress90LifecycleTransactionError(
