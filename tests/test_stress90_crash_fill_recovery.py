@@ -14,6 +14,12 @@ from afuture.models import ContractPosition, RuntimeMode
 from afuture.state import RuntimeState, StateStore
 
 
+def _test_digest(value: object) -> str:
+    return sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def _session_evidence(*, trades=()):
     from afuture.broker.ctp_session_query import build_ctp_session_activity_evidence
 
@@ -124,6 +130,16 @@ def _checkpoint(
     )
     canonical_runtime = str(runtime_dir.resolve())
     runtime_digest = sha256(f"runtime:{canonical_runtime}".encode()).hexdigest()
+    request_operation_receipt = _test_digest(
+        {
+            "kind": "stress90_crash_fill_recovery",
+            "operation_id": operation_nonce,
+            "request_digest": "0" * 64,
+            "account_identity_digest": "1" * 64,
+            "canonical_runtime": canonical_runtime,
+            "account_epoch": "2" * 64,
+        }
+    )
     authority = Stress90CrashFillRecoveryAuthority(
         account_identity_digest="1" * 64,
         account_epoch="2" * 64,
@@ -131,10 +147,14 @@ def _checkpoint(
         runtime_identity_digest=runtime_digest,
         account_binding_payload_digest="4" * 64,
         account_binding_revision=1,
-        account_binding_last_operation_id="5" * 64,
+        account_binding_last_operation_id=operation_nonce,
+        account_binding_last_operation_receipt_digest=request_operation_receipt,
         account_binding_receipt_digest="6" * 64,
         registry_sequence=7,
         registry_checksum="7" * 64,
+        registry_nonce_root="d" * 64,
+        registry_nonce_count=1,
+        registry_nonce_receipt_checksum="e" * 64,
         policy_state_sequence=8,
         policy_state_checksum="8" * 64,
     )
@@ -181,12 +201,39 @@ def _checkpoint(
         target_positions_digest=target_positions_digest,
         adopted_fill_ids=(fill_id,),
     )
+    request_operation_receipt = _test_digest(
+        {
+            "kind": "stress90_crash_fill_recovery",
+            "operation_id": operation_nonce,
+            "request_digest": request_digest,
+            "account_identity_digest": authority.account_identity_digest,
+            "canonical_runtime": authority.canonical_runtime,
+            "account_epoch": authority.account_epoch,
+        }
+    )
+    from afuture.account_runtime_nonce_ledger import build_nonce_receipt
+
+    global_nonce_receipt = build_nonce_receipt(
+        operation_nonce=operation_nonce,
+        operation_kind="stress90_crash_fill_recovery",
+        account_identity_digest=authority.account_identity_digest,
+        canonical_runtime=authority.canonical_runtime,
+        runtime_identity_digest=authority.runtime_identity_digest,
+        account_epoch=authority.account_epoch,
+        semantic_request_digest=request_operation_receipt,
+    )
+    authority = replace(
+        authority,
+        account_binding_last_operation_receipt_digest=request_operation_receipt,
+        registry_nonce_receipt_checksum=global_nonce_receipt.checksum,
+    )
     return build_stress90_crash_fill_recovery_checkpoint(
         operation_nonce=operation_nonce,
         request_digest=request_digest,
         operator_reason=operator_reason,
         authority=authority,
         trading_day="20260825",
+        semantic_trading_day_evidence=trading_day_evidence,
         trading_day_evidence=trading_day_evidence,
         session_evidence=_session_evidence(trades=(trade,)),
         session_evidence_sequence=3,
@@ -232,6 +279,7 @@ def _rebuild_checksummed_checkpoint(checkpoint, **changes):
         operator_reason=candidate.operator_reason,
         authority=candidate.authority,
         trading_day=candidate.trading_day,
+        semantic_trading_day_evidence=candidate.semantic_trading_day_evidence,
         trading_day_evidence=candidate.trading_day_evidence,
         session_evidence=candidate.session_evidence,
         session_evidence_sequence=candidate.session_evidence_sequence,
@@ -475,12 +523,13 @@ def test_recovery_nonce_history_is_permanent_and_exact_retry_only(tmp_path: Path
         prepared = store.begin(checkpoint)
         store.mark_committed(prepared.checkpoint.transaction_id)
 
-    assert len(store.load_required_record().operation_history) == 7
+    assert store.load_required_record().nonce_count == 7
+    assert len(store.load_required_record().operation_history) == 1
     with pytest.raises(Stress90CrashFillRecoveryError, match="already consumed"):
         store.begin(_checkpoint(tmp_path))
 
 
-def test_recovery_store_rejects_a_checksummed_truncated_nonce_history(tmp_path: Path) -> None:
+def test_recovery_store_rejects_a_deleted_authenticated_nonce_receipt(tmp_path: Path) -> None:
     from afuture.stress90_crash_fill_recovery import (
         Stress90CrashFillRecoveryError,
         Stress90CrashFillRecoveryStore,
@@ -493,22 +542,9 @@ def test_recovery_store_rejects_a_checksummed_truncated_nonce_history(tmp_path: 
     second = store.begin(_checkpoint(tmp_path, operation_nonce="b" * 64))
     store.mark_committed(second.checkpoint.transaction_id)
 
-    envelope = json.loads(store.path.read_text(encoding="utf-8"))
-    envelope["operation_history"] = envelope["operation_history"][-1:]
-    unsigned = {key: value for key, value in envelope.items() if key != "checksum"}
-    envelope["checksum"] = sha256(
-        json.dumps(
-            unsigned,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
-    store.path.write_text(json.dumps(envelope), encoding="utf-8")
-
-    with pytest.raises(Stress90CrashFillRecoveryError, match="history.*transition"):
-        store.load_required_record()
+    store._nonce_ledger().receipt_path("a" * 64).unlink()
+    with pytest.raises(Stress90CrashFillRecoveryError, match="nonce|receipt|ledger"):
+        store.begin(_checkpoint(tmp_path))
 
 
 @pytest.mark.parametrize(
@@ -741,6 +777,13 @@ def test_recovery_proof_first_lifecycle_consumption_and_second_advance(
     require_committed_stress90_crash_fill_recovery(recovery_store, later)
     assert later.state.runtime_mode == RuntimeMode.HALTED.value
     assert later.state.kill_switch is True
+
+    # Re-running the original recovery nonce after legitimate lifecycle
+    # advancement is still an exact no-op, not an attempt to roll state back.
+    assert apply_stress90_crash_fill_recovery(recovery_store, state_store).checkpoint.status == (
+        "committed"
+    )
+    assert state_store.load_required_record() == later
 
 
 def test_lifecycle_commit_consumes_recovery_after_generic_cas_before_coordinator(
@@ -1677,4 +1720,263 @@ def test_lifecycle_guard_consumes_exact_committed_checkpoint_marker(tmp_path: Pa
             pending_lifecycle=None,
             persisted_record=replace(current, checksum="0" * 64),
             runtime_dir=tmp_path,
+        )
+
+
+def test_recovery_checkpoint_recomputes_semantic_request_not_opaque_digest(
+    tmp_path: Path,
+) -> None:
+    from afuture.stress90_crash_fill_recovery import (
+        Stress90CrashFillRecoveryError,
+        _checkpoint_payload,
+        _decode_checkpoint,
+    )
+
+    StateStore(tmp_path / "state.json").save(_source_state())
+    checkpoint = _checkpoint(tmp_path)
+    substituted = _rebuild_checksummed_checkpoint(
+        checkpoint,
+        request_digest="f" * 64,
+    )
+
+    with pytest.raises(Stress90CrashFillRecoveryError, match="semantic request|request digest"):
+        _decode_checkpoint(_checkpoint_payload(substituted))
+
+
+class _StrSubclass(str):
+    pass
+
+
+class _ListSubclass(list):
+    pass
+
+
+class _DictSubclass(dict):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("status", _StrSubclass("prepared")),
+        ("trading_day", 20260825),
+        ("adopted_fill_ids", _ListSubclass()),
+        ("authority", _DictSubclass()),
+        ("session_evidence", _DictSubclass()),
+        ("generic_source", _DictSubclass()),
+        ("generic_target", _DictSubclass()),
+    ],
+)
+def test_recovery_checkpoint_decoder_rejects_persisted_type_substitution(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    from afuture.stress90_crash_fill_recovery import (
+        Stress90CrashFillRecoveryError,
+        _checkpoint_payload,
+        _decode_checkpoint,
+    )
+
+    StateStore(tmp_path / "state.json").save(_source_state())
+    payload = _checkpoint_payload(_checkpoint(tmp_path))
+    original = payload[field]
+    if isinstance(replacement, list):
+        replacement.extend(original)  # type: ignore[arg-type]
+    elif isinstance(replacement, dict):
+        replacement.update(original)  # type: ignore[arg-type]
+    payload[field] = replacement
+
+    with pytest.raises(Stress90CrashFillRecoveryError, match="type|fields|invalid"):
+        _decode_checkpoint(payload)
+
+
+def test_recovery_coordinator_record_is_compact_and_has_no_resignable_histories(
+    tmp_path: Path,
+) -> None:
+    from afuture.stress90_crash_fill_recovery import Stress90CrashFillRecoveryStore
+
+    StateStore(tmp_path / "state.json").save(_source_state())
+    store = Stress90CrashFillRecoveryStore(tmp_path / "stress90_crash_fill_recovery.json")
+    for index in range(32):
+        checkpoint = _checkpoint(tmp_path, operation_nonce=f"{index + 1:064x}")
+        prepared = store.begin(checkpoint)
+        store.mark_committed(prepared.checkpoint.transaction_id)
+
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    assert "operation_history" not in raw
+    assert "consumption_history" not in raw
+    assert store.path.stat().st_size < 48_000
+    assert store.load_required_record().checkpoint.operation_nonce == f"{32:064x}"
+
+
+def test_recovery_current_and_previous_resign_cannot_reuse_old_nonce(tmp_path: Path) -> None:
+    from afuture.stress90_crash_fill_recovery import (
+        Stress90CrashFillRecoveryError,
+        Stress90CrashFillRecoveryStore,
+        _digest,
+    )
+
+    StateStore(tmp_path / "state.json").save(_source_state())
+    store = Stress90CrashFillRecoveryStore(tmp_path / "stress90_crash_fill_recovery.json")
+    old_nonce = "a" * 64
+    for nonce in (old_nonce, "b" * 64, "c" * 64):
+        prepared = store.begin(_checkpoint(tmp_path, operation_nonce=nonce))
+        store.mark_committed(prepared.checkpoint.transaction_id)
+
+    previous = json.loads(store.previous_path.read_text(encoding="utf-8"))
+    current = json.loads(store.path.read_text(encoding="utf-8"))
+    previous["nonce_count"] = 1
+    previous["checksum"] = _digest(
+        {key: value for key, value in previous.items() if key != "checksum"}
+    )
+    current["nonce_count"] = 1
+    current["parent_checksum"] = previous["checksum"]
+    current["checksum"] = _digest(
+        {key: value for key, value in current.items() if key != "checksum"}
+    )
+    store.previous_path.write_text(json.dumps(previous), encoding="utf-8")
+    store.path.write_text(json.dumps(current), encoding="utf-8")
+
+    with pytest.raises(Stress90CrashFillRecoveryError, match="nonce|receipt|ledger|consumed"):
+        store.begin(_checkpoint(tmp_path, operation_nonce=old_nonce))
+
+
+def test_real_lifecycle_guard_preserves_durable_consumed_receipt_on_second_operation(
+    tmp_path: Path,
+) -> None:
+    from afuture.cli import _require_no_unpersisted_lifecycle_crash_fill_adoption
+    from afuture.stress90_crash_fill_recovery import (
+        Stress90CrashFillRecoveryStore,
+        apply_stress90_crash_fill_recovery,
+        consume_stress90_crash_fill_recovery,
+    )
+
+    state_store = StateStore(tmp_path / "state.json")
+    state_store.save(_source_state())
+    recovery_store = Stress90CrashFillRecoveryStore(tmp_path / "stress90_crash_fill_recovery.json")
+    recovery_store.begin(_checkpoint(tmp_path))
+    apply_stress90_crash_fill_recovery(recovery_store, state_store)
+    recovered = state_store.load_required_record()
+    first_nonce = "b" * 64
+    first_target = _require_no_unpersisted_lifecycle_crash_fill_adoption(
+        recovered.state,
+        recovered.state,
+        pending_lifecycle=None,
+        persisted_record=recovered,
+        runtime_dir=tmp_path,
+        consumer_operation_nonce=first_nonce,
+    )
+    first = state_store.save(
+        first_target,
+        expected_sequence=recovered.sequence,
+        expected_checksum=recovered.checksum,
+    )
+    consume_stress90_crash_fill_recovery(
+        recovery_store,
+        first,
+        consumer_operation_nonce=first_nonce,
+    )
+
+    second_nonce = "c" * 64
+    second_target = _require_no_unpersisted_lifecycle_crash_fill_adoption(
+        first.state,
+        first.state,
+        pending_lifecycle=None,
+        persisted_record=first,
+        runtime_dir=tmp_path,
+        consumer_operation_nonce=second_nonce,
+    )
+    assert second_target == first.state
+    assert (
+        second_target.strategy_states["stress90_crash_fill_recovery"]
+        == (first.state.strategy_states["stress90_crash_fill_recovery"])
+    )
+
+
+@pytest.mark.parametrize("crash_side", ["generic_before_receipt", "receipt_before_coordinator"])
+def test_real_lifecycle_guard_exactly_retries_consumption_crash_prefixes(
+    tmp_path: Path,
+    crash_side: str,
+) -> None:
+    from afuture.cli import _require_no_unpersisted_lifecycle_crash_fill_adoption
+    from afuture.stress90_crash_fill_recovery import (
+        Stress90CrashFillRecoveryStore,
+        apply_stress90_crash_fill_recovery,
+        consume_stress90_crash_fill_recovery,
+    )
+
+    state_store = StateStore(tmp_path / "state.json")
+    state_store.save(_source_state())
+    recovery_store = Stress90CrashFillRecoveryStore(tmp_path / "stress90_crash_fill_recovery.json")
+    recovery_store.begin(_checkpoint(tmp_path))
+    apply_stress90_crash_fill_recovery(recovery_store, state_store)
+    recovered = state_store.load_required_record()
+    consumer = "b" * 64
+    target = _require_no_unpersisted_lifecycle_crash_fill_adoption(
+        recovered.state,
+        recovered.state,
+        pending_lifecycle=None,
+        persisted_record=recovered,
+        runtime_dir=tmp_path,
+        consumer_operation_nonce=consumer,
+    )
+    persisted = state_store.save(
+        target,
+        expected_sequence=recovered.sequence,
+        expected_checksum=recovered.checksum,
+    )
+    if crash_side == "receipt_before_coordinator":
+        consume_stress90_crash_fill_recovery(
+            recovery_store,
+            persisted,
+            consumer_operation_nonce=consumer,
+        )
+    pending = type(
+        "PreparedLifecycle",
+        (),
+        {"status": "prepared", "operation_nonce": consumer},
+    )()
+
+    retried = _require_no_unpersisted_lifecycle_crash_fill_adoption(
+        persisted.state,
+        persisted.state,
+        pending_lifecycle=pending,
+        persisted_record=persisted,
+        runtime_dir=tmp_path,
+        consumer_operation_nonce=consumer,
+    )
+    assert retried == persisted.state
+
+
+def test_real_lifecycle_guard_rejects_forged_consumed_marker(tmp_path: Path) -> None:
+    from afuture.cli import _require_no_unpersisted_lifecycle_crash_fill_adoption
+    from afuture.stress90_crash_fill_recovery import (
+        Stress90CrashFillRecoveryStore,
+        apply_stress90_crash_fill_recovery,
+    )
+
+    state_store = StateStore(tmp_path / "state.json")
+    state_store.save(_source_state())
+    recovery_store = Stress90CrashFillRecoveryStore(tmp_path / "stress90_crash_fill_recovery.json")
+    recovery_store.begin(_checkpoint(tmp_path))
+    apply_stress90_crash_fill_recovery(recovery_store, state_store)
+    current = state_store.load_required_record()
+    forged_states = dict(current.state.strategy_states)
+    forged_states["stress90_crash_fill_recovery"] = {
+        "schema_version": 1,
+        "transaction_id": recovery_store.load_required_record().checkpoint.transaction_id,
+        "consumer_operation_nonce": "b" * 64,
+        "receipt_digest": "f" * 64,
+    }
+    forged = replace(current, state=replace(current.state, strategy_states=forged_states))
+
+    with pytest.raises(RuntimeError, match="not exact and committed"):
+        _require_no_unpersisted_lifecycle_crash_fill_adoption(
+            forged.state,
+            forged.state,
+            pending_lifecycle=None,
+            persisted_record=forged,
+            runtime_dir=tmp_path,
+            consumer_operation_nonce="c" * 64,
         )

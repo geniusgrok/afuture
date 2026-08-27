@@ -32,7 +32,7 @@ STRESS90_CRASH_FILL_RECOVERY_STATE_KEY = "stress90_crash_fill_recovery"
 STRESS90_CRASH_FILL_RECOVERY_CONFIRMATION = "I_CONFIRM_AUTHORIZED_STRESS90_CRASH_FILL_RECOVERY"
 
 _KIND = "afuture.stress90-crash-fill-recovery"
-_SCHEMA = 1
+_SCHEMA = 2
 _SHA = re.compile(r"[0-9a-f]{64}")
 _STATUSES = {"prepared", "committed"}
 _LINEAGE_MARKER = b'{"kind":"afuture.stress90-crash-fill-recovery-lineage","schema_version":1}\n'
@@ -52,9 +52,13 @@ class Stress90CrashFillRecoveryAuthority:
     account_binding_payload_digest: str
     account_binding_revision: int
     account_binding_last_operation_id: str
+    account_binding_last_operation_receipt_digest: str
     account_binding_receipt_digest: str
     registry_sequence: int
     registry_checksum: str
+    registry_nonce_root: str
+    registry_nonce_count: int
+    registry_nonce_receipt_checksum: str
     policy_state_sequence: int
     policy_state_checksum: str
 
@@ -68,6 +72,7 @@ class Stress90CrashFillRecoveryCheckpoint:
     status: str
     authority: Stress90CrashFillRecoveryAuthority
     trading_day: str
+    semantic_trading_day_evidence: TradingDayEvidence
     trading_day_evidence: TradingDayEvidence
     session_evidence: CtpSessionActivityEvidence
     session_evidence_sequence: int
@@ -104,11 +109,29 @@ class Stress90CrashFillRecoveryConsumption:
 @dataclass(frozen=True)
 class Stress90CrashFillRecoveryRecord:
     checkpoint: Stress90CrashFillRecoveryCheckpoint
-    operation_history: tuple[Stress90CrashFillRecoveryOperation, ...]
-    consumption_history: tuple[Stress90CrashFillRecoveryConsumption, ...]
+    consumption: Stress90CrashFillRecoveryConsumption | None
+    nonce_root: str
+    nonce_count: int
     sequence: int
     parent_checksum: str | None
     checksum: str
+
+    @property
+    def operation_history(self) -> tuple[Stress90CrashFillRecoveryOperation, ...]:
+        """Compatibility view; permanent history lives in the authenticated root."""
+
+        return (
+            Stress90CrashFillRecoveryOperation(
+                self.checkpoint.operation_nonce,
+                self.checkpoint.request_digest,
+            ),
+        )
+
+    @property
+    def consumption_history(self) -> tuple[Stress90CrashFillRecoveryConsumption, ...]:
+        """Compatibility view of the only current checkpoint consumption."""
+
+        return () if self.consumption is None else (self.consumption,)
 
 
 @dataclass
@@ -134,6 +157,22 @@ def _canonical(value: object) -> bytes:
 
 def _digest(value: object) -> str:
     return sha256(_canonical(value)).hexdigest()
+
+
+def _require_exact_json_types(value: object, *, label: str) -> None:
+    if value is None or type(value) in {bool, int, float, str}:
+        return
+    if type(value) is list:
+        for item in value:
+            _require_exact_json_types(item, label=label)
+        return
+    if type(value) is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                raise Stress90CrashFillRecoveryError(f"{label} contains a non-string object key")
+            _require_exact_json_types(item, label=label)
+        return
+    raise Stress90CrashFillRecoveryError(f"{label} contains an invalid persisted type")
 
 
 def stress90_crash_fill_positions_digest(
@@ -248,11 +287,12 @@ def _decode_session(raw: object) -> CtpSessionActivityEvidence:
         "trades_digest",
         "evidence_digest",
     }
-    if not isinstance(raw, Mapping) or set(raw) != fields:
+    if type(raw) is not dict or set(raw) != fields:
         raise Stress90CrashFillRecoveryError("recovery session evidence fields are invalid")
+    _require_exact_json_types(raw, label="recovery session evidence")
     orders_raw = raw["orders"]
     trades_raw = raw["trades"]
-    if not isinstance(orders_raw, list) or not isinstance(trades_raw, list):
+    if type(orders_raw) is not list or type(trades_raw) is not list:
         raise Stress90CrashFillRecoveryError("recovery session evidence rows are invalid")
     try:
         orders = tuple(
@@ -265,7 +305,7 @@ def _decode_session(raw: object) -> CtpSessionActivityEvidence:
                 }
             )
             for item in orders_raw
-            if isinstance(item, dict)
+            if type(item) is dict
         )
         trades = tuple(
             CtpSessionTrade(
@@ -277,7 +317,7 @@ def _decode_session(raw: object) -> CtpSessionActivityEvidence:
                 }
             )
             for item in trades_raw
-            if isinstance(item, dict)
+            if type(item) is dict
         )
         if len(orders) != len(orders_raw) or len(trades) != len(trades_raw):
             raise TypeError("session evidence row is not an object")
@@ -306,13 +346,17 @@ def _authority_payload(authority: Stress90CrashFillRecoveryAuthority) -> dict[st
         "runtime_identity_digest",
         "account_binding_payload_digest",
         "account_binding_last_operation_id",
+        "account_binding_last_operation_receipt_digest",
         "account_binding_receipt_digest",
         "registry_checksum",
+        "registry_nonce_root",
+        "registry_nonce_receipt_checksum",
         "policy_state_checksum",
     ):
         _sha(payload[name], name.replace("_", " "))
     _positive_int(authority.account_binding_revision, "account binding revision")
     _positive_int(authority.registry_sequence, "registry sequence")
+    _positive_int(authority.registry_nonce_count, "registry nonce count")
     _positive_int(authority.policy_state_sequence, "policy state sequence")
     if (
         type(authority.canonical_runtime) is not str
@@ -383,6 +427,7 @@ def _checkpoint_identity_payload(
     operator_reason: str,
     authority: Stress90CrashFillRecoveryAuthority,
     trading_day: str,
+    semantic_trading_day_evidence: TradingDayEvidence,
     trading_day_evidence: TradingDayEvidence,
     session_evidence: CtpSessionActivityEvidence,
     session_evidence_sequence: int,
@@ -402,6 +447,9 @@ def _checkpoint_identity_payload(
         "operator_reason": operator_reason,
         "authority": _authority_payload(authority),
         "trading_day": trading_day,
+        "semantic_trading_day_evidence": _trading_day_evidence_payload(
+            semantic_trading_day_evidence
+        ),
         "trading_day_evidence": _trading_day_evidence_payload(trading_day_evidence),
         "session_evidence": _session_payload(session_evidence),
         "session_evidence_sequence": session_evidence_sequence,
@@ -415,6 +463,97 @@ def _checkpoint_identity_payload(
         "target_positions_digest": target_positions_digest,
         "adopted_fill_ids": list(adopted_fill_ids),
     }
+
+
+def _semantic_request_payload(
+    *,
+    operation_nonce: str,
+    operator_reason: str,
+    account_identity_digest: str,
+    account_epoch: str,
+    canonical_runtime: str,
+    trading_day_evidence: TradingDayEvidence,
+    session_evidence: CtpSessionActivityEvidence,
+    session_ownership_digest: str,
+    generic_source_sequence: int,
+    generic_source_checksum: str,
+    generic_source: RuntimeState,
+    generic_target: RuntimeState,
+    source_positions_digest: str,
+    target_positions_digest: str,
+    adopted_fill_ids: tuple[str, ...],
+) -> dict[str, object]:
+    return {
+        "operation_nonce": operation_nonce,
+        "operator_reason": operator_reason,
+        "account_identity_digest": account_identity_digest,
+        "account_epoch": account_epoch,
+        "canonical_runtime": canonical_runtime,
+        "trading_day_evidence": _trading_day_evidence_payload(trading_day_evidence),
+        "session_account": session_evidence.account_identity_digest,
+        "session_trading_day": session_evidence.trading_day,
+        "session_orders_digest": session_evidence.orders_digest,
+        "session_trades_digest": session_evidence.trades_digest,
+        "session_ownership_digest": session_ownership_digest,
+        "generic_source_sequence": generic_source_sequence,
+        "generic_source_checksum": generic_source_checksum,
+        "generic_source": asdict(generic_source),
+        "generic_target_without_recovery_marker": _without_recovery_marker(generic_target),
+        "source_positions_digest": source_positions_digest,
+        "target_positions_digest": target_positions_digest,
+        "adopted_fill_ids": list(adopted_fill_ids),
+    }
+
+
+def _registry_recovery_operation_receipt_digest(
+    *,
+    operation_nonce: str,
+    request_digest: str,
+    authority: Stress90CrashFillRecoveryAuthority,
+) -> str:
+    return _digest(
+        {
+            "kind": "stress90_crash_fill_recovery",
+            "operation_id": operation_nonce,
+            "request_digest": request_digest,
+            "account_identity_digest": authority.account_identity_digest,
+            "canonical_runtime": authority.canonical_runtime,
+            "account_epoch": authority.account_epoch,
+        }
+    )
+
+
+def _validate_registry_nonce_authority(
+    *,
+    operation_nonce: str,
+    request_digest: str,
+    authority: Stress90CrashFillRecoveryAuthority,
+) -> None:
+    from .account_runtime_nonce_ledger import build_nonce_receipt
+
+    operation_receipt = _registry_recovery_operation_receipt_digest(
+        operation_nonce=operation_nonce,
+        request_digest=request_digest,
+        authority=authority,
+    )
+    if (
+        authority.account_binding_last_operation_id != operation_nonce
+        or authority.account_binding_last_operation_receipt_digest != operation_receipt
+    ):
+        raise Stress90CrashFillRecoveryError(
+            "recovery semantic request does not match registry operation receipt"
+        )
+    receipt = build_nonce_receipt(
+        operation_nonce=operation_nonce,
+        operation_kind="stress90_crash_fill_recovery",
+        account_identity_digest=authority.account_identity_digest,
+        canonical_runtime=authority.canonical_runtime,
+        runtime_identity_digest=authority.runtime_identity_digest,
+        account_epoch=authority.account_epoch,
+        semantic_request_digest=operation_receipt,
+    )
+    if receipt.checksum != authority.registry_nonce_receipt_checksum:
+        raise Stress90CrashFillRecoveryError("recovery registry nonce receipt checksum mismatch")
 
 
 def build_stress90_crash_fill_recovery_request_digest(
@@ -484,26 +623,23 @@ def build_stress90_crash_fill_recovery_request_digest(
     if source_digest != actual_source or target_digest != actual_target:
         raise Stress90CrashFillRecoveryError("recovery request position digest mismatch")
     return _digest(
-        {
-            "operation_nonce": nonce,
-            "operator_reason": reason,
-            "account_identity_digest": account,
-            "account_epoch": epoch,
-            "canonical_runtime": runtime,
-            "trading_day_evidence": _trading_day_evidence_payload(trading_day_evidence),
-            "session_account": session_evidence.account_identity_digest,
-            "session_trading_day": session_evidence.trading_day,
-            "session_orders_digest": session_evidence.orders_digest,
-            "session_trades_digest": session_evidence.trades_digest,
-            "session_ownership_digest": session_ownership_digest,
-            "generic_source_sequence": generic_source.sequence,
-            "generic_source_checksum": generic_source.checksum,
-            "generic_source": asdict(generic_source.state),
-            "generic_target_without_recovery_marker": _without_recovery_marker(generic_target),
-            "source_positions_digest": source_digest,
-            "target_positions_digest": target_digest,
-            "adopted_fill_ids": list(fills),
-        }
+        _semantic_request_payload(
+            operation_nonce=nonce,
+            operator_reason=reason,
+            account_identity_digest=account,
+            account_epoch=epoch,
+            canonical_runtime=runtime,
+            trading_day_evidence=trading_day_evidence,
+            session_evidence=session_evidence,
+            session_ownership_digest=session_ownership_digest,
+            generic_source_sequence=generic_source.sequence,
+            generic_source_checksum=generic_source.checksum,
+            generic_source=generic_source.state,
+            generic_target=generic_target,
+            source_positions_digest=source_digest,
+            target_positions_digest=target_digest,
+            adopted_fill_ids=fills,
+        )
     )
 
 
@@ -514,6 +650,7 @@ def build_stress90_crash_fill_recovery_checkpoint(
     operator_reason: str,
     authority: Stress90CrashFillRecoveryAuthority,
     trading_day: str,
+    semantic_trading_day_evidence: TradingDayEvidence,
     trading_day_evidence: TradingDayEvidence,
     session_evidence: CtpSessionActivityEvidence,
     session_evidence_sequence: int,
@@ -594,12 +731,39 @@ def build_stress90_crash_fill_recovery_checkpoint(
         raise Stress90CrashFillRecoveryError("recovery source position digest mismatch")
     if target_positions_digest != actual_target_positions:
         raise Stress90CrashFillRecoveryError("recovery target position digest mismatch")
+    expected_request = _digest(
+        _semantic_request_payload(
+            operation_nonce=nonce,
+            operator_reason=reason,
+            account_identity_digest=authority.account_identity_digest,
+            account_epoch=authority.account_epoch,
+            canonical_runtime=authority.canonical_runtime,
+            trading_day_evidence=semantic_trading_day_evidence,
+            session_evidence=session_evidence,
+            session_ownership_digest=session_ownership_digest,
+            generic_source_sequence=generic_source.sequence,
+            generic_source_checksum=generic_source.checksum,
+            generic_source=generic_source.state,
+            generic_target=generic_target,
+            source_positions_digest=source_positions_digest,
+            target_positions_digest=target_positions_digest,
+            adopted_fill_ids=normalized_ids,
+        )
+    )
+    if request != expected_request:
+        raise Stress90CrashFillRecoveryError("recovery semantic request digest mismatch")
+    _validate_registry_nonce_authority(
+        operation_nonce=nonce,
+        request_digest=request,
+        authority=authority,
+    )
     identity = _checkpoint_identity_payload(
         operation_nonce=nonce,
         request_digest=request,
         operator_reason=reason,
         authority=authority,
         trading_day=trading_day,
+        semantic_trading_day_evidence=semantic_trading_day_evidence,
         trading_day_evidence=trading_day_evidence,
         session_evidence=session_evidence,
         session_evidence_sequence=session_evidence_sequence,
@@ -634,6 +798,7 @@ def build_stress90_crash_fill_recovery_checkpoint(
         status="prepared",
         authority=authority,
         trading_day=trading_day,
+        semantic_trading_day_evidence=semantic_trading_day_evidence,
         trading_day_evidence=trading_day_evidence,
         session_evidence=session_evidence,
         session_evidence_sequence=session_evidence_sequence,
@@ -660,6 +825,9 @@ def _checkpoint_payload(checkpoint: Stress90CrashFillRecoveryCheckpoint) -> dict
         "status": checkpoint.status,
         "authority": _authority_payload(checkpoint.authority),
         "trading_day": checkpoint.trading_day,
+        "semantic_trading_day_evidence": _trading_day_evidence_payload(
+            checkpoint.semantic_trading_day_evidence
+        ),
         "trading_day_evidence": _trading_day_evidence_payload(checkpoint.trading_day_evidence),
         "session_evidence": _session_payload(checkpoint.session_evidence),
         "session_evidence_sequence": checkpoint.session_evidence_sequence,
@@ -679,7 +847,7 @@ def _checkpoint_payload(checkpoint: Stress90CrashFillRecoveryCheckpoint) -> dict
 
 def _decode_authority(raw: object) -> Stress90CrashFillRecoveryAuthority:
     fields = set(Stress90CrashFillRecoveryAuthority.__dataclass_fields__)
-    if not isinstance(raw, Mapping) or set(raw) != fields:
+    if type(raw) is not dict or set(raw) != fields:
         raise Stress90CrashFillRecoveryError("recovery authority fields are invalid")
     try:
         authority = Stress90CrashFillRecoveryAuthority(**dict(raw))
@@ -698,6 +866,7 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
         "status",
         "authority",
         "trading_day",
+        "semantic_trading_day_evidence",
         "trading_day_evidence",
         "session_evidence",
         "session_evidence_sequence",
@@ -713,19 +882,23 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
         "target_positions_digest",
         "adopted_fill_ids",
     }
-    if not isinstance(raw, Mapping) or set(raw) != fields:
+    if type(raw) is not dict or set(raw) != fields:
         raise Stress90CrashFillRecoveryError("recovery checkpoint fields are invalid")
+    _require_exact_json_types(raw, label="recovery checkpoint")
     status = raw["status"]
-    if status not in _STATUSES:
+    if type(status) is not str or status not in _STATUSES:
         raise Stress90CrashFillRecoveryError("recovery checkpoint status is invalid")
+    trading_day = raw["trading_day"]
+    if type(trading_day) is not str:
+        raise Stress90CrashFillRecoveryError("recovery trading day type is invalid")
     source_raw = raw["generic_source"]
     target_raw = raw["generic_target"]
-    if not isinstance(source_raw, dict) or not isinstance(target_raw, dict):
+    if type(source_raw) is not dict or type(target_raw) is not dict:
         raise Stress90CrashFillRecoveryError("recovery generic state evidence is invalid")
     source = StateStore._state_from_payload(source_raw)
     target = StateStore._state_from_payload(target_raw)
     adopted = raw["adopted_fill_ids"]
-    if not isinstance(adopted, list):
+    if type(adopted) is not list:
         raise Stress90CrashFillRecoveryError("recovery adopted fill identities are invalid")
     try:
         checkpoint = Stress90CrashFillRecoveryCheckpoint(
@@ -733,9 +906,12 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
             operation_nonce=_sha(raw["operation_nonce"], "recovery operation nonce"),
             request_digest=_sha(raw["request_digest"], "recovery request digest"),
             operator_reason=_reason(raw["operator_reason"]),
-            status=str(status),
+            status=status,
             authority=_decode_authority(raw["authority"]),
-            trading_day=str(raw["trading_day"]),
+            trading_day=trading_day,
+            semantic_trading_day_evidence=_decode_trading_day_evidence(
+                raw["semantic_trading_day_evidence"]
+            ),
             trading_day_evidence=_decode_trading_day_evidence(raw["trading_day_evidence"]),
             session_evidence=_decode_session(raw["session_evidence"]),
             session_evidence_sequence=_positive_int(
@@ -839,12 +1015,39 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
         raise Stress90CrashFillRecoveryError("recovery source position digest mismatch")
     if checkpoint.target_positions_digest != target_positions:
         raise Stress90CrashFillRecoveryError("recovery target position digest mismatch")
+    expected_request = _digest(
+        _semantic_request_payload(
+            operation_nonce=checkpoint.operation_nonce,
+            operator_reason=checkpoint.operator_reason,
+            account_identity_digest=checkpoint.authority.account_identity_digest,
+            account_epoch=checkpoint.authority.account_epoch,
+            canonical_runtime=checkpoint.authority.canonical_runtime,
+            trading_day_evidence=checkpoint.semantic_trading_day_evidence,
+            session_evidence=checkpoint.session_evidence,
+            session_ownership_digest=checkpoint.session_ownership_digest,
+            generic_source_sequence=checkpoint.generic_source_sequence,
+            generic_source_checksum=checkpoint.generic_source_checksum,
+            generic_source=checkpoint.generic_source,
+            generic_target=checkpoint.generic_target,
+            source_positions_digest=checkpoint.source_positions_digest,
+            target_positions_digest=checkpoint.target_positions_digest,
+            adopted_fill_ids=checkpoint.adopted_fill_ids,
+        )
+    )
+    if checkpoint.request_digest != expected_request:
+        raise Stress90CrashFillRecoveryError("recovery semantic request digest mismatch")
+    _validate_registry_nonce_authority(
+        operation_nonce=checkpoint.operation_nonce,
+        request_digest=checkpoint.request_digest,
+        authority=checkpoint.authority,
+    )
     identity = _checkpoint_identity_payload(
         operation_nonce=checkpoint.operation_nonce,
         request_digest=checkpoint.request_digest,
         operator_reason=checkpoint.operator_reason,
         authority=checkpoint.authority,
         trading_day=checkpoint.trading_day,
+        semantic_trading_day_evidence=checkpoint.semantic_trading_day_evidence,
         trading_day_evidence=checkpoint.trading_day_evidence,
         session_evidence=checkpoint.session_evidence,
         session_evidence_sequence=checkpoint.session_evidence_sequence,
@@ -964,6 +1167,43 @@ class Stress90CrashFillRecoveryStore:
         self.previous_path = self.path.with_name(self.path.name + ".prev")
         self.lock_path = self.path.with_name(self.path.name + ".lock")
         self.lineage_path = self.path.with_name(self.path.name + ".lineage")
+
+    def _nonce_ledger(self):
+        from .account_runtime_nonce_ledger import AccountRuntimeNonceLedger
+
+        return AccountRuntimeNonceLedger.for_registry(self.path)
+
+    @staticmethod
+    def _nonce_receipt(checkpoint: Stress90CrashFillRecoveryCheckpoint):
+        from .account_runtime_nonce_ledger import build_nonce_receipt
+
+        return build_nonce_receipt(
+            operation_nonce=checkpoint.operation_nonce,
+            operation_kind="stress90_crash_fill_recovery",
+            account_identity_digest=checkpoint.authority.account_identity_digest,
+            canonical_runtime=checkpoint.authority.canonical_runtime,
+            runtime_identity_digest=checkpoint.authority.runtime_identity_digest,
+            account_epoch=checkpoint.authority.account_epoch,
+            semantic_request_digest=checkpoint.request_digest,
+        )
+
+    def _validate_nonce_root(self, record: Stress90CrashFillRecoveryRecord) -> None:
+        from .account_runtime_nonce_ledger import AccountRuntimeNonceLedgerError
+
+        try:
+            self._nonce_ledger().load_ready_root()
+            receipt = self._nonce_ledger().require_receipt(
+                record.nonce_root,
+                record.checkpoint.operation_nonce,
+            )
+            if receipt != self._nonce_receipt(record.checkpoint):
+                raise AccountRuntimeNonceLedgerError(
+                    "recovery nonce receipt does not match checkpoint"
+                )
+        except AccountRuntimeNonceLedgerError as exc:
+            raise Stress90CrashFillRecoveryError(
+                "recovery nonce ledger integrity validation failed"
+            ) from exc
 
     @staticmethod
     def _exists(path: Path) -> bool:
@@ -1203,12 +1443,14 @@ class Stress90CrashFillRecoveryStore:
             "sequence",
             "parent_checksum",
             "checkpoint",
-            "operation_history",
-            "consumption_history",
+            "consumption",
+            "nonce_root",
+            "nonce_count",
             "checksum",
         }
-        if not isinstance(raw, dict) or set(raw) != fields:
+        if type(raw) is not dict or set(raw) != fields:
             raise Stress90CrashFillRecoveryError(f"{label} crash-fill recovery envelope is invalid")
+        _require_exact_json_types(raw, label=f"{label} recovery envelope")
         if raw["kind"] != _KIND or raw["schema_version"] != _SCHEMA:
             raise Stress90CrashFillRecoveryError("crash-fill recovery schema is unsupported")
         sequence = _positive_int(raw["sequence"], "recovery sequence")
@@ -1223,38 +1465,21 @@ class Stress90CrashFillRecoveryStore:
         if checksum != _digest(unsigned):
             raise Stress90CrashFillRecoveryError(f"{label} crash-fill recovery checksum mismatch")
         checkpoint = _decode_checkpoint(raw["checkpoint"])
-        history_raw = raw["operation_history"]
-        if not isinstance(history_raw, list):
-            raise Stress90CrashFillRecoveryError("recovery operation history is invalid")
-        history: list[Stress90CrashFillRecoveryOperation] = []
-        for item in history_raw:
-            if not isinstance(item, dict) or set(item) != {"operation_nonce", "request_digest"}:
-                raise Stress90CrashFillRecoveryError("recovery operation history is invalid")
-            history.append(
-                Stress90CrashFillRecoveryOperation(
-                    _sha(item["operation_nonce"], "recovery history nonce"),
-                    _sha(item["request_digest"], "recovery history request digest"),
-                )
-            )
-        if len({item.operation_nonce for item in history}) != len(history):
-            raise Stress90CrashFillRecoveryError("recovery operation history reuses a nonce")
-        if not history or history[-1] != Stress90CrashFillRecoveryOperation(
-            checkpoint.operation_nonce,
-            checkpoint.request_digest,
+        consumption_raw = raw["consumption"]
+        consumption = None if consumption_raw is None else _decode_consumption(consumption_raw)
+        nonce_root = _sha(raw["nonce_root"], "recovery nonce root")
+        nonce_count = raw["nonce_count"]
+        if type(nonce_count) is not int or nonce_count <= 0:
+            raise Stress90CrashFillRecoveryError("recovery nonce count is invalid")
+        if sequence == 1 and (
+            checkpoint.status != "prepared" or consumption is not None or nonce_count != 1
         ):
-            raise Stress90CrashFillRecoveryError("recovery checkpoint/history mismatch")
-        consumption_raw = raw["consumption_history"]
-        if not isinstance(consumption_raw, list):
-            raise Stress90CrashFillRecoveryError("recovery consumption history is invalid")
-        consumption = tuple(_decode_consumption(item) for item in consumption_raw)
-        if len({item.transaction_id for item in consumption}) != len(consumption):
-            raise Stress90CrashFillRecoveryError("recovery proof was consumed more than once")
-        if sequence == 1 and (checkpoint.status != "prepared" or len(history) != 1 or consumption):
             raise Stress90CrashFillRecoveryError("initial recovery history transition is invalid")
         return Stress90CrashFillRecoveryRecord(
             checkpoint=checkpoint,
-            operation_history=tuple(history),
-            consumption_history=consumption,
+            consumption=consumption,
+            nonce_root=nonce_root,
+            nonce_count=nonce_count,
             sequence=sequence,
             parent_checksum=parent,
             checksum=checksum,
@@ -1294,6 +1519,7 @@ class Stress90CrashFillRecoveryStore:
         self._validate_and_refsync_lineage_unlocked()
         current_bytes = self._read_bytes(self.path, "current")
         current = self._decode_record(current_bytes, "current")
+        self._validate_nonce_root(current)
         if current.sequence == 1:
             if previous_exists:
                 previous_bytes = self._read_bytes(self.previous_path, "previous")
@@ -1308,6 +1534,7 @@ class Stress90CrashFillRecoveryStore:
         if previous_bytes == current_bytes:
             return current
         previous = self._decode_record(previous_bytes, "previous")
+        self._validate_nonce_root(previous)
         if (
             previous.sequence + 1 != current.sequence
             or current.parent_checksum != previous.checksum
@@ -1316,23 +1543,26 @@ class Stress90CrashFillRecoveryStore:
         committed = (
             previous.checkpoint.status == "prepared"
             and current.checkpoint == replace(previous.checkpoint, status="committed")
-            and current.operation_history == previous.operation_history
-            and current.consumption_history == previous.consumption_history
+            and current.nonce_root == previous.nonce_root
+            and current.nonce_count == previous.nonce_count
+            and current.consumption == previous.consumption
         )
         consumed = (
             previous.checkpoint.status == "committed"
             and current.checkpoint == previous.checkpoint
-            and current.operation_history == previous.operation_history
-            and current.consumption_history[:-1] == previous.consumption_history
-            and len(current.consumption_history) == len(previous.consumption_history) + 1
-            and current.consumption_history[-1].transaction_id == current.checkpoint.transaction_id
+            and current.nonce_root == previous.nonce_root
+            and current.nonce_count == previous.nonce_count
+            and previous.consumption is None
+            and current.consumption is not None
+            and current.consumption.transaction_id == current.checkpoint.transaction_id
         )
         prepared = (
             previous.checkpoint.status == "committed"
             and current.checkpoint.status == "prepared"
-            and current.checkpoint.operation_nonce == current.operation_history[-1].operation_nonce
-            and current.operation_history[:-1] == previous.operation_history
-            and current.consumption_history == previous.consumption_history
+            and current.checkpoint.operation_nonce != previous.checkpoint.operation_nonce
+            and current.nonce_root != previous.nonce_root
+            and current.nonce_count == previous.nonce_count + 1
+            and current.consumption is None
         )
         if not (committed or consumed or prepared):
             raise Stress90CrashFillRecoveryError("recovery history transition is invalid")
@@ -1415,8 +1645,10 @@ class Stress90CrashFillRecoveryStore:
         self,
         current: Stress90CrashFillRecoveryRecord | None,
         checkpoint: Stress90CrashFillRecoveryCheckpoint,
-        history: tuple[Stress90CrashFillRecoveryOperation, ...],
-        consumption_history: tuple[Stress90CrashFillRecoveryConsumption, ...],
+        consumption: Stress90CrashFillRecoveryConsumption | None,
+        *,
+        nonce_root: str,
+        nonce_count: int,
     ) -> Stress90CrashFillRecoveryRecord:
         sequence = 1 if current is None else current.sequence + 1
         parent = None if current is None else current.checksum
@@ -1426,8 +1658,9 @@ class Stress90CrashFillRecoveryStore:
             "sequence": sequence,
             "parent_checksum": parent,
             "checkpoint": _checkpoint_payload(checkpoint),
-            "operation_history": [_operation_payload(item) for item in history],
-            "consumption_history": [_consumption_payload(item) for item in consumption_history],
+            "consumption": None if consumption is None else _consumption_payload(consumption),
+            "nonce_root": _sha(nonce_root, "recovery nonce root"),
+            "nonce_count": nonce_count,
         }
         encoded = json.dumps(
             {**unsigned, "checksum": _digest(unsigned)},
@@ -1464,7 +1697,11 @@ class Stress90CrashFillRecoveryStore:
             del lock
             if not self._exists(self.previous_path):
                 raise Stress90CrashFillRecoveryError("recovery .prev evidence is missing")
-            return self._decode_record(self._read_bytes(self.previous_path, "previous"), "previous")
+            record = self._decode_record(
+                self._read_bytes(self.previous_path, "previous"), "previous"
+            )
+            self._validate_nonce_root(record)
+            return record
 
     def begin(
         self,
@@ -1474,45 +1711,57 @@ class Stress90CrashFillRecoveryStore:
             raise Stress90CrashFillRecoveryError("recovery begin requires prepared checkpoint")
         # Decode the exact payload before any mutation.
         checkpoint = _decode_checkpoint(_checkpoint_payload(checkpoint))
-        requested = Stress90CrashFillRecoveryOperation(
-            checkpoint.operation_nonce,
-            checkpoint.request_digest,
-        )
+        from .account_runtime_nonce_ledger import AccountRuntimeNonceLedgerError
+
         with self._exclusive_lock() as lock:
             current = self._load_unlocked(
                 required=False,
                 surviving_visible_lock=lock.surviving_visible_lock,
             )
+            ledger = self._nonce_ledger()
+            receipt = self._nonce_receipt(checkpoint)
             if current is not None:
-                same_nonce = current.checkpoint.operation_nonce == checkpoint.operation_nonce
-                if same_nonce and current.checkpoint.transaction_id == checkpoint.transaction_id:
-                    return current
-                if same_nonce:
+                try:
+                    existing = ledger.lookup(current.nonce_root, checkpoint.operation_nonce)
+                except AccountRuntimeNonceLedgerError as exc:
                     raise Stress90CrashFillRecoveryError(
-                        "recovery operation nonce was reused for a different request"
-                    )
-                if any(
-                    item.operation_nonce == checkpoint.operation_nonce
-                    for item in current.operation_history
-                ):
+                        "recovery nonce ledger proof failed"
+                    ) from exc
+                if existing is not None:
+                    if (
+                        existing == receipt
+                        and current.checkpoint.transaction_id == checkpoint.transaction_id
+                    ):
+                        return current
                     raise Stress90CrashFillRecoveryError(
-                        "recovery operation nonce was already consumed"
+                        "recovery operation nonce was already consumed for a different request"
                     )
                 if current.checkpoint.status == "prepared":
                     raise Stress90CrashFillRecoveryError(
                         "a crash-fill recovery transaction is already prepared"
                     )
-                history = (*current.operation_history, requested)
+                old_root, old_count = current.nonce_root, current.nonce_count
             else:
                 self._create_lineage_marker_unlocked()
                 self._claim_initial_visible_lock_unlocked(lock)
-                history = (requested,)
-            consumption_history = () if current is None else current.consumption_history
+                from .account_runtime_nonce_ledger import EMPTY_NONCE_ROOT
+
+                ledger.initialize_ready(source_digest=sha256(_LINEAGE_MARKER).hexdigest())
+                old_root, old_count = EMPTY_NONCE_ROOT, 0
+            try:
+                insertion = ledger.insert(
+                    old_root=old_root,
+                    old_count=old_count,
+                    receipt=receipt,
+                )
+            except AccountRuntimeNonceLedgerError as exc:
+                raise Stress90CrashFillRecoveryError("recovery nonce ledger insert failed") from exc
             return self._save_unlocked(
                 current,
                 checkpoint,
-                history,
-                consumption_history,
+                None,
+                nonce_root=insertion.new_root,
+                nonce_count=insertion.new_count,
             )
 
     def mark_committed(self, transaction_id: str) -> Stress90CrashFillRecoveryRecord:
@@ -1530,8 +1779,9 @@ class Stress90CrashFillRecoveryStore:
             return self._save_unlocked(
                 current,
                 replace(current.checkpoint, status="committed"),
-                current.operation_history,
-                current.consumption_history,
+                current.consumption,
+                nonce_root=current.nonce_root,
+                nonce_count=current.nonce_count,
             )
 
     def mark_consumed(
@@ -1552,14 +1802,7 @@ class Stress90CrashFillRecoveryStore:
                 raise Stress90CrashFillRecoveryError(
                     "recovery proof changed before lifecycle consumption"
                 )
-            prior = next(
-                (
-                    item
-                    for item in current.consumption_history
-                    if item.transaction_id == consumption.transaction_id
-                ),
-                None,
-            )
+            prior = current.consumption
             if prior is not None:
                 if prior != consumption:
                     raise Stress90CrashFillRecoveryError(
@@ -1569,8 +1812,9 @@ class Stress90CrashFillRecoveryStore:
             return self._save_unlocked(
                 current,
                 current.checkpoint,
-                current.operation_history,
-                (*current.consumption_history, consumption),
+                consumption,
+                nonce_root=current.nonce_root,
+                nonce_count=current.nonce_count,
             )
 
 
@@ -1606,9 +1850,14 @@ def apply_stress90_crash_fill_recovery(
     state = state_store.load_required_record()
     if checkpoint.status == "committed":
         if not _state_is_target(state, checkpoint):
-            raise Stress90CrashFillRecoveryError(
-                "committed recovery has an unrelated generic state revision"
-            )
+            # A durably consumed marker may legitimately survive later HALTED
+            # lifecycle revisions.  Validate its receipt; never roll state back.
+            try:
+                require_committed_stress90_crash_fill_recovery(recovery_store, state)
+            except Stress90CrashFillRecoveryError as exc:
+                raise Stress90CrashFillRecoveryError(
+                    "committed recovery has an unrelated generic state revision"
+                ) from exc
         return record
     if _state_is_source(state, checkpoint):
         state_store.save(
@@ -1665,6 +1914,16 @@ def build_stress90_crash_fill_recovery_consumed_state(
         )
     expected_marker = {"transaction_id": checkpoint.transaction_id}
     current_marker = state_record.state.strategy_states.get(STRESS90_CRASH_FILL_RECOVERY_STATE_KEY)
+    if isinstance(current_marker, dict) and set(current_marker) == {
+        "schema_version",
+        "transaction_id",
+        "consumer_operation_nonce",
+        "receipt_digest",
+    }:
+        # A later lifecycle operation consumes no new recovery participant.  The
+        # original marker and its durable receipt remain the permanent proof.
+        require_committed_stress90_crash_fill_recovery(recovery_store, state_record)
+        return state_record.state
     consumed_marker = _consumed_marker(checkpoint, consumer_operation_nonce)
     if current_marker == consumed_marker:
         return state_record.state

@@ -73,6 +73,8 @@ class AccountRuntimeBindingEvidence:
     binding_payload_digest: str
     binding_revision: int
     binding_receipt_digest: str
+    registry_nonce_root: str
+    registry_nonce_count: int
 
 
 @dataclass
@@ -168,6 +170,8 @@ def _binding_evidence(
         binding_payload_digest=payload_digest,
         binding_revision=revision,
         binding_receipt_digest=receipt,
+        registry_nonce_root=record.nonce_root,
+        registry_nonce_count=record.nonce_count,
     )
 
 

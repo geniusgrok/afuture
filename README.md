@@ -168,6 +168,7 @@ afuture directional-ohlc-refresh --config config/afuture.directional-stress90-li
 afuture stress90-oi-collect --help
 afuture stress90-prepare-decision --help
 afuture stress90-registry-init --help
+afuture stress90-registry-nonce-migrate --help
 afuture stress90-settlement-roll-forward --help
 afuture stress90-activate --help
 afuture stress90-account-rebase --help

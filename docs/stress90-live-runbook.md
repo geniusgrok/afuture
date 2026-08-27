@@ -138,9 +138,10 @@ afuture directional-ohlc-refresh \
 和 lifecycle coordinator；任一 account、epoch、runtime、account-specific receipt 不一致，或
 coordinator 仍为 `prepared`，都必须在构造 provider 前失败。registry 的 machine-wide
 sequence/checksum 只作审计快照；另一账户推进 registry 不会废除本账户由 binding payload、
-account revision、last operation 和 receipt digest 固定的证据。registry schema 2 还为每次
-bind/advance/switch/acknowledgement/transfer 持久化 operation kind 和精确参数 receipt；nonce
-全 machine、全账户、全 operation kind 唯一，只有 kind 与全部参数都相同的重试可以复用。
+account revision、last operation 和 receipt digest 固定的证据。registry schema 3 以认证
+Patricia-Merkle root 和不可变 receipt 为每次 bind/advance/switch/acknowledgement/transfer/recovery
+持久化 operation kind 和精确参数；nonce 全 machine、全账户、全 operation kind 永久唯一，
+只有 kind 与全部参数都相同的重试可以复用。
 
 cache artifact lock 从 final-path 检查一直持有到 provider load 和 durable commit。首次创建使用
 `O_EXCL|O_NOFOLLOW`，更新只写入已验证身份的 `O_NOFOLLOW` regular-file fd。写前会 durable
@@ -376,6 +377,24 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 - CTP/vendor flow 存在未解释差异；
 - 外部 provider 失败且 verified cache 不足。
 
+旧 registry schema 1/2 不得在普通启动或 lifecycle 中静默迁移；这些门会保持 `HALTED` 并失败
+关闭。保全 current、`.prev`、`.lineage`、`.lock` 和备份，确认没有其他 registry writer 后，
+由已批准的维护窗口显式执行：
+
+```bash
+export AFUTURE_ACCOUNT_RUNTIME_NONCE_MIGRATION_ACK=MIGRATE_AFUTURE_MACHINE_ACCOUNT_NONCE_LEDGER
+afuture stress90-registry-nonce-migrate \
+  --config config/afuture.directional-stress90-live.example.toml \
+  --confirm-live --confirm-nonce-migration \
+  --operator-reason "approved schema-3 global nonce ledger migration"
+```
+
+迁移 marker 绑定精确 legacy current/history，partial receipt/node/ready/registry-CAS 崩溃只允许同一
+source exact retry；迁移不得改变任何 account-specific binding receipt。schema 3 的 nonce receipt
+永不删除或淘汰，正常 membership 查询最多读取 256 层且不扫描目录。达到 800,000 条必须告警并
+安排磁盘扩容；达到 1,000,000 硬上限后所有新 registry mutation 失败关闭。任何已锚定 receipt
+或 path node 缺失/损坏都是 durable incident，禁止重建、删 marker 或用新 nonce 绕过。
+
 `account-runtime-registry.json.lineage` 与
 `stress90_lifecycle_transaction.json.lineage` 是首次落盘时以 `O_EXCL` 创建并完成文件、
 父目录 `fsync` 的不可变 inception 证据。若 lineage marker 存在但 current 与 `.prev`
@@ -445,8 +464,9 @@ Broker，在 critical-ingress fence 内再次验证 query generation/evidence �
 state.json CAS → recovery committed` 持久化。registry acknowledgement 的 request digest 绑定
 pre-ack account receipt、完整 session 语义和 source/target state；checkpoint 则绑定确定性的
 post-ack account receipt 与完整 TradingDayEvidence sequence/checksum。checkpoint 保存完整 session
-order/trade rows、ownership digest、source/target state checksum、position digest 和永久 append-only
-nonce history。machine-wide registry sequence/checksum 只是审计快照，其他账户推进 registry
+order/trade rows、ownership digest、source/target state checksum 和 position digest。永久 nonce
+成员资格由 machine registry schema-3 root 与 recovery checkpoint 自己的认证 compact root 固定，
+不会把无界 history 数组重复写入 current。machine-wide registry sequence/checksum 只是审计快照，其他账户推进 registry
 不得使本账户 receipt 失效。
 
 同一 nonce 的精确重试只接受完全相同的操作原因、账户 receipt、session order/trade 语义、

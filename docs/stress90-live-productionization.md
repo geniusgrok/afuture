@@ -91,7 +91,7 @@ Stress-90 使用四份彼此分责的带 schema/sequence/checksum 文件：
 | `stress90_oi_evidence.json` | in-progress 与 completed raw 60m/session evidence、覆盖集合和缺失集合 |
 | `stress90_execution_intent.json` | 已持久的每日整数目标和 reduction/opening plan identity |
 | `stress90_ctp_orders.json` + archive/epoch manifest | 第一张 official send 前的 durable order authorization、完整 fill economics、跨容量/账户 epoch 的不可变冷链 |
-| `stress90_crash_fill_recovery.json` | 仅在 `HALTED` + kill switch 下采用已授权崩溃成交的独立 prepared/committed checkpoint、完整 session order/trade evidence 与永久 operation nonce history |
+| `stress90_crash_fill_recovery.json` | 仅在 `HALTED` + kill switch 下采用已授权崩溃成交的独立 prepared/committed checkpoint、完整 session order/trade evidence 与认证 compact nonce root |
 
 另外，通用 `state.json` 保存运行状态、Broker position mirror 和明确的 policy activation marker。每次成功替换先保留验证过的 `.prev` 作为人工证据；当前文件损坏时绝不自动回退。
 
@@ -103,7 +103,10 @@ account epoch 与 account-specific registry receipt、无 active/unknown order/t
 精确 roll-forward、recovery prepared、generic state CAS、recovery committed；
 两处崩溃均只允许同一 nonce、相同语义 evidence 和相同 state target 的 exact retry。machine-wide
 registry sequence/checksum 只作审计快照；授权绑定账户自己的 payload digest、revision、last
-operation 和 receipt digest。命令不报单、不撤单，成功后仍为 `HALTED` 且 kill switch 开启。
+operation 和 receipt digest。全 machine nonce 永久性由 registry schema-3 Patricia-Merkle root、
+不可变 content-addressed node/receipt 和显式 schema-1/2 migration 保证；普通 live 门不自动迁移，
+80% 容量告警、1,000,000 receipt 硬上限均失败关闭且 receipt 永不淘汰。命令不报单、不撤单，
+成功后仍为 `HALTED` 且 kill switch 开启。
 首次后续 lifecycle 将 recovery marker 与自身 operation nonce 一起转换成 consumed marker，并在
 generic CAS 后、lifecycle coordinator commit 前向 recovery store 追加 durable consumption receipt；
 该参与者的 crash retry 必须精确完成，后续 lifecycle 只保留并验证 receipt，不再要求 generic

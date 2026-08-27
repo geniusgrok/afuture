@@ -2478,6 +2478,7 @@ def _require_no_unpersisted_lifecycle_crash_fill_adoption(
 def _run_stress90_crash_fill_recovery(config, args) -> int:
     """Persist exact authorized current-session fills while remaining HALTED."""
 
+    from .account_runtime_nonce_ledger import AccountRuntimeNonceLedger
     from .account_runtime_registry import AccountRuntimeRegistry
     from .broker.ctp import CtpBroker
     from .broker.ctp_session_query import CtpSessionActivityEvidenceStore
@@ -2578,6 +2579,12 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
         except Exception:
             authoritative = False
         binding = receipt.binding
+        registry_nonce_receipt = AccountRuntimeNonceLedger.for_registry(
+            registry.path
+        ).require_receipt(
+            receipt.registry_nonce_root,
+            binding.last_operation_id,
+        )
         recovery_source = (
             not authoritative
             and evidence.phase == "bound"
@@ -2616,9 +2623,15 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
             account_binding_payload_digest=receipt.binding_payload_digest,
             account_binding_revision=receipt.binding_revision,
             account_binding_last_operation_id=receipt.binding.last_operation_id,
+            account_binding_last_operation_receipt_digest=(
+                receipt.binding.last_operation_receipt_digest
+            ),
             account_binding_receipt_digest=receipt.binding_receipt_digest,
             registry_sequence=receipt.registry_sequence,
             registry_checksum=receipt.registry_checksum,
+            registry_nonce_root=receipt.registry_nonce_root,
+            registry_nonce_count=receipt.registry_nonce_count,
+            registry_nonce_receipt_checksum=registry_nonce_receipt.checksum,
             policy_state_sequence=policy_record.sequence,
             policy_state_checksum=policy_record.checksum,
         )
@@ -2633,7 +2646,9 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
             current.account_binding_payload_digest,
             current.account_binding_revision,
             current.account_binding_last_operation_id,
+            current.account_binding_last_operation_receipt_digest,
             current.account_binding_receipt_digest,
+            current.registry_nonce_receipt_checksum,
             current.policy_state_sequence,
             current.policy_state_checksum,
         )
@@ -2840,9 +2855,22 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
                 account_binding_payload_digest=post_receipt.binding_payload_digest,
                 account_binding_revision=post_receipt.binding_revision,
                 account_binding_last_operation_id=post_receipt.binding.last_operation_id,
+                account_binding_last_operation_receipt_digest=(
+                    post_receipt.binding.last_operation_receipt_digest
+                ),
                 account_binding_receipt_digest=post_receipt.binding_receipt_digest,
                 registry_sequence=post_trading_day.registry_sequence,
                 registry_checksum=post_trading_day.registry_checksum,
+                registry_nonce_root=post_receipt.registry_nonce_root,
+                registry_nonce_count=post_receipt.registry_nonce_count,
+                registry_nonce_receipt_checksum=(
+                    AccountRuntimeNonceLedger.for_registry(registry.path)
+                    .require_receipt(
+                        post_receipt.registry_nonce_root,
+                        operation_nonce,
+                    )
+                    .checksum
+                ),
                 policy_state_sequence=policy_record.sequence,
                 policy_state_checksum=policy_record.checksum,
             )
@@ -2854,6 +2882,7 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
                     operator_reason=operator_reason,
                     authority=post_authority,
                     trading_day=mechanical.trading_day,
+                    semantic_trading_day_evidence=semantic_trading_day_evidence,
                     trading_day_evidence=post_trading_day,
                     session_evidence=mechanical.session_proof.evidence,
                     session_evidence_sequence=session_record.sequence,
