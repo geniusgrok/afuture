@@ -6,6 +6,7 @@ import textwrap
 
 
 def test_operator_roll_forward_has_no_order_or_cancel_callsite() -> None:
+    """The operator continuity command has no direct Broker write callsite."""
     from afuture.cli import _run_stress90_operator_roll_forward
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(_run_stress90_operator_roll_forward)))
@@ -20,6 +21,7 @@ def test_operator_roll_forward_has_no_order_or_cancel_callsite() -> None:
 
 
 def test_operator_roll_forward_reports_zero_order_and_cancel_counts() -> None:
+    """The command's audit result must explicitly report a zero-write lifecycle."""
     from afuture.cli import _run_stress90_operator_roll_forward
 
     source = inspect.getsource(_run_stress90_operator_roll_forward)
