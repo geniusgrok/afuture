@@ -23,7 +23,7 @@ jobs:
           python-version: "3.10"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]" -c constraints/core-dev.txt
-      - name: Patch runner for duplicate activation signatures
+      - name: Patch runner for exact activation signatures
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -58,6 +58,13 @@ jobs:
           )
           start2, end2 = enclosing_call(later)
           del lines[start2:end2 + 1]
+
+          ambiguous = next(
+              i for i, line in enumerate(lines)
+              if 'account_identity_digest=account_identity_digest,\\n            )\\n' in line
+          )
+          start3, end3 = enclosing_call(ambiguous)
+          del lines[start3:end3 + 1]
 
           path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
           PY
