@@ -190,7 +190,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/live-risk-capacity-apply.py .github/workflows/live-risk-capacity-apply.yml
+          rm -f .github/live-risk-capacity-apply.py .github/workflows/live-risk-capacity-apply.yml
           git add -A
           git commit -m "Add Stress-90 live risk capacity controls"
           git push origin HEAD:codex/live-risk-capacity
