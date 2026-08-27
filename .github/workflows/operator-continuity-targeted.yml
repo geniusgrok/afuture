@@ -24,8 +24,9 @@ jobs:
       - name: Apply staged implementation
         run: |
           python tools/operator_continuity_plan_patch.py
+          python tools/operator_continuity_cli_patch.py
           python tools/operator_continuity_test_fix.py
-          python -m ruff format afuture/stress90_operator_continuity.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
+          python -m ruff format afuture/stress90_operator_continuity.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
       - name: Targeted tests
         run: |
           python -m pytest -q \
@@ -36,12 +37,14 @@ jobs:
             tests/test_trading_day_evidence.py \
             tests/test_account_runtime_registry.py \
             tests/test_stress90_lifecycle_transaction.py \
-            tests/test_stress90_activation_permit.py
+            tests/test_stress90_activation_permit.py \
+            tests/test_directional_stress90_activation.py
       - name: Targeted quality
         run: |
-          python -m ruff check afuture/stress90_operator_continuity.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
-          python -m ruff format --check afuture/stress90_operator_continuity.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
-          python -m mypy afuture/stress90_operator_continuity.py
+          python -m ruff check afuture/stress90_operator_continuity.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
+          python -m ruff format --check afuture/stress90_operator_continuity.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
+          python -m mypy afuture/stress90_operator_continuity.py afuture/cli.py
+          python -m compileall -q afuture
       - name: Commit generated implementation checkpoint
         shell: bash
         run: |
@@ -50,6 +53,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add afuture/stress90_operator_continuity.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
-          git commit -m "feat: build operator continuity roll-forward plan"
+          git add afuture/stress90_operator_continuity.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
+          git commit -m "feat: wire operator continuity roll-forward transaction"
           git push origin HEAD:codex/operator-managed-continuity
