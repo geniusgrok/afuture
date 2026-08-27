@@ -25,6 +25,7 @@ jobs:
         run: |
           python tools/operator_continuity_plan_patch.py
           python tools/operator_continuity_cli_patch.py
+          python tools/operator_continuity_mypy_fix.py
           python tools/operator_continuity_test_fix.py
           python -m ruff format afuture/stress90_operator_continuity.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
       - name: Targeted tests
