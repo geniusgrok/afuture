@@ -4,105 +4,25 @@ from pathlib import Path
 def replace_once(path: str, old: str, new: str) -> None:
     file_path = Path(path)
     text = file_path.read_text(encoding="utf-8")
-    if new and new in text:
+    if new in text:
         return
     if old not in text:
-        raise SystemExit(f"patch anchor missing: {path}: {old[:80]!r}")
+        raise SystemExit(f"patch anchor missing: {path}: {old[:120]!r}")
     file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-replace_once(
-    "afuture/directional.py",
-    '    account_exclusive: bool = True\n\n    def validate(self) -> None:\n',
-    '    account_exclusive: bool = True\n'
-    '    account_continuity_mode: str = "strict"\n\n'
-    '    def validate(self) -> None:\n',
-)
-replace_once(
-    "afuture/directional.py",
-    '        require_bool(self.account_exclusive, "directional.account_exclusive")\n'
-    '        require_string(self.policy, "directional.policy")\n',
-    '        require_bool(self.account_exclusive, "directional.account_exclusive")\n'
-    '        require_string(self.policy, "directional.policy")\n'
-    '        require_string(\n'
-    '            self.account_continuity_mode, "directional.account_continuity_mode"\n'
-    '        )\n'
-    '        if self.account_continuity_mode not in {"strict", "operator_managed"}:\n'
-    '            raise ValueError(\n'
-    '                "directional.account_continuity_mode must be strict or operator_managed"\n'
-    '            )\n',
-)
+MODULE_ANCHOR = '''@dataclass(frozen=True)\nclass Stress90OperatorContinuityRecord:\n'''
+MODULE_INSERT = '''@dataclass(frozen=True)\nclass Stress90OperatorAccountDayContinuityEvidence:\n    completed_account_day: str\n    current_ctp_trading_day: str\n    natural_day_gap: int\n    ohlc_content_digest: str\n    oi_store_checksum: str\n    completed_oi_evidence_digest: str\n    observed_transition_digest: str\n    continuity_digest: str\n\n\ndef load_stress90_operator_account_day_continuity_evidence(\n    ohlc_store,\n    oi_store,\n    *,\n    completed_account_day: str,\n    current_ctp_trading_day: str,\n) -> Stress90OperatorAccountDayContinuityEvidence:\n    """Prove one observed market-session transition without guessing a trading calendar."""\n\n    from .directional_ohlc_refresh import load_stress90_completed_ohlc\n    from .directional_stress90_policy import STRESS90_POLICY\n    from .directional_stress90_runtime import stress90_target_transitions\n\n    source_dt = _day(completed_account_day, "completed account trading day")\n    target_dt = _day(current_ctp_trading_day, "current CTP trading day")\n    if target_dt <= source_dt:\n        raise Stress90OperatorContinuityError(\n            "operator continuity target CTP day must be strictly later than source day"\n        )\n    source = source_dt.strftime("%Y%m%d")\n    target = target_dt.strftime("%Y%m%d")\n    natural_gap = (target_dt.date() - source_dt.date()).days\n    try:\n        entry = load_stress90_completed_ohlc(\n            ohlc_store,\n            products=STRESS90_POLICY.products,\n            current_ctp_trading_day=target,\n            authoritative_ctp_trading_day=target,\n            required_completed_day=source,\n        )\n        transitions = stress90_target_transitions(\n            last_completed_target_day=source,\n            current_ctp_trading_day=target,\n            completed_close_index=entry.close.index,\n        )\n    except (RuntimeError, TypeError, ValueError) as exc:\n        raise Stress90OperatorContinuityError(\n            "operator continuity OHLC session chain is not contiguous"\n        ) from exc\n    if transitions != ((source, target),):\n        raise Stress90OperatorContinuityError(\n            "operator continuity cannot skip intermediate completed OHLC session data"\n        )\n\n    try:\n        oi_record = oi_store.load_required_record()\n        completed_rows = tuple(\n            item\n            for item in oi_record.state.completed\n            if source <= item.trading_day < target\n        )\n        observed = tuple(\n            item\n            for item in oi_record.state.observed_transitions\n            if item.source_trading_day == source and item.target_trading_day == target\n        )\n    except Exception as exc:\n        raise Stress90OperatorContinuityError(\n            "operator continuity OI session evidence is unavailable"\n        ) from exc\n    if len(completed_rows) != 1 or completed_rows[0].trading_day != source:\n        raise Stress90OperatorContinuityError(\n            "operator continuity cannot skip intermediate completed OI session data"\n        )\n    completed = completed_rows[0]\n    if (\n        completed.complete is not True\n        or set(completed.flows) != set(STRESS90_POLICY.oi_products)\n        or any(value not in (-1, 0, 1) for value in completed.flows.values())\n    ):\n        raise Stress90OperatorContinuityError(\n            "operator continuity completed OI evidence is incomplete"\n        )\n    if len(observed) != 1:\n        raise Stress90OperatorContinuityError(\n            "operator continuity requires one observed CTP source/target transition"\n        )\n    transition = observed[0]\n    if transition.completed_oi_evidence_digest != completed.evidence_digest:\n        raise Stress90OperatorContinuityError(\n            "operator continuity observed transition/OI digest mismatch"\n        )\n    observed_transition_digest = _digest(\n        {\n            "source_trading_day": transition.source_trading_day,\n            "target_trading_day": transition.target_trading_day,\n            "completed_oi_evidence_digest": transition.completed_oi_evidence_digest,\n        }\n    )\n    identity = {\n        "kind": "afuture.stress90-operator-market-session-continuity",\n        "schema_version": 1,\n        "completed_account_day": source,\n        "current_ctp_trading_day": target,\n        "natural_day_gap": natural_gap,\n        "ohlc_content_digest": entry.content_digest,\n        "oi_store_checksum": oi_record.checksum,\n        "completed_oi_evidence_digest": completed.evidence_digest,\n        "observed_transition_digest": observed_transition_digest,\n    }\n    return Stress90OperatorAccountDayContinuityEvidence(\n        completed_account_day=source,\n        current_ctp_trading_day=target,\n        natural_day_gap=natural_gap,\n        ohlc_content_digest=entry.content_digest,\n        oi_store_checksum=oi_record.checksum,\n        completed_oi_evidence_digest=completed.evidence_digest,\n        observed_transition_digest=observed_transition_digest,\n        continuity_digest=_digest(identity),\n    )\n\n\n@dataclass(frozen=True)\nclass Stress90OperatorContinuityRecord:\n'''
+replace_once("afuture/stress90_operator_continuity.py", MODULE_ANCHOR, MODULE_INSERT)
 
-replace_once(
-    "afuture/config.py",
-    '    config = DirectionalConfig(**cast(Any, values))\n'
-    '    config.validate()\n'
-    '    if config.enabled and mode == "live" and not config.policy:\n',
-    '    config = DirectionalConfig(**cast(Any, values))\n'
-    '    config.validate()\n'
-    '    if config.account_continuity_mode == "operator_managed" and (\n'
-    '        mode != "live"\n'
-    '        or not config.enabled\n'
-    '        or config.policy != "stress90"\n'
-    '        or not config.account_exclusive\n'
-    '    ):\n'
-    '        raise ValueError(\n'
-    '            "directional.account_continuity_mode=operator_managed requires "\n'
-    '            "system.mode=live, directional.enabled=true, policy=stress90, "\n'
-    '            "and account_exclusive=true"\n'
-    '        )\n'
-    '    if config.enabled and mode == "live" and not config.policy:\n',
-)
+PARSER_ANCHOR = '''    stress90_settlement.add_argument("--shadow-account", action="store_true")\n\n    stress90_crash_fill_recovery = sub.add_parser(\n'''
+PARSER_INSERT = '''    stress90_settlement.add_argument("--shadow-account", action="store_true")\n\n    stress90_operator_roll_forward = sub.add_parser(\n        "stress90-operator-roll-forward",\n        help="在 operator-managed 模式下显式确认独占账户并安全推进一个 CTP 交易日",\n    )\n    stress90_operator_roll_forward.add_argument("--config", required=True)\n    stress90_operator_roll_forward.add_argument("--confirm-live", action="store_true")\n    stress90_operator_roll_forward.add_argument(\n        "--confirm-operator-continuity", action="store_true"\n    )\n    stress90_operator_roll_forward.add_argument("--operation-id", required=True)\n    stress90_operator_roll_forward.add_argument("--operator-reason", required=True)\n    stress90_operator_roll_forward.add_argument("--startup-timeout", type=float, default=60.0)\n    stress90_operator_roll_forward.add_argument("--snapshot-wait", type=float, default=12.0)\n\n    stress90_crash_fill_recovery = sub.add_parser(\n'''
+replace_once("afuture/cli.py", PARSER_ANCHOR, PARSER_INSERT)
 
-replace_once(
-    "afuture/account_runtime_registry.py",
-    '        "stress90_crash_fill_recovery",\n        "legacy",\n',
-    '        "stress90_crash_fill_recovery",\n'
-    '        "operator_managed_continuity",\n'
-    '        "legacy",\n',
-)
+FUNCTION_ANCHOR = '''def _run_stress90_settlement_roll_forward(config, args) -> int:\n    """Fail closed until authoritative prior-day funding closure is available."""\n'''
+FUNCTION_INSERT = '''def _run_stress90_operator_roll_forward(config, args) -> int:\n    """Advance one Stress-90 account day under the explicit operator trust model."""\n\n    from .stress90_operator_continuity import STRESS90_OPERATOR_CONTINUITY_CONFIRMATION\n\n    _validate_stress90_lifecycle_config(config)\n    if config.directional.account_continuity_mode != "operator_managed":\n        raise ValueError(\n            "stress90-operator-roll-forward requires "\n            "directional.account_continuity_mode=operator_managed"\n        )\n    _require_production_confirmation(config, args)\n    _require_lifecycle_operation_nonce(args)\n    reason = str(args.operator_reason)\n    if not reason.strip() or reason != reason.strip() or len(reason) > 1_000:\n        raise ValueError("operator continuity operator reason is invalid")\n    if (\n        not args.confirm_operator_continuity\n        or os.getenv("AFUTURE_OPERATOR_CONTINUITY_ACK")\n        != STRESS90_OPERATOR_CONTINUITY_CONFIRMATION\n    ):\n        raise RuntimeError(\n            "operator continuity requires --confirm-operator-continuity and "\n            "AFUTURE_OPERATOR_CONTINUITY_ACK="\n            + STRESS90_OPERATOR_CONTINUITY_CONFIRMATION\n        )\n    runtime_dir = Path(config.state_path).parent.resolve(strict=False)\n    if runtime_dir == Path(runtime_dir.anchor):\n        raise ValueError("operator continuity runtime path must not be a filesystem root")\n\n    # Broker construction is deliberately after every static/config/operator gate.\n    from .broker.ctp import CtpBroker\n\n    CtpBroker(config.ctp)\n    raise RuntimeError("operator-managed roll-forward runtime implementation is incomplete")\n\n\ndef _run_stress90_settlement_roll_forward(config, args) -> int:\n    """Fail closed until authoritative prior-day funding closure is available."""\n'''
+replace_once("afuture/cli.py", FUNCTION_ANCHOR, FUNCTION_INSERT)
 
-recovery_tail = '''            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)\n\n    def _is_exact_unchanged_binding_acknowledgement_retry(\n'''
-operator_method = '''            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)\n\n    def acknowledge_operator_continuity_operation(\n        self,\n        account_identity_digest: str,\n        runtime_dir: str | Path,\n        source_epoch: str,\n        operation_id: str,\n        request_digest: str,\n    ) -> AccountRuntimeRegistryRecord:\n        """Globally consume one semantic operator-continuity request nonce."""\n\n        account = _sha(account_identity_digest, "economic account identity")\n        runtime, runtime_digest = _canonical_runtime(runtime_dir)\n        source = _sha(source_epoch, "source account runtime epoch")\n        operation = _sha(operation_id, "operator continuity operation")\n        request = _sha(request_digest, "operator continuity request")\n        operation_receipt = _operation_receipt(\n            "operator_managed_continuity",\n            operation_id=operation,\n            request_digest=request,\n            account_identity_digest=account,\n            canonical_runtime=runtime,\n            account_epoch=source,\n        )\n        nonce_receipt = self._nonce_receipt_for(\n            operation=operation,\n            kind="operator_managed_continuity",\n            account=account,\n            runtime=runtime,\n            runtime_digest=runtime_digest,\n            epoch=source,\n            semantic_request_digest=operation_receipt,\n        )\n        with self._exclusive_lock() as lock:\n            current = self._load_unlocked(\n                required=True,\n                legacy_lock_evidence=lock.legacy_lock_evidence,\n            )\n            assert current is not None\n            self._require_schema3_nonce_ledger(current)\n            self._reconcile_nonce_pending_unlocked(current)\n            bindings = {item.account_identity_digest: item for item in current.bindings}\n            binding = bindings.get(account)\n            if binding is None:\n                raise AccountRuntimeRegistryError(\n                    "operator continuity registry binding is missing"\n                )\n            if (\n                binding.canonical_runtime != runtime\n                or binding.runtime_identity_digest != runtime_digest\n                or binding.account_epoch != source\n            ):\n                raise AccountRuntimeRegistryError(\n                    "operator continuity registry source CAS mismatch"\n                )\n            existing_nonce = self._nonce_ledger().lookup(current.nonce_root, operation)\n            if existing_nonce is not None:\n                if (\n                    binding.last_operation_id == operation\n                    and binding.operation_kinds[-1] == "operator_managed_continuity"\n                    and binding.last_operation_receipt_digest == operation_receipt\n                    and existing_nonce == nonce_receipt\n                ):\n                    return current\n                raise AccountRuntimeRegistryError(\n                    "operator continuity operation was already consumed for a different request"\n                )\n            operation_history, operation_kinds = _bound_operation_heads(\n                binding.operation_history,\n                binding.operation_kinds,\n                operation,\n                "operator_managed_continuity",\n            )\n            bindings[account] = _advance_binding_authority(\n                binding,\n                replace(\n                    binding,\n                    last_operation_id=operation,\n                    operation_history=operation_history,\n                    operation_kinds=operation_kinds,\n                    last_operation_receipt_digest=operation_receipt,\n                ),\n                operation_receipt=operation_receipt,\n            )\n            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)\n\n    def _is_exact_unchanged_binding_acknowledgement_retry(\n'''
-replace_once("afuture/account_runtime_registry.py", recovery_tail, operator_method)
-
-replace_once(
-    "afuture/trading_day_evidence.py",
-    '            "stress90_to_execution_aligned",\n        } or status not in {"prepared", "committed"}:\n',
-    '            "stress90_to_execution_aligned",\n'
-    '            "settlement_roll_forward",\n'
-    '        } or status not in {"prepared", "committed"}:\n',
-)
-
-replace_once(
-    "tests/test_stress90_operator_continuity.py",
-    'import json\nimport os\n',
-    'import json\nimport os\nfrom hashlib import sha256\n',
-)
-replace_once(
-    "tests/test_stress90_operator_continuity.py",
-    '        canonical_runtime_digest=_SHA_1,\n',
-    '        canonical_runtime_digest=sha256(\n'
-    '            f"runtime:{runtime.resolve()}".encode()\n'
-    '        ).hexdigest(),\n',
-)
-replace_once(
-    "afuture/stress90_operator_continuity.py",
-    "from typing import Any\n\n",
-    "",
-)
-replace_once(
-    "tests/test_stress90_operator_continuity.py",
-    "import json\nimport os\nfrom hashlib import sha256\nfrom dataclasses import replace\n",
-    "import json\nimport os\nfrom dataclasses import replace\nfrom hashlib import sha256\n",
-)
-replace_once(
-    "tests/test_stress90_operator_continuity.py",
-    "from afuture.account_runtime_registry import (\n    AccountRuntimeRegistry,\n    AccountRuntimeRegistryError,\n    ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,\n)\n",
-    "from afuture.account_runtime_registry import (\n    ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,\n    AccountRuntimeRegistry,\n    AccountRuntimeRegistryError,\n)\n",
-)
-replace_once(
-    "tests/test_stress90_operator_continuity.py",
-    "    Stress90OperatorContinuityEvidence,\n    Stress90OperatorContinuityError,\n",
-    "    Stress90OperatorContinuityError,\n    Stress90OperatorContinuityEvidence,\n",
-)
+DISPATCH_ANCHOR = '''    if args.command == "stress90-settlement-roll-forward":\n        return _run_stress90_settlement_roll_forward(config, args)\n\n    if args.command == "stress90-order-journal-rollover":\n'''
+DISPATCH_INSERT = '''    if args.command == "stress90-settlement-roll-forward":\n        return _run_stress90_settlement_roll_forward(config, args)\n\n    if args.command == "stress90-operator-roll-forward":\n        return _run_stress90_operator_roll_forward(config, args)\n\n    if args.command == "stress90-order-journal-rollover":\n'''
+replace_once("afuture/cli.py", DISPATCH_ANCHOR, DISPATCH_INSERT)
