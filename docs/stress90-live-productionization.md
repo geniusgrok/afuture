@@ -112,6 +112,20 @@ generic CAS 后、lifecycle coordinator commit 前向 recovery store 追加 dura
 该参与者的 crash retry 必须精确完成，后续 lifecycle 只保留并验证 receipt，不再要求 generic
 state 永远停在最初 recovery target。
 
+跨日 account path 仍有一个独立外部 blocker：当前代码不能证明上一完整柜台交易日的最终资金流。
+锁定的 `vnpy_ctp 6.7.11.4` 虽然暴露 request-bound `QrySettlementInfo` 和
+`QryTransferSerial`，但前者只把结算单资金内容作为无结构 `Content` 文本返回，后者只查询银期
+转账流水，且请求没有交易日或保留范围边界。二者都不能排除柜台人工调账、非银期资金变化或
+历史保留不完整。D+1 的 `PreBalance` 与当日累计 `Deposit/Withdraw=0` 也不能证明 D 日最后一次
+本地 snapshot 后没有资金变化，operator assertion 不能替代柜台证据。
+
+因此 `stress90-settlement-roll-forward` 在取得以下外部证据前始终失败关闭：一个不可变、响应完整
+且具有明确 finality 语义的结构化记录，必须绑定账户、币种、completed day、settlement identity、
+request/generation，并给出包含非银期/人工调整在内的最终 `Deposit` 与 `Withdraw` 总额。若目标
+柜台只能给结算单文本，必须先取得柜台文档化的稳定 grammar、真实目标机 fixture，并与独立完整
+资金台账对账；未知格式、sequence gap、无 `bIsLast`、超时、错误或任一 identity 不一致都继续
+阻断。该 blocker 不允许 FakeBroker/provider/parser fallback，也不允许把未闭合资金流记为策略收益。
+
 一个 target day 只能推进一次。prepared decision 必须在第一张订单前原子落盘；持久化失败则 `orders_sent=0`。决策已保存但未下单、第一张订单后崩溃或部分成交后崩溃，重启都复用同一 decision/intent，以 Broker 最新持仓继续向同一目标收敛，不重复追加 HHI，也不重新推进候选状态。policy/schema/manifest/seed/digest 不一致、交易日倒退或 target gap 均失败关闭。
 
 历史 bootstrap seed 不继承回测账户收益。live account soft path 从真实账户 inception 开始；充值、出金或换账户只能在全套生命周期门通过后以唯一 `--operation-id` 执行 `stress90-account-rebase`。同一账户只接受 verified nonzero cash-flow adjustment，不能用零资金流重置 hard daily/HWM；换账户才创建新 account epoch。运行中不允许手工交易、其他策略、充值或出金，也不允许把资金流自动当作策略收益。

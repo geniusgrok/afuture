@@ -182,6 +182,8 @@ afuture recover-state --help
 afuture quality-report --config config/afuture.directional-live.example.toml --output runtime/execution_quality_report.json
 ```
 
+`stress90-settlement-roll-forward` 当前仍是显式失败关闭入口：目标柜台尚未提供可证明上一完整交易日全部资金流的权威最终见证，因此确认参数和 operator reason 都不能使它推进状态。详见运行手册的结算资金闭合门。
+
 `status` 只读本地状态和运行环境，不需要 CTP 凭证。`doctor` 连接 CTP 获取新的账户、持仓、活动委托、合约目录、报价和合约参数，但不会发送订单。Stress-90 的精确 bootstrap→status→doctor→Shadow→测试柜台→极小真钱顺序见 [`docs/stress90-live-runbook.md`](docs/stress90-live-runbook.md)。
 
 ## 测试

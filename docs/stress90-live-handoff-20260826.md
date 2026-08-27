@@ -123,13 +123,14 @@ the fixed files and their documented digests.
 
 ## Open P0 blockers
 
-1. `stress90-settlement-roll-forward` still deliberately raises a fail-closed “lifecycle
-   wiring incomplete” error. Complete it as an exactly-once, zero-order, HALTED lifecycle
-   transaction or keep runtime rollover unavailable.
-2. Prior-day final account funding closure is not authoritative. A D+1 `PreBalance` cannot
-   prove that no deposit/withdrawal occurred after the last D account snapshot. Do not record
-   that amount as strategy return without an account/day/request-bound final settlement or
-   funding witness. Deposits/withdrawals must route to explicit rebase.
+1. `stress90-settlement-roll-forward` deliberately fails before Broker construction or state
+   mutation because the authoritative prior-day final funding/settlement witness is an external
+   activation blocker. Pinned CTP exposes opaque settlement text and bank-futures transfer rows,
+   but neither proves all non-bank/manual funding changes or retention completeness.
+2. D+1 `PreBalance`, current-day `Deposit/Withdraw=0`, `TransferSerial` alone, opaque
+   `SettlementInfo` content and operator assertion are explicitly insufficient. Do not record
+   an unclosed amount as strategy return; independently verified funding changes must route to
+   explicit rebase.
 3. Authorized crash-fill adoption has no independent durable HALTED recovery checkpoint/CLI.
    The current lifecycle commands safely refuse to proceed when adoption differs from the
    persisted state, but operators cannot yet persist that recovery evidence.
@@ -201,8 +202,9 @@ silence errors globally.
 ## External gates that code cannot self-certify
 
 Even after code completion, leave these unchecked until evidence exists on the target
-machine: CTP ABI, multi-day Shadow, test counter, actual fees/margins, FAK partial fills,
-disconnect/reconnect, tiny real-money trading, and risk-scale expansion.
+machine: CTP ABI, authoritative prior-day final funding/settlement witness, multi-day Shadow,
+test counter, actual fees/margins, FAK partial fills, disconnect/reconnect, tiny real-money
+trading, and risk-scale expansion.
 
 `112.100053%` is historical research evidence, not a future-return promise. The 96-template
 pool has observed selection bias, and new live data is the actual forward evidence. CTP/live

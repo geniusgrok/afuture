@@ -309,7 +309,33 @@ afuture live \
 
 错过首个 entry window 时当日不得追开，但 reductions 和硬风险退出继续允许。每轮 reductions 后必须等待 Broker 成交、重新读账户/持仓并重新运行 `RiskManager`，才可 opening。
 
-## 11. 充值、出金或更换账户
+## 11. 结算与上一交易日资金闭合门
+
+`stress90-settlement-roll-forward` 当前不可用，即使提供 `--confirm-roll-forward`、强确认环境变量、
+合法 operation id 和 operator reason，也会在构造 Broker 或写入任何 state/lifecycle artifact 前
+失败关闭。不要循环重试或修改本地状态来绕过；运行 `status`/`doctor` 时
+`prior_day_final_funding_settlement_witness` 必须继续显示为未验证的外部 activation blocker。
+
+当前锁定的 CTP Python ABI 只有以下相关原语：
+
+- `QryTradingAccount`：D+1 `PreBalance`、`SettlementID` 和 D+1 当前日累计
+  `Deposit/Withdraw`；它不能证明 D 日最后一次 snapshot 后没有资金变化；
+- `QryTransferSerial`：request-bound 银期转账流水，但请求没有 completed-day/retention 边界，
+  也不能排除非银期或柜台人工资金调整；
+- `QrySettlementInfo`：带 account/day/settlement/sequence 的结算单分片，但资金内容是无结构
+  `Content` 文本，当前没有经目标柜台批准的稳定解析契约。
+
+只有目标柜台提供不可变、响应完整且具有明确 finality 的结构化最终记录，绑定账户、币种、
+completed day、SettlementID、request/generation，并给出包括非银期/人工调整在内的最终
+`Deposit` 与 `Withdraw`，才能重新评审该命令。若只能提供结算单文本，还必须有柜台文档化 grammar、
+真实目标机 fixtures 和独立完整资金台账对账。未知格式、sequence gap、缺少 `bIsLast`、查询
+超时/错误、identity 不一致、未知 transfer code/status 或保留范围不完整都必须保持阻断。
+
+严禁用 operator 猜测、D+1 当日 `Deposit/Withdraw=0`、`PreBalance` 差额、单独
+`TransferSerial` 或 FakeBroker/provider/parser fallback 替代见证；无法闭合的资金变化不得计入
+策略收益。
+
+## 12. 充值、出金或更换账户
 
 运行期间禁止手工交易、其他策略、充值或出金。发生资金或账户生命周期变化后，先人工设置 kill switch 并进入 `HALTED`，清空 Broker 与本地持仓、处理全部活动委托、完成 fresh snapshot 和 reconcile，再执行：
 
@@ -342,7 +368,7 @@ afuture stress90-account-rebase \
 
 同一账户 rebase 必须由已验证的非零充值/出金差额支持，并以资金流调整 hard daily/HWM 和 completed wealth 基线，不能用零资金流清除回撤或日损状态；更换账户才从新账户 verified settlement 建立新的 soft path。两类 rebase 都写 prepared/completed audit，但 candidate、HHI 和 seed 不重算。成功后仍保持 `HALTED` 和 kill switch，必须重新走 `status`、`doctor`、Shadow/测试柜台所需门。禁止运行中静默重置，也禁止把资金流算成策略收益。每个新操作都必须使用新的 `--operation-id`；只有原事务的精确重试可复用。
 
-## 12. CTP order journal 容量 epoch 封存
+## 13. CTP order journal 容量 epoch 封存
 
 order journal 的 20,000 个 order identity / 10,000 个 fill identity 是硬上限，不能删文件或放宽上限。容量接近上限时先保持 kill switch、进入 `HALTED`，确认 Broker/local 空仓、没有活动委托且 fresh reconcile 成功，再执行：
 
@@ -362,7 +388,7 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 
 命令先全审计 current/archive chain，再把旧账户 epoch 封存为带 checksum、parent root、exact identity set 和 Bloom 摘要的不可变证据；任一复制、校验或清理中断都会留下显式 pending 状态并阻止 runtime，使用同一 operation id 精确重试。成功后 technical permit 失效，状态仍为 `HALTED`，必须重新运行 `status` 和 `doctor`。`status/doctor` 会全量检查所有 sealed cold epochs；不得手工删除 `.prev`、archive、epoch manifest 或 sealed directory。
 
-## 13. 立即停止条件
+## 14. 立即停止条件
 
 出现以下任一情况，停止新增风险并按状态矩阵处理：
 
@@ -375,6 +401,7 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 - live metadata、quotes、margin 或 commission 不可信；
 - deterministic fee + minimum reasonable slippage 显著超过单边 15bp；
 - CTP/vendor flow 存在未解释差异；
+- prior-day final funding/settlement witness 不可用或不完整；
 - 外部 provider 失败且 verified cache 不足。
 
 旧 registry schema 1/2 不得在普通启动或 lifecycle 中静默迁移；这些门会保持 `HALTED` 并失败

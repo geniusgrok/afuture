@@ -34,6 +34,7 @@ from .state import RuntimeState, StateIntegrityError, StateStore
 MIN_OPERATIONAL_DISK_FREE_BYTES = 100 * 1024 * 1024
 STRESS90_EXTERNAL_ACTIVATION_GATES = (
     "target_machine_ctp_abi",
+    "prior_day_final_funding_settlement_witness",
     "multi_day_shadow",
     "test_counter",
     "observed_live_fees",

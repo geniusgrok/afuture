@@ -4286,7 +4286,7 @@ def _run_stress90_order_journal_rollover(config, args) -> int:
 
 
 def _run_stress90_settlement_roll_forward(config, args) -> int:
-    """Fail closed until the full zero-order settlement transaction is available."""
+    """Fail closed until authoritative prior-day funding closure is available."""
 
     _validate_stress90_lifecycle_config(config)
     _require_production_confirmation(config, args)
@@ -4301,7 +4301,10 @@ def _run_stress90_settlement_roll_forward(config, args) -> int:
         )
     _require_lifecycle_operation_nonce(args)
     raise RuntimeError(
-        "Stress-90 settlement roll-forward is fail-closed while lifecycle wiring is incomplete"
+        "Stress-90 settlement roll-forward is fail-closed: authoritative prior-day final "
+        "funding/settlement witness is unavailable; D+1 PreBalance/current Deposit/Withdraw, "
+        "CTP TransferSerial alone, opaque SettlementInfo content, and operator assertion are "
+        "insufficient"
     )
 
 

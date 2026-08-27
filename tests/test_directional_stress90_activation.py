@@ -1262,6 +1262,64 @@ def test_settlement_roll_forward_requires_strong_confirmation_before_broker(
         _run_stress90_settlement_roll_forward(config, args)
 
 
+def test_settlement_roll_forward_reports_external_funding_witness_blocker_before_broker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.cli import _run_stress90_settlement_roll_forward
+    from afuture.directional import DirectionalConfig
+    from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+
+    class ForbiddenBroker:
+        def __init__(self, credentials):
+            del credentials
+            raise AssertionError("external blocker must be checked before Broker construction")
+
+    monkeypatch.setattr("afuture.broker.ctp.CtpBroker", ForbiddenBroker)
+    monkeypatch.setenv(
+        "AFUTURE_STRESS90_SETTLEMENT_ACK",
+        "ROLL_FORWARD_STRESS90_SETTLEMENT",
+    )
+    config = SimpleNamespace(
+        mode="live",
+        ctp=SimpleNamespace(environment="test"),
+        directional=DirectionalConfig(
+            enabled=True,
+            policy="stress90",
+            products=FROZEN_PRODUCTS,
+            account_exclusive=True,
+        ),
+        state_path=str(tmp_path / "state.json"),
+        journal_path=str(tmp_path / "audit.jsonl"),
+    )
+    args = SimpleNamespace(
+        confirm_live=True,
+        confirm_roll_forward=True,
+        startup_timeout=0.1,
+        snapshot_wait=0.1,
+        runtime_dir="",
+        operator_reason="operator assertion is not authoritative evidence",
+        operation_id=_OPERATION_ID,
+        shadow_account=False,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="authoritative prior-day final funding/settlement witness is unavailable",
+    ) as error:
+        _run_stress90_settlement_roll_forward(config, args)
+
+    detail = str(error.value)
+    for insufficient in (
+        "D+1 PreBalance/current Deposit/Withdraw",
+        "CTP TransferSerial alone",
+        "opaque SettlementInfo content",
+        "operator assertion",
+    ):
+        assert insufficient in detail
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_shadow_activation_reads_canonical_persistent_account_and_rejects_position(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
