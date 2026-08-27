@@ -144,6 +144,45 @@ jobs:
               text = text.replace(old, new, 1)
 
           path.write_text(text, encoding='utf-8')
+
+          test_path = Path('tests/test_directional_stress90_activation.py')
+          test_text = test_path.read_text(encoding='utf-8')
+          if 'from afuture.risk import RiskConfig\n' not in test_text:
+              anchor = 'from afuture.models import RuntimeMode\n'
+              if test_text.count(anchor) != 1:
+                  raise RuntimeError('activation test RiskConfig import anchor mismatch')
+              test_text = test_text.replace(
+                  anchor,
+                  anchor + 'from afuture.risk import RiskConfig\n',
+                  1,
+              )
+          simple = '        ctp=SimpleNamespace(environment="test"),\n        directional=DirectionalConfig(\n'
+          if simple not in test_text:
+              raise RuntimeError('fresh activation test config anchor missing')
+          test_text = test_text.replace(
+              simple,
+              '        ctp=SimpleNamespace(environment="test"),\n        risk=RiskConfig(),\n        directional=DirectionalConfig(\n',
+              1,
+          )
+          migrated = (
+              '        ctp=SimpleNamespace(\n'
+              '            environment="test",\n'
+              '            account_id="account-a",\n'
+              '            currency_id="CNY",\n'
+              '        ),\n'
+              '        directional=DirectionalConfig(\n'
+          )
+          if migrated not in test_text:
+              raise RuntimeError('migration/reactivation test config anchor missing')
+          test_text = test_text.replace(
+              migrated,
+              migrated.replace(
+                  '        directional=DirectionalConfig(\n',
+                  '        risk=RiskConfig(),\n        directional=DirectionalConfig(\n',
+              ),
+              1,
+          )
+          test_path.write_text(test_text, encoding='utf-8')
           PY
       - name: Apply TDD implementation and focused verification
         run: python .github/live-risk-capacity-apply.py
