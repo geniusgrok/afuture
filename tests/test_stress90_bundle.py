@@ -132,9 +132,8 @@ def test_archive_rejects_truncation_append_and_tamper() -> None:
 
 
 def test_bundle_rejects_non_official_expectations(tmp_path: Path) -> None:
-    from afuture.stress90_bundle import Stress90BundleError, create_stress90_bundle
-
     from afuture.directional_stress90_bootstrap import Stress90BootstrapExpectations
+    from afuture.stress90_bundle import Stress90BundleError, create_stress90_bundle
 
     expectations = Stress90BootstrapExpectations(
         input_sha256={
