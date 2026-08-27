@@ -23,6 +23,8 @@
 
 固定 Stress-90 候选现在可以通过 `directional.policy = "stress90"` 显式接入 Shadow、测试柜台和 CTP runtime；普通 `execution_aligned` 仍保留原有行为。代码 wiring、历史候选验证、Shadow、测试柜台、极小真钱和扩大风险是六个不同阶段，前一阶段不能自动授权后一阶段。
 
+Stress-90 账户连续性默认使用 `account_continuity_mode = "strict"`，保持现有官方结算/交易时段证据的 fail-closed 门。个人专用、账户独占且运行期间无人工交易和出入金时，可显式选择 `operator_managed`，通过 `stress90-operator-roll-forward` 记录带 checksum 的操作者信任连续性凭证；它不是交易所或 Broker 的官方结算/session 见证，成功后仍保持 `HALTED`、kill switch 开启，并要求重新运行 `status`、`doctor` 和签发新的技术 permit。任何外部账户活动都必须先走 `stress90-account-rebase`。
+
 ## 策略
 
 ### 跨期价差
@@ -170,6 +172,7 @@ afuture stress90-prepare-decision --help
 afuture stress90-registry-init --help
 afuture stress90-registry-nonce-migrate --help
 afuture stress90-settlement-roll-forward --help
+afuture stress90-operator-roll-forward --help
 afuture stress90-activate --help
 afuture stress90-account-rebase --help
 afuture stress90-order-journal-rollover --help

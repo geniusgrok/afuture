@@ -66,6 +66,13 @@ afuture recover-state \
 
 `.prev` 只是上一份通过校验的诊断证据，不是自动恢复源。不能把它复制覆盖 current 后直接实盘。
 
+
+### 4.1 Stress-90 operator-managed 连续性故障
+
+`status`/`doctor` 会把严格外部门与 operator trust receipt 分开显示。`operator_managed` 下若报告 receipt 缺失、checksum/`.prev`/lineage 损坏、account/epoch/runtime 不匹配、registry/TDE 不再绑定、需要 roll-forward、需要 rebase 或需要新 permit，保持 `HALTED`，不要删除 artifact、复制 `.prev`、手改 checksum 或修改本机日期。
+
+若 CTP 当前 Deposit/Withdraw 非零、出现人工/外部订单或成交、Broker/local 持仓漂移、unknown order/trade 或无法解释的权益变化，operator continuity 不再成立。先用柜台事实查明原因；发生合法外部资金/账户活动时走 `stress90-account-rebase`，然后重新建立 continuity。`stress90-operator-roll-forward` 本身绝不发送订单或撤单；成功后也不会解除 kill switch，必须重新运行 `status`、`doctor` 并签发新 technical permit。
+
 ## 5. 日志和证据
 
 定位问题至少保留：

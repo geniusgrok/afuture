@@ -54,10 +54,14 @@
 
 - [ ] 使用固定的 50 品种范围，不为追逐近期收益随意删改。
 - [ ] 生产配置显式包含 `directional.policy = "stress90"` 和 `directional.account_exclusive = true`。
+- [ ] `directional.account_continuity_mode` 已明确选择；默认和通用生产建议为 `strict`。选择 `operator_managed` 时已确认这是个人专用、单账户、账户独占的操作者信任模型，而非官方结算/session 证据。
 - [ ] `directional.max_gross_leverage <= 2.0`。
 - [ ] `directional.max_contract_volume == 35` 或更低。
 - [ ] 方向组合不与固定跨期组合或 Auto 同时启用。
 - [ ] 同一账户没有手工或其他程序交易，保持账户独占假设。
+- [ ] 若使用 `operator_managed`，每次跨日 receipt 的 account/epoch/runtime、registry/TDE、完整 session ownership、journal、持仓对账、Deposit/Withdraw 和四项 no-external-activity assertion 均有效；`orders_sent=0`、`cancels_sent=0`。
+- [ ] 若账户发生人工交易、外部委托、入金、出金或无法解释的资金变化，已先执行 `stress90-account-rebase`，没有把外部资金变化计入策略收益。
+- [ ] operator roll-forward 后 runtime 仍为 `HALTED` 且 kill switch 开启，已重新运行 `status`/`doctor` 并签发新 technical permit；外部 activation blockers 仍单独保留。
 - [ ] 目标交易所和品种权限已开通。
 - [ ] `rebalance_window` 经过测试柜台验证。
 - [ ] Stress-90 不用宽泛 `rebalance_window` 追单；每个产品只在固定 session manifest 的首个 entry window 增加风险。

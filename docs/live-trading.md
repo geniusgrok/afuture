@@ -253,6 +253,17 @@ Stress-90 Shadow 使用 `runtime/shadow/` 下单独 bootstrap、activation 和�
 
 `recover-state` 只是人工恢复入口，不能跳过停机原因和柜台对账。它会在 CTP 启动前恢复可证明交易所的成交 identity；状态仍含旧 `(trading_day, trade_id)` 时拒绝采纳，必须先人工完成柜台对账。
 
+
+### 11.1 Stress-90 账户连续性模式
+
+Stress-90 默认 `directional.account_continuity_mode = "strict"`。未配置该字段时行为与原有严格模式完全一致：缺少 prior-day final funding/settlement witness 或权威 nonadjacent session ledger 时继续 fail closed，现有 `stress90-settlement-roll-forward` 的含义不变。
+
+`operator_managed` 只面向个人专用、单账户、`account_exclusive=true` 的 live Stress-90 runtime。它记录本地 `stress90_operator_continuity.json` receipt，把当前 CTP 交易日、账户/epoch/runtime、registry/TDE、完整 session ownership、order journal、Broker/local 持仓对账、Deposit/Withdraw、OHLC/activity/OI/policy 对齐和操作者的“无人工交易、无外部委托、无入金、无出金”声明绑定在同一 checksum 链中。该 receipt 的 authority 是 `operator_trust`，**不是**交易所/Broker 官方结算见证或官方 session ledger；`external_activation_gates_completed` 始终保持 `false`。
+
+跨日必须显式执行 `afuture stress90-operator-roll-forward`，并同时提供 `--confirm-live`、`--confirm-operator-continuity`、唯一 64-hex `--operation-id`、`--operator-reason` 和 `AFUTURE_OPERATOR_CONTINUITY_ACK=I_CONFIRM_EXCLUSIVE_ACCOUNT_AND_NO_EXTERNAL_ACTIVITY`。命令只在 `HALTED`、kill switch 开启、fresh account/positions/session ownership 完整、活动委托为零、journal 无未终态/unknown、Broker/local 持仓一致且当前 Deposit/Withdraw 都为零时推进；它不报单也不撤单。周五到周一等自然日间隔可以由 operator receipt 明确确认，但不能跳过已经存在的中间 OHLC/OI session 数据，也不使用本机日期、`BDay` 或静态节假日日历猜测交易日。
+
+成功后 generic/policy state 仍通过原有 recoverable lifecycle transaction/CAS 原子推进，runtime 仍为 `HALTED`、kill switch 仍开启、`metadata_verified=false`。旧 activation permit 被失效，必须再次执行 `status`、`doctor` 并签发新的 technical permit。任何人工交易、外部委托、入金、出金或无法解释的资金变化都不能算策略收益；必须先用现有 `stress90-account-rebase` 建立新的账户 epoch，然后才能重新建立 operator continuity。
+
 ## 12. 启动对账与执行质量
 
 方向组合不持久化第二份策略持仓。重启时以 Broker 完整账户和持仓为真相，与 `StateStore` 中的预期状态核对；任何差异都失败关闭。

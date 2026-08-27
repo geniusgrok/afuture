@@ -47,11 +47,17 @@ class DirectionalConfig:
     rebalance_window: str = "21:00-21:10"
     signal_max_age_hours: float = 36.0
     account_exclusive: bool = True
+    account_continuity_mode: str = "strict"
 
     def validate(self) -> None:
         require_bool(self.enabled, "directional.enabled")
         require_bool(self.account_exclusive, "directional.account_exclusive")
         require_string(self.policy, "directional.policy")
+        require_string(self.account_continuity_mode, "directional.account_continuity_mode")
+        if self.account_continuity_mode not in {"strict", "operator_managed"}:
+            raise ValueError(
+                "directional.account_continuity_mode must be strict or operator_managed"
+            )
         for field_name in ("products", "exchanges"):
             require_string_sequence(getattr(self, field_name), f"directional.{field_name}")
         require_string(self.rebalance_window, "directional.rebalance_window")

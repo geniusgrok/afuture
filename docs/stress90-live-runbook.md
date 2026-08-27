@@ -41,6 +41,7 @@ afuture validate --config /secure/path/afuture.directional-stress90.toml
 enabled = true
 policy = "stress90"
 account_exclusive = true
+account_continuity_mode = "strict"  # 默认；个人独占账户才考虑 operator_managed
 ```
 
 并保持固定 50 品种。commissioning 风险可以更严格，不能更宽；任何差异都要保留在审计中，且不能声称精确复现固定历史矩阵。
@@ -189,6 +190,36 @@ unset AFUTURE_STRESS90_ACTIVATION_PERMIT_ACK
 ```
 
 该 permit 只允许一次 `HALTED → RUNNING` 技术状态转换，不能代表多日 Shadow、测试柜台、极小真钱或扩大风险门已通过。permit 在账户 lease 内先被消费、再保存 RUNNING；两步之间崩溃时状态保持 `HALTED` 且 permit 已消费，必须重新运行 Doctor 签发，禁止自动复用。
+
+
+### 6.1 可选：个人独占账户的 operator-managed 跨日
+
+默认 `strict` 不变，仍要求原有 authoritative settlement/session 证据。只有该账户完全由本进程独占、运行期间不进行人工交易/外部委托/入金/出金时，才可在私有生产配置中显式设置：
+
+```toml
+[directional]
+account_continuity_mode = "operator_managed"
+```
+
+跨日时先保持 `HALTED` 和 kill switch，不启动 live 交易循环。确认 CTP fresh account、完整持仓、活动委托、当前 session order/trade、journal、registry、TradingDayEvidence、OHLC/activity/OI/policy 均一致后：
+
+```bash
+export AFUTURE_OPERATOR_CONTINUITY_ACK=I_CONFIRM_EXCLUSIVE_ACCOUNT_AND_NO_EXTERNAL_ACTIVITY
+OPERATION_ID="$(openssl rand -hex 32)"
+
+afuture stress90-operator-roll-forward \
+  --config /secure/path/afuture.directional-stress90.toml \
+  --confirm-live \
+  --confirm-operator-continuity \
+  --operation-id "$OPERATION_ID" \
+  --operator-reason 'exclusive account continuity; no manual trade/order/deposit/withdrawal'
+
+unset AFUTURE_OPERATOR_CONTINUITY_ACK OPERATION_ID
+```
+
+该命令不报单、不撤单；Deposit/Withdraw 非零、活动委托、unknown order/trade、journal 未终态、持仓漂移、source/data day 不齐或 prepared transaction 不匹配都会失败关闭。自然日间隔大于 1（例如周五到周一）只记录为 operator trust；不把本机日期、`BDay`、静态节假日日历或 OHLC 端点本身当作官方 session ledger。
+
+成功后仍必须看到 `HALTED`、`kill_switch=true`、`metadata_verified=false`，并依次重新运行 `status`、无报单 `doctor`、再签发新的 technical permit。receipt 不能把 `external_activation_gates_completed` 变成 true。若发生任何外部账户活动，先执行 `stress90-account-rebase`；同账户 rebase 会推进 account epoch，后续 operator receipt 只可在 registry/TDE 已证明该新 epoch 的前提下重新锚定，旧 receipt 不能跨 epoch 授权。
 
 ## 7. 独立持久 Shadow
 
