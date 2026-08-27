@@ -296,7 +296,7 @@ def _deployment_payload(
     bundle = canonical_safe_path(bundle_path, label="bootstrap bundle")
     bundle_verification = verify_stress90_bundle(bundle, require_production=True, repo_dir=repo)
     seed = Stress90SeedStore(runtime / "stress90_bootstrap_seed.json").load_required()
-    policy = Stress90PolicyStateStore(runtime / "stress90_policy_state.json").load_required().state
+    policy = Stress90PolicyStateStore(runtime / "stress90_policy_state.json").load_required()
     if (
         seed.seed_digest != bundle_verification.manifest["seed_digest"]
         or policy.bootstrap_seed_digest != seed.seed_digest
