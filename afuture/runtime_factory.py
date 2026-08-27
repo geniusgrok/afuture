@@ -161,26 +161,31 @@ def build_runtime_engine(
             )
 
             runtime_dir = Path(state_store.path).parent.resolve(strict=False)
-            from .directional_policy_activation import require_directional_policy_identity
-            from .directional_stress90_policy import STRESS90_POLICY
-            from .directional_stress90_state import Stress90SeedStore
-            from .stress90_risk_overlay import stress90_risk_overlay_digest
-
-            generic = state_store.load_required_record()
-            seed = Stress90SeedStore(runtime_dir / "stress90_bootstrap_seed.json").load_required()
-            require_directional_policy_identity(
-                generic.state,
-                policy_id=STRESS90_POLICY.policy_id,
-                policy_definition_digest=STRESS90_POLICY.policy_definition_digest,
-                products_manifest_digest=STRESS90_POLICY.products_manifest_digest,
-                bootstrap_seed_digest=seed.seed_digest,
-                risk_overlay_digest=stress90_risk_overlay_digest(config.directional, config.risk),
-            )
             _require_stress90_account_runtime_binding(
                 config,
                 broker,
                 runtime_dir,
             )
+            generic = state_store.load_record()
+            if generic is not None:
+                from .directional_policy_activation import require_directional_policy_identity
+                from .directional_stress90_policy import STRESS90_POLICY
+                from .directional_stress90_state import Stress90SeedStore
+                from .stress90_risk_overlay import stress90_risk_overlay_digest
+
+                seed = Stress90SeedStore(
+                    runtime_dir / "stress90_bootstrap_seed.json"
+                ).load_required()
+                require_directional_policy_identity(
+                    generic.state,
+                    policy_id=STRESS90_POLICY.policy_id,
+                    policy_definition_digest=STRESS90_POLICY.policy_definition_digest,
+                    products_manifest_digest=STRESS90_POLICY.products_manifest_digest,
+                    bootstrap_seed_digest=seed.seed_digest,
+                    risk_overlay_digest=stress90_risk_overlay_digest(
+                        config.directional, config.risk
+                    ),
+                )
             from .stress90_activation_permit import (
                 Stress90TechnicalActivationAuthority,
             )

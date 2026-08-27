@@ -79,6 +79,11 @@ def estimate_stress90_contract_cost(
     fee_values = [float(getattr(spec.fee, name)) for name in spec.fee.__dataclass_fields__]
     if require_commission_evidence and not any(value > 0.0 for value in fee_values):
         raise ValueError("live commission evidence is missing")
+    open_fee_per_lot = float(spec.fee.open_fixed) + float(spec.fee.open_rate) * notional
+    close_fee_per_lot = float(spec.fee.close_fixed) + float(spec.fee.close_rate) * notional
+    close_today_fee_per_lot = (
+        float(spec.fee.close_today_fixed) + float(spec.fee.close_today_rate) * notional
+    )
     open_fee = fee_bps(spec.fee.open_fixed, spec.fee.open_rate)
     close_fee = fee_bps(spec.fee.close_fixed, spec.fee.close_rate)
     close_today_fee = fee_bps(
@@ -96,11 +101,15 @@ def estimate_stress90_contract_cost(
         "symbol": tick.symbol,
         "exchange": tick.exchange,
         "mid_price": mid,
+        "open_fee_per_lot": open_fee_per_lot,
+        "close_yesterday_fee_per_lot": close_fee_per_lot,
+        "close_today_fee_per_lot": close_today_fee_per_lot,
         "open_fee_bps": open_fee,
         "close_yesterday_fee_bps": close_fee,
         "close_today_fee_bps": close_today_fee,
         "one_tick_bps": one_tick,
         "bid_ask_bps": bid_ask,
+        "spread_bps": bid_ask,
         "bid_depth": float(tick.bid_volume),
         "ask_depth": float(tick.ask_volume),
         "minimum_reasonable_slippage_bps": minimum_slippage,
@@ -650,6 +659,19 @@ def _add_stress90_local_status(
                 else sum(abs(float(value)) for value in policy_state.last_survivor_weights.values())
             ),
         )
+        raw_product_weights = (
+            dict(prepared.survivor_weights)
+            if prepared is not None
+            else dict(policy_state.last_survivor_weights)
+        )
+        raw_target_gross = sum(abs(float(value)) for value in raw_product_weights.values())
+        facts["raw_target_gross"] = raw_target_gross
+        facts["scaled_target_gross"] = raw_target_gross * float(config.directional.live_risk_scale)
+        facts["raw_product_weights"] = raw_product_weights
+        facts["scaled_product_weights"] = {
+            product: float(weight) * float(config.directional.live_risk_scale)
+            for product, weight in raw_product_weights.items()
+        }
         identity_ok = bool(
             seed is not None
             and policy_state.bootstrap_seed_digest == seed.seed_digest
@@ -785,6 +807,24 @@ def _add_stress90_local_status(
                 if intent_record.retired
                 else dict(intent_record.intent.initial_margin_fitted_lots)
             )
+            facts["raw_integer_lots"] = None
+            facts["scaled_integer_lots"] = None
+            facts["margin_fitted_lots"] = (
+                {}
+                if intent_record.retired
+                else dict(intent_record.intent.initial_margin_fitted_lots)
+            )
+            facts["final_lots"] = (
+                {} if intent_record.retired else dict(intent_record.intent.freeze_authorized_lots)
+            )
+            facts["live_plan_metrics_available"] = False
+            facts["live_plan_metrics_reason"] = (
+                "fresh CTP quotes/specs are required; run doctor or stress90-capacity-report"
+            )
+            facts["integer_tracking_error"] = None
+            facts["live_cost_compatibility"] = None
+            facts["estimated_margin_ratio"] = None
+            facts["estimated_available_ratio"] = None
             if intent_record.retired:
                 assert intent_record.retirement is not None
                 facts["execution_intent"] = {

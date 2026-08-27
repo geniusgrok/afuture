@@ -1487,10 +1487,26 @@ def _run_stress90_capacity_report(config, args) -> int:
         try:
             refresh = broker.refresh_session_activity
             evidence = refresh(timeout_seconds=max(0.1, float(args.snapshot_wait)))
+            from .broker.ctp_order_journal import CtpOrderSubmissionJournal
             from .broker.ctp_session_query import validate_ctp_session_activity_ownership
 
-            local_session_trades = tuple(broker.get_session_trades())
-            validate_ctp_session_activity_ownership(evidence, local_session_trades)
+            account_identity = broker.get_account_identity_digest()
+            if (
+                not isinstance(account_identity, str)
+                or evidence.account_identity_digest != account_identity
+                or evidence.trading_day != trading_day
+            ):
+                raise RuntimeError("capacity report CTP session identity mismatch")
+            journal_entries = tuple(
+                CtpOrderSubmissionJournal(
+                    Path(config.state_path).parent / "stress90_ctp_orders.json"
+                ).load_all_entries()
+            )
+            validate_ctp_session_activity_ownership(evidence, journal_entries)
+            require_current = getattr(broker, "require_session_activity_evidence_current", None)
+            if not callable(require_current):
+                raise RuntimeError("capacity report cannot revalidate CTP session evidence")
+            require_current(evidence)
             session_valid = True
             session_detail = "read-only complete CTP session activity ownership verified"
         except Exception as exc:
@@ -3661,7 +3677,13 @@ def _run_stress90_risk_overlay_reactivation(config, args) -> int:
         if shadow_account
         else live_broker
     )
-    account_identity = broker.get_account_identity_digest()
+    raw_account_identity = broker.get_account_identity_digest()
+    if (
+        not isinstance(raw_account_identity, str)
+        or re.fullmatch(r"[0-9a-f]{64}", raw_account_identity) is None
+    ):
+        raise RuntimeError("risk-overlay reactivation Broker account identity is invalid")
+    account_identity = raw_account_identity
     lease = AccountExclusiveRuntimeLease(
         paths["runtime"], account_identity, role="stress90-risk-overlay-reactivation"
     )

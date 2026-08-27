@@ -169,6 +169,7 @@ afuture stress90-bootstrap --config config/afuture.directional-stress90-live.exa
 afuture directional-ohlc-refresh --config config/afuture.directional-stress90-live.example.toml --current-trading-day YYYYMMDD
 afuture stress90-oi-collect --help
 afuture stress90-prepare-decision --help
+afuture stress90-capacity-report --help
 afuture stress90-registry-init --help
 afuture stress90-registry-nonce-migrate --help
 afuture stress90-settlement-roll-forward --help
