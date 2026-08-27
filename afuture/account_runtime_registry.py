@@ -2112,9 +2112,7 @@ class AccountRuntimeRegistry:
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
             if binding is None:
-                raise AccountRuntimeRegistryError(
-                    "operator continuity registry binding is missing"
-                )
+                raise AccountRuntimeRegistryError("operator continuity registry binding is missing")
             if (
                 binding.canonical_runtime != runtime
                 or binding.runtime_identity_digest != runtime_digest

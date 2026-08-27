@@ -53,9 +53,7 @@ class DirectionalConfig:
         require_bool(self.enabled, "directional.enabled")
         require_bool(self.account_exclusive, "directional.account_exclusive")
         require_string(self.policy, "directional.policy")
-        require_string(
-            self.account_continuity_mode, "directional.account_continuity_mode"
-        )
+        require_string(self.account_continuity_mode, "directional.account_continuity_mode")
         if self.account_continuity_mode not in {"strict", "operator_managed"}:
             raise ValueError(
                 "directional.account_continuity_mode must be strict or operator_managed"
