@@ -138,7 +138,7 @@ def _bundle_digest(unsigned_manifest: dict[str, Any]) -> str:
     return sha256(canonical_json_bytes(unsigned_manifest)).hexdigest()
 
 
-def _require_clean_bootstrap(runtime: Path) -> tuple[object, object, object]:
+def _require_clean_bootstrap(runtime: Path) -> tuple[Any, Any, Any]:
     for name in _FORBIDDEN_BOUND_ARTIFACTS:
         path = runtime / name
         if path.exists() or path.is_symlink():
