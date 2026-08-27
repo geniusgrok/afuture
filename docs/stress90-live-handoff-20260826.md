@@ -8,7 +8,7 @@
 - Repository: `ychenracing/afuture`
 - Base `main`: `da8de59304963c7b1d6737a63e8dadd6eaecd860`
 - Feature branch: `codex/stress90-live-productionization`
-- Draft PR: <https://github.com/ychenracing/afuture/pull/29>
+- PR: <https://github.com/ychenracing/afuture/pull/29>
 - Final reviewed code head: `48a16d181c0bf7820fd156714d0c45177aa8ad28`
 - Final reviewed code tree: `87da8c84fa341640e32aeb908badc9a5d818554c`
 - Latest code CI: run `33044030711` / #1767, quality + Python 3.10 + Python 3.13 success
@@ -65,9 +65,12 @@ CLI help                     current production commands passed
 3. 五份固定历史输入仍缺失。本次没有复现 candidate SHA、Stress-90 `112.100053%` 或
    Stress-80 `80.067891%`，不得替换输入或声称 parity 已完成。
 4. 目标机 CTP ABI/callback、multi-day Shadow、测试柜台、真实 fees/margin、FAK partial、
-   disconnect/reconnect、tiny-live、risk-scale approval 和 branch protection 仍是现场/治理证据。
+   disconnect/reconnect、tiny-live 和 risk-scale approval 仍是现场证据。
+5. `main` branch protection 尚未配置。用户于 2026-08-27 明确授权本次合并豁免该治理前置项；
+   该豁免只允许把已验证的 fail-closed 代码合入 `main`，不关闭任何实盘 activation gate。
 
-因此当前最终结论仍是：**PR 保持 Draft，不 merge `main`，不授权真实资金。**
+因此当前最终结论是：**PR #29 可合入 `main`，但不授权真实资金；所有外部 activation
+gate 继续失败关闭。**
 
 ## Safety status
 

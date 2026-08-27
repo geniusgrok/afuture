@@ -5,7 +5,7 @@
 ## 2026-08-27 productionization 验证记录
 
 本节记录后续实盘安全接线的代码证据，不重跑、替代或倒写下文的固定历史研究矩阵。
-最终代码候选位于 Draft PR #29 的远端提交
+最终代码候选位于 PR #29 的远端提交
 `48a16d181c0bf7820fd156714d0c45177aa8ad28`，对应源码 tree
 `87da8c84fa341640e32aeb908badc9a5d818554c`；base `main` 仍为
 `da8de59304963c7b1d6737a63e8dadd6eaecd860`。最终独立 adversarial review 为
