@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Temporary development-only patch; removed before the final PR.
 path = Path("afuture/stress90_operator_continuity.py")
 text = path.read_text(encoding="utf-8")
 text = text.replace(
