@@ -904,6 +904,15 @@ def _state_from_payload(raw: object) -> Stress90OiEvidenceState:
             or completed_source.evidence_digest != digest
         ):
             raise OiEvidenceIntegrityError("observed CTP day transition identity is invalid")
+        natural_days = (
+            datetime.strptime(target, "%Y%m%d") - datetime.strptime(source, "%Y%m%d")
+        ).days
+        if natural_days != 1:
+            raise OiEvidenceIntegrityError(
+                "non-adjacent raw CTP transition requires an official immutable "
+                "session ledger; BDay/local calendar/operator assertion/OHLC endpoints/"
+                "long connection are forbidden"
+            )
         transitions.append(ObservedTradingDayTransition(source, target, digest))
     transition_keys = tuple(
         (item.source_trading_day, item.target_trading_day) for item in transitions

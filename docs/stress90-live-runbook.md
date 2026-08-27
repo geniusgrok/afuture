@@ -294,6 +294,8 @@ afuture stress90-oi-compare \
 - 目标机 ABI、前置、重连和 callback 顺序已验证；
 - 当前账户独占，Broker/local 空仓且无活动委托；
 - 完整日 OI/coverage、OHLC/activity 和 target continuity 无 gap；
+- `authoritative_nonadjacent_session_ledger` 不再是外部 blocker；若当前交易日与上一日非相邻，
+  必须先有真实 official ledger，不能人工确认；
 - 实际 commission、margin、tick/slippage 与 15bp 历史假设兼容；
 - Shadow/test counter 中无未解释 flow、partial/reject 或 tracking discrepancy；
 - 当日处于每个产品首个允许 entry window；
@@ -334,6 +336,28 @@ completed day、SettlementID、request/generation，并给出包括非银期/人
 严禁用 operator 猜测、D+1 当日 `Deposit/Withdraw=0`、`PreBalance` 差额、单独
 `TransferSerial` 或 FakeBroker/provider/parser fallback 替代见证；无法闭合的资金变化不得计入
 策略收益。
+
+### 11.1 非相邻自然日 session continuity 门
+
+`status` 和 `doctor` 必须列出外部 blocker
+`authoritative_nonadjacent_session_ledger=not_available_from_pinned_vnpy_ctp_6_7_11_4`。
+当前锁定 ABI 的 `getTradingDay()` 只有当前日；`QryUserSession` 是登录会话，`QryExchange` 只有
+交易所元数据，`OnRtnInstrumentStatus` 是没有 `TradingDay` 的当前状态推送。它们都不是历史
+trading-session ledger。raw MD generation 即使没有断开，也只能为相邻自然日记录
+`ObservedTradingDayTransition`；持久化 decoder 和 account-day consumer 会拒绝周五到周一或
+节假日 gap。
+
+以下内容一律不是可接受证据：`pandas.BDay` 或其他 business-day 推断、本机/UTC 日期、人工维护或
+猜测的节假日、operator assertion、静态时段 manifest、Sina OHLC endpoint/行、只观察 source 与
+target 两天，以及跨越 gap 的长连接。不得修改 `natural_days == 1`、手写 checksummed transition、
+删除 evidence 或用 FakeBroker/provider fallback 绕过。
+
+未来只有真实目标柜台或交易所发布的不可变 official ledger 才可触发新一轮设计评审。交付物必须
+包含 issuer/exchange、产品/session scope、有效区间、完整有序的 official trading-day chain、
+版本/发布 identity、内容 digest 或签名、明确 finality/completeness 语义、真实目标机 fixture，
+以及 request/generation（若经柜台查询）。任何覆盖边界不清、漏日、重复、乱序、未知版本、响应
+不完整或身份不一致都继续保持 `HALTED`。在上述外部输入到位前，不创建空壳 ledger schema，
+不运行非相邻 settlement/account-day roll-forward，也不宣称周末/节假日 continuity 已闭合。
 
 ## 12. 充值、出金或更换账户
 

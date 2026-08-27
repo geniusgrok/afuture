@@ -89,6 +89,15 @@ def load_stress90_account_day_continuity_evidence(
     )
     if current <= previous:
         raise RuntimeError("completed account session continuity is unavailable")
+    natural_days = (
+        datetime.strptime(current, "%Y%m%d") - datetime.strptime(previous, "%Y%m%d")
+    ).days
+    if natural_days != 1:
+        raise RuntimeError(
+            "non-adjacent account-day continuity requires an official immutable "
+            "session ledger; BDay/local calendar/operator assertion/OHLC endpoints/"
+            "long connection are forbidden"
+        )
     entry = load_stress90_completed_ohlc(
         ohlc_store,
         products=STRESS90_POLICY.products,

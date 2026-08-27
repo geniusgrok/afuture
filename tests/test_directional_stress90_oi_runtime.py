@@ -1069,6 +1069,39 @@ def test_checkpoint_restores_in_progress_then_persists_rollover_once(tmp_path: P
     assert record.state.in_progress.trading_day == "20260826"
 
 
+def test_persisted_raw_transition_cannot_forge_a_weekend_session_ledger(
+    tmp_path: Path,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceState,
+        Stress90OiEvidenceStore,
+        build_fixed_historical_60m_evidence,
+    )
+
+    completed = build_fixed_historical_60m_evidence(
+        "20260821",
+        _fixed_historical_bars("20260821"),
+    )
+    store = Stress90OiEvidenceStore(tmp_path / "stress90_oi_evidence.json")
+    store.save_state(Stress90OiEvidenceState(completed=(completed,)))
+    envelope = json.loads(store.path.read_text(encoding="utf-8"))
+    envelope["state"]["observed_transitions"] = [
+        {
+            "source_trading_day": "20260821",
+            "target_trading_day": "20260824",
+            "completed_oi_evidence_digest": completed.evidence_digest,
+        }
+    ]
+    _rewrite_oi_envelope(store.path, state=envelope["state"])
+
+    with pytest.raises(
+        OiEvidenceIntegrityError,
+        match="official immutable session ledger",
+    ):
+        store.load_required_record()
+
+
 def test_restart_cannot_invent_unobserved_ctp_trading_day_transition(tmp_path: Path):
     from afuture.directional_stress90_oi_runtime import (
         Stress90OiEvidenceAggregator,

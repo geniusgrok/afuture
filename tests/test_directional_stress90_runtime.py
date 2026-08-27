@@ -772,13 +772,14 @@ def test_completed_account_continuity_uses_verified_ohlc_and_oi_session_chain(
             ohlc_cache_path=ohlc_path,
         )
 
-    friday_history = pd.date_range(end="2026-08-21", periods=170, freq="D")
-    weekend = manager_with_sessions(
-        tmp_path / "weekend",
-        close_index=friday_history,
-        completed_oi_days=("20260821",),
-        observed_transitions=(("20260821", "20260824"),),
+    adjacent_history = pd.date_range(end="2026-08-25", periods=170, freq="D")
+    adjacent = manager_with_sessions(
+        tmp_path / "adjacent",
+        close_index=adjacent_history,
+        completed_oi_days=("20260825",),
+        observed_transitions=(("20260825", "20260826"),),
     )
+    friday_history = pd.date_range(end="2026-08-21", periods=170, freq="D")
     missing_transition = manager_with_sessions(
         tmp_path / "missing-transition",
         close_index=friday_history,
@@ -791,18 +792,18 @@ def test_completed_account_continuity_uses_verified_ohlc_and_oi_session_chain(
         completed_oi_days=("20260824", "20260825", "20260826"),
     )
     try:
-        continuity = weekend.completed_account_day_continuity_evidence(
-            "20260821",
-            "20260824",
+        continuity = adjacent.completed_account_day_continuity_evidence(
+            "20260825",
+            "20260826",
         )
-        assert continuity.completed_account_day == "20260821"
-        assert continuity.current_ctp_trading_day == "20260824"
+        assert continuity.completed_account_day == "20260825"
+        assert continuity.current_ctp_trading_day == "20260826"
         assert len(continuity.ohlc_content_digest) == 64
         assert len(continuity.oi_store_checksum) == 64
         assert len(continuity.completed_oi_evidence_digest) == 64
         assert len(continuity.observed_transition_digest) == 64
         assert len(continuity.continuity_digest) == 64
-        assert weekend.completed_account_day_is_contiguous("20260821", "20260824") is True
+        assert adjacent.completed_account_day_is_contiguous("20260825", "20260826") is True
         assert (
             missing_transition.completed_account_day_is_contiguous(
                 "20260821",
@@ -812,9 +813,69 @@ def test_completed_account_continuity_uses_verified_ohlc_and_oi_session_chain(
         )
         assert gap.completed_account_day_is_contiguous("20260824", "20260827") is False
     finally:
-        weekend.close()
+        adjacent.close()
         missing_transition.close()
         gap.close()
+
+
+def test_completed_account_continuity_rejects_nonadjacent_endpoint_evidence(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_stress90_oi_runtime import (
+        ObservedTradingDayTransition,
+        Stress90OiEvidenceRecord,
+        Stress90OiEvidenceState,
+        build_fixed_historical_60m_evidence,
+    )
+    from afuture.directional_stress90_policy import STRESS90_POLICY
+    from afuture.directional_stress90_runtime import (
+        load_stress90_account_day_continuity_evidence,
+    )
+
+    close_index = pd.date_range(end="2026-08-21", periods=170, freq="D")
+    close = pd.DataFrame(100.0, index=close_index, columns=STRESS90_POLICY.products)
+    ohlc_store = DirectionalOHLCCacheStore(tmp_path / "directional_ohlc_cache.json")
+    ohlc_store.save(STRESS90_POLICY.products, close, close)
+    completed = build_fixed_historical_60m_evidence(
+        "20260821",
+        [
+            {
+                "datetime": datetime(2026, 8, 21, 9, 0, tzinfo=_CHINA),
+                "product": product,
+                "symbol": f"{product}2612",
+                "open": 100.0,
+                "close": 101.0,
+                "volume": 10.0,
+                "hold": 100.0,
+            }
+            for product in STRESS90_POLICY.oi_products
+        ],
+    )
+    oi_record = Stress90OiEvidenceRecord(
+        state=Stress90OiEvidenceState(
+            completed=(completed,),
+            observed_transitions=(
+                ObservedTradingDayTransition(
+                    source_trading_day="20260821",
+                    target_trading_day="20260824",
+                    completed_oi_evidence_digest=completed.evidence_digest,
+                ),
+            ),
+        ),
+        sequence=1,
+        checksum="a" * 64,
+    )
+
+    with pytest.raises(RuntimeError, match="official immutable session ledger"):
+        load_stress90_account_day_continuity_evidence(
+            ohlc_store,
+            SimpleNamespace(load_required_record=lambda: oi_record),
+            completed_account_day="20260821",
+            current_ctp_trading_day="20260824",
+        )
 
 
 def test_manager_validates_required_policy_state_before_market_subscriptions(tmp_path: Path):

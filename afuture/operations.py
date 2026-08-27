@@ -35,6 +35,7 @@ MIN_OPERATIONAL_DISK_FREE_BYTES = 100 * 1024 * 1024
 STRESS90_EXTERNAL_ACTIVATION_GATES = (
     "target_machine_ctp_abi",
     "prior_day_final_funding_settlement_witness",
+    "authoritative_nonadjacent_session_ledger",
     "multi_day_shadow",
     "test_counter",
     "observed_live_fees",
@@ -43,6 +44,13 @@ STRESS90_EXTERNAL_ACTIVATION_GATES = (
     "disconnect_reconnect",
     "tiny_live_capital",
     "risk_scale_approval",
+)
+
+_STRESS90_EXTERNAL_ACTIVATION_GATE_STATUS = {
+    name: "not_verified_by_local_code" for name in STRESS90_EXTERNAL_ACTIVATION_GATES
+}
+_STRESS90_EXTERNAL_ACTIVATION_GATE_STATUS["authoritative_nonadjacent_session_ledger"] = (
+    "not_available_from_pinned_vnpy_ctp_6_7_11_4"
 )
 
 
@@ -306,9 +314,7 @@ def _add_stress90_local_status(
         "policy_data_gap": True,
         "live_eligibility": False,
         "capital_activation_eligible": False,
-        "external_activation_gates": {
-            name: "not_verified_by_local_code" for name in STRESS90_EXTERNAL_ACTIVATION_GATES
-        },
+        "external_activation_gates": dict(_STRESS90_EXTERNAL_ACTIVATION_GATE_STATUS),
         "external_blocker_reasons": list(STRESS90_EXTERNAL_ACTIVATION_GATES),
         "remaining_blocker_reasons": blockers,
         "policy_state_path": str(policy_path),

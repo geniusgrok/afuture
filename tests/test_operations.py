@@ -110,6 +110,19 @@ def test_stress90_status_surfaces_prior_day_funding_witness_external_gate(
     assert "prior_day_final_funding_settlement_witness" in stress90["external_blocker_reasons"]
 
 
+def test_stress90_status_surfaces_authoritative_nonadjacent_session_external_gate(
+    tmp_path: Path,
+) -> None:
+    report = build_local_status(_stress90_config(tmp_path), min_free_bytes=1)
+
+    stress90 = report.facts["stress90"]
+    assert (
+        stress90["external_activation_gates"]["authoritative_nonadjacent_session_ledger"]
+        == "not_available_from_pinned_vnpy_ctp_6_7_11_4"
+    )
+    assert "authoritative_nonadjacent_session_ledger" in stress90["external_blocker_reasons"]
+
+
 def test_status_rejects_active_execution_intent_from_stale_account_epoch(
     tmp_path: Path,
 ) -> None:

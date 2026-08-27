@@ -588,10 +588,9 @@ def test_stress90_unproven_target_day_gap_enters_reduce_only_when_exposed(tmp_pa
     assert manager.completed_account_returns == []
 
 
-def test_stress90_weekend_rollover_uses_explicit_verified_session_chain(tmp_path):
+def test_stress90_weekend_rollover_rejects_without_official_session_ledger(tmp_path):
     _broker, manager, engine = _engine(tmp_path)
     manager.runtime_policy_id = "directional.stress90"
-    manager.verified_completed_account_transitions.add(("20260821", "20260824"))
     engine.state.trading_day = "20260821"
     engine.state.day_start_equity = 100_000.0
     engine.state.last_account_trading_day = "20260821"
@@ -611,10 +610,11 @@ def test_stress90_weekend_rollover_uses_explicit_verified_session_chain(tmp_path
         settlement_id=91,
     )
 
-    engine._advance_trading_day(account)
+    with pytest.raises(RuntimeError, match="trading-day gap"):
+        engine._advance_trading_day(account)
 
-    assert manager.completed_account_returns == [("20260821", pytest.approx(0.1, abs=1e-15))]
-    assert engine.state.trading_day == "20260824"
+    assert manager.completed_account_returns == []
+    assert engine.state.trading_day == "20260821"
 
 
 def test_stress90_account_day_rejects_unverified_or_nonzero_cash_flow(tmp_path):

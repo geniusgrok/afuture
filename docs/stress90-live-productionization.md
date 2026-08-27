@@ -126,6 +126,25 @@ request/generation，并给出包含非银期/人工调整在内的最终 `Depos
 资金台账对账；未知格式、sequence gap、无 `bIsLast`、超时、错误或任一 identity 不一致都继续
 阻断。该 blocker 不允许 FakeBroker/provider/parser fallback，也不允许把未闭合资金流记为策略收益。
 
+非相邻自然日的 session continuity 是另一项明确的外部 activation blocker。对锁定的
+`vnpy_ctp 6.7.11.4` 生成 ABI 逐项审计后，行情 API 只有登录、订阅和当前 Tick，交易 API 的
+`getTradingDay()` 也只返回当前前置交易日；request/callback 列表没有 trading calendar、holiday
+calendar 或可证明完整历史 session chain 的查询。`QryUserSession` 只返回登录会话，
+`QryExchange` 只返回交易所标识/名称/属性，`OnRtnInstrumentStatus` 只是没有 `TradingDay` 的当前
+状态推送，均不能证明周末/节假日之间没有遗漏 target session。
+
+因此 raw CTP `ObservedTradingDayTransition` 只允许相邻自然日；聚合器、持久化 decoder 和消费端
+都会拒绝非相邻 source/target。Sina OHLC 行、静态品种时段 manifest、两个 endpoint day、长连接、
+operator assertion、`pandas.BDay`、本机日历或猜测的节假日都不能替代 session ledger。
+`status`/`doctor` 必须持续列出 `authoritative_nonadjacent_session_ledger`，其诊断为
+`not_available_from_pinned_vnpy_ctp_6_7_11_4`；周五到周一及任何节假日 gap 保持失败关闭。
+
+只有取得真实目标柜台或交易所发布的不可变 official ledger 后，才可另行评审 ingestion：证据至少
+要绑定 issuer/exchange、适用产品/session scope、有效区间、完整且有序的 official trading-day
+chain、版本/发布 identity、内容 digest 或签名、finality/completeness 语义，以及产生证据的
+request/generation（若经柜台查询）。未知版本、覆盖边界不清、漏日、重复、乱序、响应不完整或
+任一身份不一致都必须继续阻断。本轮不预造没有真实 fixture 和 provenance 的 ledger schema。
+
 一个 target day 只能推进一次。prepared decision 必须在第一张订单前原子落盘；持久化失败则 `orders_sent=0`。决策已保存但未下单、第一张订单后崩溃或部分成交后崩溃，重启都复用同一 decision/intent，以 Broker 最新持仓继续向同一目标收敛，不重复追加 HHI，也不重新推进候选状态。policy/schema/manifest/seed/digest 不一致、交易日倒退或 target gap 均失败关闭。
 
 历史 bootstrap seed 不继承回测账户收益。live account soft path 从真实账户 inception 开始；充值、出金或换账户只能在全套生命周期门通过后以唯一 `--operation-id` 执行 `stress90-account-rebase`。同一账户只接受 verified nonzero cash-flow adjustment，不能用零资金流重置 hard daily/HWM；换账户才创建新 account epoch。运行中不允许手工交易、其他策略、充值或出金，也不允许把资金流自动当作策略收益。
