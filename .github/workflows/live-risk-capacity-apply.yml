@@ -161,7 +161,7 @@ jobs:
               raise RuntimeError('fresh activation test config anchor missing')
           test_text = test_text.replace(
               simple,
-              '        ctp=SimpleNamespace(environment="test"),\n        risk=RiskConfig(),\n        directional=DirectionalConfig(\n',
+              '        ctp=SimpleNamespace(environment="test"),\n        risk=RiskConfig(margin_estimate_buffer=1.25),\n        directional=DirectionalConfig(\n',
               1,
           )
           migrated = (
@@ -178,7 +178,7 @@ jobs:
               migrated,
               migrated.replace(
                   '        directional=DirectionalConfig(\n',
-                  '        risk=RiskConfig(),\n        directional=DirectionalConfig(\n',
+                  '        risk=RiskConfig(margin_estimate_buffer=1.25),\n        directional=DirectionalConfig(\n',
               ),
               1,
           )
