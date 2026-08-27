@@ -33,6 +33,33 @@ jobs:
           PY
             python tools/operator_continuity_patch.py
           fi
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("afuture/stress90_operator_continuity.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              "    for value, name in (\n        (evidence.source_generic_state_sequence,",
+              "    for sequence_value, name in (\n        (evidence.source_generic_state_sequence,",
+              1,
+          ).replace(
+              "    ):\n        _positive_sequence(value, name)\n    for value, name in (\n        (evidence.source_generic_state_checksum,",
+              "    ):\n        _positive_sequence(sequence_value, name)\n    for digest_value, name in (\n        (evidence.source_generic_state_checksum,",
+              1,
+          ).replace(
+              "    ):\n        _sha(value, name)\n\n    canonical, runtime_digest",
+              "    ):\n        _sha(digest_value, name)\n\n    canonical, runtime_digest",
+              1,
+          ).replace(
+              "    for value, name in (\n        (evidence.source_last_account_equity,",
+              "    for equity_value, name in (\n        (evidence.source_last_account_equity,",
+              1,
+          ).replace(
+              "    ):\n        _finite(value, name, positive=True)\n    if (",
+              "    ):\n        _finite(equity_value, name, positive=True)\n    if (",
+              1,
+          )
+          path.write_text(text, encoding="utf-8")
+          PY
       - name: Targeted tests
         run: |
           if [ -f tests/test_stress90_operator_continuity.py ]; then
