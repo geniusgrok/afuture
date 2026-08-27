@@ -29,6 +29,61 @@ META_ANNUALIZED_WEIGHT = 0.25
 META_SHARPE_WEIGHT = 1.0
 META_SCORE_SOURCE = "continuous_intraday_base_rank_stress_survival"
 
+# Frozen alphabetic 50-product universe shared by the base policy and Stress-90.
+# Keep the compatibility re-export in ``execution_aligned_runtime`` for existing callers.
+FROZEN_PRODUCTS = (
+    "A",
+    "AG",
+    "AL",
+    "AP",
+    "AU",
+    "B",
+    "BC",
+    "BU",
+    "C",
+    "CF",
+    "CJ",
+    "CS",
+    "CU",
+    "EB",
+    "EG",
+    "FG",
+    "FU",
+    "HC",
+    "I",
+    "J",
+    "JM",
+    "L",
+    "LH",
+    "LU",
+    "M",
+    "MA",
+    "NI",
+    "NR",
+    "OI",
+    "P",
+    "PB",
+    "PF",
+    "PG",
+    "PK",
+    "PP",
+    "RB",
+    "RM",
+    "RU",
+    "SA",
+    "SF",
+    "SM",
+    "SN",
+    "SP",
+    "SR",
+    "SS",
+    "TA",
+    "UR",
+    "V",
+    "Y",
+    "ZN",
+)
+
 
 @dataclass(frozen=True)
 class _Template:
@@ -249,6 +304,7 @@ _EXECUTION_TEMPLATE_IDS = (
     "breakout_s40_f0_k1_r5_g2",
     "reversal_s0_f5_k3_r10_g2",
 )
+EXECUTION_TEMPLATE_IDS = _EXECUTION_TEMPLATE_IDS
 _EXECUTION_TEMPLATES = tuple(_parse_template_id(item) for item in _EXECUTION_TEMPLATE_IDS)
 
 

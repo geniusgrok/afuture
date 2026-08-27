@@ -108,9 +108,40 @@ def test_flow_is_shifted_exactly_one_frozen_target_session():
 
     result = lag_flow(flow, target_days=target_days, products=("AG",))
 
-    assert result.loc[pd.Timestamp("2026-01-05"), "AG"] == 0.0
+    assert pd.isna(result.loc[pd.Timestamp("2026-01-05"), "AG"])
     assert result.loc[pd.Timestamp("2026-01-06"), "AG"] == 1.0
     assert result.loc[pd.Timestamp("2026-01-07"), "AG"] == -1.0
+
+
+def test_missing_flow_remains_distinct_from_legal_zero_flow():
+    _, _, lag_flow, _ = _api()
+    flow = pd.DataFrame(
+        {"A": [0.0], "C": [float("nan")]},
+        index=pd.to_datetime(["2026-01-05"]),
+    )
+    target_days = pd.to_datetime(["2026-01-05", "2026-01-06"])
+
+    result = lag_flow(flow, target_days=target_days, products=("A", "C"))
+
+    assert result.loc[pd.Timestamp("2026-01-06"), "A"] == 0.0
+    assert pd.isna(result.loc[pd.Timestamp("2026-01-06"), "C"])
+
+
+def test_first_target_can_use_explicitly_available_prior_completed_session():
+    _, _, lag_flow, _ = _api()
+    flow = pd.DataFrame(
+        {"A": [-1.0, 1.0]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-05"]),
+    )
+
+    result = lag_flow(
+        flow,
+        target_days=pd.to_datetime(["2026-01-05", "2026-01-06"]),
+        products=("A",),
+    )
+
+    assert result.loc[pd.Timestamp("2026-01-05"), "A"] == -1.0
+    assert result.loc[pd.Timestamp("2026-01-06"), "A"] == 1.0
 
 
 def test_matching_flow_allows_new_risk_but_disagreement_blocks_it():
@@ -125,7 +156,7 @@ def test_matching_flow_allows_new_risk_but_disagreement_blocks_it():
     assert result.loc[index[-1], "CU"] == 0.0
 
 
-def test_same_sign_increase_is_blocked_but_reduction_exit_and_reversal_bypass():
+def test_same_sign_increase_is_blocked_and_unconfirmed_reversal_exits_to_flat():
     _, _, _, apply_filter = _api()
     index = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"])
     raw = pd.DataFrame({"AG": [1.0, 2.0, 0.5, -1.0]}, index=index)
@@ -133,7 +164,7 @@ def test_same_sign_increase_is_blocked_but_reduction_exit_and_reversal_bypass():
 
     result = apply_filter(raw_weights=raw, confirming_flow=flow, supported_products=("AG",))
 
-    assert list(result["AG"]) == [1.0, 1.0, 0.5, -1.0]
+    assert list(result["AG"]) == [1.0, 1.0, 0.5, 0.0]
 
 
 def test_unsupported_products_are_exactly_unchanged_and_gross_never_exceeds_raw():

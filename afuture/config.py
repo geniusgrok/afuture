@@ -15,6 +15,7 @@ try:
 except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
+from .account_runtime_registry import PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH
 from .auto import AutoConfig
 from .config_validation import (
     require_bool,
@@ -54,6 +55,7 @@ class AppConfig:
     report_path: str = "runtime/report.json"
     journal_path: str = "runtime/audit.jsonl"
     alert_path: str = "runtime/alerts.jsonl"
+    account_registry_path: str = "/var/lib/afuture/account-runtime-registry.json"
     alert_webhook: str = ""
     auto: AutoConfig = field(default_factory=AutoConfig)
     directional: DirectionalConfig = field(default_factory=DirectionalConfig)
@@ -108,7 +110,8 @@ def load_config(
     pairs = _load_pairs(_rows(data.get("pairs", []), "pairs"), contracts, mode)
     auto = _load_auto(_section(data, "auto", set(AutoConfig.__dataclass_fields__)), mode)
     directional = _load_directional(
-        _section(data, "directional", set(DirectionalConfig.__dataclass_fields__))
+        _section(data, "directional", set(DirectionalConfig.__dataclass_fields__)),
+        mode,
     )
     if directional.enabled and (pairs or auto.enabled):
         raise ValueError(
@@ -124,6 +127,7 @@ def load_config(
         ),
         mode,
         require_credentials=require_ctp_credentials,
+        require_account_identity=(directional.enabled and directional.policy == "stress90"),
     )
     if mode == "live" and not pairs and not auto.enabled and not directional.enabled:
         raise ValueError(
@@ -173,7 +177,26 @@ def load_config(
     if metadata_timeout_seconds <= 0:
         raise ValueError("execution metadata_timeout_seconds must be positive")
 
-    paths = _section(data, "paths", {"state", "log", "report", "journal", "alert"})
+    paths = _section(
+        data,
+        "paths",
+        {"state", "log", "report", "journal", "alert", "account_registry"},
+    )
+    account_registry_path = require_string(
+        paths.get(
+            "account_registry",
+            "/var/lib/afuture/account-runtime-registry.json",
+        ),
+        "paths.account_registry",
+    )
+    if mode == "live" and directional.enabled and directional.policy == "stress90":
+        registry_path = Path(account_registry_path)
+        if not registry_path.is_absolute():
+            raise ValueError("paths.account_registry must be an absolute machine-level path")
+        if registry_path != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH:
+            raise ValueError(
+                "paths.account_registry must use the fixed machine-level registry path"
+            )
     alert = _section(data, "alert", {"webhook"})
     return AppConfig(
         mode=mode,
@@ -203,6 +226,7 @@ def load_config(
         report_path=require_string(paths.get("report", "runtime/report.json"), "paths.report"),
         journal_path=require_string(paths.get("journal", "runtime/audit.jsonl"), "paths.journal"),
         alert_path=require_string(paths.get("alert", "runtime/alerts.jsonl"), "paths.alert"),
+        account_registry_path=account_registry_path,
         alert_webhook=require_string(alert.get("webhook", ""), "alert.webhook"),
         auto=auto,
         directional=directional,
@@ -461,17 +485,30 @@ def _load_auto(raw: Mapping[str, object], mode: str) -> AutoConfig:
     return auto
 
 
-def _load_directional(raw: Mapping[str, object]) -> DirectionalConfig:
+def _load_directional(raw: Mapping[str, object], mode: str) -> DirectionalConfig:
     values = dict(raw)
     for name in ("products", "exchanges"):
         if name in values:
             values[name] = require_string_sequence(values[name], f"directional.{name}")
     config = DirectionalConfig(**cast(Any, values))
     config.validate()
+    if config.enabled and mode == "live" and not config.policy:
+        raise ValueError("directional.policy must be explicit in live mode")
+    if config.enabled and config.policy == "stress90":
+        from .execution_aligned_policy import FROZEN_PRODUCTS
+
+        if tuple(sorted({item.upper() for item in config.products})) != FROZEN_PRODUCTS:
+            raise ValueError("Stress-90 requires the frozen 50-product universe")
     return config
 
 
-def _load_ctp(raw: Mapping[str, object], mode: str, *, require_credentials: bool = True):
+def _load_ctp(
+    raw: Mapping[str, object],
+    mode: str,
+    *,
+    require_credentials: bool = True,
+    require_account_identity: bool = False,
+):
     td_address = require_string(raw.get("td_address", ""), "ctp.td_address").strip()
     md_address = require_string(raw.get("md_address", ""), "ctp.md_address").strip()
     environment = require_string(raw.get("environment", "test"), "ctp.environment").lower()
@@ -496,8 +533,26 @@ def _load_ctp(raw: Mapping[str, object], mode: str, *, require_credentials: bool
     if missing:
         raise ValueError(f"missing CTP environment variables: {', '.join(missing)}")
 
+    identity_env = {
+        "account_id": "AFUTURE_CTP_ACCOUNT_ID",
+        "currency_id": "AFUTURE_CTP_CURRENCY_ID",
+        "investor_id": "AFUTURE_CTP_INVESTOR_ID",
+        "invest_unit_id": "AFUTURE_CTP_INVEST_UNIT_ID",
+    }
+    identity = {name: os.getenv(env_name, "").strip() for name, env_name in identity_env.items()}
+    if require_account_identity:
+        missing_identity = [
+            identity_env[name] for name in ("account_id", "currency_id") if not identity[name]
+        ]
+        if missing_identity:
+            raise ValueError(
+                "missing Stress-90 CTP account identity environment variables: "
+                + ", ".join(missing_identity)
+            )
+
     return CtpCredentials(
         **values,
+        **identity,
         td_address=td_address,
         md_address=md_address,
         app_id=os.getenv("AFUTURE_CTP_APP_ID", ""),

@@ -1,6 +1,7 @@
 import afuture.execution_aligned_policy as execution_policy
 from afuture.directional_risk import (
     DirectionalRiskGovernor,
+    DirectionalRiskResponseMode,
     DirectionalRiskScaledPolicy,
 )
 from afuture.state import RuntimeState, StateStore
@@ -13,6 +14,11 @@ def test_directional_risk_governor_uses_only_completed_returns_and_scales_defens
     assert governor.scale([-0.0199]) == 1.0
     assert governor.scale([-0.02]) == 0.25
     assert governor.scale([-0.04, 0.01]) == 0.25
+
+
+def test_directional_risk_response_modes_make_scaling_vs_freeze_explicit():
+    assert DirectionalRiskResponseMode.TARGET_SCALE.value == "target_scale"
+    assert DirectionalRiskResponseMode.FREEZE_NEW_RISK.value == "freeze_new_risk"
 
 
 def test_directional_risk_governor_never_increases_gross():

@@ -1,4 +1,4 @@
-"""Parameter-free lexicographic reallocation across cost-approved survivors.
+"""Batch adapter for parameter-free reallocation across cost-approved survivors.
 
 The cost-aware layer is used only as an eligibility mask. On each target day this helper:
 
@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
+from .directional_stress90_policy import reallocate_survivor_row
 
 MAX_GROSS_LEVERAGE = 2.0
 _EPS = 1e-12
@@ -69,51 +71,15 @@ def reallocate_survivors_lexicographically(
     """Restore gross on survivors with tracking-first, turnover-second allocation."""
     original, approved = _validated_frames(original_weights, approved_weights)
     result = pd.DataFrame(0.0, index=original.index, columns=original.columns)
-    previous: np.ndarray = np.zeros(len(original.columns), dtype=float)
+    previous = {str(product): 0.0 for product in original.columns}
 
     for timestamp in original.index:
-        original_row = original.loc[timestamp].to_numpy(float)
-        approved_row = approved.loc[timestamp].to_numpy(float)
-        support = np.abs(approved_row) > _EPS
-        original_gross = float(np.abs(original_row).sum())
-
-        if original_gross <= _EPS or not bool(support.any()):
-            previous = np.zeros_like(previous)
-            continue
-
-        signs = np.sign(original_row)
-        base = np.where(support, np.abs(original_row), 0.0)
-        base_gross = float(base.sum())
-        residual = max(original_gross - base_gross, 0.0)
-        magnitudes = base.copy()
-
-        # Every unit of residual necessarily increases L1 distance from the original
-        # target by one unit. Within that tracking-equivalent set, a unit assigned toward
-        # yesterday's same-sign excess reduces target turnover one-for-one. Consume that
-        # capacity first. Proportional allocation makes simultaneous ties deterministic.
-        same_sign_previous = support & (np.sign(previous) == signs)
-        turnover_capacity = np.where(
-            same_sign_previous,
-            np.maximum(np.abs(previous) - base, 0.0),
-            0.0,
+        applied = reallocate_survivor_row(
+            oi_weights=original.loc[timestamp].to_dict(),
+            approved_weights=approved.loc[timestamp].to_dict(),
+            prior_survivor=previous,
         )
-        capacity_total = float(turnover_capacity.sum())
-        if residual > _EPS and capacity_total > _EPS:
-            used = min(residual, capacity_total)
-            magnitudes += turnover_capacity * (used / capacity_total)
-            residual -= used
-
-        # Any residual beyond the previous-target capacity is turnover-indifferent.
-        # Preserve the original survivor composition proportionally as a deterministic
-        # tertiary tie-break rather than inventing a product preference.
-        if residual > _EPS:
-            denominator = float(base.sum())
-            if denominator <= _EPS:
-                raise AssertionError("survivor support has no original magnitude")
-            magnitudes += base * (residual / denominator)
-
-        applied = np.where(support, signs * magnitudes, 0.0)
-        result.loc[timestamp] = applied
+        result.loc[timestamp] = pd.Series(applied).reindex(original.columns)
         previous = applied
 
     values = result.to_numpy(float)

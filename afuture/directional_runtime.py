@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
+from threading import Event, Lock, Thread
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,7 @@ from .directional import (
     build_target_lots,
 )
 from .directional_execution import depth_aware_opening_price
+from .directional_risk import DirectionalRiskResponseMode
 from .models import (
     ContractInfo,
     ContractPosition,
@@ -56,6 +58,9 @@ class DirectionalActionResult:
 class DirectionalPortfolioManager:
     """Translate directional targets into concrete orders through shared hard risk gates."""
 
+    policy_risk_response_mode = DirectionalRiskResponseMode.TARGET_SCALE
+    requires_explicit_settlement_roll_forward = False
+
     def __init__(
         self,
         config: DirectionalConfig,
@@ -69,6 +74,7 @@ class DirectionalPortfolioManager:
         metadata_timeout_seconds: float = 10.0,
         static_specs: Mapping[str, ContractSpec] | None = None,
         quality_recorder=None,
+        raw_tick_observer=None,
     ) -> None:
         config.validate()
         self.config = config
@@ -82,12 +88,18 @@ class DirectionalPortfolioManager:
         self.metadata_timeout_seconds = max(float(metadata_timeout_seconds), 0.1)
         self.rate_limiter = OrderRateLimiter(risk_manager.config.max_orders_per_minute)
         self.quality = quality_recorder
+        self.raw_tick_observer = raw_tick_observer
         self._catalog: list[ContractInfo] = []
+        self._subscribed_contracts: set[tuple[str, str]] = set()
         self._ticks: dict[str, Tick] = {}
         self._specs: dict[str, ContractSpec] = dict(static_specs or {})
         self._signal_frame: pd.DataFrame | None = None
         self._signal_refresh_date: date | None = None
         self._initialized = False
+        self._subscription_lock = Lock()
+        self._subscription_stop = Event()
+        self._subscription_thread: Thread | None = None
+        self._subscription_error = ""
 
         self._quality_cycle_seq = 0
         self._quality_cycle: dict | None = None
@@ -100,6 +112,14 @@ class DirectionalPortfolioManager:
         products = {item.upper() for item in self.config.products}
         exchanges = {item.upper() for item in self.config.exchanges}
         local_date = self._local(now).date()
+        trading_day: str | None = None
+        catalog_date = local_date
+        if self.raw_tick_observer is not None:
+            trading_day = self.broker.get_trading_day()
+            try:
+                catalog_date = datetime.strptime(trading_day, "%Y%m%d").date()
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("directional CTP trading day is invalid") from exc
         allowed: list[ContractInfo] = []
         for item in catalog:
             if item.product.upper() not in products:
@@ -108,7 +128,13 @@ class DirectionalPortfolioManager:
                 continue
             if item.listing:
                 try:
-                    if datetime.fromisoformat(item.listing).date() > local_date:
+                    if datetime.fromisoformat(item.listing).date() > catalog_date:
+                        continue
+                except ValueError:
+                    continue
+            if self.raw_tick_observer is not None:
+                try:
+                    if datetime.fromisoformat(item.expiry).date() < catalog_date:
                         continue
                 except ValueError:
                     continue
@@ -116,14 +142,119 @@ class DirectionalPortfolioManager:
         if not allowed:
             raise RuntimeError("directional contract catalog has no allowed products")
         self._catalog = allowed
+        if self.raw_tick_observer is not None:
+            self.raw_tick_observer.set_expected_contracts(
+                trading_day,
+                catalog,
+            )
+            self.broker.set_raw_tick_observer(self.raw_tick_observer)
         for item in allowed:
             self.broker.subscribe(item.symbol, item.exchange)
+            self._subscribed_contracts.add((item.symbol, item.exchange))
         self._initialized = True
+        if self.raw_tick_observer is not None and bool(
+            getattr(self.broker, "metadata_query_blocks", False)
+        ):
+            self._subscription_thread = Thread(
+                target=self._subscription_maintenance_loop,
+                name="afuture-market-subscriptions",
+                daemon=True,
+            )
+            self._subscription_thread.start()
 
     def close(self) -> None:
-        closer = getattr(self.signal_provider, "close", None)
-        if callable(closer):
-            closer()
+        try:
+            if self.raw_tick_observer is not None:
+                self._subscription_stop.set()
+                if self._subscription_thread is not None:
+                    self._subscription_thread.join(timeout=2.0)
+                self.broker.set_raw_tick_observer(None)
+                self.checkpoint_oi_evidence()
+        finally:
+            closer = getattr(self.signal_provider, "close", None)
+            if callable(closer):
+                closer()
+
+    def checkpoint_oi_evidence(self) -> None:
+        """Durably commit raw OI evidence only after a bounded broker batch."""
+        if self.raw_tick_observer is not None:
+            with self._subscription_lock:
+                error = self._subscription_error
+            if error:
+                raise RuntimeError(f"market subscription maintenance failed: {error}")
+            self.raw_tick_observer.checkpoint()
+
+    def _subscription_maintenance_loop(self) -> None:
+        """Refresh catalog subscriptions outside run_once and every Broker callback."""
+
+        while not self._subscription_stop.wait(5.0):
+            try:
+                self._maintain_market_subscriptions_once()
+            except Exception as exc:
+                with self._subscription_lock:
+                    self._subscription_error = str(exc)
+
+    def _maintain_market_subscriptions_once(self) -> None:
+        if self.raw_tick_observer is None or not self._initialized:
+            return
+        trading_day = self.broker.get_trading_day()
+        try:
+            catalog_date = datetime.strptime(trading_day, "%Y%m%d").date()
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("directional CTP trading day is invalid") from exc
+        refresh_broker_catalog = getattr(self.broker, "refresh_contract_catalog", None)
+        if callable(refresh_broker_catalog):
+            try:
+                refresh_broker_catalog(timeout_seconds=self.metadata_timeout_seconds)
+            except Exception:
+                verified_for_day = getattr(
+                    self.broker,
+                    "contract_catalog_verified_for_day",
+                    None,
+                )
+                if not callable(verified_for_day) or not verified_for_day(trading_day):
+                    raise
+        catalog = self.broker.get_contract_catalog()
+        if not catalog:
+            raise RuntimeError("directional contract catalog is empty")
+        products = {item.upper() for item in self.config.products}
+        exchanges = {item.upper() for item in self.config.exchanges}
+        allowed: list[ContractInfo] = []
+        for item in catalog:
+            if item.product.upper() not in products or item.exchange.upper() not in exchanges:
+                continue
+            try:
+                expiry = datetime.fromisoformat(item.expiry).date()
+                listing = datetime.fromisoformat(item.listing).date() if item.listing else None
+            except ValueError:
+                continue
+            if expiry < catalog_date or (listing is not None and listing > catalog_date):
+                continue
+            allowed.append(item)
+        if not allowed:
+            raise RuntimeError("directional contract catalog has no allowed products")
+        refresh = getattr(self.raw_tick_observer, "refresh_contract_catalog", None)
+        if callable(refresh):
+            refresh(trading_day, catalog)
+        with self._subscription_lock:
+            newly_subscribed = [
+                item
+                for item in allowed
+                if (item.symbol, item.exchange) not in self._subscribed_contracts
+            ]
+        for item in newly_subscribed:
+            self.broker.subscribe(item.symbol, item.exchange)
+        note_subscriptions = getattr(self.raw_tick_observer, "note_contract_subscriptions", None)
+        if newly_subscribed and callable(note_subscriptions):
+            note_subscriptions(trading_day, tuple(item.symbol for item in newly_subscribed))
+        with self._subscription_lock:
+            self._subscribed_contracts.update(
+                (item.symbol, item.exchange) for item in newly_subscribed
+            )
+            self._catalog = allowed
+            if hasattr(self, "_catalog_by_symbol"):
+                self._catalog_by_symbol = {item.symbol: item for item in allowed}
+            self._subscription_error = ""
 
     def observe(self, tick: Tick) -> None:
         if not self._initialized:
@@ -424,6 +555,8 @@ class DirectionalPortfolioManager:
         selected: Mapping[str, ContractInfo],
         specs: Mapping[str, ContractSpec],
         now: datetime,
+        *,
+        reference_prefix: str | None = None,
     ) -> DirectionalActionResult:
         selected_by_symbol = {item.symbol: item for item in selected.values()}
         requests: list[OrderRequest] = []
@@ -445,7 +578,7 @@ class DirectionalPortfolioManager:
                 side,
                 requested_volume=volume,
                 spec=spec,
-                session_windows=(self.config.rebalance_window,),
+                session_windows=self._entry_session_windows(item.product),
             )
             if not market.allowed:
                 return DirectionalActionResult("reject", market.reason)
@@ -464,21 +597,49 @@ class DirectionalPortfolioManager:
                         aggressive_ticks=self.aggressive_ticks,
                     ),
                     order_type=OrderType.FAK,
-                    reference=f"directional:{item.product.upper()}",
+                    reference=(
+                        f"directional:{item.product.upper()}"
+                        if reference_prefix is None
+                        else f"{reference_prefix}:{item.product.upper()}"
+                    ),
                 )
             )
 
         current_volumes = {
             position.symbol: position.long_total + position.short_total for position in positions
         }
+        account = self.broker.get_account()
+        policy_rejection = self._opening_policy_rejection(
+            account,
+            positions,
+            requests,
+            specs,
+            now,
+        )
+        if policy_rejection:
+            return DirectionalActionResult("reject", policy_rejection)
         account_decision = self.risk_manager.check_open_orders(
-            self.broker.get_account(),
+            account,
             requests,
             dict(specs),
             current_contract_volumes=current_volumes,
         )
         if not account_decision.allowed:
             return DirectionalActionResult("reject", account_decision.reason)
+
+        authorize_candidate = getattr(
+            self.broker,
+            "authorize_candidate_order_requests",
+            None,
+        )
+        if callable(authorize_candidate):
+            try:
+                authorize_candidate(tuple(requests))
+            except Exception as exc:
+                return DirectionalActionResult(
+                    "reject",
+                    f"directional exact opening authorization failed: {exc}",
+                )
 
         order_ids: list[str] = []
         for request in requests:
@@ -497,6 +658,23 @@ class DirectionalPortfolioManager:
                     tuple(order_ids),
                 )
         return DirectionalActionResult("open", order_ids=tuple(order_ids))
+
+    def _opening_policy_rejection(
+        self,
+        account,
+        positions: list[ContractPosition],
+        requests: list[OrderRequest],
+        specs: Mapping[str, ContractSpec],
+        now: datetime,
+    ) -> str:
+        """Optional strategy-specific check immediately before the hard account gate."""
+
+        del account, positions, requests, specs, now
+        return ""
+
+    def _entry_session_windows(self, product: str) -> tuple[str, ...]:
+        del product
+        return (self.config.rebalance_window,)
 
     def _start_quality_cycle(
         self,
@@ -548,6 +726,10 @@ class DirectionalPortfolioManager:
             return
         cycle_id = str(self._quality_cycle["cycle_id"])
         product = str(request.reference).split(":", 1)[1] if ":" in request.reference else ""
+        contract = getattr(self, "_catalog_by_symbol", {}).get(request.symbol)
+        if contract is not None:
+            product = contract.product.upper()
+        expected_windows = self._entry_session_windows(product) if product else ()
         self._quality_expectations[order_id] = {
             "cycle_id": cycle_id,
             "product": product,
@@ -560,6 +742,18 @@ class DirectionalPortfolioManager:
             "submitted": now,
         }
         self._quality_cycle["order_ids"].add(order_id)
+        self.quality.record_directional_order_plan(
+            cycle_id=cycle_id,
+            order_id=order_id,
+            product=product,
+            symbol=request.symbol,
+            side=request.side.value,
+            offset=request.offset.value,
+            volume=request.volume,
+            expected_open_window=",".join(expected_windows),
+            planned_order_price=request.price,
+            planning_timestamp=now.isoformat(),
+        )
 
     def directional_order_expectation(self, order_id: str) -> dict | None:
         item = self._quality_expectations.get(order_id)
@@ -601,6 +795,7 @@ class DirectionalPortfolioManager:
             commission=float(commission),
             commission_source=commission_source,
             fill_notional=fill_notional,
+            actual_fill_timestamp=trade.timestamp.isoformat(),
         )
         if self._quality_cycle and self._quality_cycle["cycle_id"] == expected["cycle_id"]:
             self._quality_cycle["realized_turnover_notional"] += fill_notional

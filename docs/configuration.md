@@ -23,8 +23,19 @@ CTP 凭证不进入 TOML：
 | `AFUTURE_CTP_BROKER` | CTP 连接必需 | 经纪公司代码。 |
 | `AFUTURE_CTP_APP_ID` | 柜台要求时必需 | CTP App ID。 |
 | `AFUTURE_CTP_AUTH_CODE` | 柜台要求时必需 | CTP 认证码。 |
+| `AFUTURE_CTP_ACCOUNT_ID` | Stress-90 柜台连接必需 | 预期 AccountID；只用于精确身份校验和不可逆摘要，不写入日志。 |
+| `AFUTURE_CTP_CURRENCY_ID` | Stress-90 柜台连接必需 | 预期 CurrencyID（通常为 `CNY`）；必须与原始账户响应精确一致。 |
+| `AFUTURE_CTP_INVESTOR_ID` | 柜台提供时填写 | 预期 InvestorID；原始响应含此字段时必须精确一致。 |
+| `AFUTURE_CTP_INVEST_UNIT_ID` | 柜台提供时填写 | 预期 InvestUnitID；原始响应含此字段时必须精确一致。 |
 | `AFUTURE_LIVE_ACK` | 生产报单必需 | 必须为 `I_UNDERSTAND_FUTURES_RISK`，并同时传入 `--confirm-live`。 |
 | `AFUTURE_RECOVERY_ACK` | 人工恢复必需 | 必须为 `I_VERIFIED_CTP_POSITIONS`，并同时传入 `--confirm-adopt-state`。 |
+| `AFUTURE_STRESS90_ACTIVATION_ACK` | Stress-90 首次 identity 绑定必需 | 必须为 `I_CONFIRM_STRESS90_POLICY_ACTIVATION`，并同时传入 `--confirm-activation`。 |
+| `AFUTURE_STRESS90_REBASE_ACK` | Stress-90 账户路径 rebase 必需 | 必须为 `RESET_STRESS90_ACCOUNT_PATH`，并同时传入 `--confirm-rebase`。 |
+| `AFUTURE_STRESS90_ORDER_EPOCH_ACK` | Stress-90 CTP order journal 容量 epoch 封存必需 | 必须为 `I_CONFIRM_STRESS90_CTP_ORDER_JOURNAL_EPOCH_ROLLOVER`，并同时传入 `--confirm-rollover`。 |
+
+`stress90-activate`、`stress90-account-rebase`、`directional-policy-migrate` 和
+`stress90-order-journal-rollover` 还要求 operator 生成的唯一 64 位十六进制
+`--operation-id`。只有同一 prepared 事务的精确崩溃重试才能复用该值；新的资金流、账户切换、policy 迁移或 journal epoch 必须使用新值。
 
 ## 2. 账户和交易风险
 
@@ -78,7 +89,7 @@ CTP 凭证不进入 TOML：
 | `paths.alert` | `runtime/alerts.jsonl` | 本地告警事件。 |
 | `alert.webhook` | 空 | 可选告警 Webhook；不要在 URL 中嵌入不必要的敏感参数。 |
 
-相对路径以启动命令的当前目录为基准。生产环境应确保目录可写、磁盘空间充足且日志轮转正常。Directional 启用时还会在 `paths.state` 同一目录派生两个不可单独配置的市场证据文件：`directional_activity.json` 保存完整日和进行中流动性观察，`directional_ohlc_cache.json` 保存最后一份已验证的连续合约开盘/收盘历史。两者都不属于账户、订单、成交或持仓状态。
+相对路径以启动命令的当前目录为基准。生产环境应确保目录可写、磁盘空间充足且日志轮转正常。Directional 启用时还会在 `paths.state` 同一目录派生 `directional_activity.json` 和 `directional_ohlc_cache.json`。Stress-90 另派生 `stress90_bootstrap_seed.json`、`stress90_policy_state.json`、`stress90_oi_evidence.json` 和 `stress90_execution_intent.json`。这些文件各自带 schema/sequence/checksum；损坏当前文件时不得自动采用 `.prev`。
 
 ## 5. 固定跨期组合
 
@@ -187,6 +198,7 @@ CTP 凭证不进入 TOML：
 | 字段 | 默认值 | 含义与约束 |
 | --- | --- | --- |
 | `directional.enabled` | `false` | 启用方向组合；启用后不能同时配置固定组合或 Auto。 |
+| `directional.policy` | 回放兼容为 `execution_aligned` | 只允许 `execution_aligned` 或 `stress90`。`system.mode=live` 时必须显式填写，不能由默认值决定生产经济行为。 |
 | `directional.products` | 空 | 允许品种，启用时不能为空。 |
 | `directional.exchanges` | `DCE, CZCE, SHFE, INE` | 允许交易所。 |
 | `directional.max_gross_leverage` | `2.0` | 目标总名义敞口上限，范围 `(0, 2]`。 |
@@ -198,11 +210,23 @@ CTP 凭证不进入 TOML：
 | `directional.signal_max_age_hours` | `36.0` | 信号时间戳的第二层最长年龄，小时；交易日对齐仍是主要新鲜度判断。 |
 | `directional.account_exclusive` | `true` | 必须保持 `true`；同一账户不能混入手工或其他程序持仓。 |
 
+`stress90` 还强制以下配置身份：
+
+- `products` 必须与固定 50 品种 manifest 完全一致；
+- manager 使用 1x candidate 和 freeze-only risk response，不能再套普通模式的 0.25 target scaling；
+- `max_gross_leverage <= 2.0`、`max_contract_volume <= 35`；
+- `[risk]` 不得宽于 margin 35%、available 25%、daily loss 5%、total drawdown 30%、margin buffer 1.25 和 35 手；
+- `account_exclusive = true`；运行期间禁止手工交易、其他策略、充值和出金；
+- `rebalance_window` 只保留旧 manager 的外层兼容校验，实际新风险 entry 使用不可变的产品/交易所 first-session manifest；错过首个窗口当日不追单。
+
+更严格 commissioning 值可以减少风险，但会偏离固定历史矩阵。`status`/`doctor` 会显示该差异；不得把更严格配置下的 live/Shadow 结果表述为历史 Stress-90 的精确复现。
+
 ## 8. 配置选择与修改纪律
 
 - 回放从 `config/afuture.example.toml` 或 `config/afuture.auto-replay.example.toml` 开始；CTP 测试从对应 live 示例复制，不直接编辑仓库示例。
+- Stress-90 从 `config/afuture.directional-stress90-live.example.toml` 复制；该示例只表达 wiring 和 hard envelope，不构成 activation 许可。
 - 修改手续费、合约乘数、保证金、滑点、杠杆、风控阈值、信号参数或交易窗口会改变经济行为，应重新运行受影响回测和验收。
 - 路径、日志和无行为影响的说明性修改只需运行配置、文档和相关运维测试。
 - 所有可执行配置节和手续费子项都拒绝未知键；布尔值必须是真正的 TOML boolean，整数不能经有损浮点转换，所有经济数值必须有限。`afuture validate` 失败时应修正配置，不得通过字符串强转、`nan` 或忽略拼写错误继续运行。
 
-策略语义见 [`strategies.md`](strategies.md)，输入字段见 [`data-formats.md`](data-formats.md)，上线操作见 [`live-trading.md`](live-trading.md)。
+策略语义见 [`strategies.md`](strategies.md)，输入字段见 [`data-formats.md`](data-formats.md)，通用上线操作见 [`live-trading.md`](live-trading.md)，Stress-90 lifecycle 见 [`stress90-live-runbook.md`](stress90-live-runbook.md)。

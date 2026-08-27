@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from math import floor, isfinite
 
 import pandas as pd
@@ -27,6 +28,11 @@ from .directional_data_validation import (
 )
 from .directional_efficiency import attribute_rebalance_deltas
 from .directional_risk import DirectionalRiskGovernor, DirectionalRiskScale
+from .directional_stress90_planner import (
+    Stress90LotStages,
+    build_stress90_rebalance_stages,
+)
+from .models import AccountSnapshot, ContractSpec, Tick
 
 PRODUCT_MULTIPLIERS: dict[str, float] = {
     "A": 10.0,
@@ -151,6 +157,103 @@ class PreparedDirectionalContracts:
     by_day_symbol: Mapping[tuple[pd.Timestamp, str], pd.Series]
     activity_by_day: Mapping[pd.Timestamp, pd.DataFrame]
     available_activity_days: pd.DatetimeIndex
+
+
+class Stress90ProductionAcceptance:
+    """Offline adapter that delegates every Stress-90 lot stage to production code."""
+
+    def __init__(self, config: ProductionMechanicsConfig | None = None) -> None:
+        self.config = config or ProductionMechanicsConfig()
+        self.config.validate()
+
+    def target_lot_stages(
+        self,
+        *,
+        equity: float,
+        product_weights: Mapping[str, float],
+        product_open_prices: Mapping[str, float],
+        selected_symbols: Mapping[str, str],
+        live_margin_rates: Mapping[str, tuple[float, float]],
+        current_lots: Mapping[str, int] | None = None,
+        completed_returns: tuple[float, ...] = (),
+        drawdown_reserve_freeze: bool,
+        concentration_freeze: bool,
+        unavailable_products: tuple[str, ...] = (),
+        entry_blocked_products: tuple[str, ...] = (),
+        authorized_transition_products: tuple[str, ...] = (),
+    ) -> Stress90LotStages:
+        if equity <= 0:
+            raise ValueError("Stress-90 acceptance equity must be positive")
+        ticks: dict[str, Tick] = {}
+        specs: dict[str, ContractSpec] = {}
+        symbol_products: dict[str, str] = {}
+        for raw_product, raw_symbol in selected_symbols.items():
+            product = str(raw_product).upper()
+            symbol = str(raw_symbol)
+            price = float(product_open_prices.get(product, 0.0))
+            rates = live_margin_rates.get(symbol)
+            multiplier = PRODUCT_MULTIPLIERS.get(product)
+            if price <= 0 or rates is None or multiplier is None:
+                raise ValueError(f"missing Stress-90 acceptance mechanics: {product}")
+            long_rate, short_rate = (float(rates[0]), float(rates[1]))
+            ticks[product] = Tick(
+                symbol=symbol,
+                exchange="DCE",
+                timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                bid_price=price,
+                ask_price=price,
+                last_price=price,
+                bid_volume=1.0,
+                ask_volume=1.0,
+                trading_day="20260101",
+            )
+            specs[symbol] = ContractSpec(
+                symbol=symbol,
+                exchange="DCE",
+                multiplier=float(multiplier),
+                price_tick=1.0,
+                margin_rate_long=long_rate,
+                margin_rate_short=short_rate,
+            )
+            symbol_products[symbol] = product
+        for symbol in current_lots or {}:
+            symbol_products.setdefault(symbol, self._product(symbol))
+        account = AccountSnapshot(
+            balance=float(equity),
+            equity=float(equity),
+            available=float(equity),
+            margin=0.0,
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,
+            trading_day="20260101",
+        )
+        return build_stress90_rebalance_stages(
+            account=account,
+            product_weights=product_weights,
+            product_ticks=ticks,
+            specs=specs,
+            current_lots=current_lots or {},
+            symbol_products=symbol_products,
+            max_contract_volume=self.config.max_contract_volume,
+            max_gross_leverage=self.config.max_realized_gross_ratio,
+            max_margin_ratio=self.config.max_margin_ratio,
+            min_available_ratio=self.config.min_available_ratio,
+            max_daily_loss_ratio=self.config.max_daily_loss_ratio,
+            margin_estimate_buffer=self.config.margin_estimate_buffer,
+            completed_returns=completed_returns,
+            drawdown_reserve_freeze=drawdown_reserve_freeze,
+            concentration_freeze=concentration_freeze,
+            unavailable_products=unavailable_products,
+            entry_blocked_products=entry_blocked_products,
+            authorized_transition_products=authorized_transition_products,
+        )
+
+    @staticmethod
+    def _product(symbol: str) -> str:
+        product = "".join(char for char in str(symbol).upper() if char.isalpha())
+        if product not in PRODUCT_MULTIPLIERS:
+            raise ValueError(f"unknown frozen product multiplier: {symbol}")
+        return product
 
 
 class DirectionalProductionAcceptance:

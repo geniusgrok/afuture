@@ -14,6 +14,8 @@
 - [`docs/data-and-backtest.md`](data-and-backtest.md) — 当前数据、时间因果和模拟约束。
 - [`docs/documentation-index.md`](documentation-index.md) — 本文档分类索引。
 - [`docs/live-trading.md`](live-trading.md) — CTP、影子运行、停机和恢复手册。
+- [`docs/stress90-live-productionization.md`](stress90-live-productionization.md) — Stress-90 当前代码 wiring、identity、状态、数据和执行安全边界。
+- [`docs/stress90-live-runbook.md`](stress90-live-runbook.md) — Stress-90 从固定 bootstrap 到 Shadow、测试柜台和极小真钱的精确操作顺序。
 - [`docs/troubleshooting.md`](troubleshooting.md) — 故障诊断和人工恢复手册。
 - [`docs/production-checklist.md`](production-checklist.md) — 真实资金上线检查表。
 
@@ -22,11 +24,18 @@
 - [`docs/refactoring/architecture-audit-20260825.md`](refactoring/architecture-audit-20260825.md) — 重构前的架构和正确性审计。
 - [`docs/refactoring/industrial-refactoring-report-20260825.md`](refactoring/industrial-refactoring-report-20260825.md) — 工业重构、正确性修复和验证报告。
 - [`docs/refactoring/solo-operations-hardening-report-20260825.md`](refactoring/solo-operations-hardening-report-20260825.md) — 单用户运维加固和验证报告。
+- [`docs/stress90-live-handoff-20260826.md`](stress90-live-handoff-20260826.md) — Stress-90 工程交接与审计记录，不是当前运行契约。
+- [`docs/stress90-live-continuation-prompt-20260826.md`](stress90-live-continuation-prompt-20260826.md) — Stress-90 工程续办提示与审计记录，不是当前运行契约。
+
+## 当前开发设计与计划
+
+- [`docs/superpowers/specs/2026-08-25-stress90-live-productionization-design.md`](superpowers/specs/2026-08-25-stress90-live-productionization-design.md) — Stress-90 productionization 的批准设计和安全边界。
+- [`docs/superpowers/plans/2026-08-25-stress90-live-productionization.md`](superpowers/plans/2026-08-25-stress90-live-productionization.md) — 分阶段 TDD、验证、review 和交付计划。
 
 ## 当前研究证据
 
 - [`docs/stress90-bounded-research-evidence.md`](stress90-bounded-research-evidence.md) — 有界研究过程、失败路线和防过拟合记录。
-- [`docs/stress90-final-evidence.md`](stress90-final-evidence.md) — 当前离线压力研究候选的完整输入与结果；不代表已接入实盘。
+- [`docs/stress90-final-evidence.md`](stress90-final-evidence.md) — 固定离线压力研究候选的完整输入与结果；保留当时 `production_wiring=false`，不能用后来的 wiring 倒写历史。
 
 ## 历史或已替代记录
 

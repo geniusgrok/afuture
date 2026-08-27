@@ -17,6 +17,12 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from .directional import DirectionalConfig
+from .durable_file_creation import (
+    DurableFileCreationToken,
+    canonical_file_path,
+    create_durable_file_exclusive,
+    durable_file_lock,
+)
 from .models import ContractInfo, Tick
 
 ACTIVITY_SCHEMA_VERSION = 1
@@ -141,13 +147,24 @@ class DirectionalActivityStore:
     """Atomically persist verified completed and in-progress activity evidence."""
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        self.path = canonical_file_path(path)
+        self._last_creation_token: DurableFileCreationToken | None = None
+
+    @property
+    def last_creation_token(self) -> DurableFileCreationToken | None:
+        return self._last_creation_token
 
     def load(self) -> DirectionalActivitySnapshot | None:
         """Load only completed evidence for callers that do not track observations."""
         return self.load_state().completed
 
     def load_state(self) -> DirectionalActivityState:
+        with durable_file_lock(self.path):
+            return self.load_state_unlocked()
+
+    def load_state_unlocked(self) -> DirectionalActivityState:
+        """Decode current while the caller already holds this artifact lock."""
+
         if not self.path.exists():
             return DirectionalActivityState()
         try:
@@ -240,6 +257,28 @@ class DirectionalActivityStore:
         self.save_state(DirectionalActivityState(completed=snapshot))
 
     def save_state(self, state: DirectionalActivityState) -> None:
+        encoded = self._encoded_state(state)
+        with durable_file_lock(self.path):
+            self._replace_encoded(encoded)
+
+    def save_new(
+        self,
+        snapshot: DirectionalActivitySnapshot,
+    ) -> tuple[DirectionalActivityState, DurableFileCreationToken]:
+        """Create first activity evidence without replacing a concurrent writer."""
+
+        state = DirectionalActivityState(completed=snapshot)
+        encoded = self._encoded_state(state)
+        try:
+            token = create_durable_file_exclusive(self.path, encoded)
+        except FileExistsError as exc:
+            raise DirectionalActivityIntegrityError(
+                "directional activity appeared concurrently"
+            ) from exc
+        self._last_creation_token = token
+        return state, token
+
+    def _encoded_state(self, state: DirectionalActivityState) -> bytes:
         _validate_state(state)
         unsigned = {
             "schema_version": ACTIVITY_SCHEMA_VERSION,
@@ -254,6 +293,9 @@ class DirectionalActivityStore:
             sort_keys=True,
             allow_nan=False,
         ).encode("utf-8")
+        return encoded
+
+    def _replace_encoded(self, encoded: bytes) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
         temp: Path | None = None

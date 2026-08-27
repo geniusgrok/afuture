@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 # TDD contract: reversing into a new side requires completed D->D+1 OI confirmation.
 
@@ -71,3 +72,17 @@ def test_unsupported_products_are_exactly_unchanged_and_gross_never_increases():
 
     assert result["AG"].equals(raw["AG"])
     assert bool((result.abs().sum(axis=1) <= raw.abs().sum(axis=1) + 1e-12).all())
+
+
+def test_supported_product_missing_flow_fails_instead_of_becoming_zero():
+    apply_filter = _api()
+    index = pd.to_datetime(["2026-01-05", "2026-01-06"])
+    raw = pd.DataFrame({"A": [0.0, 1.0]}, index=index)
+    flow = pd.DataFrame({"A": [0.0, float("nan")]}, index=index)
+
+    with pytest.raises(ValueError, match="missing completed OI flow: A"):
+        apply_filter(
+            raw_weights=raw,
+            confirming_flow=flow,
+            supported_products=("A",),
+        )

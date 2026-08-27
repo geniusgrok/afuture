@@ -33,7 +33,7 @@ from afuture.research import (
 )
 from afuture.risk import RiskConfig, RiskManager
 from afuture.scanner import SpreadScanner
-from afuture.state import RuntimeState, StateStore
+from afuture.state import RuntimeState, StateIntegrityError, StateStore
 from afuture.strategy import CalendarSpreadStrategy
 
 _CHINA_TZ = timezone(timedelta(hours=8))
@@ -296,6 +296,53 @@ def test_state_has_checksum_sequence_and_legacy_migration(tmp_path: Path):
     legacy = tmp_path / "legacy.json"
     legacy.write_text(json.dumps({"kill_switch": True, "positions": []}), encoding="utf-8")
     assert StateStore(legacy).load().kill_switch
+
+
+@pytest.mark.parametrize("evidence_suffix", [".prev", ".lock"])
+def test_state_store_missing_current_with_evidence_fails_load_and_save(
+    tmp_path: Path,
+    evidence_suffix: str,
+):
+    path = tmp_path / "state.json"
+    evidence_path = path.with_name(f"{path.name}{evidence_suffix}")
+    evidence_path.write_bytes(b"incident evidence")
+    store = StateStore(path)
+
+    with pytest.raises(StateIntegrityError, match="current.*missing"):
+        store.load()
+    with pytest.raises(StateIntegrityError, match="current.*missing"):
+        store.save(RuntimeState())
+
+    assert not path.exists()
+    assert evidence_path.read_bytes() == b"incident evidence"
+
+
+def test_state_store_both_current_and_evidence_absent_is_fresh(tmp_path: Path):
+    store = StateStore(tmp_path / "state.json")
+
+    assert store.load() == RuntimeState()
+    store.save(RuntimeState(kill_switch=True))
+
+    assert store.load().kill_switch is True
+
+
+def test_state_store_exposes_verified_record_and_rejects_stale_cas(tmp_path: Path):
+    store = StateStore(tmp_path / "state.json")
+    first = store.save(RuntimeState(kill_switch=True))
+
+    assert first.sequence == 1
+    assert len(first.checksum) == 64
+    assert store.load_required_record() == first
+    before = store.path.read_bytes()
+
+    with pytest.raises(StateIntegrityError, match="changed concurrently"):
+        store.save(
+            RuntimeState(kill_switch=False),
+            expected_sequence=first.sequence,
+            expected_checksum="0" * 64,
+        )
+
+    assert store.path.read_bytes() == before
 
 
 def test_conservative_sim_consumes_depth_and_cancels_fak_after_latency():

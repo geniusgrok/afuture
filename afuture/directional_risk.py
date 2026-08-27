@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from enum import Enum
 from math import isfinite
 from statistics import stdev
 from typing import Protocol
+
+
+class DirectionalRiskResponseMode(str, Enum):
+    """Declare whether a manager scales weights or freezes only new lot risk."""
+
+    TARGET_SCALE = "target_scale"
+    FREEZE_NEW_RISK = "freeze_new_risk"
 
 
 class DirectionalRiskScale(Protocol):

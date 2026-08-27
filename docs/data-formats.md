@@ -14,8 +14,8 @@
 示例：
 
 ```csv
-timestamp,symbol,exchange,bid_price,ask_price,last_price,bid_volume,ask_volume,trading_day,limit_up,limit_down,volume,open_interest
-2026-08-21T09:00:00+08:00,m2609,DCE,3000,3001,3000.5,20,18,20260821,3300,2700,125000,82000
+timestamp,symbol,exchange,bid_price,ask_price,last_price,bid_volume,ask_volume,trading_day,limit_up,limit_down,volume,open_interest,open_price,source_trading_day,source_action_day,source_trading_day_verified
+2026-08-21T09:00:00+08:00,m2609,DCE,3000,3001,3000.5,20,18,20260821,3300,2700,125000,82000,2998,20260821,20260821,true
 ```
 
 ## 2. 字段定义
@@ -35,6 +35,10 @@ timestamp,symbol,exchange,bid_price,ask_price,last_price,bid_volume,ask_volume,t
 | `limit_down` | 否 | 浮点数，价格 | 当日跌停价；空值按 0 读取。两者均非 0 时必须满足涨停价高于跌停价。 |
 | `volume` | 否 | 浮点数，手 | 柜台当日累计成交量，不是该 Tick 的增量；空值按 0 读取并产生数据质量告警。 |
 | `open_interest` | 否 | 浮点数，手 | 当前总持仓量；空值按 0 读取并产生数据质量告警。 |
+| `open_price` | 否 | 浮点数，元/报价单位 | CTP 当日开盘价；必须有限且非负。0 表示没有可信开盘证据，不能替代首个完整区间的开盘。 |
+| `source_trading_day` | 否 | `YYYYMMDD` | 原始 CTP 行情包的 `TradingDay` 字段；保留包来源身份，不单独构成柜台交易日权威。 |
+| `source_action_day` | 否 | `YYYYMMDD` | 原始 CTP 行情包的 `ActionDay` 字段；用于审计夜盘/自然日包身份，不能替代权威交易日。 |
+| `source_trading_day_verified` | 否 | 布尔值 | 该行情来源交易日是否已由权威 TD API/会话证据验证；实时 CTP 适配器只在有原始 `TradingDay` 包字段时标记，Stress-90 仍以 Broker 派生的 TD/会话交易日作最终权限判断。 |
 
 所有数值字段拒绝 NaN 和无穷值。价格和一档数量必须为正；涨跌停、累计成交量和持仓量可以为 0，但 0 表示证据缺失，不能据此通过需要这些字段的开仓门。
 
@@ -72,6 +76,7 @@ CTP 行情由适配器直接构造相同的 `Tick` 模型，不先写入 CSV。�
 
 - 行情相对当前时间未过期；
 - 交易日与账户和另一腿一致；
+- 原始 `source_trading_day`、`source_action_day` 只描述 CTP 行情包；权威日必须由 TD API 账户/会话证据与 Broker 派生交易日一致地验证，缺失或不匹配时拒绝推进 Stress-90 数据或决策；
 - 合约目录身份和交易所一致；
 - 合约乘数、最小变动价位、保证金和手续费来自可信柜台元数据；
 - 断线或快照不完整时拒绝增加风险。

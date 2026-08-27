@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import sys
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
@@ -298,6 +300,8 @@ class _FillLatencyEngine(DirectionalTradingEngine):
 def _activity_lifecycle_engine(
     tmp_path: Path,
     store: DirectionalActivityStore,
+    *,
+    oi_observer=None,
 ) -> tuple[_LatencyBroker, DirectionalTradingEngine]:
     broker = _LatencyBroker()
     manager = ExecutionAlignedDirectionalPortfolioManager(
@@ -307,6 +311,7 @@ def _activity_lifecycle_engine(
         signal_provider=_Provider(),
         policy=_Policy(),
         activity_tracker=DirectionalActivityTracker(store),
+        raw_tick_observer=oi_observer,
     )
     engine = DirectionalTradingEngine(
         broker,
@@ -319,6 +324,26 @@ def _activity_lifecycle_engine(
     )
     engine.start()
     return broker, engine
+
+
+def test_post_batch_oi_checkpoint_failure_halts_engine(tmp_path: Path) -> None:
+    class FailingOiObserver:
+        def checkpoint(self):
+            raise OSError("injected OI checkpoint failure")
+
+    broker, engine = _activity_lifecycle_engine(
+        tmp_path,
+        DirectionalActivityStore(tmp_path / "directional_activity.json"),
+        oi_observer=FailingOiObserver(),
+    )
+    broker.events = []
+
+    engine.run_once()
+
+    assert engine.halted is True
+    assert engine.state.kill_reason == (
+        "directional OI evidence checkpoint failed: injected OI checkpoint failure"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1002,8 +1027,8 @@ def test_cache_codec_wraps_datetime_and_numeric_range_failures(
         DirectionalOHLCCacheStore(cache_path).load(("A",))
 
 
-@pytest.mark.parametrize("failure_boundary", ["fsync", "replace"])
-def test_atomic_cache_save_failure_preserves_previous_verified_file(
+@pytest.mark.parametrize("failure_boundary", ["file-fsync", "directory-fsync"])
+def test_ambiguous_cache_fsync_failure_preserves_pending_witness_and_blocks_io(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure_boundary: str,
@@ -1014,26 +1039,35 @@ def test_atomic_cache_save_failure_preserves_previous_verified_file(
     original_close = pd.DataFrame({"A": range(100, 240)}, index=dates, dtype=float)
     original_open = original_close.shift(1).fillna(original_close.iloc[0])
     store.save(("A",), original_open, original_close)
-    original_bytes = cache_path.read_bytes()
+    real_fsync = ohlc_cache_module.os.fsync
+    directory_fsyncs = 0
 
-    if failure_boundary == "fsync":
-        monkeypatch.setattr(
-            ohlc_cache_module.os,
-            "fsync",
-            lambda _fd: (_ for _ in ()).throw(OSError("injected fsync failure")),
-        )
-    else:
-        monkeypatch.setattr(
-            Path,
-            "replace",
-            lambda _source, _target: (_ for _ in ()).throw(OSError("injected replace failure")),
-        )
+    def fail_after_selected_fsync(descriptor: int) -> None:
+        nonlocal directory_fsyncs
+        opened = os.fstat(descriptor)
+        if stat.S_ISDIR(opened.st_mode):
+            directory_fsyncs += 1
+            selected = failure_boundary == "directory-fsync" and directory_fsyncs == 2
+        else:
+            cache_identity = os.stat(cache_path, follow_symlinks=False)
+            selected = failure_boundary == "file-fsync" and (
+                opened.st_dev,
+                opened.st_ino,
+            ) == (cache_identity.st_dev, cache_identity.st_ino)
+        real_fsync(descriptor)
+        if selected:
+            raise OSError(f"injected {failure_boundary} failure")
 
-    with pytest.raises(OSError, match="injected"):
+    monkeypatch.setattr(ohlc_cache_module.os, "fsync", fail_after_selected_fsync)
+
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending witness preserved"):
         store.save(("A",), original_open + 1.0, original_close + 1.0)
 
-    assert cache_path.read_bytes() == original_bytes
-    assert list(tmp_path.iterdir()) == [cache_path]
+    assert store.pending_path.is_file()
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending"):
+        store.load(("A",))
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending"):
+        store.save(("A",), original_open, original_close)
 
 
 def test_default_execution_aligned_runtime_requires_the_frozen_50_product_universe():

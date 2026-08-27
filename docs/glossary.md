@@ -16,6 +16,9 @@
 | FAK | 立即成交当前可成交部分，剩余数量自动撤销的限价单。 |
 | OHLC / 开高低收 | 一个时间区间的开盘价、最高价、最低价和收盘价。 |
 | OI / 持仓量 | 市场尚未平仓的合约数量；这里用于流动性判断和具体合约选择。 |
+| 60m Price×OI flow | 对一个完整柜台交易日的具体合约，比较 first 60m open、last 60m close 和 first/last hold；只有持仓量上升且价格方向非零才得到 `-1/+1`。合法 `0` 与 missing/incomplete 不同。 |
+| target trading day | 某份产品目标被应用的权威柜台交易日，只能来自 CTP `getTradingDay()`；本机自然日和通用工作日推算不是 live 权威。 |
+| activity day | 已完整结束并用于下一 target day 选具体合约的柜台交易日。 |
 | L1 / 一档行情 | 当前最优买价、卖价及其可见数量，不包含完整委托队列。 |
 | D / D+1 | D 是已经完整结束的交易日；D+1 是其后的下一个交易日。D 日数据最早只能影响 D+1 的决策。 |
 | point-in-time / 当时可见 | 决策只能使用该时点已经发布或已经完成的数据，不能使用后来补充的合约、行情或结果。 |
@@ -38,6 +41,10 @@
 | fail-closed / 失败关闭 | 数据、状态或外部事件不完整、不可信时，默认拒绝增加风险，而不是猜测后继续运行。 |
 | margin reject / 保证金拒绝 | 目标仓位或开仓请求会突破保证金或可用资金限制，因此被风控拒绝。 |
 | Kill Switch / 停机开关 | 人工或系统设置的持久化停机标记，未完成核验和恢复前不能重新交易。 |
+| drawdown reserve / 回撤预留 | Stress-90 的软防御阈值：30% hard total drawdown 减 5% daily loss，等于 25%。只用 completed account wealth/high-watermark，并只冻结新风险。 |
+| freeze new risk / 冻结新风险 | 阻止新开仓和同方向加仓，但允许减仓、退出、反转进入新方向前的旧风险退出，以及同品种换月。它不是 0.25 target scaling，也不能覆盖硬风控。 |
+| policy activation identity | 通用 runtime state 中绑定的 policy id、definition digest、products digest 和 bootstrap seed digest；不一致时失败关闭。 |
+| account rebase | 在 `HALTED`、空仓、无活动委托、fresh account snapshot、reconcile 和强确认后重置 live account soft-path sufficient statistics；不重算候选或 HHI。 |
 
 ## 研究与指标
 
@@ -56,6 +63,11 @@
 | net alpha / 净收益贡献 | 扣除交易成本后的累计交易收益；这里的 alpha 是研究记账名称，不代表已证明的市场超额收益。 |
 | net alpha / turnover | 净收益贡献除以换手金额，通常用基点表示，用于衡量每单位交易量留下的净收益。 |
 | HHI / 集中度指数 | 各品种目标权重绝对值占比的平方和；数值越高，组合风险越集中。 |
+| survivor reallocation | 成本门决定 support 后，在不创造 support、不改方向、不增加 gross 的前提下恢复 OI-confirmed aggregate gross；先最小化 candidate L1 tracking error，再最小化相对上一 applied target 的 L1 turnover。 |
+| `policy_definition_digest` | Stress-90 固定定义和常量的规范摘要，不包含未来每日目标。 |
+| `historical_candidate_weight_sha256` | 固定历史完整 candidate weight path 的摘要；不是 policy definition，也不是未来每日 decision identity。 |
+| `daily_decision_digest` | 一个 target day 的规范输入、各层 product weights 和 post-state 摘要；相同输入/state 必须一致。 |
+| prepared decision | 在第一张订单之前原子持久化的 exactly-once 每日候选决定。重启复用它，不再次推进 HHI 或候选 state。 |
 | L1–L4 验证级别 | 工程验证范围：L1 为局部测试，L2 为模块测试，L3 为相关历史情景，L4 为完整验收矩阵。它与“一档行情 L1”是不同语境。 |
 
 ## 使用规则

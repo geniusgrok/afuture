@@ -1,0 +1,112 @@
+"""Explicit OHLC refresh and cache-only Stress-90 loading boundary."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+import pandas as pd
+
+from .directional_ohlc_cache import (
+    DirectionalOHLCCacheEntry,
+    DirectionalOHLCCacheStore,
+    canonicalize_ohlc_frames,
+    require_unchanged_overlap,
+)
+
+_MIN_STRESS90_HISTORY = 140
+
+
+def _day(raw: str, *, name: str) -> pd.Timestamp:
+    if not isinstance(raw, str):
+        raise RuntimeError(f"{name} must be YYYYMMDD")
+    try:
+        parsed = datetime.strptime(raw, "%Y%m%d")
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be YYYYMMDD") from exc
+    if parsed.strftime("%Y%m%d") != raw:
+        raise RuntimeError(f"{name} must be YYYYMMDD")
+    return pd.Timestamp(parsed.date())
+
+
+def load_stress90_completed_ohlc(
+    store: DirectionalOHLCCacheStore,
+    *,
+    products: tuple[str, ...],
+    current_ctp_trading_day: str,
+    authoritative_ctp_trading_day: str | None = None,
+    required_completed_day: str | None = None,
+) -> DirectionalOHLCCacheEntry:
+    """Load verified bytes only; no provider/network object is accepted here."""
+
+    current = _day(current_ctp_trading_day, name="current CTP trading day")
+    if authoritative_ctp_trading_day is None:
+        raise RuntimeError("Broker-derived CTP trading-day evidence is required")
+    authoritative = _day(
+        authoritative_ctp_trading_day,
+        name="Broker-derived CTP trading day",
+    )
+    if current != authoritative:
+        raise RuntimeError("requested current trading day mismatches Broker-derived evidence")
+    entry = store.load(products)
+    if entry is None:
+        raise RuntimeError("verified Stress-90 OHLC cache is missing")
+    if entry.row_count < _MIN_STRESS90_HISTORY:
+        raise RuntimeError("verified Stress-90 OHLC cache is shorter than 140 days")
+    if bool((entry.close.index >= current).any()):
+        raise RuntimeError("verified Stress-90 OHLC cache contains current/future data")
+    if required_completed_day is not None:
+        required = _day(required_completed_day, name="required completed OHLC day")
+        if required not in entry.close.index:
+            raise RuntimeError(
+                "verified Stress-90 OHLC cache does not cover required completed day"
+            )
+    return entry
+
+
+def refresh_directional_ohlc_cache(
+    store: DirectionalOHLCCacheStore,
+    *,
+    provider=None,
+    provider_factory=None,
+    products: tuple[str, ...],
+    current_ctp_trading_day: str,
+    authoritative_ctp_trading_day: str | None = None,
+) -> DirectionalOHLCCacheEntry:
+    """Fetch outside the engine, reject revisions, and atomically append verified data."""
+
+    current = _day(current_ctp_trading_day, name="current CTP trading day")
+    if authoritative_ctp_trading_day is None:
+        raise RuntimeError("Broker-derived CTP trading-day evidence is required")
+    authoritative = _day(
+        authoritative_ctp_trading_day,
+        name="Broker-derived CTP trading day",
+    )
+    if current != authoritative:
+        raise RuntimeError("requested current trading day mismatches Broker-derived evidence")
+    if (provider is None) == (provider_factory is None):
+        raise RuntimeError("exactly one directional OHLC provider source is required")
+    with store.authority():
+        existing, descriptor = store.load_for_update_unlocked(products)
+        try:
+            active_provider = provider if provider_factory is None else provider_factory()
+            history = active_provider.load(products)
+            if not hasattr(history, "open") or not hasattr(history, "close"):
+                raise RuntimeError("directional OHLC provider returned an invalid history")
+            open_prices, close = canonicalize_ohlc_frames(
+                products,
+                history.open,
+                history.close,
+                name="directional OHLC refresh",
+            )
+            if bool((close.index >= current).any()):
+                raise RuntimeError("directional OHLC provider returned current/future data")
+            if existing is not None:
+                require_unchanged_overlap(existing, open_prices, close)
+            envelope, encoded = store._encoded_envelope(products, open_prices, close)
+            store.commit_encoded_unlocked(encoded, existing_descriptor=descriptor)
+            return store._entry_from_envelope(envelope, products)
+        finally:
+            if descriptor is not None:
+                import os
+
+                os.close(descriptor)

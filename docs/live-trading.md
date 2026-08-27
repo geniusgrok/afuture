@@ -11,12 +11,13 @@
 
 两种模式共用 Broker、账户风控、停机开关、只减仓状态、状态存储、启动对账和审计链。
 
-当前离线压力研究候选没有接入实盘。离线高收益不能替代真实行情、测试柜台、未来数据和小资金验证。
+固定 Stress-90 候选已经成为显式可选的 Directional runtime policy；必须配置 `directional.policy = "stress90"`、完成固定 bootstrap 并绑定 policy identity。该 wiring 不等于真实资金 activation，离线高收益和 CI 不能替代真实行情、测试柜台、未来数据和小资金验证。
 
 ## 2. 推荐上线顺序
 
 ```text
 固定历史回放和压力验证
+→ Stress-90 固定输入 bootstrap、identity activation 和无报单 doctor
 → 连续多个交易日 CTP Shadow
 → CTP 无报单预检
 → 测试柜台验证订单、部分成交、拒单、重连和保证金
@@ -38,7 +39,13 @@ AFUTURE_CTP_PASSWORD
 AFUTURE_CTP_BROKER
 AFUTURE_CTP_APP_ID
 AFUTURE_CTP_AUTH_CODE
+AFUTURE_CTP_ACCOUNT_ID
+AFUTURE_CTP_CURRENCY_ID
+AFUTURE_CTP_INVESTOR_ID       # 柜台提供时
+AFUTURE_CTP_INVEST_UNIT_ID    # 柜台提供时
 ```
+
+Stress-90 的柜台连接必须至少显式配置预期 `AccountID` 和 `CurrencyID`。账户原始响应、VeighNa `AccountData`、权威 CTP 交易日和当次查询证据未形成唯一精确匹配时，账户身份保持未验证并触发 `broker_error`；不得据此新增风险。
 
 真实生产还必须设置：
 
@@ -69,6 +76,8 @@ afuture status --config config/afuture.directional-live.example.toml
 - 运行路径是否可写、可访问；
 - 磁盘是否至少剩余 100 MiB。
 
+Stress-90 还检查 seed/policy/OI/intent 的 schema、sequence、checksum 和 identity，展示 bootstrap through day、last target、input digests、各层 decision digest、HHI/prior median、两个 freeze、completed account wealth/HWM/drawdown、target/current lots、gross、tracking error、policy/data gap 和 remaining blockers。
+
 当前状态损坏时命令返回 2。`state.json.prev` 只供人工诊断，不能自动恢复，也不能绕过 `recover-state`。
 
 ### 4.2 CTP 无报单预检
@@ -88,11 +97,13 @@ afuture doctor --config config/afuture.directional-live.example.toml --confirm-l
 - 方向组合需要的上一完整交易日流动性证据；
 - 已验证 Directional OHLC 缓存是否精确覆盖该完整交易日。
 
+Stress-90 还会核验九品种 OI contract coverage、target-day continuity、policy/seed identity，预览每层 weights 与整数 lots，并用 live 合约参数估算开仓、平昨、平今、1 tick、bid/ask 和 depth 成本。任一必需项不可信时 `stress90_ready=false`；`orders_sent` 始终为 0。
+
 任一检查失败都返回 2，输出中的 `orders_sent` 必须为 0。方向组合新部署要先观察一个完整交易日，形成流动性快照后才可能通过。
 
 ## 5. 方向组合示例配置
 
-`config/afuture.directional-live.example.toml` 只适合作为测试和 Shadow 起点：
+`config/afuture.directional-live.example.toml` 是普通 `execution_aligned` 起点；`config/afuture.directional-stress90-live.example.toml` 是 Stress-90 commissioning 起点。两者都不授予实盘许可：
 
 | 项目 | 当前示例值 |
 | --- | ---: |
@@ -161,7 +172,7 @@ D+1 实时行情仍用于价格、盘口、涨跌停、保证金和下单，但�
 
 预先固定的信号组合必须同时通过标准成本和压力成本验证，运行期间不能重新拟合历史参数。
 
-引擎只使用已经完成交易日的账户收益决定下一目标：
+普通 `execution_aligned` 引擎只使用已经完成交易日的账户收益决定下一目标：
 
 ```text
 最近完整日收益 <= -2%
@@ -174,9 +185,13 @@ D+1 实时行情仍用于价格、盘口、涨跌停、保证金和下单，但�
 
 当前交易日尚未完成的盈亏不能影响当前目标。该规则只能降低风险。
 
+Stress-90 不使用上述 0.25 target scaling。它保留同一 adaptive soft margin envelope，但使用 1x raw candidate 做 margin-aware integer sizing，随后依次应用 completed account path 的 25% drawdown-reserve freeze 和 raw candidate HHI freeze。两个 freeze 只冻结 entry/同向 add；reduction、exit、reversal 和 same-product roll 通过。`RiskManager` 仍拥有 margin、available、gross、daily circuit 和 HALT 的最终权限。
+
 ## 8.1 CTP 事件投递观测
 
 CTP 的 order、trade、position、account 和 error 回调进入关键 FIFO；Tick 按 `(symbol, exchange)` 合并成尚未投递的最新值。每轮默认最多投递 100 条并优先关键 FIFO，避免 Tick 洪峰饿死成交与账户真相。运维诊断可读取 `delivery_counters()` 的 enqueued/received/coalesced/delivered/backlog 计数；`ticks_coalesced` 上升表示旧的未消费 Tick 被更新值替换，不代表成交丢失。持续增长的 `critical_backlog` 必须视为运行容量问题，停止扩大风险并在目标机定位回调/消费延迟。
+
+Stress-90 的 raw 60m observer 位于 Tick 转换成功后、合并前，因此 manager Tick 可以被 coalesce，而 Price×OI evidence 仍看到每个有效 raw Tick。callback 不做磁盘或网络 IO；证据只在一批 Broker events 完成后 checkpoint。它按 CTP `trading_day`、固定 session manifest 和 expected contract universe 记录 first open、last close、first/last hold、累计 volume 增量及 coverage。missing/incomplete 与合法 `flow=0` 始终分开。
 
 ## 9. 先减仓、后开仓
 
@@ -200,6 +215,8 @@ afuture shadow --config config/afuture.directional-live.example.toml --duration-
 ```
 
 Shadow 使用真实 CTP 合约目录、行情、交易日和合约参数，以及正式策略和风控逻辑；账户、订单、成交和持仓由本地 `SimBroker` 维护。
+
+Stress-90 Shadow 使用 `runtime/shadow/` 下单独 bootstrap、activation 和持久 state，不能复用 live account path。准确命令见 [`stress90-live-runbook.md`](stress90-live-runbook.md)。Shadow 与 live 共用 raw CTP evidence 链；vendor comparator 没有 Broker 或订单权限，任何未解释 flow 差异都阻断 activation。
 
 至少记录并复核：
 
@@ -246,10 +263,12 @@ Shadow 使用真实 CTP 合约目录、行情、交易日和合约参数，以�
 - 成交：实际价格、滑点、手续费、延迟、部分成交和拒单；
 - 周期：实际换手、目标偏差和剩余风险。
 
+Stress-90 每个 target day 另记录 Base/OI/cost/survivor、HHI/prior median、两个 freeze、raw/margin-fitted/drawdown-frozen/HHI-frozen/final lots、reduction/opening plan 和 daily decision digest；计划/成交记录包含 expected open、planned/actual price、one-way cost、p95 cost、partial/reject、latency 和 model/actual turnover。
+
 使用 `afuture quality-report` 持续汇总这些证据，并与结算单核对。
 
 ## 13. 离线研究与实盘边界
 
-当前离线压力研究结果来自固定历史输入和确定性账户模拟。它没有覆盖多年完整盘口排队、柜台限流、断线、逐日保证金、实际结算费率和极端行情冲击，也没有接入实盘策略。
+当前离线压力研究结果来自固定历史输入和确定性账户模拟。它没有覆盖多年完整盘口排队、柜台限流、断线、逐日保证金、实际结算费率和极端行情冲击。后续代码已经完成可选 runtime wiring，但这不会改变历史证据中当时 `production_wiring=false` 的事实，也不会自动补齐现场证据。
 
-完整离线结果见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。真实资金上线条件以 [`production-checklist.md`](production-checklist.md) 为准，不能用历史指标代替。
+完整离线结果见 [`stress90-final-evidence.md`](stress90-final-evidence.md)，当前代码边界见 [`stress90-live-productionization.md`](stress90-live-productionization.md)，准确操作顺序见 [`stress90-live-runbook.md`](stress90-live-runbook.md)。`112.100053%` 不是未来收益承诺，96-template pool 存在已观察历史 selection bias；真实资金上线条件以 [`production-checklist.md`](production-checklist.md) 为准。

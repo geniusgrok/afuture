@@ -1,11 +1,13 @@
-"""Research-only causal 60-minute Price x OI confirmation overlay.
+"""Batch adapters for the shared causal 60-minute Price x OI primitives.
 
 The candidate has no fitted threshold or lookback. For each completed product session it
 selects the contract with the highest final 60-minute open interest (then total volume,
 then symbol), takes the direction of first-open -> last-close only when that contract's
 open interest increased during the session, and exposes that direction to the next frozen
-target session. The overlay may suppress only new risk or same-sign increases. Reductions,
-exits and reversals remain authoritative and unsupported products are unchanged.
+target session. The shared Stress-90 primitive confirms entries, same-sign increases and
+reversals; unconfirmed reversals exit to flat. Reductions and exits remain authoritative,
+and unsupported products are unchanged. Missing evidence remains missing rather than being
+silently converted to a legal zero flow.
 """
 
 from __future__ import annotations
@@ -15,11 +17,16 @@ from collections.abc import Iterable
 import numpy as np
 import pandas as pd
 
+from .directional_stress90_policy import (
+    SUPPORTED_OI_PRODUCTS,
+    apply_oi_confirmation_row,
+)
+
 # Frozen from coverage workflow 32717335780. Each product has >=80% exact daily 60m
 # coverage in both 2022-08-21..2024-08-20 and 2024-08-21..2026-08-20, and the set spans
 # at least two exchanges. Do not expand this set from later provider responses inside
 # this research phase.
-SUPPORTED_PRODUCTS = ("A", "C", "EG", "I", "M", "P", "PP", "TA", "Y")
+SUPPORTED_PRODUCTS = SUPPORTED_OI_PRODUCTS
 
 _REQUIRED_COLUMNS = {
     "datetime",
@@ -81,7 +88,7 @@ def build_daily_price_oi_flow(raw: pd.DataFrame) -> pd.DataFrame:
     result = dominant.pivot(index="date", columns="product", values="flow").sort_index()
     result.index = pd.DatetimeIndex(result.index).normalize()
     result.columns = [str(column).upper() for column in result.columns]
-    return result.fillna(0.0).astype(float)
+    return result.astype(float)
 
 
 def lag_flow_to_target_days(
@@ -98,8 +105,19 @@ def lag_flow_to_target_days(
     frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index, errors="coerce")).normalize()
     frame = frame[~frame.index.isna()]
     frame.columns = [str(column).upper() for column in frame.columns]
-    frame = frame.reindex(index=index, columns=columns).fillna(0.0)
-    return frame.shift(1).fillna(0.0).astype(float)
+    frame = frame.reindex(columns=columns).sort_index()
+    result = pd.DataFrame(float("nan"), index=index, columns=columns, dtype=float)
+    for position, target_day in enumerate(index):
+        if position:
+            source_day = index[position - 1]
+        else:
+            prior = frame.index[frame.index < target_day]
+            if prior.empty:
+                continue
+            source_day = prior[-1]
+        if source_day in frame.index:
+            result.loc[target_day] = frame.loc[source_day]
+    return result.astype(float)
 
 
 def apply_oi_confirmation_to_weights(
@@ -115,26 +133,31 @@ def apply_oi_confirmation_to_weights(
     flow = confirming_flow.copy().astype(float)
     flow.index = pd.DatetimeIndex(pd.to_datetime(flow.index, errors="coerce")).normalize()
     flow.columns = [str(column).upper() for column in flow.columns]
-    flow = flow.reindex(index=raw.index, columns=raw.columns).fillna(0.0)
-    supported = {str(product).upper() for product in supported_products}
+    if not np.isfinite(raw.to_numpy()).all():
+        raise ValueError("raw OI weights must be finite")
+    flow = flow.reindex(index=raw.index, columns=raw.columns)
+    supported = tuple(str(product).upper() for product in supported_products)
 
     result = pd.DataFrame(0.0, index=raw.index, columns=raw.columns)
     previous = {str(product): 0.0 for product in raw.columns}
     for day in raw.index:
-        for product in raw.columns:
-            target = float(raw.at[day, product])
-            prior = float(previous[product])
-            final = target
-            if product in supported:
-                same_direction_increase = abs(target) > abs(prior) + 1e-15 and (
-                    abs(prior) <= 1e-15 or np.sign(target) == np.sign(prior)
-                )
-                if same_direction_increase:
-                    evidence = float(flow.at[day, product])
-                    if evidence != float(np.sign(target)):
-                        final = prior
-            result.at[day, product] = final
-            previous[product] = final
+        completed = {
+            product: (
+                None
+                if product not in flow.columns or pd.isna(flow.at[day, product])
+                else float(flow.at[day, product])
+            )
+            for product in supported
+            if product in raw.columns
+        }
+        applied = apply_oi_confirmation_row(
+            raw_weights=raw.loc[day].to_dict(),
+            prior_applied=previous,
+            completed_flow=completed,
+            supported_products=supported,
+        )
+        result.loc[day] = pd.Series(applied).reindex(raw.columns)
+        previous = applied
 
     raw_gross = raw.abs().sum(axis=1)
     result_gross = result.abs().sum(axis=1)

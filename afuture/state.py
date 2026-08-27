@@ -12,8 +12,16 @@ from tempfile import NamedTemporaryFile
 
 from .models import ContractPosition, RuntimeMode
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_RECENT_TRADE_IDS = 10_000
+RESERVED_STRATEGY_STATE_KEYS = frozenset(
+    {
+        "directional_policy_identity",
+        "stress90_doctor_attestation",
+        "stress90_live_permission",
+        "stress90_crash_fill_recovery",
+    }
+)
 
 
 @dataclass
@@ -37,6 +45,10 @@ class RuntimeState:
     directional_daily_circuit_day: str = ""
     last_account_equity: float = 0.0
     last_account_trading_day: str = ""
+    last_account_deposit: float = 0.0
+    last_account_withdrawal: float = 0.0
+    last_account_cash_flow_verified: bool = False
+    last_account_settlement_id: int = -1
 
 
 class StateIntegrityError(ValueError):
@@ -44,9 +56,10 @@ class StateIntegrityError(ValueError):
 
 
 @dataclass(frozen=True)
-class _DecodedState:
+class RuntimeStateRecord:
     state: RuntimeState
     sequence: int
+    checksum: str
     legacy: bool
 
 
@@ -65,10 +78,35 @@ class StateStore:
         """
         return self.path.with_name(f"{self.path.name}.prev")
 
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_name(f"{self.path.name}.lock")
+
+    def _require_fresh_or_current(self) -> None:
+        if self.path.exists():
+            return
+        evidence = [path.name for path in (self.previous_path, self.lock_path) if path.exists()]
+        if evidence:
+            raise StateIntegrityError(
+                "current runtime state is missing while incident evidence exists: "
+                + ", ".join(evidence)
+            )
+
     def load(self) -> RuntimeState:
+        record = self.load_record()
+        return RuntimeState() if record is None else record.state
+
+    def load_record(self) -> RuntimeStateRecord | None:
+        self._require_fresh_or_current()
         if not self.path.exists():
-            return RuntimeState()
-        return self._read_verified(self.path).state
+            return None
+        return self._read_verified(self.path)
+
+    def load_required_record(self) -> RuntimeStateRecord:
+        record = self.load_record()
+        if record is None:
+            raise StateIntegrityError("required current runtime state is missing")
+        return record
 
     def load_previous(self) -> RuntimeState | None:
         """Load the verified previous state without changing current-state semantics."""
@@ -76,10 +114,10 @@ class StateStore:
             return None
         return self._read_verified(self.previous_path).state
 
-    def _read_verified(self, path: Path) -> _DecodedState:
+    def _read_verified(self, path: Path) -> RuntimeStateRecord:
         return self._decode_verified(path.read_bytes())
 
-    def _decode_verified(self, payload: bytes) -> _DecodedState:
+    def _decode_verified(self, payload: bytes) -> RuntimeStateRecord:
         try:
             text = payload.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -93,7 +131,7 @@ class StateStore:
         if "schema_version" not in raw:
             # 兼容旧版裸 RuntimeState JSON。
             state = self._state_from_payload(raw)
-            return _DecodedState(state, 0, True)
+            return RuntimeStateRecord(state, 0, sha256(payload).hexdigest(), True)
 
         required = {"schema_version", "sequence", "state", "checksum"}
         missing = sorted(required.difference(raw))
@@ -118,11 +156,16 @@ class StateStore:
         if expected != raw.get("checksum"):
             raise StateIntegrityError("state checksum mismatch")
         state = self._state_from_payload(state_payload)
-        return _DecodedState(state, sequence, False)
+        return RuntimeStateRecord(state, sequence, raw["checksum"], False)
 
     @staticmethod
     def _state_from_payload(payload: dict) -> RuntimeState:
-        bool_fields = {"kill_switch", "reconciled", "metadata_verified"}
+        bool_fields = {
+            "kill_switch",
+            "reconciled",
+            "metadata_verified",
+            "last_account_cash_flow_verified",
+        }
         string_fields = {
             "kill_reason",
             "trading_day",
@@ -137,6 +180,8 @@ class StateStore:
             "day_start_equity",
             "equity_high_watermark",
             "last_account_equity",
+            "last_account_deposit",
+            "last_account_withdrawal",
         }
         list_fields = {"positions", "recent_daily_returns", "recent_trade_ids"}
         object_fields = {"strategy_states", "auto_pairs"}
@@ -155,6 +200,13 @@ class StateStore:
                 or not isfinite(value)
             ):
                 raise StateIntegrityError(f"state field {name} must be finite number")
+        settlement_id = payload.get("last_account_settlement_id", -1)
+        if (
+            isinstance(settlement_id, bool)
+            or not isinstance(settlement_id, int)
+            or settlement_id < -1
+        ):
+            raise StateIntegrityError("state field last_account_settlement_id is invalid")
         for name in list_fields.intersection(payload):
             if not isinstance(payload[name], list):
                 raise StateIntegrityError(f"state field {name} must be a list")
@@ -204,14 +256,29 @@ class StateStore:
         allowed = RuntimeState.__dataclass_fields__
         return RuntimeState(**{key: value for key, value in payload.items() if key in allowed})
 
-    def save(self, state: RuntimeState) -> None:
+    def save(
+        self,
+        state: RuntimeState,
+        *,
+        expected_sequence: int | None = None,
+        expected_checksum: str | None = None,
+    ) -> RuntimeStateRecord:
+        self._require_fresh_or_current()
         sequence = 1
         previous_bytes: bytes | None = None
+        current: RuntimeStateRecord | None = None
         if self.path.exists():
             # A corrupt target is incident evidence, not an empty state.  Verify it
             # before creating a replacement so sequence history cannot silently reset.
             previous_bytes = self.path.read_bytes()
-            sequence = self._decode_verified(previous_bytes).sequence + 1
+            current = self._decode_verified(previous_bytes)
+            sequence = current.sequence + 1
+        current_sequence = 0 if current is None else current.sequence
+        current_checksum = "" if current is None else current.checksum
+        if expected_sequence is not None and expected_sequence != current_sequence:
+            raise StateIntegrityError("runtime state changed concurrently")
+        if expected_checksum is not None and expected_checksum != current_checksum:
+            raise StateIntegrityError("runtime state changed concurrently")
         state_payload = asdict(state)
         self._state_from_payload(state_payload)
         envelope = {
@@ -232,6 +299,7 @@ class StateStore:
             # Backup failure aborts before replacing the authoritative current state.
             self._atomic_replace(self.previous_path, previous_bytes)
         self._atomic_replace(self.path, encoded)
+        return self._decode_verified(encoded)
 
     @staticmethod
     def _atomic_replace(target: Path, payload: bytes) -> None:
@@ -247,13 +315,29 @@ class StateStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             temp_path.replace(target)
+            directory_descriptor = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
         finally:
             if temp_path is not None and temp_path.exists():
                 temp_path.unlink()
 
-    def save_positions(self, state: RuntimeState, positions: list[ContractPosition]) -> None:
+    def save_positions(
+        self,
+        state: RuntimeState,
+        positions: list[ContractPosition],
+        *,
+        expected_sequence: int | None = None,
+        expected_checksum: str | None = None,
+    ) -> RuntimeStateRecord:
         state.positions = [asdict(position) for position in positions]
-        self.save(state)
+        return self.save(
+            state,
+            expected_sequence=expected_sequence,
+            expected_checksum=expected_checksum,
+        )
 
     def positions_from_state(self, state: RuntimeState) -> list[ContractPosition]:
         return [ContractPosition(**item) for item in state.positions]

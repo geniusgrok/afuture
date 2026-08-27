@@ -10,6 +10,7 @@
 | CTP 合约目录和参数 | 挂牌、到期、乘数、最小变动价位、保证金和手续费 | 缺失可信字段时不能开仓 |
 | 连续合约开高低收 | 方向组合的品种信号历史 | 换月跳空不能计入可交易盈亏 |
 | 具体合约价格、持仓量和成交量 | 当时可见的选约、换月和次日开盘账户模拟 | 必须使用当时已挂牌合约和固定乘数 |
+| completed 60m Price×OI evidence | Stress-90 九品种方向变化确认；保存 expected/observed/missing 合约 coverage | 普通合并后 Tick、日线或缺失合约不能伪造完整 flow |
 | Broker 账户、持仓和成交 | 实盘现金、权益、保证金、持仓和成交真相 | 研究目标或订单请求不能替代真实成交 |
 
 公开历史数据通常不包含多年完整买卖盘口、排队、部分成交、柜台拒单、订单限流、逐日保证金和实际结算费率。固定成本和保证金比例只是为了可比较的研究假设，不是精确的 CTP 历史重放。
@@ -55,11 +56,17 @@ D 日已选合约的收盘到 D+1 开盘盈亏
 
 生产 Tick 必须包含时区。中国期货夜盘的自然日期和柜台交易日不能混用。已启动的 CTP adapter 只接受交易 API 的 `getTradingDay()` 结果；网关、交易 API、getter 或合法 `YYYYMMDD` 值缺失时失败关闭，不能退回本机自然日期或旧缓存日期。
 
+Stress-90 的 target trading day 同样只接受当前 CTP `getTradingDay()`。上一 activity/signal/OI day 必须由已经完成并持久化的柜台交易日证据确定；周末、法定节假日、临时休市和 missed target day 不能用 `pandas.BDay` 或人工猜测跳过。seed 与当前首个 live target 之间若有 gap，必须携带完整 manifest 逐日 replay。
+
 `DirectionalActivityTracker` 每次有实质变化的最新观察都原子写入带 schema 和 checksum 的 `directional_activity.json`，同时保存 `completed` 和 `in_progress`。重启会恢复进行中观察，只在权威 `Tick.trading_day` 推进时冻结前一完整交易日。旧版无 envelope/checksum、只有 completed 的活动文件不自动迁移；必须保留诊断副本并重新观察一个完整柜台交易日。周末、节假日和夜盘都依赖柜台交易日证据，不能根据自然日小时差猜测数据是否最新。
 
 方向组合要求价格历史覆盖流动性快照对应的交易日。第一次启动尚未形成完整快照时，系统不增加方向风险。
 
 生产连续合约历史在任何时区/日期归一化前，就必须使用无时区、自然日午夜、唯一递增且开盘/收盘完全一致的索引；每个正有限数值必须可无损表示为 `float64`。runtime 先校验 provider 返回的全部允许行：不得晚于权威 CTP 当前交易日；没有 tracker 时不得晚于本地计划日。允许存在尚未完成的当前交易日行，但只把 required completed day 及以前的规范值原子写入 `directional_ohlc_cache.json`，首次调用和重启都使用重新解码的同一 `float64` 表示。文件使用一个共享日期向量、行优先开盘/收盘矩阵、内容 SHA-256 和整个 envelope SHA-256；它只保存市场输入证据。新的 provider 结果只有在与已验证缓存的全部重叠规范值逐值不变时才可替换缓存。重叠历史被静默修订、缓存被篡改、schema/品种/形状不符，或缓存没有所需完整交易日时，都不接受该输入；provider 中断只能回退到仍满足同一所需交易日/新鲜度契约的已验证缓存。
+
+Stress-90 live 的外部 OHLC provider 只由 `directional-ohlc-refresh` 这一无订单权限的准备进程调用。`run_once()`、`on_tick()`、rebalance 和 Broker callbacks 只读 validated cache，不同步访问网络。cache 不完整时空仓拒绝 openings，有仓进入 `REDUCE_ONLY`；不得以更旧 cache 继续增加风险。
+
+raw CTP 60m observer 位于 Tick 转换成功后、manager Tick coalescing 前。每个有效 raw Tick 进入有界聚合器，但 critical order/trade/account/position/error 仍保持 FIFO 优先。聚合按 CTP `trading_day` 和固定 session manifest 处理夜盘跨午夜、60m 边界、累计 volume 非负增量、reset、duplicate/out-of-order/late Tick、重启和 rollover。九品种中任一 required contract coverage 不完整时，对应 target input 为 missing/incomplete，而不是 `flow=0`。
 
 ## 5. 回放和撮合
 
@@ -100,7 +107,11 @@ D 日已选合约的收盘到 D+1 开盘盈亏
 | 标准情景 | 5 个基点 | 12% | 156.881655% | 15.708467% | 1.983123 倍权益 | 0 | 否 |
 | 压力情景 | 15 个基点 | 15% | 112.100053% | 14.567214% | 1.670510 倍权益 | 0 | 否 |
 
-这些数字只描述固定历史输入下的离线账户模拟。完整分段结果、输入摘要、成本、换手和防过拟合约束见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。该候选没有自动接入实盘。
+这些数字只描述固定历史输入下的离线账户模拟。完整分段结果、输入摘要、成本、换手和防过拟合约束见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。该文档如实保留当时 `production_wiring=false`；当前代码后来把同一固定候选接成显式可选 runtime policy，见 [`stress90-live-productionization.md`](stress90-live-productionization.md)。两项证据不能倒推，也不能替代现场 activation。
+
+当前 batch evaluator、bootstrap replay 和 live incremental transition 共用同一生产纯核心，验收必须逐日、逐产品比较 Base/OI/cost/survivor，而不能只比较最终年化收益。五个固定输入可用时还必须重得 candidate SHA `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`；输入缺失或 SHA 不符时报告 blocker，不得更换数据后声称精确复现。
+
+`112.100053%` 不是未来收益承诺。96-template pool 在已观察历史上存在 selection bias；候选固定后新发生的数据才是真正 forward evidence。live 使用 CTP raw 60m 后，必须通过 Shadow comparator 解释它与历史 vendor 数据在 first/last、volume、dominant 和 flow 上的差异。
 
 ## 8. 何时重跑昂贵验证
 

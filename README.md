@@ -16,11 +16,12 @@
 | 固定跨期组合回放 | 已实现并测试 | 使用确定性模拟 Broker；不等同于真实成交 |
 | 自动选择跨期组合 | 已实现并测试 | 只使用决策时已经可见的合约目录、到期信息和流动性数据 |
 | 方向组合离线研究 | 已实现并有固定证据 | 历史结果不是未来收益承诺 |
+| Stress-90 可选 runtime wiring | 已实现并测试 | 必须显式选择、bootstrap 和绑定 identity；不等于真实资金许可 |
 | Shadow 影子运行 | 已实现 | 使用实时 CTP 行情和合约信息，本地模拟订单，绝不向柜台报单 |
 | CTP 期货柜台实盘基础链 | 已实现 | 真实资金前仍需完成多日 Shadow、测试柜台和生产检查表 |
 | 状态、审计与恢复 | 已实现 | 损坏状态不会自动回退；恢复必须人工核验并重新对账 |
 
-当前压力研究候选仍然只用于离线验证，没有自动接入实盘策略。项目是否“能够运行实盘”和“是否已经具备扩大真实资金的证据”是两件不同的事。
+固定 Stress-90 候选现在可以通过 `directional.policy = "stress90"` 显式接入 Shadow、测试柜台和 CTP runtime；普通 `execution_aligned` 仍保留原有行为。代码 wiring、历史候选验证、Shadow、测试柜台、极小真钱和扩大风险是六个不同阶段，前一阶段不能自动授权后一阶段。
 
 ## 策略
 
@@ -35,6 +36,8 @@
 方向组合根据已完成的价格数据生成品种目标。生产链使用预先固定的信号组合，不在运行期间搜索参数；交易日 D 的数据最早只能影响下一交易日 D+1。
 
 系统在 D+1 根据上一完整交易日的成交量、持仓量、挂牌和到期信息选择具体合约，再把目标权重转换成整数手数。转换过程同时受保证金、可用资金、总敞口和单合约手数限制。减仓必须先成交，随后才允许增加风险。
+
+生产配置必须在 `execution_aligned` 和 `stress90` 中显式二选一。前者保留既有 0.25 风险缩放；后者使用固定 Base→60m Price×OI→20/3/15bp cost gate→survivor reallocation 候选，不再套 0.25 缩放，而是在整数 lots 层分别应用 25% completed-path drawdown reserve freeze 和 HHI concentration freeze。两个 freeze 只阻止新风险；最终硬风险权限仍属于 `RiskManager`。
 
 ## 架构
 
@@ -117,7 +120,8 @@ python -m pip install -e ".[live,dev]" \
 - `config/afuture.example.toml`：固定跨期组合回放；
 - `config/afuture.auto-replay.example.toml`：自动选择组合的回放；
 - `config/afuture.live.example.toml`：跨期策略 CTP 配置；
-- `config/afuture.directional-live.example.toml`：方向组合 CTP 配置。
+- `config/afuture.directional-live.example.toml`：普通 `execution_aligned` 方向组合 CTP 配置；
+- `config/afuture.directional-stress90-live.example.toml`：Stress-90 production-wiring/commissioning 示例，不授予 activation。
 
 全部字段的类型、默认值、单位和约束见 [`docs/configuration.md`](docs/configuration.md)。
 
@@ -133,7 +137,7 @@ python -m pip install -e ".[live,dev]" \
 | `[paths]` | 状态、日志、报告、审计和告警路径 |
 | `[[contracts]]` / `[[pairs]]` | 固定回放使用的合约、费率和组合 |
 
-实盘凭证只从环境变量读取：`AFUTURE_CTP_USER`、`AFUTURE_CTP_PASSWORD`、`AFUTURE_CTP_BROKER`。真实报单还必须设置：
+实盘凭证只从环境变量读取：`AFUTURE_CTP_USER`、`AFUTURE_CTP_PASSWORD`、`AFUTURE_CTP_BROKER`。Stress-90 柜台连接还必须设置预期 `AFUTURE_CTP_ACCOUNT_ID`、`AFUTURE_CTP_CURRENCY_ID`；柜台提供时同时设置 `AFUTURE_CTP_INVESTOR_ID`、`AFUTURE_CTP_INVEST_UNIT_ID`。真实报单还必须设置：
 
 ```text
 AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
@@ -158,12 +162,29 @@ afuture doctor --config config/afuture.directional-live.example.toml --confirm-l
 afuture shadow --config config/afuture.directional-live.example.toml --duration-seconds 3600
 afuture live --config config/afuture.directional-live.example.toml --confirm-live
 
+# Stress-90 固定 bootstrap、无订单 OHLC 准备和显式 lifecycle（先阅读 runbook）
+afuture stress90-bootstrap --config config/afuture.directional-stress90-live.example.toml --runtime-dir runtime --through YYYYMMDD
+afuture directional-ohlc-refresh --config config/afuture.directional-stress90-live.example.toml --current-trading-day YYYYMMDD
+afuture stress90-oi-collect --help
+afuture stress90-prepare-decision --help
+afuture stress90-registry-init --help
+afuture stress90-registry-nonce-migrate --help
+afuture stress90-settlement-roll-forward --help
+afuture stress90-activate --help
+afuture stress90-account-rebase --help
+afuture stress90-order-journal-rollover --help
+afuture stress90-crash-fill-recover --help
+afuture directional-policy-migrate --help
+afuture stress90-oi-compare --help
+
 # 人工恢复和执行质量
 afuture recover-state --help
 afuture quality-report --config config/afuture.directional-live.example.toml --output runtime/execution_quality_report.json
 ```
 
-`status` 只读本地状态和运行环境，不需要 CTP 凭证。`doctor` 连接 CTP 获取新的账户、持仓、活动委托、合约目录和合约参数，但不会发送订单。实盘操作顺序见 [`docs/live-trading.md`](docs/live-trading.md)。
+`stress90-settlement-roll-forward` 当前仍是显式失败关闭入口：目标柜台尚未提供可证明上一完整交易日全部资金流的权威最终见证，因此确认参数和 operator reason 都不能使它推进状态。详见运行手册的结算资金闭合门。
+
+`status` 只读本地状态和运行环境，不需要 CTP 凭证。`doctor` 连接 CTP 获取新的账户、持仓、活动委托、合约目录、报价和合约参数，但不会发送订单。Stress-90 的精确 bootstrap→status→doctor→Shadow→测试柜台→极小真钱顺序见 [`docs/stress90-live-runbook.md`](docs/stress90-live-runbook.md)。
 
 ## 测试
 
@@ -195,12 +216,14 @@ python -m compileall -q afuture
 
 “汇总窗口”覆盖训练、验证和样本外区段，因此不是与它们完全独立的最终留出集。这些结果来自固定输入的离线账户模拟，不代表未来收益，也不证明真实成交质量。完整输入摘要、分段结果、成本、换手和防过拟合约束见 [`docs/stress90-final-evidence.md`](docs/stress90-final-evidence.md)。
 
+112.100053% 不是未来收益承诺。96-template pool 在已观察历史上存在 selection bias；候选固定后新发生的数据才是真正 forward evidence。live 改用 CTP raw 60m 数据后，必须通过多日 Shadow 解释它与历史 vendor 数据在 first/last、volume、dominant contract 和 flow 上的差异。
+
 ## 局限性
 
 - 目前是单用户、单账户工程，不支持多账户并发、分布式高可用或远程管理平台；
 - 历史回放和离线账户模拟无法完整复现排队、断线、柜台限流和极端行情成交；
 - CTP 原生组件、真实手续费、保证金和合约规则需要在目标账户和交易机再次核验；
-- 当前压力研究候选尚未自动接入实盘，不能用离线高收益替代上线验证；
+- Stress-90 runtime wiring 已实现，但尚不能用代码或离线高收益替代目标机 CTP、Shadow、测试柜台和小资金上线验证；
 - 状态备份只保留一个上一版本证据，不会自动恢复或绕过柜台对账；
 - 项目没有承诺稳定的第三方插件接口，内部模块可能随正确性要求调整。
 
@@ -229,5 +252,7 @@ python -m compileall -q afuture
 - [`docs/live-trading.md`](docs/live-trading.md)：CTP、Shadow、停机和恢复；
 - [`docs/troubleshooting.md`](docs/troubleshooting.md)：常见故障、诊断顺序和安全恢复；
 - [`docs/production-checklist.md`](docs/production-checklist.md)：真实资金上线检查表；
+- [`docs/stress90-live-productionization.md`](docs/stress90-live-productionization.md)：Stress-90 当前代码 wiring、状态/data/执行边界；
+- [`docs/stress90-live-runbook.md`](docs/stress90-live-runbook.md)：Stress-90 从 bootstrap 到极小真钱的操作顺序；
 - [`docs/stress90-final-evidence.md`](docs/stress90-final-evidence.md)：当前离线压力研究证据；
 - [`docs/documentation-index.md`](docs/documentation-index.md)：全部 Markdown 的权威分类和历史记录入口。

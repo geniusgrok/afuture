@@ -1,6 +1,42 @@
 # 当前离线压力研究证据（历史代号 Stress-90）
 
-> 阅读说明：`Stress-90` 的“90”表示本轮预先设定的压力情景年化收益目标不低于 90%，不是 90 个基点成本、90% 保证金或实盘风险等级。标准情景使用单边 5 个基点成本和固定 12% 保证金比例假设；压力情景使用单边 15 个基点和 15% 假设。本文保留文件名、输出字段和研究代号，便于与程序结果核对；术语定义见 [`glossary.md`](glossary.md)。该候选没有接入实盘。
+> 阅读说明：`Stress-90` 的“90”表示本轮预先设定的压力情景年化收益目标不低于 90%，不是 90 个基点成本、90% 保证金或实盘风险等级。标准情景使用单边 5 个基点成本和固定 12% 保证金比例假设；压力情景使用单边 15 个基点和 15% 假设。本文保留文件名、输出字段和研究代号，便于与程序结果核对；术语定义见 [`glossary.md`](glossary.md)。该历史 checkpoint 的状态为 `production_wiring=false`，候选当时没有接入实盘；后续 productionization 不倒写这一事实。
+
+## 2026-08-27 productionization 验证记录
+
+本节记录后续实盘安全接线的代码证据，不重跑、替代或倒写下文的固定历史研究矩阵。
+最终代码候选位于 PR #29 的远端提交
+`48a16d181c0bf7820fd156714d0c45177aa8ad28`，对应源码 tree
+`87da8c84fa341640e32aeb908badc9a5d818554c`；base `main` 仍为
+`da8de59304963c7b1d6737a63e8dadd6eaecd860`。最终独立 adversarial review 为
+Critical 0、Important 0，定向测试 `312 passed`。GitHub Actions run
+`33044030711` 的 quality、Python 3.10 和 Python 3.13 均成功。
+
+稳定代码候选只运行了一次最终 L4，结果为：
+
+```text
+pytest                         1554 passed, 1 skipped
+ruff check                     passed
+ruff format --check            247 files already formatted
+mypy afuture                   102 source files clean
+compileall                     passed
+pip check                      no broken requirements
+wheel + sdist build            passed
+all five example configs       passed
+Shadow zero-write smoke        4 passed
+fixed-pair and Auto replay     4 trades, flat positions, zero margin
+current CLI help               passed
+```
+
+这些结果证明代码候选及其 fail-closed 门禁通过离线工程验收，不授权真实资金。目标 ABI
+仍无法提供权威的 prior-day final funding/settlement witness，也没有 official immutable
+nonadjacent session ledger；相应 settlement rollover 和周末/节假日 continuity 继续在
+Broker 构造或状态推进前失败关闭。目标机 CTP ABI、multi-day Shadow、测试柜台、真实费率/
+保证金、FAK/reconnect、极小真钱和 risk-scale 审批证据仍未完成。
+
+五份固定历史输入在本次 workspace 中仍不存在，因此本次 productionization **没有复现**
+候选 SHA、Stress-90 `112.100053%` 或 Stress-80 `80.067891%`。下文数值仅是既有固定输入
+历史证据，不是本次运行结果，也不是未来收益承诺。
 
 ## 结论
 

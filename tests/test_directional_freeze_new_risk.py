@@ -54,6 +54,13 @@ def test_reduction_exit_reversal_and_contract_roll_are_never_blocked():
             "C2501": "C",
         },
         triggered=True,
+        lot_notionals={
+            "AG2606": 10.0,
+            "AG2608": 5.0,
+            "M2501": 10.0,
+            "I2501": 10.0,
+            "C2501": 10.0,
+        },
     )
 
     # AG is a same-product contract roll and therefore remains executable.

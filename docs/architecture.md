@@ -17,7 +17,7 @@
 | `PositionBook` | 根据 Broker 成交维护本地持仓镜像 |
 | `RiskManager` | 执行账户限制、只减仓状态和硬停机 |
 | `StateStore` | 保存带版本、序号和校验和的重启证据 |
-| Directional activity / OHLC sidecars | 保存带 schema、digest/checksum 的市场输入证据；不拥有账户或策略状态 |
+| Directional activity / OHLC / Stress-90 OI sidecars | 保存带 schema、digest/checksum 的市场输入证据；不拥有账户或 Broker 真相 |
 | `TradingEngine` | 编排事件顺序、对账、持久化和运行观测 |
 
 策略、研究工具和命令行都不能直接修改真实持仓，也不能绕过 Broker 成交和 `RiskManager`。
@@ -77,6 +77,24 @@ provider 的已完成交易日品种价格
 
 `DirectionalPortfolioManager` 不维护第二套账户。`directional_ohlc_cache.json` 也只保存共享日期向量、开盘/收盘矩阵、品种 manifest、内容 SHA-256 和 envelope SHA-256，不保存目标或仓位。provider 的开盘/收盘索引必须在任何转换前都是无时区的自然日午夜、完全对齐、唯一且递增；数值必须能无损规范成 `float64`。新的 provider 结果必须保留缓存中的每个交易日，并且这些日期的规范值完全不变，才可作为向后追加的新权威；删日期或静默修订都会被拒绝。provider 暂时不可用时，只有 schema、品种、索引、正有限值、digest/checksum 和必需完整交易日都通过的缓存才能继续；已有风险但证据不足时进入风险收缩，空账户则拒绝新增仓位。
 
+生产 Directional 必须显式选择 `execution_aligned` 或 `stress90`。普通模式继续使用 `ExecutionAlignedDirectionalPortfolioManager` 和既有 0.25 target scaling；Stress-90 使用独立 manager、1x raw candidate 和 freeze-only risk response capability，不允许引擎重复包装缩放。两者共享 adaptive margin envelope、reduction-first 执行、Broker truth 和最终 `RiskManager`。
+
+Stress-90 的单一候选核心位于 `directional_stress90_policy.py`：
+
+```text
+ExecutionAlignedAggressivePolicy Base（50 品种、96 templates、11/3/3）
+→ 九品种 completed 60m Price×OI confirmation
+→ completed close 20/3/15bp cost gate
+→ lexicographic survivor reallocation
+→ raw product HHI / strictly-prior expanding median
+```
+
+研究 batch wrapper、固定 bootstrap replay 和 live incremental transition 都调用同一组纯 primitives。核心不读取 Broker、账户、文件、网络、本机日期或当前 PnL；live runtime 不导入 `tools/` 或 acceptance CLI。
+
+Stress-90 raw observer 在 CTP Tick 成功转换后、Tick coalescing 前收到每个有效 Tick。它只做有界内存聚合，按权威 CTP `trading_day` 和固定 session manifest 构造 in-progress/completed 60m evidence；磁盘 checkpoint 发生在一个有界 broker event batch 完成后。九个支持品种保存 expected/observed/missing contract coverage，因此没有观察到潜在 dominant contract 时不能生成伪 `flow=0`。
+
+Stress-90 target day 的状态顺序是：校验完整输入，原子保存 exactly-once prepared decision，读取 Broker truth，生成 raw/margin-fitted integer lots，依次应用 completed-path 25% drawdown reserve freeze 和 HHI freeze，保存 execution intent，再生成 reduction-first orders。崩溃恢复复用同一 decision/intent；HHI 与候选 state 不随订单、成交或账户结果重复推进。详细边界见 [`stress90-live-productionization.md`](stress90-live-productionization.md)。
+
 ## 5. 离线账户验证
 
 `DirectionalProductionAcceptance` 是确定性账户模拟器：相同输入必定产生相同结果。它从固定目标和历史具体合约数据模拟：
@@ -88,7 +106,7 @@ provider 的已完成交易日品种价格
 - 保证金、可用资金、总敞口、风控拒绝和停机；
 - 训练、验证、样本外、前序区间和汇总窗口的独立账户结果。
 
-当前离线压力研究候选在该模拟器上验证，但没有接入实盘策略。完整假设和结果见 [`stress90-final-evidence.md`](stress90-final-evidence.md)。
+固定 Stress-90 候选在该模拟器上验证，并已作为显式可选 runtime policy 接线。历史文件仍如实保存当时 `production_wiring=false`；当前接线与现场 activation 是后续、彼此独立的证据。完整历史假设和结果见 [`stress90-final-evidence.md`](stress90-final-evidence.md)，当前生产化边界见 [`stress90-live-productionization.md`](stress90-live-productionization.md)。
 
 ## 6. 时间和研究窗口
 
@@ -115,7 +133,7 @@ provider 的已完成交易日品种价格
 - 本地和柜台持仓按“合约 + 交易所”对账，重复记录或交易所不一致必须失败关闭；
 - 流动性快照的合约、品种和交易所必须与合约目录一致。
 
-CTP callback 不再共享一个可被 Tick 洪峰填满的混合队列。关键 order/trade/position/account/error 进入 FIFO；Tick 按 `(symbol, exchange)` 只保存尚未投递的最新值。`poll_events()` 每轮按可配置上限（默认 100）先投递关键 FIFO，再投递合并后的 Tick。`delivery_counters()` 暴露 critical/tick 的接收、合并、投递和 backlog 计数。持仓 mirror 与 position snapshot 另有串行锁，确保 snapshot 和成交事件顺序对应同一份 `(symbol, exchange)` 真相。Directional activity 只在每轮有界事件批次后合并落盘一次，并在交易日切换和正常停机前强制 checkpoint；不在每个 Tick 回调中 `fsync`。
+CTP callback 不再共享一个可被 Tick 洪峰填满的混合队列。关键 order/trade/position/account/error 进入 FIFO；Tick 按 `(symbol, exchange)` 只保存尚未投递的最新值。`poll_events()` 每轮按可配置上限（默认 100）先投递关键 FIFO，再投递合并后的 Tick。`delivery_counters()` 暴露 critical/tick 的接收、合并、投递和 backlog 计数。持仓 mirror 与 position snapshot 另有串行锁，确保 snapshot 和成交事件顺序对应同一份 `(symbol, exchange)` 真相。Stress-90 raw evidence observer 在 coalescing 前看到有效 Tick，但不改变 critical FIFO；Directional activity 和 OI evidence 只在每轮有界事件批次后合并落盘一次，并在交易日切换和正常停机前强制 checkpoint；不在每个 Tick callback 中 `fsync`。
 
 交易日只能向前推进；延迟的旧日 account event 保持原今/昨仓 bucket 并失败关闭。
 
@@ -145,6 +163,8 @@ RUNNING 或 REDUCE_ONLY
 
 Directional 流动性 sidecar 同时持久化 `completed` 与 `in_progress`，因此日内重启继续已有观察；损坏或旧版裸 completed 文件不自动迁移，必须重新观察完整柜台交易日。OHLC sidecar 是另一份独立市场证据，provider 刷新和回退都要重新验证，不得复制成账户状态或绕过 required-day 门。
 
+Stress-90 另有不可变 bootstrap seed、exactly-once policy state、raw OI evidence、execution intent 和 CTP order journal envelope。policy state 保留最后三层 weights、全部 prior HHI、prepared decision 和 live account wealth/HWM sufficient statistics；seed 不包含历史回测账户收益或任何凭证。order journal 在 official send 前原子持久化授权和最坏 fill 容量预留，terminal entries 进入 immutable archive；容量或账户切换通过显式 HALTED epoch 事务封存，跨 epoch 仍继承全局 order identity 防重。通用 state 还保存 policy activation identity。schema、sequence、checksum、policy digest、产品 manifest 或 seed identity 不一致均 `HALTED`，旧 `execution_aligned` state 不会被静默解释成 Stress-90 state。
+
 状态文件的 JSON、版本、正序号、校验和、持仓数量、均价或成交去重历史不可信时：
 
 - `load` 拒绝加载；
@@ -156,8 +176,8 @@ Directional 流动性 sidecar 同时持久化 `completed` 与 `in_progress`，�
 
 ## 10. 可观测性
 
-- `status`：不连接 Broker，只读检查当前和上一份状态、Directional OHLC cache 的 readiness/digest/date、路径和磁盘；
-- `doctor`：连接 CTP 取得新快照，检查账户、风险比率、权威交易日、活动委托、合约参数、持仓对账、流动性证据和 OHLC required-day coverage，全程不发送订单；
+- `status`：不连接 Broker，只读检查当前状态、Directional OHLC cache、Stress-90 seed/policy/OI/intent identity、target/account/freeze facts、路径和磁盘；`.prev` 只显示证据，绝不加载为当前状态；
+- `doctor`：连接 CTP 取得新快照，检查账户、风险比率、权威交易日、活动委托、合约参数、持仓对账、OHLC/OI/activity 对齐、live cost 和完整整数 plan preview，全程保持 `orders_sent=0`；
 - CTP `delivery_counters()`：报告关键事件与 Tick 的接收、合并、投递和 backlog，不拥有流控或交易权限；
 - `AuditJournal`：记录信号、订单、成交、风险和恢复事件；
 - `AlertManager`：向本地文件和可选 webhook 发送告警；

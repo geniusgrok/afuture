@@ -12,6 +12,7 @@ md_address = "tcp://YOUR_MARKET_FRONT"
 
 [directional]
 enabled = true
+policy = "execution_aligned"
 products = [
   "A", "AG", "AL", "AP", "AU", "B", "BC", "BU", "C", "CF", "CJ", "CS",
   "CU", "EB", "EG", "FG", "FU", "HC", "I", "J", "JM", "L", "LH", "LU",
