@@ -115,9 +115,7 @@ def test_archive_rejects_truncation_append_and_tamper() -> None:
         read_deterministic_archive,
     )
 
-    payload = create_deterministic_archive(
-        {"manifest.json": b'{"a":1}', "seed.json": b"seed"}
-    )
+    payload = create_deterministic_archive({"manifest.json": b'{"a":1}', "seed.json": b"seed"})
     variants = [
         payload[:-512],
         payload + b"garbage",
