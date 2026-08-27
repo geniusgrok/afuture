@@ -678,6 +678,86 @@ class TradingDayEvidenceStore:
             previous_account_identity_digest=previous_identity,
         )
 
+    def roll_forward_stress90_recovery_binding(
+        self,
+        *,
+        source_evidence: TradingDayEvidence,
+        binding_evidence: AccountRuntimeBindingEvidence,
+        operation_nonce: str,
+    ) -> TradingDayEvidence:
+        """Bind one recovery to its post-ack account receipt with exact retry proof."""
+
+        operation = _sha_identity(operation_nonce, "recovery operation nonce")
+        current = self.load_required()
+        binding, payload_digest, revision, receipt_digest = _receipt_fields(binding_evidence)
+        if (
+            source_evidence.phase != "bound"
+            or source_evidence.account_identity_digest != binding.account_identity_digest
+            or source_evidence.account_epoch != binding.account_epoch
+            or source_evidence.canonical_runtime != binding.canonical_runtime
+            or source_evidence.runtime_identity_digest != binding.runtime_identity_digest
+            or binding.last_operation_id != operation
+        ):
+            raise TradingDayEvidenceError("Stress-90 recovery trading-day source/receipt mismatch")
+        target_values = (
+            source_evidence.phase,
+            source_evidence.trading_day,
+            source_evidence.account_identity_digest,
+            source_evidence.account_epoch,
+            source_evidence.canonical_runtime,
+            source_evidence.runtime_identity_digest,
+            payload_digest,
+            revision,
+            operation,
+            receipt_digest,
+            operation,
+            source_evidence.account_identity_digest,
+        )
+        current_values = (
+            current.phase,
+            current.trading_day,
+            current.account_identity_digest,
+            current.account_epoch,
+            current.canonical_runtime,
+            current.runtime_identity_digest,
+            current.account_binding_payload_digest,
+            current.account_binding_revision,
+            current.account_binding_last_operation_id,
+            current.account_binding_receipt_digest,
+            current.rebind_transaction_id,
+            current.previous_account_identity_digest,
+        )
+        if current_values == target_values:
+            if not self.previous_path.exists():
+                raise TradingDayEvidenceError(
+                    "Stress-90 recovery source trading-day proof is missing"
+                )
+            previous = TradingDayEvidenceStore(self.previous_path).load_required()
+            if previous != source_evidence:
+                raise TradingDayEvidenceError("Stress-90 recovery source trading-day proof changed")
+            return current
+        if current != source_evidence:
+            raise TradingDayEvidenceError(
+                "Stress-90 recovery trading-day evidence changed before acknowledgement"
+            )
+        return self._save(
+            current=current,
+            phase=source_evidence.phase,
+            trading_day=source_evidence.trading_day,
+            account_identity_digest=source_evidence.account_identity_digest,
+            account_epoch=source_evidence.account_epoch,
+            canonical_runtime=source_evidence.canonical_runtime,
+            runtime_identity_digest=source_evidence.runtime_identity_digest,
+            account_binding_payload_digest=payload_digest,
+            account_binding_revision=revision,
+            account_binding_last_operation_id=operation,
+            account_binding_receipt_digest=receipt_digest,
+            registry_sequence=binding_evidence.registry_sequence,
+            registry_checksum=binding_evidence.registry_checksum,
+            rebind_transaction_id=operation,
+            previous_account_identity_digest=source_evidence.account_identity_digest,
+        )
+
     def _validated_legacy_for_lifecycle(self) -> Mapping[str, object] | None:
         raw = self._read_raw()
         fields = {

@@ -26,6 +26,7 @@ from .broker.ctp_session_query import (
 from .models import ContractPosition, Offset, OrderSide, OrderType, RuntimeMode
 from .state import SCHEMA_VERSION as GENERIC_STATE_SCHEMA_VERSION
 from .state import RuntimeState, RuntimeStateRecord, StateStore
+from .trading_day_evidence import TradingDayEvidence
 
 STRESS90_CRASH_FILL_RECOVERY_STATE_KEY = "stress90_crash_fill_recovery"
 STRESS90_CRASH_FILL_RECOVERY_CONFIRMATION = "I_CONFIRM_AUTHORIZED_STRESS90_CRASH_FILL_RECOVERY"
@@ -62,16 +63,19 @@ class Stress90CrashFillRecoveryAuthority:
 class Stress90CrashFillRecoveryCheckpoint:
     transaction_id: str
     operation_nonce: str
+    request_digest: str
     operator_reason: str
     status: str
     authority: Stress90CrashFillRecoveryAuthority
     trading_day: str
+    trading_day_evidence: TradingDayEvidence
     session_evidence: CtpSessionActivityEvidence
     session_evidence_sequence: int
     session_evidence_checksum: str
     session_ownership_digest: str
     generic_source_sequence: int
     generic_source_checksum: str
+    generic_source: RuntimeState
     generic_target: RuntimeState
     generic_target_sequence: int
     generic_target_checksum: str
@@ -87,9 +91,21 @@ class Stress90CrashFillRecoveryOperation:
 
 
 @dataclass(frozen=True)
+class Stress90CrashFillRecoveryConsumption:
+    transaction_id: str
+    consumer_operation_nonce: str
+    recovered_sequence: int
+    recovered_checksum: str
+    consumed_sequence: int
+    consumed_checksum: str
+    receipt_digest: str
+
+
+@dataclass(frozen=True)
 class Stress90CrashFillRecoveryRecord:
     checkpoint: Stress90CrashFillRecoveryCheckpoint
     operation_history: tuple[Stress90CrashFillRecoveryOperation, ...]
+    consumption_history: tuple[Stress90CrashFillRecoveryConsumption, ...]
     sequence: int
     parent_checksum: str | None
     checksum: str
@@ -307,6 +323,51 @@ def _authority_payload(authority: Stress90CrashFillRecoveryAuthority) -> dict[st
     return payload
 
 
+def _trading_day_evidence_payload(evidence: TradingDayEvidence) -> dict[str, object]:
+    if type(evidence) is not TradingDayEvidence or evidence.phase != "bound":
+        raise Stress90CrashFillRecoveryError("recovery trading-day evidence is invalid")
+    payload = asdict(evidence)
+    unsigned = {
+        "kind": "afuture.ctp.trading-day-evidence",
+        "schema_version": 3,
+        **{key: value for key, value in payload.items() if key != "checksum"},
+    }
+    if evidence.checksum != _digest(unsigned):
+        raise Stress90CrashFillRecoveryError("recovery trading-day evidence checksum mismatch")
+    for name in (
+        "account_identity_digest",
+        "account_epoch",
+        "runtime_identity_digest",
+        "account_binding_payload_digest",
+        "account_binding_last_operation_id",
+        "account_binding_receipt_digest",
+        "registry_checksum",
+    ):
+        _sha(payload[name], f"trading-day {name.replace('_', ' ')}")
+    _positive_int(evidence.sequence, "trading-day evidence sequence")
+    _positive_int(evidence.account_binding_revision, "trading-day binding revision")
+    _positive_int(evidence.registry_sequence, "trading-day registry sequence")
+    if (
+        type(evidence.canonical_runtime) is not str
+        or os.path.realpath(evidence.canonical_runtime) != evidence.canonical_runtime
+        or not Path(evidence.canonical_runtime).is_absolute()
+    ):
+        raise Stress90CrashFillRecoveryError("recovery trading-day canonical runtime is invalid")
+    return payload
+
+
+def _decode_trading_day_evidence(raw: object) -> TradingDayEvidence:
+    fields = set(TradingDayEvidence.__dataclass_fields__)
+    if type(raw) is not dict or set(raw) != fields:
+        raise Stress90CrashFillRecoveryError("recovery trading-day evidence fields are invalid")
+    try:
+        evidence = TradingDayEvidence(**raw)
+    except TypeError as exc:
+        raise Stress90CrashFillRecoveryError("recovery trading-day evidence is invalid") from exc
+    _trading_day_evidence_payload(evidence)
+    return evidence
+
+
 def _without_recovery_marker(state: RuntimeState) -> dict[str, object]:
     payload = asdict(state)
     states = dict(payload["strategy_states"])
@@ -318,15 +379,18 @@ def _without_recovery_marker(state: RuntimeState) -> dict[str, object]:
 def _checkpoint_identity_payload(
     *,
     operation_nonce: str,
+    request_digest: str,
     operator_reason: str,
     authority: Stress90CrashFillRecoveryAuthority,
     trading_day: str,
+    trading_day_evidence: TradingDayEvidence,
     session_evidence: CtpSessionActivityEvidence,
     session_evidence_sequence: int,
     session_evidence_checksum: str,
     session_ownership_digest: str,
     generic_source_sequence: int,
     generic_source_checksum: str,
+    generic_source: RuntimeState,
     generic_target: RuntimeState,
     source_positions_digest: str,
     target_positions_digest: str,
@@ -334,15 +398,18 @@ def _checkpoint_identity_payload(
 ) -> dict[str, object]:
     return {
         "operation_nonce": operation_nonce,
+        "request_digest": request_digest,
         "operator_reason": operator_reason,
         "authority": _authority_payload(authority),
         "trading_day": trading_day,
+        "trading_day_evidence": _trading_day_evidence_payload(trading_day_evidence),
         "session_evidence": _session_payload(session_evidence),
         "session_evidence_sequence": session_evidence_sequence,
         "session_evidence_checksum": session_evidence_checksum,
         "session_ownership_digest": session_ownership_digest,
         "generic_source_sequence": generic_source_sequence,
         "generic_source_checksum": generic_source_checksum,
+        "generic_source": asdict(generic_source),
         "generic_target_without_recovery_marker": _without_recovery_marker(generic_target),
         "source_positions_digest": source_positions_digest,
         "target_positions_digest": target_positions_digest,
@@ -350,12 +417,104 @@ def _checkpoint_identity_payload(
     }
 
 
-def build_stress90_crash_fill_recovery_checkpoint(
+def build_stress90_crash_fill_recovery_request_digest(
     *,
     operation_nonce: str,
     operator_reason: str,
+    account_identity_digest: str,
+    account_epoch: str,
+    canonical_runtime: str,
+    trading_day_evidence: TradingDayEvidence,
+    session_evidence: CtpSessionActivityEvidence,
+    session_ownership_digest: str,
+    generic_source: RuntimeStateRecord,
+    generic_target: RuntimeState,
+    source_positions_digest: str,
+    target_positions_digest: str,
+    adopted_fill_ids: tuple[str, ...],
+) -> str:
+    """Bind the semantic pre-registry recovery request for global nonce CAS."""
+
+    nonce = _sha(operation_nonce, "recovery operation nonce")
+    reason = _reason(operator_reason)
+    account = _sha(account_identity_digest, "recovery account identity")
+    epoch = _sha(account_epoch, "recovery account epoch")
+    runtime = str(canonical_runtime)
+    if (
+        not Path(runtime).is_absolute()
+        or os.path.realpath(runtime) != runtime
+        or trading_day_evidence.account_identity_digest != account
+        or trading_day_evidence.account_epoch != epoch
+        or trading_day_evidence.canonical_runtime != runtime
+        or session_evidence.account_identity_digest != account
+        or session_evidence.trading_day != trading_day_evidence.trading_day
+    ):
+        raise Stress90CrashFillRecoveryError("recovery request authority is inconsistent")
+    _sha(session_ownership_digest, "session ownership digest")
+    source_digest = _sha(source_positions_digest, "source positions digest")
+    target_digest = _sha(target_positions_digest, "target positions digest")
+    fills = tuple(adopted_fill_ids)
+    if (
+        not fills
+        or len(set(fills)) != len(fills)
+        or any(type(item) is not str or not item for item in fills)
+    ):
+        raise Stress90CrashFillRecoveryError("recovery request fill identities are invalid")
+    if not set(fills).issubset(item.fill_key for item in session_evidence.trades):
+        raise Stress90CrashFillRecoveryError(
+            "recovery request fill identities are not in session evidence"
+        )
+    if not set(fills).issubset(generic_target.recent_trade_ids) or set(fills).intersection(
+        generic_source.state.recent_trade_ids
+    ):
+        raise Stress90CrashFillRecoveryError(
+            "recovery request fill identities do not match generic source/target"
+        )
+    try:
+        actual_source = stress90_crash_fill_positions_digest(
+            [ContractPosition(**item) for item in generic_source.state.positions]
+        )
+        actual_target = stress90_crash_fill_positions_digest(
+            [ContractPosition(**item) for item in generic_target.positions]
+        )
+    except (TypeError, ValueError) as exc:
+        raise Stress90CrashFillRecoveryError(
+            "recovery request position evidence is invalid"
+        ) from exc
+    if source_digest != actual_source or target_digest != actual_target:
+        raise Stress90CrashFillRecoveryError("recovery request position digest mismatch")
+    return _digest(
+        {
+            "operation_nonce": nonce,
+            "operator_reason": reason,
+            "account_identity_digest": account,
+            "account_epoch": epoch,
+            "canonical_runtime": runtime,
+            "trading_day_evidence": _trading_day_evidence_payload(trading_day_evidence),
+            "session_account": session_evidence.account_identity_digest,
+            "session_trading_day": session_evidence.trading_day,
+            "session_orders_digest": session_evidence.orders_digest,
+            "session_trades_digest": session_evidence.trades_digest,
+            "session_ownership_digest": session_ownership_digest,
+            "generic_source_sequence": generic_source.sequence,
+            "generic_source_checksum": generic_source.checksum,
+            "generic_source": asdict(generic_source.state),
+            "generic_target_without_recovery_marker": _without_recovery_marker(generic_target),
+            "source_positions_digest": source_digest,
+            "target_positions_digest": target_digest,
+            "adopted_fill_ids": list(fills),
+        }
+    )
+
+
+def build_stress90_crash_fill_recovery_checkpoint(
+    *,
+    operation_nonce: str,
+    request_digest: str,
+    operator_reason: str,
     authority: Stress90CrashFillRecoveryAuthority,
     trading_day: str,
+    trading_day_evidence: TradingDayEvidence,
     session_evidence: CtpSessionActivityEvidence,
     session_evidence_sequence: int,
     session_evidence_checksum: str,
@@ -369,6 +528,7 @@ def build_stress90_crash_fill_recovery_checkpoint(
     """Build one immutable prepared request and bind its proof marker into target state."""
 
     nonce = _sha(operation_nonce, "recovery operation nonce")
+    request = _sha(request_digest, "recovery request digest")
     reason = _reason(operator_reason)
     if generic_source.legacy:
         raise Stress90CrashFillRecoveryError("legacy generic state cannot be recovered")
@@ -382,6 +542,25 @@ def build_stress90_crash_fill_recovery_checkpoint(
         raise Stress90CrashFillRecoveryError("session/account recovery identity mismatch")
     if session_evidence.trading_day != trading_day:
         raise Stress90CrashFillRecoveryError("session recovery trading day mismatch")
+    tde = _trading_day_evidence_payload(trading_day_evidence)
+    if (
+        trading_day_evidence.trading_day != trading_day
+        or trading_day_evidence.account_identity_digest != authority.account_identity_digest
+        or trading_day_evidence.account_epoch != authority.account_epoch
+        or trading_day_evidence.canonical_runtime != authority.canonical_runtime
+        or trading_day_evidence.runtime_identity_digest != authority.runtime_identity_digest
+        or trading_day_evidence.account_binding_payload_digest
+        != authority.account_binding_payload_digest
+        or trading_day_evidence.account_binding_revision != authority.account_binding_revision
+        or trading_day_evidence.account_binding_last_operation_id
+        != authority.account_binding_last_operation_id
+        or trading_day_evidence.account_binding_receipt_digest
+        != authority.account_binding_receipt_digest
+        or trading_day_evidence.registry_sequence != authority.registry_sequence
+        or trading_day_evidence.registry_checksum != authority.registry_checksum
+        or not tde
+    ):
+        raise Stress90CrashFillRecoveryError("recovery trading-day evidence authority mismatch")
     _positive_int(session_evidence_sequence, "session evidence sequence")
     _sha(session_evidence_checksum, "session evidence checksum")
     _sha(session_ownership_digest, "session ownership digest")
@@ -394,17 +573,41 @@ def build_stress90_crash_fill_recovery_checkpoint(
         or any(type(item) is not str or not item for item in normalized_ids)
     ):
         raise Stress90CrashFillRecoveryError("adopted fill identities are invalid")
+    session_fill_ids = {item.fill_key for item in session_evidence.trades}
+    if not set(normalized_ids).issubset(session_fill_ids):
+        raise Stress90CrashFillRecoveryError(
+            "adopted fill identities are not members of session evidence"
+        )
+    if not set(normalized_ids).issubset(generic_target.recent_trade_ids) or set(
+        normalized_ids
+    ).intersection(generic_source.state.recent_trade_ids):
+        raise Stress90CrashFillRecoveryError(
+            "adopted fill identities do not match generic source/target"
+        )
+    actual_source_positions = stress90_crash_fill_positions_digest(
+        [ContractPosition(**item) for item in generic_source.state.positions]
+    )
+    actual_target_positions = stress90_crash_fill_positions_digest(
+        [ContractPosition(**item) for item in generic_target.positions]
+    )
+    if source_positions_digest != actual_source_positions:
+        raise Stress90CrashFillRecoveryError("recovery source position digest mismatch")
+    if target_positions_digest != actual_target_positions:
+        raise Stress90CrashFillRecoveryError("recovery target position digest mismatch")
     identity = _checkpoint_identity_payload(
         operation_nonce=nonce,
+        request_digest=request,
         operator_reason=reason,
         authority=authority,
         trading_day=trading_day,
+        trading_day_evidence=trading_day_evidence,
         session_evidence=session_evidence,
         session_evidence_sequence=session_evidence_sequence,
         session_evidence_checksum=session_evidence_checksum,
         session_ownership_digest=session_ownership_digest,
         generic_source_sequence=generic_source.sequence,
         generic_source_checksum=generic_source.checksum,
+        generic_source=generic_source.state,
         generic_target=generic_target,
         source_positions_digest=source_positions_digest,
         target_positions_digest=target_positions_digest,
@@ -426,16 +629,19 @@ def build_stress90_crash_fill_recovery_checkpoint(
     return Stress90CrashFillRecoveryCheckpoint(
         transaction_id=transaction_id,
         operation_nonce=nonce,
+        request_digest=request,
         operator_reason=reason,
         status="prepared",
         authority=authority,
         trading_day=trading_day,
+        trading_day_evidence=trading_day_evidence,
         session_evidence=session_evidence,
         session_evidence_sequence=session_evidence_sequence,
         session_evidence_checksum=session_evidence_checksum,
         session_ownership_digest=session_ownership_digest,
         generic_source_sequence=generic_source.sequence,
         generic_source_checksum=generic_source.checksum,
+        generic_source=generic_source.state,
         generic_target=marked_target,
         generic_target_sequence=target_sequence,
         generic_target_checksum=target_checksum,
@@ -449,16 +655,19 @@ def _checkpoint_payload(checkpoint: Stress90CrashFillRecoveryCheckpoint) -> dict
     return {
         "transaction_id": checkpoint.transaction_id,
         "operation_nonce": checkpoint.operation_nonce,
+        "request_digest": checkpoint.request_digest,
         "operator_reason": checkpoint.operator_reason,
         "status": checkpoint.status,
         "authority": _authority_payload(checkpoint.authority),
         "trading_day": checkpoint.trading_day,
+        "trading_day_evidence": _trading_day_evidence_payload(checkpoint.trading_day_evidence),
         "session_evidence": _session_payload(checkpoint.session_evidence),
         "session_evidence_sequence": checkpoint.session_evidence_sequence,
         "session_evidence_checksum": checkpoint.session_evidence_checksum,
         "session_ownership_digest": checkpoint.session_ownership_digest,
         "generic_source_sequence": checkpoint.generic_source_sequence,
         "generic_source_checksum": checkpoint.generic_source_checksum,
+        "generic_source": asdict(checkpoint.generic_source),
         "generic_target": asdict(checkpoint.generic_target),
         "generic_target_sequence": checkpoint.generic_target_sequence,
         "generic_target_checksum": checkpoint.generic_target_checksum,
@@ -484,16 +693,19 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
     fields = {
         "transaction_id",
         "operation_nonce",
+        "request_digest",
         "operator_reason",
         "status",
         "authority",
         "trading_day",
+        "trading_day_evidence",
         "session_evidence",
         "session_evidence_sequence",
         "session_evidence_checksum",
         "session_ownership_digest",
         "generic_source_sequence",
         "generic_source_checksum",
+        "generic_source",
         "generic_target",
         "generic_target_sequence",
         "generic_target_checksum",
@@ -506,9 +718,11 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
     status = raw["status"]
     if status not in _STATUSES:
         raise Stress90CrashFillRecoveryError("recovery checkpoint status is invalid")
+    source_raw = raw["generic_source"]
     target_raw = raw["generic_target"]
-    if not isinstance(target_raw, dict):
-        raise Stress90CrashFillRecoveryError("recovery generic target is invalid")
+    if not isinstance(source_raw, dict) or not isinstance(target_raw, dict):
+        raise Stress90CrashFillRecoveryError("recovery generic state evidence is invalid")
+    source = StateStore._state_from_payload(source_raw)
     target = StateStore._state_from_payload(target_raw)
     adopted = raw["adopted_fill_ids"]
     if not isinstance(adopted, list):
@@ -517,10 +731,12 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
         checkpoint = Stress90CrashFillRecoveryCheckpoint(
             transaction_id=_sha(raw["transaction_id"], "recovery transaction identity"),
             operation_nonce=_sha(raw["operation_nonce"], "recovery operation nonce"),
+            request_digest=_sha(raw["request_digest"], "recovery request digest"),
             operator_reason=_reason(raw["operator_reason"]),
             status=str(status),
             authority=_decode_authority(raw["authority"]),
             trading_day=str(raw["trading_day"]),
+            trading_day_evidence=_decode_trading_day_evidence(raw["trading_day_evidence"]),
             session_evidence=_decode_session(raw["session_evidence"]),
             session_evidence_sequence=_positive_int(
                 raw["session_evidence_sequence"], "session evidence sequence"
@@ -535,6 +751,7 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
                 raw["generic_source_sequence"], "generic source sequence"
             ),
             generic_source_checksum=_sha(raw["generic_source_checksum"], "generic source checksum"),
+            generic_source=source,
             generic_target=target,
             generic_target_sequence=_positive_int(
                 raw["generic_target_sequence"], "generic target sequence"
@@ -548,6 +765,13 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
         raise Stress90CrashFillRecoveryError("recovery checkpoint is invalid") from exc
     if checkpoint.generic_target_sequence != checkpoint.generic_source_sequence + 1:
         raise Stress90CrashFillRecoveryError("recovery generic target sequence is invalid")
+    expected_source = StateStore._checksum(
+        GENERIC_STATE_SCHEMA_VERSION,
+        checkpoint.generic_source_sequence,
+        asdict(checkpoint.generic_source),
+    )
+    if checkpoint.generic_source_checksum != expected_source:
+        raise Stress90CrashFillRecoveryError("recovery generic source checksum mismatch")
     if checkpoint.generic_target.runtime_mode != RuntimeMode.HALTED.value or not (
         checkpoint.generic_target.kill_switch
     ):
@@ -562,17 +786,73 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
     )
     if checkpoint.generic_target_checksum != expected_target:
         raise Stress90CrashFillRecoveryError("recovery generic target checksum mismatch")
+    if (
+        checkpoint.session_evidence.account_identity_digest
+        != (checkpoint.authority.account_identity_digest)
+        or checkpoint.session_evidence.trading_day != checkpoint.trading_day
+    ):
+        raise Stress90CrashFillRecoveryError("recovery session authority mismatch")
+    tde = checkpoint.trading_day_evidence
+    if (
+        tde.trading_day != checkpoint.trading_day
+        or tde.account_identity_digest != checkpoint.authority.account_identity_digest
+        or tde.account_epoch != checkpoint.authority.account_epoch
+        or tde.canonical_runtime != checkpoint.authority.canonical_runtime
+        or tde.runtime_identity_digest != checkpoint.authority.runtime_identity_digest
+        or tde.account_binding_payload_digest != checkpoint.authority.account_binding_payload_digest
+        or tde.account_binding_revision != checkpoint.authority.account_binding_revision
+        or tde.account_binding_last_operation_id
+        != checkpoint.authority.account_binding_last_operation_id
+        or tde.account_binding_receipt_digest != checkpoint.authority.account_binding_receipt_digest
+        or tde.registry_sequence != checkpoint.authority.registry_sequence
+        or tde.registry_checksum != checkpoint.authority.registry_checksum
+    ):
+        raise Stress90CrashFillRecoveryError("recovery trading-day evidence authority mismatch")
+    adopted = checkpoint.adopted_fill_ids
+    if (
+        not adopted
+        or any(type(item) is not str or not item for item in adopted)
+        or len(set(adopted)) != len(adopted)
+    ):
+        raise Stress90CrashFillRecoveryError("adopted fill identities are invalid")
+    session_fill_ids = {item.fill_key for item in checkpoint.session_evidence.trades}
+    if not set(adopted).issubset(session_fill_ids):
+        raise Stress90CrashFillRecoveryError(
+            "adopted fill identities are not members of session evidence"
+        )
+    if not set(adopted).issubset(checkpoint.generic_target.recent_trade_ids) or set(
+        adopted
+    ).intersection(checkpoint.generic_source.recent_trade_ids):
+        raise Stress90CrashFillRecoveryError(
+            "adopted fill identities do not match generic source/target"
+        )
+    try:
+        source_positions = stress90_crash_fill_positions_digest(
+            [ContractPosition(**item) for item in checkpoint.generic_source.positions]
+        )
+        target_positions = stress90_crash_fill_positions_digest(
+            [ContractPosition(**item) for item in checkpoint.generic_target.positions]
+        )
+    except (TypeError, ValueError) as exc:
+        raise Stress90CrashFillRecoveryError("recovery position evidence is invalid") from exc
+    if checkpoint.source_positions_digest != source_positions:
+        raise Stress90CrashFillRecoveryError("recovery source position digest mismatch")
+    if checkpoint.target_positions_digest != target_positions:
+        raise Stress90CrashFillRecoveryError("recovery target position digest mismatch")
     identity = _checkpoint_identity_payload(
         operation_nonce=checkpoint.operation_nonce,
+        request_digest=checkpoint.request_digest,
         operator_reason=checkpoint.operator_reason,
         authority=checkpoint.authority,
         trading_day=checkpoint.trading_day,
+        trading_day_evidence=checkpoint.trading_day_evidence,
         session_evidence=checkpoint.session_evidence,
         session_evidence_sequence=checkpoint.session_evidence_sequence,
         session_evidence_checksum=checkpoint.session_evidence_checksum,
         session_ownership_digest=checkpoint.session_ownership_digest,
         generic_source_sequence=checkpoint.generic_source_sequence,
         generic_source_checksum=checkpoint.generic_source_checksum,
+        generic_source=checkpoint.generic_source,
         generic_target=checkpoint.generic_target,
         source_positions_digest=checkpoint.source_positions_digest,
         target_positions_digest=checkpoint.target_positions_digest,
@@ -588,6 +868,79 @@ def _operation_payload(operation: Stress90CrashFillRecoveryOperation) -> dict[st
         "operation_nonce": _sha(operation.operation_nonce, "recovery operation nonce"),
         "request_digest": _sha(operation.request_digest, "recovery request digest"),
     }
+
+
+def _consumption_receipt_digest(
+    *,
+    transaction_id: str,
+    consumer_operation_nonce: str,
+    recovered_sequence: int,
+    recovered_checksum: str,
+) -> str:
+    return _digest(
+        {
+            "schema_version": 1,
+            "transaction_id": _sha(transaction_id, "recovery transaction identity"),
+            "consumer_operation_nonce": _sha(
+                consumer_operation_nonce, "recovery consumer operation nonce"
+            ),
+            "recovered_sequence": _positive_int(recovered_sequence, "recovered generic sequence"),
+            "recovered_checksum": _sha(recovered_checksum, "recovered generic checksum"),
+        }
+    )
+
+
+def _consumption_payload(
+    consumption: Stress90CrashFillRecoveryConsumption,
+) -> dict[str, object]:
+    expected_receipt = _consumption_receipt_digest(
+        transaction_id=consumption.transaction_id,
+        consumer_operation_nonce=consumption.consumer_operation_nonce,
+        recovered_sequence=consumption.recovered_sequence,
+        recovered_checksum=consumption.recovered_checksum,
+    )
+    if consumption.receipt_digest != expected_receipt:
+        raise Stress90CrashFillRecoveryError("recovery consumption receipt mismatch")
+    return {
+        "transaction_id": consumption.transaction_id,
+        "consumer_operation_nonce": consumption.consumer_operation_nonce,
+        "recovered_sequence": consumption.recovered_sequence,
+        "recovered_checksum": consumption.recovered_checksum,
+        "consumed_sequence": _positive_int(
+            consumption.consumed_sequence, "consumed generic sequence"
+        ),
+        "consumed_checksum": _sha(consumption.consumed_checksum, "consumed generic checksum"),
+        "receipt_digest": consumption.receipt_digest,
+    }
+
+
+def _decode_consumption(raw: object) -> Stress90CrashFillRecoveryConsumption:
+    fields = {
+        "transaction_id",
+        "consumer_operation_nonce",
+        "recovered_sequence",
+        "recovered_checksum",
+        "consumed_sequence",
+        "consumed_checksum",
+        "receipt_digest",
+    }
+    if not isinstance(raw, Mapping) or set(raw) != fields:
+        raise Stress90CrashFillRecoveryError("recovery consumption history is invalid")
+    consumption = Stress90CrashFillRecoveryConsumption(
+        transaction_id=_sha(raw["transaction_id"], "recovery transaction identity"),
+        consumer_operation_nonce=_sha(
+            raw["consumer_operation_nonce"], "recovery consumer operation nonce"
+        ),
+        recovered_sequence=_positive_int(raw["recovered_sequence"], "recovered generic sequence"),
+        recovered_checksum=_sha(raw["recovered_checksum"], "recovered generic checksum"),
+        consumed_sequence=_positive_int(raw["consumed_sequence"], "consumed generic sequence"),
+        consumed_checksum=_sha(raw["consumed_checksum"], "consumed generic checksum"),
+        receipt_digest=_sha(raw["receipt_digest"], "recovery consumption receipt"),
+    )
+    _consumption_payload(consumption)
+    if consumption.consumed_sequence <= consumption.recovered_sequence:
+        raise Stress90CrashFillRecoveryError("recovery consumption sequence is invalid")
+    return consumption
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -851,6 +1204,7 @@ class Stress90CrashFillRecoveryStore:
             "parent_checksum",
             "checkpoint",
             "operation_history",
+            "consumption_history",
             "checksum",
         }
         if not isinstance(raw, dict) or set(raw) != fields:
@@ -869,9 +1223,6 @@ class Stress90CrashFillRecoveryStore:
         if checksum != _digest(unsigned):
             raise Stress90CrashFillRecoveryError(f"{label} crash-fill recovery checksum mismatch")
         checkpoint = _decode_checkpoint(raw["checkpoint"])
-        expected_status = "prepared" if sequence % 2 == 1 else "committed"
-        if checkpoint.status != expected_status:
-            raise Stress90CrashFillRecoveryError("recovery sequence/status parity is invalid")
         history_raw = raw["operation_history"]
         if not isinstance(history_raw, list):
             raise Stress90CrashFillRecoveryError("recovery operation history is invalid")
@@ -887,18 +1238,23 @@ class Stress90CrashFillRecoveryStore:
             )
         if len({item.operation_nonce for item in history}) != len(history):
             raise Stress90CrashFillRecoveryError("recovery operation history reuses a nonce")
-        if len(history) != (sequence + 1) // 2:
-            raise Stress90CrashFillRecoveryError(
-                "recovery operation history transition is truncated"
-            )
         if not history or history[-1] != Stress90CrashFillRecoveryOperation(
             checkpoint.operation_nonce,
-            checkpoint.transaction_id,
+            checkpoint.request_digest,
         ):
             raise Stress90CrashFillRecoveryError("recovery checkpoint/history mismatch")
+        consumption_raw = raw["consumption_history"]
+        if not isinstance(consumption_raw, list):
+            raise Stress90CrashFillRecoveryError("recovery consumption history is invalid")
+        consumption = tuple(_decode_consumption(item) for item in consumption_raw)
+        if len({item.transaction_id for item in consumption}) != len(consumption):
+            raise Stress90CrashFillRecoveryError("recovery proof was consumed more than once")
+        if sequence == 1 and (checkpoint.status != "prepared" or len(history) != 1 or consumption):
+            raise Stress90CrashFillRecoveryError("initial recovery history transition is invalid")
         return Stress90CrashFillRecoveryRecord(
             checkpoint=checkpoint,
             operation_history=tuple(history),
+            consumption_history=consumption,
             sequence=sequence,
             parent_checksum=parent,
             checksum=checksum,
@@ -940,9 +1296,11 @@ class Stress90CrashFillRecoveryStore:
         current = self._decode_record(current_bytes, "current")
         if current.sequence == 1:
             if previous_exists:
-                raise Stress90CrashFillRecoveryError(
-                    "unexpected recovery .prev evidence for initial sequence"
-                )
+                previous_bytes = self._read_bytes(self.previous_path, "previous")
+                if previous_bytes != current_bytes:
+                    raise Stress90CrashFillRecoveryError(
+                        "unexpected recovery .prev evidence for initial sequence"
+                    )
             return current
         if not previous_exists:
             raise Stress90CrashFillRecoveryError("recovery .prev evidence is missing")
@@ -955,16 +1313,29 @@ class Stress90CrashFillRecoveryStore:
             or current.parent_checksum != previous.checksum
         ):
             raise Stress90CrashFillRecoveryError("recovery parent chain mismatch")
-        if current.sequence % 2 == 0:
-            if (
-                current.operation_history != previous.operation_history
-                or current.checkpoint != replace(previous.checkpoint, status="committed")
-            ):
-                raise Stress90CrashFillRecoveryError(
-                    "recovery committed history transition is invalid"
-                )
-        elif current.operation_history[:-1] != previous.operation_history:
-            raise Stress90CrashFillRecoveryError("recovery prepared history transition is invalid")
+        committed = (
+            previous.checkpoint.status == "prepared"
+            and current.checkpoint == replace(previous.checkpoint, status="committed")
+            and current.operation_history == previous.operation_history
+            and current.consumption_history == previous.consumption_history
+        )
+        consumed = (
+            previous.checkpoint.status == "committed"
+            and current.checkpoint == previous.checkpoint
+            and current.operation_history == previous.operation_history
+            and current.consumption_history[:-1] == previous.consumption_history
+            and len(current.consumption_history) == len(previous.consumption_history) + 1
+            and current.consumption_history[-1].transaction_id == current.checkpoint.transaction_id
+        )
+        prepared = (
+            previous.checkpoint.status == "committed"
+            and current.checkpoint.status == "prepared"
+            and current.checkpoint.operation_nonce == current.operation_history[-1].operation_nonce
+            and current.operation_history[:-1] == previous.operation_history
+            and current.consumption_history == previous.consumption_history
+        )
+        if not (committed or consumed or prepared):
+            raise Stress90CrashFillRecoveryError("recovery history transition is invalid")
         return current
 
     def _atomic_replace(self, path: Path, payload: bytes) -> None:
@@ -988,11 +1359,64 @@ class Stress90CrashFillRecoveryStore:
             if temporary is not None and temporary.exists():
                 temporary.unlink()
 
+    def _create_initial_current_unlocked(self, payload: bytes) -> None:
+        if self._exists(self.path) or self._exists(self.previous_path):
+            raise Stress90CrashFillRecoveryError(
+                "crash-fill recovery initial current already exists"
+            )
+        descriptor: int | None = None
+        body_failed = False
+        try:
+            descriptor = os.open(
+                self.path,
+                os.O_CREAT
+                | os.O_EXCL
+                | os.O_WRONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError(errno.EIO, "short initial current write")
+                remaining = remaining[written:]
+            os.fsync(descriptor)
+            opened = os.fstat(descriptor)
+            visible = os.stat(self.path, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not stat.S_ISREG(visible.st_mode)
+                or (opened.st_dev, opened.st_ino) != (visible.st_dev, visible.st_ino)
+            ):
+                raise OSError(errno.ESTALE, "initial recovery current path changed")
+            os.close(descriptor)
+            descriptor = None
+            self._fsync_parent(self.path)
+        except BaseException as exc:
+            body_failed = True
+            if isinstance(exc, Stress90CrashFillRecoveryError):
+                raise
+            raise Stress90CrashFillRecoveryError(
+                "crash-fill recovery initial current creation failed"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    if not body_failed:
+                        raise Stress90CrashFillRecoveryError(
+                            "crash-fill recovery initial current close failed"
+                        ) from exc
+
     def _save_unlocked(
         self,
         current: Stress90CrashFillRecoveryRecord | None,
         checkpoint: Stress90CrashFillRecoveryCheckpoint,
         history: tuple[Stress90CrashFillRecoveryOperation, ...],
+        consumption_history: tuple[Stress90CrashFillRecoveryConsumption, ...],
     ) -> Stress90CrashFillRecoveryRecord:
         sequence = 1 if current is None else current.sequence + 1
         parent = None if current is None else current.checksum
@@ -1003,6 +1427,7 @@ class Stress90CrashFillRecoveryStore:
             "parent_checksum": parent,
             "checkpoint": _checkpoint_payload(checkpoint),
             "operation_history": [_operation_payload(item) for item in history],
+            "consumption_history": [_consumption_payload(item) for item in consumption_history],
         }
         encoded = json.dumps(
             {**unsigned, "checksum": _digest(unsigned)},
@@ -1013,7 +1438,9 @@ class Stress90CrashFillRecoveryStore:
         ).encode("utf-8")
         if current is not None:
             self._atomic_replace(self.previous_path, self._read_bytes(self.path, "current"))
-        self._atomic_replace(self.path, encoded)
+            self._atomic_replace(self.path, encoded)
+        else:
+            self._create_initial_current_unlocked(encoded)
         return self._decode_record(encoded, "current")
 
     def load_record(self) -> Stress90CrashFillRecoveryRecord | None:
@@ -1049,7 +1476,7 @@ class Stress90CrashFillRecoveryStore:
         checkpoint = _decode_checkpoint(_checkpoint_payload(checkpoint))
         requested = Stress90CrashFillRecoveryOperation(
             checkpoint.operation_nonce,
-            checkpoint.transaction_id,
+            checkpoint.request_digest,
         )
         with self._exclusive_lock() as lock:
             current = self._load_unlocked(
@@ -1080,7 +1507,13 @@ class Stress90CrashFillRecoveryStore:
                 self._create_lineage_marker_unlocked()
                 self._claim_initial_visible_lock_unlocked(lock)
                 history = (requested,)
-            return self._save_unlocked(current, checkpoint, history)
+            consumption_history = () if current is None else current.consumption_history
+            return self._save_unlocked(
+                current,
+                checkpoint,
+                history,
+                consumption_history,
+            )
 
     def mark_committed(self, transaction_id: str) -> Stress90CrashFillRecoveryRecord:
         transaction = _sha(transaction_id, "recovery transaction identity")
@@ -1098,6 +1531,46 @@ class Stress90CrashFillRecoveryStore:
                 current,
                 replace(current.checkpoint, status="committed"),
                 current.operation_history,
+                current.consumption_history,
+            )
+
+    def mark_consumed(
+        self,
+        consumption: Stress90CrashFillRecoveryConsumption,
+    ) -> Stress90CrashFillRecoveryRecord:
+        consumption = _decode_consumption(_consumption_payload(consumption))
+        with self._exclusive_lock() as lock:
+            current = self._load_unlocked(
+                required=True,
+                surviving_visible_lock=lock.surviving_visible_lock,
+            )
+            assert current is not None
+            if (
+                current.checkpoint.status != "committed"
+                or current.checkpoint.transaction_id != consumption.transaction_id
+            ):
+                raise Stress90CrashFillRecoveryError(
+                    "recovery proof changed before lifecycle consumption"
+                )
+            prior = next(
+                (
+                    item
+                    for item in current.consumption_history
+                    if item.transaction_id == consumption.transaction_id
+                ),
+                None,
+            )
+            if prior is not None:
+                if prior != consumption:
+                    raise Stress90CrashFillRecoveryError(
+                        "recovery proof consumption was changed or replayed"
+                    )
+                return current
+            return self._save_unlocked(
+                current,
+                current.checkpoint,
+                current.operation_history,
+                (*current.consumption_history, consumption),
             )
 
 
@@ -1153,6 +1626,93 @@ def apply_stress90_crash_fill_recovery(
     return recovery_store.mark_committed(checkpoint.transaction_id)
 
 
+def _consumed_marker(
+    checkpoint: Stress90CrashFillRecoveryCheckpoint,
+    consumer_operation_nonce: str,
+) -> dict[str, object]:
+    consumer = _sha(consumer_operation_nonce, "recovery consumer operation nonce")
+    receipt = _consumption_receipt_digest(
+        transaction_id=checkpoint.transaction_id,
+        consumer_operation_nonce=consumer,
+        recovered_sequence=checkpoint.generic_target_sequence,
+        recovered_checksum=checkpoint.generic_target_checksum,
+    )
+    return {
+        "schema_version": 1,
+        "transaction_id": checkpoint.transaction_id,
+        "consumer_operation_nonce": consumer,
+        "receipt_digest": receipt,
+    }
+
+
+def build_stress90_crash_fill_recovery_consumed_state(
+    recovery_store: Stress90CrashFillRecoveryStore,
+    state_record: RuntimeStateRecord,
+    *,
+    consumer_operation_nonce: str,
+) -> RuntimeState:
+    """Build the exact marker transition a lifecycle transaction must persist."""
+
+    record = recovery_store.load_required_record()
+    checkpoint = record.checkpoint
+    if checkpoint.status != "committed":
+        raise Stress90CrashFillRecoveryError("recovery proof is not committed")
+    if state_record.state.runtime_mode != RuntimeMode.HALTED.value or not (
+        state_record.state.kill_switch
+    ):
+        raise Stress90CrashFillRecoveryError(
+            "recovery proof consumption requires HALTED kill switch"
+        )
+    expected_marker = {"transaction_id": checkpoint.transaction_id}
+    current_marker = state_record.state.strategy_states.get(STRESS90_CRASH_FILL_RECOVERY_STATE_KEY)
+    consumed_marker = _consumed_marker(checkpoint, consumer_operation_nonce)
+    if current_marker == consumed_marker:
+        return state_record.state
+    if current_marker != expected_marker or not _state_is_target(state_record, checkpoint):
+        raise Stress90CrashFillRecoveryError(
+            "committed recovery does not prove the exact generic state"
+        )
+    strategy_states = dict(state_record.state.strategy_states)
+    strategy_states[STRESS90_CRASH_FILL_RECOVERY_STATE_KEY] = consumed_marker
+    return replace(state_record.state, strategy_states=strategy_states)
+
+
+def consume_stress90_crash_fill_recovery(
+    recovery_store: Stress90CrashFillRecoveryStore,
+    state_record: RuntimeStateRecord,
+    *,
+    consumer_operation_nonce: str,
+) -> Stress90CrashFillRecoveryRecord:
+    """Durably receipt the generic marker transition; exact retries are idempotent."""
+
+    record = recovery_store.load_required_record()
+    checkpoint = record.checkpoint
+    marker = state_record.state.strategy_states.get(STRESS90_CRASH_FILL_RECOVERY_STATE_KEY)
+    expected = _consumed_marker(checkpoint, consumer_operation_nonce)
+    if (
+        checkpoint.status != "committed"
+        or marker != expected
+        or state_record.state.runtime_mode != RuntimeMode.HALTED.value
+        or not state_record.state.kill_switch
+    ):
+        raise Stress90CrashFillRecoveryError(
+            "generic state does not contain the exact consumed recovery proof"
+        )
+    return recovery_store.mark_consumed(
+        Stress90CrashFillRecoveryConsumption(
+            transaction_id=checkpoint.transaction_id,
+            consumer_operation_nonce=_sha(
+                consumer_operation_nonce, "recovery consumer operation nonce"
+            ),
+            recovered_sequence=checkpoint.generic_target_sequence,
+            recovered_checksum=checkpoint.generic_target_checksum,
+            consumed_sequence=state_record.sequence,
+            consumed_checksum=state_record.checksum,
+            receipt_digest=str(expected["receipt_digest"]),
+        )
+    )
+
+
 def require_committed_stress90_crash_fill_recovery(
     recovery_store: Stress90CrashFillRecoveryStore,
     state_record: RuntimeStateRecord,
@@ -1162,15 +1722,42 @@ def require_committed_stress90_crash_fill_recovery(
     marker = state_record.state.strategy_states.get(STRESS90_CRASH_FILL_RECOVERY_STATE_KEY)
     if marker is None:
         raise Stress90CrashFillRecoveryError("generic state has no crash-fill recovery proof")
-    if not isinstance(marker, dict) or set(marker) != {"transaction_id"}:
+    if not isinstance(marker, dict):
         raise Stress90CrashFillRecoveryError("generic crash-fill recovery marker is invalid")
     record = recovery_store.load_required_record()
-    if (
-        record.checkpoint.status != "committed"
-        or marker["transaction_id"] != record.checkpoint.transaction_id
-        or not _state_is_target(state_record, record.checkpoint)
-    ):
+    checkpoint = record.checkpoint
+    if checkpoint.status != "committed":
         raise Stress90CrashFillRecoveryError(
             "committed recovery does not prove the exact generic state"
         )
+    if set(marker) == {"transaction_id"}:
+        if marker["transaction_id"] != checkpoint.transaction_id or not _state_is_target(
+            state_record, checkpoint
+        ):
+            raise Stress90CrashFillRecoveryError(
+                "committed recovery does not prove the exact generic state"
+            )
+        return record
+    if set(marker) != {
+        "schema_version",
+        "transaction_id",
+        "consumer_operation_nonce",
+        "receipt_digest",
+    }:
+        raise Stress90CrashFillRecoveryError("generic crash-fill recovery marker is invalid")
+    consumption = next(
+        (
+            item
+            for item in record.consumption_history
+            if item.transaction_id == checkpoint.transaction_id
+        ),
+        None,
+    )
+    if (
+        consumption is None
+        or marker != _consumed_marker(checkpoint, consumption.consumer_operation_nonce)
+        or state_record.state.runtime_mode != RuntimeMode.HALTED.value
+        or not state_record.state.kill_switch
+    ):
+        raise Stress90CrashFillRecoveryError("committed recovery consumption proof is invalid")
     return record

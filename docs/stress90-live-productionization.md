@@ -99,10 +99,15 @@ Stress-90 不使用通用 `recover-state` 猜测或采用崩溃成交。专用
 `stress90-crash-fill-recover` 先取得精确 account/runtime lease，拒绝 prepared lifecycle
 transaction，再在 Broker critical-ingress fence 内复查完整本 session order/trade evidence、
 account epoch 与 account-specific registry receipt、无 active/unknown order/trade 和 Broker/local
-一致性。随后 durable 顺序固定为 recovery prepared、generic state CAS、recovery committed；
+一致性。随后 durable 顺序固定为 registry 全局 nonce acknowledgement、TradingDayEvidence
+精确 roll-forward、recovery prepared、generic state CAS、recovery committed；
 两处崩溃均只允许同一 nonce、相同语义 evidence 和相同 state target 的 exact retry。machine-wide
 registry sequence/checksum 只作审计快照；授权绑定账户自己的 payload digest、revision、last
 operation 和 receipt digest。命令不报单、不撤单，成功后仍为 `HALTED` 且 kill switch 开启。
+首次后续 lifecycle 将 recovery marker 与自身 operation nonce 一起转换成 consumed marker，并在
+generic CAS 后、lifecycle coordinator commit 前向 recovery store 追加 durable consumption receipt；
+该参与者的 crash retry 必须精确完成，后续 lifecycle 只保留并验证 receipt，不再要求 generic
+state 永远停在最初 recovery target。
 
 一个 target day 只能推进一次。prepared decision 必须在第一张订单前原子落盘；持久化失败则 `orders_sent=0`。决策已保存但未下单、第一张订单后崩溃或部分成交后崩溃，重启都复用同一 decision/intent，以 Broker 最新持仓继续向同一目标收敛，不重复追加 HHI，也不重新推进候选状态。policy/schema/manifest/seed/digest 不一致、交易日倒退或 target gap 均失败关闭。
 

@@ -236,7 +236,6 @@ def _decode_binding(raw: object, *, schema_version: int) -> AccountRuntimeBindin
     if (
         not isinstance(history_raw, list)
         or not history_raw
-        or len(history_raw) > _MAX_OPERATION_HISTORY
         or not isinstance(operation_kinds_raw, list)
         or len(operation_kinds_raw) != len(history_raw)
         or not isinstance(retired_raw, list)
@@ -255,6 +254,7 @@ def _decode_binding(raw: object, *, schema_version: int) -> AccountRuntimeBindin
         "switch",
         "acknowledgement",
         "transfer",
+        "stress90_crash_fill_recovery",
         "legacy",
     }
     if (
@@ -1010,7 +1010,6 @@ class AccountRuntimeRegistry:
             if any(
                 len(items) >= _MAX_OPERATION_HISTORY
                 for items in (
-                    source_binding.operation_history,
                     source_binding.retired_account_identity_digests,
                     source_binding.retired_lineage_digests,
                 )
@@ -1156,8 +1155,6 @@ class AccountRuntimeRegistry:
                 raise AccountRuntimeRegistryError("account runtime operation was already consumed")
             if binding.account_epoch != source:
                 raise AccountRuntimeRegistryError("account runtime epoch CAS source mismatch")
-            if len(binding.operation_history) >= _MAX_OPERATION_HISTORY:
-                raise AccountRuntimeRegistryError("account runtime operation history exhausted")
             bindings[account] = replace(
                 binding,
                 account_epoch=target,
@@ -1229,15 +1226,74 @@ class AccountRuntimeRegistry:
                 raise AccountRuntimeRegistryError(
                     "account runtime acknowledgement operation was already consumed"
                 )
-            if len(binding.operation_history) >= _MAX_OPERATION_HISTORY:
-                raise AccountRuntimeRegistryError(
-                    "account runtime acknowledgement history exhausted"
-                )
             bindings[account] = replace(
                 binding,
                 last_operation_id=operation,
                 operation_history=(*binding.operation_history, operation),
                 operation_kinds=(*binding.operation_kinds, "acknowledgement"),
+                last_operation_receipt_digest=operation_receipt,
+            )
+            return self._save_unlocked(current, tuple(bindings.values()))
+
+    def acknowledge_stress90_recovery_operation(
+        self,
+        account_identity_digest: str,
+        runtime_dir: str | Path,
+        source_epoch: str,
+        operation_id: str,
+        request_digest: str,
+    ) -> AccountRuntimeRegistryRecord:
+        """Globally consume one semantic crash-fill recovery request nonce."""
+
+        account = _sha(account_identity_digest, "economic account identity")
+        runtime, runtime_digest = _canonical_runtime(runtime_dir)
+        source = _sha(source_epoch, "source account runtime epoch")
+        operation = _sha(operation_id, "Stress-90 recovery operation")
+        request = _sha(request_digest, "Stress-90 recovery request")
+        operation_receipt = _operation_receipt(
+            "stress90_crash_fill_recovery",
+            operation_id=operation,
+            request_digest=request,
+            account_identity_digest=account,
+            canonical_runtime=runtime,
+            account_epoch=source,
+        )
+        with self._exclusive_lock() as lock:
+            current = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=lock.legacy_lock_evidence,
+            )
+            assert current is not None
+            bindings = {item.account_identity_digest: item for item in current.bindings}
+            binding = bindings.get(account)
+            if binding is None:
+                raise AccountRuntimeRegistryError("Stress-90 recovery registry binding is missing")
+            if (
+                binding.canonical_runtime != runtime
+                or binding.runtime_identity_digest != runtime_digest
+                or binding.account_epoch != source
+            ):
+                raise AccountRuntimeRegistryError("Stress-90 recovery registry source CAS mismatch")
+            if operation in {
+                consumed for item in bindings.values() for consumed in item.operation_history
+            }:
+                if (
+                    binding.last_operation_id == operation
+                    and binding.operation_kinds[-1] == "stress90_crash_fill_recovery"
+                    and binding.last_operation_receipt_digest == operation_receipt
+                ):
+                    return current
+                raise AccountRuntimeRegistryError(
+                    "Stress-90 recovery operation was already consumed for a different request"
+                )
+            bindings[account] = replace(
+                binding,
+                last_operation_id=operation,
+                operation_history=(*binding.operation_history, operation),
+                operation_kinds=(
+                    *binding.operation_kinds,
+                    "stress90_crash_fill_recovery",
+                ),
                 last_operation_receipt_digest=operation_receipt,
             )
             return self._save_unlocked(current, tuple(bindings.values()))
@@ -1259,7 +1315,7 @@ class AccountRuntimeRegistry:
         previous = _decode_record(previous_bytes)
         previous_bindings = {item.account_identity_digest: item for item in previous.bindings}
         prior = previous_bindings.get(account)
-        if prior is None or len(prior.operation_history) >= _MAX_OPERATION_HISTORY:
+        if prior is None:
             return False
         previous_bindings[account] = replace(
             prior,
@@ -1365,10 +1421,7 @@ class AccountRuntimeRegistry:
                 raise AccountRuntimeRegistryError(
                     "account runtime transfer lineage was already consumed"
                 )
-            if (
-                len(binding.operation_history) >= _MAX_OPERATION_HISTORY
-                or len(binding.retired_runtime_identity_digests) >= _MAX_OPERATION_HISTORY
-            ):
+            if len(binding.retired_runtime_identity_digests) >= _MAX_OPERATION_HISTORY:
                 raise AccountRuntimeRegistryError("account runtime transfer history exhausted")
             bindings[account] = replace(
                 binding,

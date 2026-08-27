@@ -441,7 +441,10 @@ afuture stress90-crash-fill-recover \
 epoch、account-specific registry binding receipt、TradingDayEvidence schema 3 和 policy identity；
 存在 prepared `stress90_lifecycle_transaction` 时直接拒绝，不提供 abort/amend。随后它重新查询
 Broker，在 critical-ingress fence 内再次验证 query generation/evidence 仍为 current，并按
-`recovery prepared → state.json CAS → recovery committed` 持久化。checkpoint 保存完整 session
+`registry recovery acknowledgement → TradingDayEvidence roll-forward → recovery prepared →
+state.json CAS → recovery committed` 持久化。registry acknowledgement 的 request digest 绑定
+pre-ack account receipt、完整 session 语义和 source/target state；checkpoint 则绑定确定性的
+post-ack account receipt 与完整 TradingDayEvidence sequence/checksum。checkpoint 保存完整 session
 order/trade rows、ownership digest、source/target state checksum、position digest 和永久 append-only
 nonce history。machine-wide registry sequence/checksum 只是审计快照，其他账户推进 registry
 不得使本账户 receipt 失效。
@@ -454,9 +457,13 @@ fill IDs、持仓和 generic target；请求 id/generation 可以因重新查询
 保全现场；`.prev` 只作证据，不能提升。generic state 已保存但 checkpoint 未 committed，或
 checkpoint prepared 但 state 尚未保存，都必须用同一 operation id 精确重试收敛，禁止换 nonce。
 
-生命周期命令只有在 `state.json` 的 recovery marker 与 committed checkpoint 的 transaction、
-target sequence/checksum 完全一致后，才把该 crash-fill adoption 视为已持久；该证明缺失或损坏
-仍由 `_require_no_unpersisted_lifecycle_crash_fill_adoption` 阻断。
+首次生命周期命令只有在 `state.json` 的 recovery marker 与 committed checkpoint 的 transaction、
+target sequence/checksum 完全一致后，才可把 marker 转换为绑定该 lifecycle operation nonce 的
+consumed marker；generic CAS 后、lifecycle coordinator commit 前还必须向 recovery store 追加
+consumption receipt。若在两者之间崩溃，同一 prepared lifecycle 只能精确补齐 receipt。receipt
+完成后，后续合法 lifecycle 可继续推进 generic state，但必须保留并验证 consumed marker；proof
+本身不会清除 `HALTED`/kill switch，也不会创建 permit 或订单权限。任何缺失、伪造、重放或
+nonce 不一致仍由 `_require_no_unpersisted_lifecycle_crash_fill_adoption` 阻断。
 
 首次 bootstrap 的 durable 顺序固定为 OHLC cache、activity、bootstrap seed、policy state，最后
 才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。整个 write bootstrap 从 source

@@ -1156,13 +1156,15 @@ def test_registry_unchanged_binding_acknowledgement_fails_closed(
         "_MAX_OPERATION_HISTORY",
         len(binding.operation_history),
     )
-    with pytest.raises(AccountRuntimeRegistryError, match="history exhausted"):
-        registry.acknowledge_binding_operation(
-            first_account,
-            runtime_a,
-            epoch,
-            "9" * 64,
-        )
+    registry.acknowledge_binding_operation(
+        first_account,
+        runtime_a,
+        epoch,
+        "9" * 64,
+    )
+    assert registry.require_binding(first_account, runtime_a, epoch).operation_history[-1] == (
+        "9" * 64
+    )
 
 
 def test_surviving_legacy_lock_prevents_missing_registry_reinitialization(

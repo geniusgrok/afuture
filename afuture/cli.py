@@ -1574,11 +1574,38 @@ def _commit_stress90_lifecycle_under_broker_fence(
         transaction = prepare_transaction()
         apply_registry_transition(transaction)
         apply_evidence_transition(transaction)
+
+        def precommit_with_recovery_consumption() -> None:
+            precommit_check()
+            generic_target = getattr(transaction, "generic_target", None)
+            if not isinstance(generic_target, RuntimeState):
+                return
+            marker = generic_target.strategy_states.get("stress90_crash_fill_recovery")
+            if not isinstance(marker, dict) or set(marker) != {
+                "schema_version",
+                "transaction_id",
+                "consumer_operation_nonce",
+                "receipt_digest",
+            }:
+                return
+            from .stress90_crash_fill_recovery import (
+                Stress90CrashFillRecoveryStore,
+                consume_stress90_crash_fill_recovery,
+            )
+
+            consume_stress90_crash_fill_recovery(
+                Stress90CrashFillRecoveryStore(
+                    generic_store.path.parent / "stress90_crash_fill_recovery.json"
+                ),
+                generic_store.load_required_record(),
+                consumer_operation_nonce=transaction.operation_nonce,
+            )
+
         return apply_stress90_lifecycle_transaction(
             transaction_store,
             generic_store=generic_store,
             policy_store=policy_store,
-            precommit_check=precommit_check,
+            precommit_check=precommit_with_recovery_consumption,
         )
 
 
@@ -1762,6 +1789,32 @@ def _require_stress90_order_journal_full_audit(runtime_dir: Path) -> None:
 
         raise CtpOrderJournalIntegrityError(
             "Stress-90 lifecycle requires no unresolved durable CTP orders"
+        )
+
+
+def _require_stress90_order_journal_recovery_structural_audit(
+    runtime_dir: Path,
+    *,
+    account_identity_digest: str,
+    trading_day: str,
+) -> None:
+    """Validate recoverable current-session rows before the Broker query terminalizes them."""
+
+    from .broker.ctp_order_journal import (
+        CtpOrderJournalIntegrityError,
+        CtpOrderSubmissionJournal,
+    )
+
+    audit = CtpOrderSubmissionJournal(runtime_dir / "stress90_ctp_orders.json").audit_epochs()
+    record = audit.current_record
+    entries = () if record is None else record.all_entries
+    if any(
+        entry.account_identity_digest != account_identity_digest
+        or entry.target_trading_day != trading_day
+        for entry in entries
+    ):
+        raise CtpOrderJournalIntegrityError(
+            "Stress-90 recovery current order journal has foreign account/day rows"
         )
 
 
@@ -2288,7 +2341,8 @@ def _require_no_unpersisted_lifecycle_crash_fill_adoption(
     pending_lifecycle,
     persisted_record=None,
     runtime_dir: Path | None = None,
-) -> None:
+    consumer_operation_nonce: str | None = None,
+) -> RuntimeState:
     """Never let a lifecycle target erase recovered Broker-owned fill identity."""
 
     if adopted_state != persisted_state:
@@ -2302,7 +2356,7 @@ def _require_no_unpersisted_lifecycle_crash_fill_adoption(
         )
     marker = persisted_state.strategy_states.get("stress90_crash_fill_recovery")
     if marker is None:
-        return
+        return persisted_state
     if (
         persisted_record is None
         or getattr(persisted_record, "state", None) != persisted_state
@@ -2311,18 +2365,52 @@ def _require_no_unpersisted_lifecycle_crash_fill_adoption(
         raise RuntimeError("Stress-90 lifecycle lacks the exact crash-fill recovery proof")
     from .stress90_crash_fill_recovery import (
         Stress90CrashFillRecoveryStore,
+        build_stress90_crash_fill_recovery_consumed_state,
+        consume_stress90_crash_fill_recovery,
         require_committed_stress90_crash_fill_recovery,
     )
 
+    recovery_store = Stress90CrashFillRecoveryStore(
+        runtime_dir / "stress90_crash_fill_recovery.json"
+    )
     try:
         require_committed_stress90_crash_fill_recovery(
-            Stress90CrashFillRecoveryStore(runtime_dir / "stress90_crash_fill_recovery.json"),
+            recovery_store,
             persisted_record,
         )
     except Exception as exc:
-        raise RuntimeError(
-            "Stress-90 lifecycle crash-fill recovery proof is not exact and committed"
-        ) from exc
+        pending = bool(
+            pending_lifecycle is not None
+            and getattr(pending_lifecycle, "status", "") == "prepared"
+            and consumer_operation_nonce is not None
+            and getattr(pending_lifecycle, "operation_nonce", None) == consumer_operation_nonce
+        )
+        if not pending:
+            raise RuntimeError(
+                "Stress-90 lifecycle crash-fill recovery proof is not exact and committed"
+            ) from exc
+        assert consumer_operation_nonce is not None
+        try:
+            consume_stress90_crash_fill_recovery(
+                recovery_store,
+                persisted_record,
+                consumer_operation_nonce=consumer_operation_nonce,
+            )
+            require_committed_stress90_crash_fill_recovery(
+                recovery_store,
+                persisted_record,
+            )
+        except Exception as retry_exc:
+            raise RuntimeError(
+                "Stress-90 lifecycle crash-fill recovery proof is not exact and committed"
+            ) from retry_exc
+    if consumer_operation_nonce is None:
+        return persisted_state
+    return build_stress90_crash_fill_recovery_consumed_state(
+        recovery_store,
+        persisted_record,
+        consumer_operation_nonce=consumer_operation_nonce,
+    )
 
 
 def _run_stress90_crash_fill_recovery(config, args) -> int:
@@ -2345,6 +2433,7 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
         Stress90CrashFillRecoveryStore,
         apply_stress90_crash_fill_recovery,
         build_stress90_crash_fill_recovery_checkpoint,
+        build_stress90_crash_fill_recovery_request_digest,
         stress90_crash_fill_positions_digest,
     )
     from .stress90_lifecycle_transaction import Stress90LifecycleTransactionStore
@@ -2415,6 +2504,7 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
             raise RuntimeError(
                 "Stress-90 crash-fill recovery is blocked by a prepared lifecycle transaction"
             )
+        authoritative = True
         try:
             require_authoritative_trading_day_evidence(
                 evidence,
@@ -2423,10 +2513,39 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
                 runtime_dir=runtime_dir,
                 lifecycle_transaction=lifecycle,
             )
-        except Exception as exc:
+        except Exception:
+            authoritative = False
+        binding = receipt.binding
+        recovery_source = (
+            not authoritative
+            and evidence.phase == "bound"
+            and evidence.account_identity_digest == account_identity
+            and evidence.account_epoch == policy.live_account_epoch
+            and evidence.canonical_runtime == binding.canonical_runtime
+            and evidence.runtime_identity_digest == binding.runtime_identity_digest
+            and binding.last_operation_id == operation_nonce
+            and binding.operation_kinds[-1] == "stress90_crash_fill_recovery"
+            and receipt.binding_revision == evidence.account_binding_revision + 1
+            and len(binding.operation_history) >= 2
+            and binding.operation_history[-2] == evidence.account_binding_last_operation_id
+        )
+        if not authoritative and not recovery_source:
             raise RuntimeError(
                 "Stress-90 crash-fill recovery trading-day evidence authority mismatch"
-            ) from exc
+            )
+        semantic_evidence = evidence
+        if (
+            authoritative
+            and evidence.rebind_transaction_id == operation_nonce
+            and evidence.account_binding_last_operation_id == operation_nonce
+        ):
+            if not trading_day_store.previous_path.exists():
+                raise RuntimeError(
+                    "Stress-90 crash-fill recovery source trading-day evidence is missing"
+                )
+            semantic_evidence = TradingDayEvidenceStore(
+                trading_day_store.previous_path
+            ).load_required()
         authority = Stress90CrashFillRecoveryAuthority(
             account_identity_digest=account_identity,
             account_epoch=policy.live_account_epoch,
@@ -2441,7 +2560,7 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
             policy_state_sequence=policy_record.sequence,
             policy_state_checksum=policy_record.checksum,
         )
-        return policy_record, authority, evidence
+        return policy_record, authority, evidence, semantic_evidence
 
     def account_authority_identity(current):
         return (
@@ -2461,7 +2580,6 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
     try:
         if not lease.authorizes_technical_activation(account_identity, runtime_dir):
             raise RuntimeError("exact account/runtime lease is not held for crash-fill recovery")
-        _require_stress90_order_journal_full_audit(runtime_dir)
         source_record = state_store.load_required_record()
         source_state = source_record.state
         if source_state.runtime_mode != RuntimeMode.HALTED.value:
@@ -2469,7 +2587,17 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
         if not source_state.kill_switch:
             raise RuntimeError("Stress-90 crash-fill recovery requires the kill switch")
         seed = seed_store.load_required()
-        policy_record, authority, trading_day_evidence = authority_snapshot()
+        (
+            policy_record,
+            authority,
+            trading_day_evidence,
+            semantic_trading_day_evidence,
+        ) = authority_snapshot()
+        _require_stress90_order_journal_recovery_structural_audit(
+            runtime_dir,
+            account_identity_digest=account_identity,
+            trading_day=trading_day_evidence.trading_day,
+        )
         require_directional_policy_identity(
             source_state,
             policy_id=STRESS90_POLICY.policy_id,
@@ -2529,6 +2657,12 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
         )
         session_fill_ids = {item.fill_key for item in mechanical.session_proof.evidence.trades}
         existing_recovery = recovery_store.load_record()
+        checkpoint = None
+        target_state = None
+        session_record = None
+        source_positions_digest = ""
+        target_positions_digest = ""
+        request_digest = ""
 
         if existing_recovery is not None and (
             existing_recovery.checkpoint.operation_nonce == operation_nonce
@@ -2541,6 +2675,7 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
                 checkpoint.operator_reason != operator_reason
                 or stable_authority != current_authority
                 or checkpoint.trading_day != mechanical.trading_day
+                or checkpoint.trading_day_evidence != trading_day_evidence
                 or checkpoint.session_evidence.account_identity_digest
                 != evidence.account_identity_digest
                 or checkpoint.session_evidence.orders_digest != evidence.orders_digest
@@ -2573,39 +2708,107 @@ def _run_stress90_crash_fill_recovery(config, args) -> int:
             session_record = session_store.load_required_record()
             if session_record.evidence != mechanical.session_proof.evidence:
                 raise RuntimeError("persisted complete session recovery evidence changed")
-            checkpoint = build_stress90_crash_fill_recovery_checkpoint(
+            source_positions_digest = stress90_crash_fill_positions_digest(
+                state_store.positions_from_state(persisted_state)
+            )
+            target_positions_digest = stress90_crash_fill_positions_digest(broker_positions)
+            request_digest = build_stress90_crash_fill_recovery_request_digest(
                 operation_nonce=operation_nonce,
                 operator_reason=operator_reason,
-                authority=authority,
-                trading_day=mechanical.trading_day,
+                account_identity_digest=authority.account_identity_digest,
+                account_epoch=authority.account_epoch,
+                canonical_runtime=authority.canonical_runtime,
+                trading_day_evidence=semantic_trading_day_evidence,
                 session_evidence=mechanical.session_proof.evidence,
-                session_evidence_sequence=session_record.sequence,
-                session_evidence_checksum=session_record.checksum,
                 session_ownership_digest=mechanical.session_proof.ownership_digest,
                 generic_source=source_record,
                 generic_target=target_state,
-                source_positions_digest=stress90_crash_fill_positions_digest(
-                    state_store.positions_from_state(persisted_state)
-                ),
-                target_positions_digest=stress90_crash_fill_positions_digest(broker_positions),
+                source_positions_digest=source_positions_digest,
+                target_positions_digest=target_positions_digest,
                 adopted_fill_ids=adopted_ids,
             )
 
         with _stress90_lifecycle_broker_fence(broker):
             _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
+            _require_stress90_order_journal_full_audit(runtime_dir)
             if not lease.authorizes_technical_activation(account_identity, runtime_dir):
                 raise RuntimeError(
                     "exact account/runtime lease changed before crash-fill recovery commit"
                 )
-            current_policy, current_authority, current_trading_day = authority_snapshot()
+            (
+                current_policy,
+                current_authority,
+                current_trading_day,
+                current_semantic_trading_day,
+            ) = authority_snapshot()
             if (
                 current_policy != policy_record
                 or current_trading_day != trading_day_evidence
+                or current_semantic_trading_day != semantic_trading_day_evidence
                 or account_authority_identity(current_authority)
                 != account_authority_identity(authority)
             ):
                 raise RuntimeError("Stress-90 crash-fill recovery authority changed before commit")
             broker.require_session_activity_evidence_current(mechanical.session_proof.evidence)
+            semantic_request_digest = (
+                checkpoint.request_digest if checkpoint is not None else request_digest
+            )
+            registry.acknowledge_stress90_recovery_operation(
+                account_identity,
+                runtime_dir,
+                policy_record.state.live_account_epoch,
+                operation_nonce,
+                semantic_request_digest,
+            )
+            post_receipt = registry.require_binding_evidence(
+                account_identity,
+                runtime_dir,
+                policy_record.state.live_account_epoch,
+            )
+            post_trading_day = trading_day_store.roll_forward_stress90_recovery_binding(
+                source_evidence=semantic_trading_day_evidence,
+                binding_evidence=post_receipt,
+                operation_nonce=operation_nonce,
+            )
+            post_authority = Stress90CrashFillRecoveryAuthority(
+                account_identity_digest=account_identity,
+                account_epoch=str(policy_record.state.live_account_epoch),
+                canonical_runtime=post_receipt.binding.canonical_runtime,
+                runtime_identity_digest=post_receipt.binding.runtime_identity_digest,
+                account_binding_payload_digest=post_receipt.binding_payload_digest,
+                account_binding_revision=post_receipt.binding_revision,
+                account_binding_last_operation_id=post_receipt.binding.last_operation_id,
+                account_binding_receipt_digest=post_receipt.binding_receipt_digest,
+                registry_sequence=post_trading_day.registry_sequence,
+                registry_checksum=post_trading_day.registry_checksum,
+                policy_state_sequence=policy_record.sequence,
+                policy_state_checksum=policy_record.checksum,
+            )
+            if checkpoint is None:
+                assert target_state is not None and session_record is not None
+                checkpoint = build_stress90_crash_fill_recovery_checkpoint(
+                    operation_nonce=operation_nonce,
+                    request_digest=semantic_request_digest,
+                    operator_reason=operator_reason,
+                    authority=post_authority,
+                    trading_day=mechanical.trading_day,
+                    trading_day_evidence=post_trading_day,
+                    session_evidence=mechanical.session_proof.evidence,
+                    session_evidence_sequence=session_record.sequence,
+                    session_evidence_checksum=session_record.checksum,
+                    session_ownership_digest=mechanical.session_proof.ownership_digest,
+                    generic_source=source_record,
+                    generic_target=target_state,
+                    source_positions_digest=source_positions_digest,
+                    target_positions_digest=target_positions_digest,
+                    adopted_fill_ids=adopted_ids,
+                )
+            elif (
+                account_authority_identity(checkpoint.authority)
+                != account_authority_identity(post_authority)
+                or checkpoint.trading_day_evidence != post_trading_day
+            ):
+                raise RuntimeError("Stress-90 crash-fill recovery post-ack authority changed")
             if checkpoint.status == "prepared":
                 recovery_store.begin(checkpoint)
             completed = apply_stress90_crash_fill_recovery(recovery_store, state_store)
@@ -3337,12 +3540,13 @@ def _run_stress90_activate(config, args) -> int:
             state=state,
             broker_positions=positions,
         )
-        _require_no_unpersisted_lifecycle_crash_fill_adoption(
+        state = _require_no_unpersisted_lifecycle_crash_fill_adoption(
             persisted_state,
             state,
             pending_lifecycle=existing_lifecycle,
             persisted_record=generic_record,
             runtime_dir=paths["runtime"],
+            consumer_operation_nonce=operation_nonce,
         )
         local_positions = store.positions_from_state(state) if existed else []
         reconciliation = compare_positions(local_positions, positions)
@@ -4208,12 +4412,13 @@ def _run_stress90_account_rebase(config, args) -> int:
                 state=state,
                 broker_positions=positions,
             )
-            _require_no_unpersisted_lifecycle_crash_fill_adoption(
+            state = _require_no_unpersisted_lifecycle_crash_fill_adoption(
                 persisted_state,
                 state,
                 pending_lifecycle=preexisting_lifecycle,
                 persisted_record=state_record,
                 runtime_dir=paths["runtime"],
+                consumer_operation_nonce=operation_nonce,
             )
         local_positions = store.positions_from_state(state)
         account_identity_digest = broker.get_account_identity_digest()
@@ -4795,12 +5000,13 @@ def _run_directional_policy_migrate(config, args) -> int:
             state=state,
             broker_positions=positions,
         )
-        _require_no_unpersisted_lifecycle_crash_fill_adoption(
+        state = _require_no_unpersisted_lifecycle_crash_fill_adoption(
             persisted_state,
             state,
             pending_lifecycle=pending_lifecycle,
             persisted_record=state_record,
             runtime_dir=paths["runtime"],
+            consumer_operation_nonce=operation_nonce,
         )
         local_positions = state_store.positions_from_state(state)
         account_identity_digest = broker.get_account_identity_digest()

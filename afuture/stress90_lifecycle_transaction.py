@@ -62,6 +62,7 @@ _SETTLEMENT_EVIDENCE_FIELDS = {
     "settlement_id",
 }
 _POLICY_IDENTITY_STATE_KEY = "directional_policy_identity"
+_CRASH_FILL_RECOVERY_STATE_KEY = "stress90_crash_fill_recovery"
 _STRESS90_MARKER_FIELDS = {
     "policy_id",
     "policy_definition_digest",
@@ -1490,20 +1491,45 @@ def _require_other_strategy_states_unchanged(
     target: RuntimeState,
     *,
     label: str,
+    operation_nonce: str,
 ) -> None:
     source_other = {
         key: value
         for key, value in source.strategy_states.items()
-        if key != _POLICY_IDENTITY_STATE_KEY
+        if key not in {_POLICY_IDENTITY_STATE_KEY, _CRASH_FILL_RECOVERY_STATE_KEY}
     }
     target_other = {
         key: value
         for key, value in target.strategy_states.items()
-        if key != _POLICY_IDENTITY_STATE_KEY
+        if key not in {_POLICY_IDENTITY_STATE_KEY, _CRASH_FILL_RECOVERY_STATE_KEY}
     }
     if source_other != target_other:
         raise Stress90LifecycleTransactionError(
             f"{label} transition changed unrelated strategy state"
+        )
+    source_recovery = source.strategy_states.get(_CRASH_FILL_RECOVERY_STATE_KEY)
+    target_recovery = target.strategy_states.get(_CRASH_FILL_RECOVERY_STATE_KEY)
+    if source_recovery == target_recovery:
+        return
+    if (
+        not isinstance(source_recovery, dict)
+        or set(source_recovery) != {"transaction_id"}
+        or not isinstance(target_recovery, dict)
+        or set(target_recovery)
+        != {
+            "schema_version",
+            "transaction_id",
+            "consumer_operation_nonce",
+            "receipt_digest",
+        }
+        or target_recovery.get("schema_version") != 1
+        or target_recovery.get("transaction_id") != source_recovery.get("transaction_id")
+        or target_recovery.get("consumer_operation_nonce") != operation_nonce
+        or not isinstance(target_recovery.get("receipt_digest"), str)
+        or _SHA.fullmatch(str(target_recovery["receipt_digest"])) is None
+    ):
+        raise Stress90LifecycleTransactionError(
+            f"{label} crash-fill recovery proof transition is invalid"
         )
 
 
@@ -1519,6 +1545,7 @@ def _validate_operation_transition(
     source_account_identity_digest: str,
     account_identity_digest: str,
     account_transition: Stress90LifecycleAccountTransition | None,
+    operation_nonce: str,
 ) -> None:
     source_policy = policy_source.state
     if operation == "settlement_roll_forward":
@@ -1543,6 +1570,7 @@ def _validate_operation_transition(
             source_generic,
             generic_target,
             label="settlement roll-forward",
+            operation_nonce=operation_nonce,
         )
         expected = build_stress90_settlement_roll_forward_targets(
             source_generic,
@@ -1611,6 +1639,7 @@ def _validate_operation_transition(
                 generic_source.state,
                 generic_target,
                 label="activation",
+                operation_nonce=operation_nonce,
             )
         else:
             _require_only_allowed_delta(
@@ -1659,6 +1688,7 @@ def _validate_operation_transition(
             generic_source.state,
             generic_target,
             label="reactivation",
+            operation_nonce=operation_nonce,
         )
         if (
             account_transition.verified_deposit_delta != 0.0
@@ -1705,6 +1735,7 @@ def _validate_operation_transition(
             generic_source.state,
             generic_target,
             label="account rebase",
+            operation_nonce=operation_nonce,
         )
         if generic_target.recent_daily_returns:
             raise Stress90LifecycleTransactionError(
@@ -1781,6 +1812,7 @@ def _validate_operation_transition(
         generic_source.state,
         generic_target,
         label="migration",
+        operation_nonce=operation_nonce,
     )
 
 
@@ -2046,6 +2078,7 @@ class Stress90LifecycleTransactionStore:
             source_account_identity_digest=source_account_identity,
             account_identity_digest=normalized_account_identity,
             account_transition=account_transition,
+            operation_nonce=normalized_operation_nonce,
         )
         verified_deposit_delta = 0.0
         verified_withdrawal_delta = 0.0
