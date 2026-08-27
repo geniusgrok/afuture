@@ -62,8 +62,7 @@ def test_risk_overlay_digest_binds_scale_and_order_rate_limit() -> None:
 
     assert stress90_risk_overlay_digest(directional, risk) == baseline
     assert (
-        stress90_risk_overlay_digest(replace(directional, live_risk_scale=0.25), risk)
-        != baseline
+        stress90_risk_overlay_digest(replace(directional, live_risk_scale=0.25), risk) != baseline
     )
     assert (
         stress90_risk_overlay_digest(
