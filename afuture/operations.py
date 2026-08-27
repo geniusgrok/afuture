@@ -59,6 +59,7 @@ def estimate_stress90_contract_cost(
     spec: ContractSpec,
     *,
     hurdle_bps: float = 15.0,
+    require_commission_evidence: bool = False,
 ) -> dict[str, object]:
     """Conservatively compare deterministic live costs with the fixed 15bp evidence."""
 
@@ -75,6 +76,14 @@ def estimate_stress90_contract_cost(
     def fee_bps(fixed: float, rate: float) -> float:
         return float((float(fixed) + float(rate) * notional) / notional * 10_000.0)
 
+    fee_values = [float(getattr(spec.fee, name)) for name in spec.fee.__dataclass_fields__]
+    if require_commission_evidence and not any(value > 0.0 for value in fee_values):
+        raise ValueError("live commission evidence is missing")
+    open_fee_per_lot = float(spec.fee.open_fixed) + float(spec.fee.open_rate) * notional
+    close_fee_per_lot = float(spec.fee.close_fixed) + float(spec.fee.close_rate) * notional
+    close_today_fee_per_lot = (
+        float(spec.fee.close_today_fixed) + float(spec.fee.close_today_rate) * notional
+    )
     open_fee = fee_bps(spec.fee.open_fixed, spec.fee.open_rate)
     close_fee = fee_bps(spec.fee.close_fixed, spec.fee.close_rate)
     close_today_fee = fee_bps(
@@ -92,11 +101,15 @@ def estimate_stress90_contract_cost(
         "symbol": tick.symbol,
         "exchange": tick.exchange,
         "mid_price": mid,
+        "open_fee_per_lot": open_fee_per_lot,
+        "close_yesterday_fee_per_lot": close_fee_per_lot,
+        "close_today_fee_per_lot": close_today_fee_per_lot,
         "open_fee_bps": open_fee,
         "close_yesterday_fee_bps": close_fee,
         "close_today_fee_bps": close_today_fee,
         "one_tick_bps": one_tick,
         "bid_ask_bps": bid_ask,
+        "spread_bps": bid_ask,
         "bid_depth": float(tick.bid_volume),
         "ask_depth": float(tick.ask_volume),
         "minimum_reasonable_slippage_bps": minimum_slippage,
@@ -646,6 +659,19 @@ def _add_stress90_local_status(
                 else sum(abs(float(value)) for value in policy_state.last_survivor_weights.values())
             ),
         )
+        raw_product_weights = (
+            dict(prepared.survivor_weights)
+            if prepared is not None
+            else dict(policy_state.last_survivor_weights)
+        )
+        raw_target_gross = sum(abs(float(value)) for value in raw_product_weights.values())
+        facts["raw_target_gross"] = raw_target_gross
+        facts["scaled_target_gross"] = raw_target_gross * float(config.directional.live_risk_scale)
+        facts["raw_product_weights"] = raw_product_weights
+        facts["scaled_product_weights"] = {
+            product: float(weight) * float(config.directional.live_risk_scale)
+            for product, weight in raw_product_weights.items()
+        }
         identity_ok = bool(
             seed is not None
             and policy_state.bootstrap_seed_digest == seed.seed_digest
@@ -781,6 +807,24 @@ def _add_stress90_local_status(
                 if intent_record.retired
                 else dict(intent_record.intent.initial_margin_fitted_lots)
             )
+            facts["raw_integer_lots"] = None
+            facts["scaled_integer_lots"] = None
+            facts["margin_fitted_lots"] = (
+                {}
+                if intent_record.retired
+                else dict(intent_record.intent.initial_margin_fitted_lots)
+            )
+            facts["final_lots"] = (
+                {} if intent_record.retired else dict(intent_record.intent.freeze_authorized_lots)
+            )
+            facts["live_plan_metrics_available"] = False
+            facts["live_plan_metrics_reason"] = (
+                "fresh CTP quotes/specs are required; run doctor or stress90-capacity-report"
+            )
+            facts["integer_tracking_error"] = None
+            facts["live_cost_compatibility"] = None
+            facts["estimated_margin_ratio"] = None
+            facts["estimated_available_ratio"] = None
             if intent_record.retired:
                 assert intent_record.retirement is not None
                 facts["execution_intent"] = {
@@ -819,13 +863,37 @@ def _add_stress90_local_status(
             POLICY_IDENTITY_STATE_KEY,
             require_directional_policy_identity,
         )
+        from .stress90_risk_overlay import stress90_risk_overlay_digest
 
+        configured_risk_overlay_digest = stress90_risk_overlay_digest(
+            config.directional, config.risk
+        )
+        marker = runtime_state.strategy_states.get(POLICY_IDENTITY_STATE_KEY)
+        bound_risk_overlay_digest = (
+            str(marker.get("risk_overlay_digest", "")) if isinstance(marker, dict) else ""
+        )
+        risk_overlay_matches = bound_risk_overlay_digest == configured_risk_overlay_digest
+        facts["configured_live_risk_scale"] = float(config.directional.live_risk_scale)
+        facts["risk_overlay_digest"] = configured_risk_overlay_digest
+        facts["bound_risk_overlay_digest"] = bound_risk_overlay_digest
+        facts["risk_overlay_matches"] = risk_overlay_matches
+        facts["risk_overlay_reactivation_required"] = not risk_overlay_matches
+        report.add(
+            "stress90_risk_overlay_identity",
+            risk_overlay_matches,
+            "configured risk overlay matches activated runtime identity"
+            if risk_overlay_matches
+            else "configured risk overlay differs from activated runtime; HALTED reactivation required",
+        )
+        if not risk_overlay_matches:
+            blockers.append("stress90_risk_overlay_identity")
         require_directional_policy_identity(
             runtime_state,
             policy_id=STRESS90_POLICY.policy_id,
             policy_definition_digest=STRESS90_POLICY.policy_definition_digest,
             products_manifest_digest=STRESS90_POLICY.products_manifest_digest,
             bootstrap_seed_digest=seed.seed_digest,
+            risk_overlay_digest=configured_risk_overlay_digest,
         )
     except RuntimeError as exc:
         blockers.append("stress90_runtime_policy_identity")
@@ -1170,6 +1238,7 @@ def _add_stress90_doctor_status(
                 tick,
                 spec,
                 hurdle_bps=STRESS90_POLICY.cost_hurdle_bps,
+                require_commission_evidence=True,
             )
         except (TypeError, ValueError) as exc:
             cost_errors.append(f"{symbol}: {exc}")
@@ -1367,6 +1436,7 @@ def _add_stress90_doctor_status(
                 product_weights=prepared.survivor_weights,
                 product_ticks=product_ticks,
                 specs=metadata,
+                live_risk_scale=config.directional.live_risk_scale,
                 incumbent_ticks={
                     symbol: quotes[symbol] for symbol in current_lots if symbol in quotes
                 },
@@ -1408,17 +1478,184 @@ def _add_stress90_doctor_status(
                     )
                 return weights
 
+            from .models import Offset, OrderRequest, OrderSide
+            from .risk import RiskManager
+            from .stress90_risk_overlay import (
+                scale_stress90_product_weights,
+                stress90_risk_overlay_digest,
+            )
+
+            raw_product_weights = {
+                product: float(prepared.survivor_weights[product])
+                for product in STRESS90_POLICY.products
+            }
+            scaled_product_weights = scale_stress90_product_weights(
+                raw_product_weights, config.directional.live_risk_scale
+            )
             target_weights = realized_weights(stages.final_frozen_lots)
             actual_weights = realized_weights(current_lots)
             target_gross = sum(abs(value) for value in target_weights.values())
             actual_gross = sum(abs(value) for value in actual_weights.values())
+            raw_target_gross = sum(abs(value) for value in raw_product_weights.values())
+            scaled_target_gross = sum(abs(value) for value in scaled_product_weights.values())
             tracking_error = sum(
-                abs(target_weights[product] - float(prepared.survivor_weights[product]))
+                abs(target_weights[product] - scaled_product_weights[product])
                 for product in STRESS90_POLICY.products
             )
+            nonzero_weights = {
+                product: value for product, value in target_weights.items() if abs(value) > 1e-15
+            }
+            largest_share = (
+                max(abs(value) for value in nonzero_weights.values()) / target_gross
+                if target_gross > 0.0
+                else 0.0
+            )
+            product_hhi = (
+                sum((abs(value) / target_gross) ** 2 for value in nonzero_weights.values())
+                if target_gross > 0.0
+                else 0.0
+            )
+            per_lot_margin: dict[str, float] = {}
+            for symbol, volume in stages.final_frozen_lots.items():
+                tick = ticks_by_symbol[symbol]
+                spec = metadata[symbol]
+                rate = spec.margin_rate_long if volume > 0 else spec.margin_rate_short
+                per_lot_margin[symbol] = (
+                    float(tick.mid_price)
+                    * float(spec.multiplier)
+                    * float(rate)
+                    * float(config.risk.margin_estimate_buffer)
+                )
+            target_margin = sum(
+                abs(volume) * per_lot_margin[symbol]
+                for symbol, volume in stages.final_frozen_lots.items()
+            )
+            estimated_margin_ratio = target_margin / float(account.equity)
+            estimated_available_ratio = max(0.0, float(account.equity) - target_margin) / float(
+                account.equity
+            )
+            opening_requests: list[OrderRequest] = []
+            for symbol, delta in stages.openings.items():
+                tick = ticks_by_symbol[symbol]
+                opening_requests.append(
+                    OrderRequest(
+                        symbol=symbol,
+                        exchange=metadata[symbol].exchange,
+                        side=OrderSide.BUY if delta > 0 else OrderSide.SELL,
+                        offset=Offset.OPEN,
+                        volume=abs(int(delta)),
+                        price=float(tick.ask_price if delta > 0 else tick.bid_price),
+                        reference="stress90-capacity-preview",
+                    )
+                )
+            risk_preview = RiskManager(config.risk).check_open_orders(
+                account,
+                opening_requests,
+                metadata,
+                current_contract_volumes={
+                    symbol: abs(volume) for symbol, volume in current_lots.items()
+                },
+            )
+            report.add(
+                "stress90_risk_manager_preview",
+                risk_preview.allowed,
+                "RiskManager preview accepts the shared opening plan"
+                if risk_preview.allowed
+                else "RiskManager preview blocks openings: " + risk_preview.reason,
+            )
+            cap = min(config.directional.max_contract_volume, config.risk.max_contract_volume)
+            contract_cap_hits = sorted(
+                symbol
+                for symbol, volume in stages.scaled_integer_lots.items()
+                if abs(volume) >= cap
+            )
+            scaled_by_product = {
+                symbol_products[symbol]: abs(volume)
+                for symbol, volume in stages.scaled_integer_lots.items()
+            }
+            margin_by_product = {
+                symbol_products[symbol]: abs(volume)
+                for symbol, volume in stages.margin_fitted_lots.items()
+            }
+            final_by_product = {
+                symbol_products[symbol]: abs(volume)
+                for symbol, volume in stages.final_frozen_lots.items()
+            }
+            clipped_products = {
+                "integer": sorted(
+                    product
+                    for product, weight in scaled_product_weights.items()
+                    if abs(weight) > 1e-15 and scaled_by_product.get(product, 0) == 0
+                ),
+                "margin_or_funding": sorted(
+                    product
+                    for product, lots in scaled_by_product.items()
+                    if margin_by_product.get(product, 0) < lots
+                ),
+                "drawdown": sorted(
+                    {
+                        symbol_products[symbol]
+                        for symbol in set(stages.margin_fitted_lots)
+                        | set(stages.drawdown_frozen_lots)
+                        if abs(stages.drawdown_frozen_lots.get(symbol, 0))
+                        < abs(stages.margin_fitted_lots.get(symbol, 0))
+                    }
+                ),
+                "concentration": sorted(
+                    {
+                        symbol_products[symbol]
+                        for symbol in set(stages.drawdown_frozen_lots) | set(stages.hhi_frozen_lots)
+                        if abs(stages.hhi_frozen_lots.get(symbol, 0))
+                        < abs(stages.drawdown_frozen_lots.get(symbol, 0))
+                    }
+                ),
+                "cost": sorted(
+                    product
+                    for product, contract in selected.items()
+                    if contract.symbol in costs
+                    and costs[contract.symbol]["historical_15bp_compatible"] is not True
+                ),
+                "final": sorted(
+                    product
+                    for product, lots in margin_by_product.items()
+                    if final_by_product.get(product, 0) < lots
+                ),
+            }
+            contract_capacity: dict[str, dict[str, object]] = {}
+            for product, contract in selected.items():
+                tick = quotes.get(contract.symbol)
+                spec = metadata.get(contract.symbol)
+                if tick is None or spec is None:
+                    continue
+                notional = float(tick.mid_price) * float(spec.multiplier)
+                contract_capacity[product] = {
+                    "symbol": contract.symbol,
+                    "per_lot_notional": notional,
+                    "margin_rate_long": float(spec.margin_rate_long),
+                    "margin_rate_short": float(spec.margin_rate_short),
+                    "buffered_margin_long": notional
+                    * float(spec.margin_rate_long)
+                    * float(config.risk.margin_estimate_buffer),
+                    "buffered_margin_short": notional
+                    * float(spec.margin_rate_short)
+                    * float(config.risk.margin_estimate_buffer),
+                    **dict(costs.get(contract.symbol, {})),
+                }
+            representation_parts: list[str] = []
+            if clipped_products["integer"]:
+                representation_parts.append("scaled products round to zero lots")
+            if target_gross == 0.0 and scaled_target_gross > 0.0:
+                representation_parts.append(
+                    "non-zero scaled portfolio cannot be represented by one-lot granularity"
+                )
+            if largest_share > 0.5:
+                representation_parts.append("final portfolio is dominated by one product")
+            if tracking_error > 0.25:
+                representation_parts.append("integer target has material L1 tracking error")
             stress.update(
                 integer_target_stages={
                     "raw_integer_lots": stages.raw_integer_lots,
+                    "scaled_integer_lots": stages.scaled_integer_lots,
                     "margin_fitted_lots": stages.margin_fitted_lots,
                     "drawdown_frozen_lots": stages.drawdown_frozen_lots,
                     "hhi_frozen_lots": stages.hhi_frozen_lots,
@@ -1427,11 +1664,38 @@ def _add_stress90_doctor_status(
                     "openings": stages.openings,
                     "action_categories": stages.action_categories,
                 },
+                configured_live_risk_scale=float(config.directional.live_risk_scale),
+                risk_overlay_digest=stress90_risk_overlay_digest(config.directional, config.risk),
+                raw_product_weights=raw_product_weights,
+                scaled_product_weights=scaled_product_weights,
+                raw_target_gross=raw_target_gross,
+                scaled_target_gross=scaled_target_gross,
+                selected_contracts={
+                    product: contract.symbol for product, contract in selected.items()
+                },
+                contract_capacity=contract_capacity,
                 target_lots=stages.final_frozen_lots,
                 current_broker_lots=current_lots,
                 target_gross=target_gross,
                 actual_gross=actual_gross,
                 integer_tracking_error=tracking_error,
+                nonzero_product_count=len(nonzero_weights),
+                largest_product_absolute_gross_share=largest_share,
+                product_hhi=product_hhi,
+                estimated_margin_ratio=estimated_margin_ratio,
+                estimated_available_ratio=estimated_available_ratio,
+                contract_cap_hits=contract_cap_hits,
+                clipped_products=clipped_products,
+                risk_manager_preview={
+                    "allowed": risk_preview.allowed,
+                    "reason": risk_preview.reason,
+                },
+                execution_chain_commissioning_only=bool(
+                    float(config.directional.live_risk_scale) < 1.0
+                    or cap < STRESS90_POLICY.max_contract_lots
+                    or representation_parts
+                ),
+                portfolio_representation_warning="; ".join(representation_parts),
                 single_product_actual_concentration=(
                     max((abs(value) for value in target_weights.values()), default=0.0)
                     / target_gross

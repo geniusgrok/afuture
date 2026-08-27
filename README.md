@@ -169,6 +169,7 @@ afuture stress90-bootstrap --config config/afuture.directional-stress90-live.exa
 afuture directional-ohlc-refresh --config config/afuture.directional-stress90-live.example.toml --current-trading-day YYYYMMDD
 afuture stress90-oi-collect --help
 afuture stress90-prepare-decision --help
+afuture stress90-capacity-report --help
 afuture stress90-registry-init --help
 afuture stress90-registry-nonce-migrate --help
 afuture stress90-settlement-roll-forward --help
@@ -259,3 +260,9 @@ python -m compileall -q afuture
 - [`docs/stress90-live-runbook.md`](docs/stress90-live-runbook.md)：Stress-90 从 bootstrap 到极小真钱的操作顺序；
 - [`docs/stress90-final-evidence.md`](docs/stress90-final-evidence.md)：当前离线压力研究证据；
 - [`docs/documentation-index.md`](docs/documentation-index.md)：全部 Markdown 的权威分类和历史记录入口。
+
+### Stress-90 commissioning risk overlay
+
+Stress-90 live/Shadow production can set `directional.live_risk_scale` in `(0, 1]`. The default `1.0` preserves the historical production target; the scale is applied only after the immutable Base/OI/cost/survivor/HHI/drawdown decision and before integer lots and margin fitting. It never scales exits, reductions, hard-risk flattening, crash recovery or cancellation. Production state binds a separate canonical risk-overlay digest; changing any bound risk field fails closed until the existing `stress90-activate` lifecycle is run while HALTED, kill-switched, flat, reconciled and free of active orders.
+
+`afuture stress90-capacity-report --config ... --confirm-live --output ...` is a zero-order, zero-cancel diagnostic that reuses Doctor contract selection, live metadata/cost evidence, the shared Stress-90 lot planner and RiskManager preview. It is capacity evidence, not capital activation approval.

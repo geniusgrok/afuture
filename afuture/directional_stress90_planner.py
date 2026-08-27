@@ -13,6 +13,7 @@ from .directional import (
 )
 from .directional_stress90_policy import STRESS90_POLICY
 from .models import AccountSnapshot, ContractSpec, Tick
+from .stress90_risk_overlay import scale_stress90_product_weights
 
 
 def _lots(raw: Mapping[str, int]) -> dict[str, int]:
@@ -268,6 +269,7 @@ def _action_categories(
 @dataclass(frozen=True)
 class Stress90LotStages:
     raw_integer_lots: dict[str, int]
+    scaled_integer_lots: dict[str, int]
     margin_fitted_lots: dict[str, int]
     drawdown_frozen_lots: dict[str, int]
     hhi_frozen_lots: dict[str, int]
@@ -282,6 +284,7 @@ def build_stress90_rebalance_stages(
     account: AccountSnapshot,
     product_weights: Mapping[str, float],
     product_ticks: Mapping[str, Tick],
+    live_risk_scale: float = 1.0,
     specs: Mapping[str, ContractSpec],
     incumbent_ticks: Mapping[str, Tick] | None = None,
     current_lots: Mapping[str, int],
@@ -303,7 +306,7 @@ def build_stress90_rebalance_stages(
     persisted_margin_fitted_lots: Mapping[str, int] | None = None,
     persisted_freeze_authorized_lots: Mapping[str, int] | None = None,
 ) -> Stress90LotStages:
-    """Apply 1x integer sizing, margin fitting, reserve freeze, then HHI freeze."""
+    """Scale live product targets, then apply integer sizing, margin fit and freezes."""
 
     gross_limit = float(max_gross_leverage)
     if not 0.0 < gross_limit <= STRESS90_POLICY.max_gross_leverage:
@@ -315,9 +318,17 @@ def build_stress90_rebalance_stages(
     ):
         raise ValueError("Stress-90 contract cap must be a positive integer at most 35")
 
+    scaled_weights = scale_stress90_product_weights(product_weights, live_risk_scale)
     raw = build_target_lots(
         account,
         product_weights,
+        product_ticks,
+        specs,
+        max_contract_volume=max_contract_volume,
+    )
+    scaled = build_target_lots(
+        account,
+        scaled_weights,
         product_ticks,
         specs,
         max_contract_volume=max_contract_volume,
@@ -330,7 +341,7 @@ def build_stress90_rebalance_stages(
     else:
         fitted = build_margin_aware_target_lots(
             account,
-            product_weights,
+            scaled_weights,
             product_ticks,
             specs,
             max_contract_volume=max_contract_volume,
@@ -480,6 +491,7 @@ def build_stress90_rebalance_stages(
     )
     return Stress90LotStages(
         raw_integer_lots=_lots(raw),
+        scaled_integer_lots=_lots(scaled),
         margin_fitted_lots=margin_target,
         drawdown_frozen_lots=drawdown,
         hhi_frozen_lots=hhi,

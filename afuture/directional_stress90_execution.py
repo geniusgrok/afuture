@@ -20,7 +20,8 @@ from types import MappingProxyType
 from .directional_stress90_policy import STRESS90_POLICY
 
 _KIND = "afuture.directional.stress90.execution-intent"
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
+_LEGACY_SCHEMA_VERSION = 6
 _SHA = re.compile(r"[0-9a-f]{64}")
 
 
@@ -109,6 +110,7 @@ class Stress90ExecutionTransition:
 class Stress90ExecutionIntent:
     policy_definition_digest: str
     products_manifest_digest: str
+    risk_overlay_digest: str
     account_identity_digest: str
     account_epoch: str
     target_trading_day: str
@@ -181,6 +183,7 @@ def _payload(intent: Stress90ExecutionIntent) -> dict[str, object]:
     return {
         "policy_definition_digest": intent.policy_definition_digest,
         "products_manifest_digest": intent.products_manifest_digest,
+        "risk_overlay_digest": intent.risk_overlay_digest,
         "account_identity_digest": intent.account_identity_digest,
         "account_epoch": intent.account_epoch,
         "target_trading_day": intent.target_trading_day,
@@ -342,7 +345,7 @@ def _transitions(raw: object) -> tuple[Stress90ExecutionTransition, ...]:
 
 
 def _intent(raw: object) -> Stress90ExecutionIntent:
-    fields = {
+    legacy_fields = {
         "policy_definition_digest",
         "products_manifest_digest",
         "account_identity_digest",
@@ -355,14 +358,19 @@ def _intent(raw: object) -> Stress90ExecutionIntent:
         "transitions",
         "source_digest",
     }
-    if not isinstance(raw, Mapping) or set(raw) != fields:
+    fields = {*legacy_fields, "risk_overlay_digest"}
+    if not isinstance(raw, Mapping) or set(raw) not in (fields, legacy_fields):
         raise Stress90ExecutionIntentIntegrityError("execution intent fields are invalid")
+    legacy = set(raw) == legacy_fields
     result = Stress90ExecutionIntent(
         policy_definition_digest=_sha(
             raw["policy_definition_digest"], name="execution policy digest"
         ),
         products_manifest_digest=_sha(
             raw["products_manifest_digest"], name="execution products digest"
+        ),
+        risk_overlay_digest=(
+            "" if legacy else _sha(raw["risk_overlay_digest"], name="execution risk overlay digest")
         ),
         account_identity_digest=_sha(
             raw["account_identity_digest"], name="execution account identity"
@@ -395,6 +403,7 @@ def _intent(raw: object) -> Stress90ExecutionIntent:
     unsigned = {
         "account_epoch": result.account_epoch,
         "account_identity_digest": result.account_identity_digest,
+        **({} if legacy else {"risk_overlay_digest": result.risk_overlay_digest}),
         "current_lots": dict(result.initial_current_lots),
         "decision_digest": result.daily_decision_digest,
         "freeze_authorized_lots": dict(result.freeze_authorized_lots),
@@ -528,7 +537,10 @@ class Stress90ExecutionIntentStore:
         }
         if not isinstance(raw, Mapping) or set(raw) != fields:
             raise Stress90ExecutionIntentIntegrityError("execution intent envelope is invalid")
-        if raw["kind"] != _KIND or raw["schema_version"] != _SCHEMA_VERSION:
+        if raw["kind"] != _KIND or raw["schema_version"] not in {
+            _LEGACY_SCHEMA_VERSION,
+            _SCHEMA_VERSION,
+        }:
             raise Stress90ExecutionIntentIntegrityError("execution intent schema is invalid")
         sequence = raw["sequence"]
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
@@ -886,6 +898,7 @@ def prepare_stress90_execution_intent(
     daily_decision_digest: str,
     account_identity_digest: str,
     account_epoch: str,
+    risk_overlay_digest: str = "0000000000000000000000000000000000000000000000000000000000000000",
     current_lots: Mapping[str, int],
     margin_fitted_lots: Mapping[str, int],
     freeze_authorized_lots: Mapping[str, int] | None = None,
@@ -899,6 +912,7 @@ def prepare_stress90_execution_intent(
         name="execution account identity",
     )
     epoch = _sha(account_epoch, name="execution account epoch")
+    risk_overlay = _sha(risk_overlay_digest, name="execution risk overlay digest")
     current = _lots(current_lots, name="current lots")
     fitted = _lots(margin_fitted_lots, name="margin-fitted lots")
     authorized = _lots(
@@ -927,6 +941,10 @@ def prepare_stress90_execution_intent(
                 raise Stress90ExecutionIntentIntegrityError(
                     "same-day execution intent belongs to a stale account lifecycle epoch"
                 )
+            if intent.risk_overlay_digest != risk_overlay:
+                raise Stress90ExecutionIntentIntegrityError(
+                    "same-day execution intent risk overlay changed; old intent cannot be reinterpreted"
+                )
             return intent
         if target < intent.target_trading_day:
             raise Stress90ExecutionIntentIntegrityError("execution intent day moved backward")
@@ -950,6 +968,7 @@ def prepare_stress90_execution_intent(
     source = {
         "account_epoch": epoch,
         "account_identity_digest": account_identity,
+        "risk_overlay_digest": risk_overlay,
         "current_lots": dict(current),
         "decision_digest": decision,
         "freeze_authorized_lots": dict(authorized),
@@ -960,6 +979,7 @@ def prepare_stress90_execution_intent(
     intent = Stress90ExecutionIntent(
         policy_definition_digest=STRESS90_POLICY.policy_definition_digest,
         products_manifest_digest=STRESS90_POLICY.products_manifest_digest,
+        risk_overlay_digest=risk_overlay,
         account_identity_digest=account_identity,
         account_epoch=epoch,
         target_trading_day=target,

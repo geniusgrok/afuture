@@ -19,6 +19,7 @@ jobs:
           python-version: "3.10"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]" -c constraints/core-dev.txt
+      - run: python -m pip check
       - name: Lint
         run: python -m ruff check .
       - name: Formatting
@@ -56,6 +57,14 @@ jobs:
           AFUTURE_CTP_PASSWORD: test-password
           AFUTURE_CTP_BROKER: test-broker
         run: afuture validate --config config/afuture.directional-live.example.toml
+      - name: Validate Stress-90 commissioning example
+        env:
+          AFUTURE_CTP_USER: test-user
+          AFUTURE_CTP_PASSWORD: test-password
+          AFUTURE_CTP_BROKER: test-broker
+          AFUTURE_CTP_ACCOUNT_ID: test-account
+          AFUTURE_CTP_CURRENCY_ID: CNY
+        run: afuture validate --config config/afuture.directional-stress90-live.example.toml
 
       - name: Directional production smoke
         run: >-
@@ -176,5 +185,14 @@ jobs:
               assert key in report["directional"]
           PY
 
+      - name: Shadow zero-write smoke
+        run: python -m pytest -q tests/test_cli_safety.py -k shadow
+      - name: Stress-90 production mechanics
+        run: >-
+          python -m pytest -q
+          tests/test_stress90_live_risk_capacity.py
+          tests/test_stress90_live_risk_capacity_regression.py
+          tests/test_directional_stress90_planner.py
+          tests/test_directional_stress90_fail_closed.py
       - run: python tools/test_directional_production_mechanics.py
       - run: python -m afuture --help

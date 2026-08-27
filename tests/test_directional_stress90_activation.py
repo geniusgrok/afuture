@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from afuture.models import RuntimeMode
+from afuture.risk import RiskConfig
 from afuture.state import RuntimeState
 
 _OPERATION_ID = "f" * 64
@@ -438,6 +439,7 @@ def test_activation_cli_commissions_fresh_flat_state_but_leaves_it_halted(
     config = SimpleNamespace(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -827,6 +829,7 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
             account_id="account-a",
             currency_id="CNY",
         ),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
         directional=DirectionalConfig(
             enabled=True,
             policy="execution_aligned",

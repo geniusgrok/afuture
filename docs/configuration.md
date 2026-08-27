@@ -234,3 +234,9 @@ CTP 凭证不进入 TOML：
 - 所有可执行配置节和手续费子项都拒绝未知键；布尔值必须是真正的 TOML boolean，整数不能经有损浮点转换，所有经济数值必须有限。`afuture validate` 失败时应修正配置，不得通过字符串强转、`nan` 或忽略拼写错误继续运行。
 
 策略语义见 [`strategies.md`](strategies.md)，输入字段见 [`data-formats.md`](data-formats.md)，通用上线操作见 [`live-trading.md`](live-trading.md)，Stress-90 lifecycle 见 [`stress90-live-runbook.md`](stress90-live-runbook.md)。
+
+## Stress-90 live risk scale and overlay identity
+
+`directional.live_risk_scale` defaults to `1.0` and must be finite with `0 < value <= 1`. Only the Stress-90 live/Shadow production lot path consumes it; replay, bootstrap, historical candidate generation and `execution_aligned` ignore it. The production risk-overlay digest includes the scale, directional gross/contract/session-entry limits and all `RiskConfig` fields. A digest change is an identity change, not a hot reload: live/status/Doctor fail closed until explicit HALTED activation/reactivation rebinds it.
+
+The checked-in Stress-90 live example is intentionally a personal commissioning starting point (`live_risk_scale=0.05`, one-lot contract caps, 10% margin, 80% available cash, 1% daily loss and 5% total drawdown). These values are not Alpha parameters or permanent policy requirements. Recalibrate them from real one-lot stress loss, live margin/commission and account equity before committing more capital.
