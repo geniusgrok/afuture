@@ -92,6 +92,32 @@ jobs:
           '''.replace('          ', '')
           text = text[:start] + permit_patch + text[end:]
 
+          delegate_needle = 'operation_nonce = _require_lifecycle_operation_nonce(args)\\n    shadow_account = bool(getattr(args, \\"shadow_account\\", False))\\n'
+          start, end = call_bounds(text, delegate_needle)
+          delegate_patch = r'''cli_text = read("afuture/cli.py")
+          activate_start = cli_text.index("def _run_stress90_activate(config, args) -> int:")
+          activate_end = cli_text.index("\ndef ", activate_start + 1)
+          activate_block = cli_text[activate_start:activate_end]
+          old_delegate = (
+              "    operation_nonce = _require_lifecycle_operation_nonce(args)\n"
+              "    shadow_account = bool(getattr(args, \"shadow_account\", False))\n"
+          )
+          new_delegate = (
+              "    operation_nonce = _require_lifecycle_operation_nonce(args)\n"
+              "    if _stress90_risk_overlay_reactivation_required(config, args):\n"
+              "        return _run_stress90_risk_overlay_reactivation(config, args)\n"
+              "    shadow_account = bool(getattr(args, \"shadow_account\", False))\n"
+          )
+          if activate_block.count(old_delegate) != 1:
+              raise RuntimeError("Stress-90 activate delegation anchor mismatch")
+          activate_block = activate_block.replace(old_delegate, new_delegate, 1)
+          write(
+              "afuture/cli.py",
+              cli_text[:activate_start] + activate_block + cli_text[activate_end:],
+          )
+          '''.replace('          ', '')
+          text = text[:start] + delegate_patch + text[end:]
+
           path.write_text(text, encoding='utf-8')
           PY
       - name: Apply TDD implementation and focused verification
