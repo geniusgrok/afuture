@@ -21,10 +21,8 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]" -c constraints/core-dev.txt
-      - name: Apply rebase reanchor implementation
-        run: |
-          python tools/operator_continuity_reanchor_patch.py
-          python -m ruff format afuture/stress90_operator_continuity.py
+      - name: Apply documentation updates
+        run: python tools/operator_continuity_docs_patch.py
       - name: Targeted tests
         run: |
           python -m pytest -q \
@@ -42,19 +40,20 @@ jobs:
             tests/test_directional_stress90_activation.py \
             tests/test_operations.py \
             tests/test_cli_safety.py \
-            tests/test_cli_runtime_factory.py
+            tests/test_cli_runtime_factory.py \
+            tests/test_documentation_consistency.py
       - name: Targeted quality
         run: |
           python -m ruff check afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py tests/test_stress90_operator_rebase_reanchor.py
           python -m ruff format --check afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py tests/test_stress90_operator_rebase_reanchor.py
           python -m mypy afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py
           python -m compileall -q afuture
-      - name: Commit reanchor checkpoint
+      - name: Commit documentation checkpoint
         shell: bash
         run: |
           if git diff --quiet; then exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add afuture/stress90_operator_continuity.py
-          git commit -m "fix: reanchor continuity after same-account rebase"
+          git add README.md docs/configuration.md docs/live-trading.md docs/production-checklist.md docs/stress90-live-runbook.md docs/troubleshooting.md
+          git commit -m "docs: document operator-managed account continuity"
           git push origin HEAD:codex/operator-managed-continuity
