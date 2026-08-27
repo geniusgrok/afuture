@@ -160,11 +160,16 @@ def _allowed_member(name: str, state_filename: str | None) -> bool:
             "account-runtime-registry.json.prev",
         }:
             return True
-        if len(parts) == 3 and parts[1] == "nonce-ledger" and parts[2] in {
-            "migration.json",
-            "pending.json",
-            "ready.json",
-        }:
+        if (
+            len(parts) == 3
+            and parts[1] == "nonce-ledger"
+            and parts[2]
+            in {
+                "migration.json",
+                "pending.json",
+                "ready.json",
+            }
+        ):
             return True
         return bool(
             len(parts) == 4
@@ -304,7 +309,11 @@ def _collect_runtime(
             ):
                 raise RuntimeBackupError("CTP order epoch directory is unsafe")
             for item in sorted(epoch.iterdir(), key=os.fspath):
-                if item.is_symlink() or not item.is_file() or _SAFE_FILE.fullmatch(item.name) is None:
+                if (
+                    item.is_symlink()
+                    or not item.is_file()
+                    or _SAFE_FILE.fullmatch(item.name) is None
+                ):
                     raise RuntimeBackupError("CTP order epoch member is unsafe")
                 _add(
                     members,
@@ -351,7 +360,11 @@ def _collect_registry(
             if root.is_symlink() or not root.is_dir():
                 raise RuntimeBackupError("nonce ledger namespace is unsafe")
             for item in sorted(root.iterdir(), key=os.fspath):
-                if item.is_symlink() or not item.is_file() or _SAFE_FILE.fullmatch(item.name) is None:
+                if (
+                    item.is_symlink()
+                    or not item.is_file()
+                    or _SAFE_FILE.fullmatch(item.name) is None
+                ):
                     raise RuntimeBackupError("nonce ledger object is unsafe")
                 _add(
                     members,
@@ -376,7 +389,9 @@ def _scan_secrets(members: dict[str, bytes]) -> None:
     needles = [value.encode() for name in names if len(value := os.getenv(name, "")) >= 8]
     for logical, payload in members.items():
         if any(needle in payload for needle in needles):
-            raise RuntimeBackupError(f"raw credential/account text found in backup source: {logical}")
+            raise RuntimeBackupError(
+                f"raw credential/account text found in backup source: {logical}"
+            )
 
 
 def _load_optional_authority(runtime: Path) -> None:
@@ -385,7 +400,9 @@ def _load_optional_authority(runtime: Path) -> None:
     try:
         from .broker.ctp_session_query import CtpSessionActivityEvidenceStore
 
-        CtpSessionActivityEvidenceStore(runtime / "stress90_ctp_session_evidence.json").load_record()
+        CtpSessionActivityEvidenceStore(
+            runtime / "stress90_ctp_session_evidence.json"
+        ).load_record()
     except FileNotFoundError:
         pass
     try:
@@ -418,7 +435,9 @@ def _authority(
         raise RuntimeBackupError("backup requires HALTED generic state and kill switch=true")
 
     seed = Stress90SeedStore(runtime / "stress90_bootstrap_seed.json").load_required()
-    policy_record = Stress90PolicyStateStore(runtime / "stress90_policy_state.json").load_required_record()
+    policy_record = Stress90PolicyStateStore(
+        runtime / "stress90_policy_state.json"
+    ).load_required_record()
     policy = policy_record.state
     if policy.bootstrap_seed_digest != seed.seed_digest:
         raise RuntimeBackupError("seed/policy identity mismatch")
@@ -439,9 +458,12 @@ def _authority(
     if activity is None:
         raise RuntimeBackupError("directional activity is missing")
     validate_directional_activity_snapshot(activity)
-    if DirectionalOHLCCacheStore(runtime / "directional_ohlc_cache.json").load(
-        STRESS90_POLICY.products
-    ) is None:
+    if (
+        DirectionalOHLCCacheStore(runtime / "directional_ohlc_cache.json").load(
+            STRESS90_POLICY.products
+        )
+        is None
+    ):
         raise RuntimeBackupError("directional OHLC cache is missing")
 
     registry = AccountRuntimeRegistry(registry_path)
@@ -638,7 +660,10 @@ def _validate_manifest(manifest: dict[str, Any], members: dict[str, bytes]) -> s
     if manifest.get("schema_version") != BACKUP_SCHEMA_VERSION:
         raise RuntimeBackupError("backup schema is unsupported")
     state_filename = _state_filename(manifest.get("state_filename"))
-    if manifest.get("runtime_mode") != RuntimeMode.HALTED.value or manifest.get("kill_switch") is not True:
+    if (
+        manifest.get("runtime_mode") != RuntimeMode.HALTED.value
+        or manifest.get("kill_switch") is not True
+    ):
         raise RuntimeBackupError("backup source was not HALTED with kill switch=true")
     if manifest.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest:
         raise RuntimeBackupError("backup policy definition mismatch")
@@ -928,16 +953,24 @@ def restore_runtime(
             registry_path=stage_registry,
             manifest=manifest,
         )
-        if observed["runtime_mode"] != RuntimeMode.HALTED.value or observed["kill_switch"] is not True:
+        if (
+            observed["runtime_mode"] != RuntimeMode.HALTED.value
+            or observed["kill_switch"] is not True
+        ):
             raise RuntimeBackupError("restored generic source is not HALTED and kill-switched")
         permit_store = Stress90ActivationPermitStore(
             runtime_stage / "stress90_activation_permit.json"
         )
         permit = permit_store.load_record()
         if permit is not None and permit.permit.status != "invalidated":
-            permit_store.invalidate("runtime restored from verified backup; fresh Doctor permit required")
+            permit_store.invalidate(
+                "runtime restored from verified backup; fresh Doctor permit required"
+            )
         generic = StateStore(runtime_stage / state_filename).load_required_record()
-        if generic.state.runtime_mode != RuntimeMode.HALTED.value or generic.state.kill_switch is not True:
+        if (
+            generic.state.runtime_mode != RuntimeMode.HALTED.value
+            or generic.state.kill_switch is not True
+        ):
             raise RuntimeBackupError("restore did not preserve HALTED kill-switch state")
         _fsync_dir(runtime_stage)
         _fsync_dir(registry_stage_root)
@@ -955,7 +988,9 @@ def restore_runtime(
         _fsync_dir(registry_stage_root.parent)
 
         final_state = StateStore(runtime / state_filename).load_required_record().state
-        final_policy = Stress90PolicyStateStore(runtime / "stress90_policy_state.json").load_required()
+        final_policy = Stress90PolicyStateStore(
+            runtime / "stress90_policy_state.json"
+        ).load_required()
         final_registry = AccountRuntimeRegistry(registry).require_binding_evidence(
             final_policy.live_account_identity_digest or "",
             runtime,
@@ -965,7 +1000,10 @@ def restore_runtime(
         final_permit = Stress90ActivationPermitStore(
             runtime / "stress90_activation_permit.json"
         ).load_record()
-        if final_state.runtime_mode != RuntimeMode.HALTED.value or final_state.kill_switch is not True:
+        if (
+            final_state.runtime_mode != RuntimeMode.HALTED.value
+            or final_state.kill_switch is not True
+        ):
             raise RuntimeBackupError("restored runtime is not HALTED with kill switch=true")
         if final_permit is not None and final_permit.permit.status == "issued":
             raise RuntimeBackupError("restored runtime retained an issued activation permit")
