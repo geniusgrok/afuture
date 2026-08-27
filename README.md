@@ -172,6 +172,7 @@ afuture stress90-settlement-roll-forward --help
 afuture stress90-activate --help
 afuture stress90-account-rebase --help
 afuture stress90-order-journal-rollover --help
+afuture stress90-crash-fill-recover --help
 afuture directional-policy-migrate --help
 afuture stress90-oi-compare --help
 

@@ -91,8 +91,18 @@ Stress-90 使用四份彼此分责的带 schema/sequence/checksum 文件：
 | `stress90_oi_evidence.json` | in-progress 与 completed raw 60m/session evidence、覆盖集合和缺失集合 |
 | `stress90_execution_intent.json` | 已持久的每日整数目标和 reduction/opening plan identity |
 | `stress90_ctp_orders.json` + archive/epoch manifest | 第一张 official send 前的 durable order authorization、完整 fill economics、跨容量/账户 epoch 的不可变冷链 |
+| `stress90_crash_fill_recovery.json` | 仅在 `HALTED` + kill switch 下采用已授权崩溃成交的独立 prepared/committed checkpoint、完整 session order/trade evidence 与永久 operation nonce history |
 
 另外，通用 `state.json` 保存运行状态、Broker position mirror 和明确的 policy activation marker。每次成功替换先保留验证过的 `.prev` 作为人工证据；当前文件损坏时绝不自动回退。
+
+Stress-90 不使用通用 `recover-state` 猜测或采用崩溃成交。专用
+`stress90-crash-fill-recover` 先取得精确 account/runtime lease，拒绝 prepared lifecycle
+transaction，再在 Broker critical-ingress fence 内复查完整本 session order/trade evidence、
+account epoch 与 account-specific registry receipt、无 active/unknown order/trade 和 Broker/local
+一致性。随后 durable 顺序固定为 recovery prepared、generic state CAS、recovery committed；
+两处崩溃均只允许同一 nonce、相同语义 evidence 和相同 state target 的 exact retry。machine-wide
+registry sequence/checksum 只作审计快照；授权绑定账户自己的 payload digest、revision、last
+operation 和 receipt digest。命令不报单、不撤单，成功后仍为 `HALTED` 且 kill switch 开启。
 
 一个 target day 只能推进一次。prepared decision 必须在第一张订单前原子落盘；持久化失败则 `orders_sent=0`。决策已保存但未下单、第一张订单后崩溃或部分成交后崩溃，重启都复用同一 decision/intent，以 Broker 最新持仓继续向同一目标收敛，不重复追加 HHI，也不重新推进候选状态。policy/schema/manifest/seed/digest 不一致、交易日倒退或 target gap 均失败关闭。
 

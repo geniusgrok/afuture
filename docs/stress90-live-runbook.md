@@ -422,6 +422,42 @@ evidence CAS、generic/policy targets、coordinator committed。prepared command
 transaction；registry 或 evidence 已完成时只接受同一 nonce、account、epoch、runtime 和 receipt
 的 exact retry。任一字段不同均保持 `HALTED` 并失败关闭。
 
+### 13.1 已授权崩溃成交的 HALTED checkpoint
+
+Stress-90 的 legacy `recover-state` 故意拒绝 position recovery；不得用它绕过 lifecycle
+crash-fill 门。只有已经确认是当前 CTP session、且由完整 order/trade query evidence 授权的
+崩溃成交，才可在 `HALTED`、kill switch 开启、无 active/unknown order/trade 时运行独立命令：
+
+```bash
+export AFUTURE_STRESS90_CRASH_FILL_RECOVERY_ACK=I_CONFIRM_AUTHORIZED_STRESS90_CRASH_FILL_RECOVERY
+afuture stress90-crash-fill-recover \
+  --config config/afuture.directional-stress90-live.example.toml \
+  --confirm-live --confirm-recovery \
+  --operation-id <64-hex-unique-nonce> \
+  --operator-reason "verified current-session authorized crash fills"
+```
+
+命令取得 canonical runtime 的 account-exclusive lease，验证精确 account identity、account
+epoch、account-specific registry binding receipt、TradingDayEvidence schema 3 和 policy identity；
+存在 prepared `stress90_lifecycle_transaction` 时直接拒绝，不提供 abort/amend。随后它重新查询
+Broker，在 critical-ingress fence 内再次验证 query generation/evidence 仍为 current，并按
+`recovery prepared → state.json CAS → recovery committed` 持久化。checkpoint 保存完整 session
+order/trade rows、ownership digest、source/target state checksum、position digest 和永久 append-only
+nonce history。machine-wide registry sequence/checksum 只是审计快照，其他账户推进 registry
+不得使本账户 receipt 失效。
+
+同一 nonce 的精确重试只接受完全相同的操作原因、账户 receipt、session order/trade 语义、
+fill IDs、持仓和 generic target；请求 id/generation 可以因重新查询而前进。任一语义或 state
+变化、CAS 冲突、unknown/active order/trade 都保持 `HALTED` 并失败关闭。命令从不调用
+`send_order` 或 `cancel_order`，也不自动清除 kill switch。`stress90_crash_fill_recovery.json`
+的 current、`.prev`、`.lineage` 或 `.lock` 存在而 current 丢失/损坏时，按 durable incident
+保全现场；`.prev` 只作证据，不能提升。generic state 已保存但 checkpoint 未 committed，或
+checkpoint prepared 但 state 尚未保存，都必须用同一 operation id 精确重试收敛，禁止换 nonce。
+
+生命周期命令只有在 `state.json` 的 recovery marker 与 committed checkpoint 的 transaction、
+target sequence/checksum 完全一致后，才把该 crash-fill adoption 视为已持久；该证明缺失或损坏
+仍由 `_require_no_unpersisted_lifecycle_crash_fill_adoption` 阻断。
+
 首次 bootstrap 的 durable 顺序固定为 OHLC cache、activity、bootstrap seed、policy state，最后
 才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。整个 write bootstrap 从 source
 复核、preflight snapshot、先决证据写入、OI save 到 rollback 都持有按 canonical runtime 路径

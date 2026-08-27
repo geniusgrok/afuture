@@ -19,6 +19,7 @@ RESERVED_STRATEGY_STATE_KEYS = frozenset(
         "directional_policy_identity",
         "stress90_doctor_attestation",
         "stress90_live_permission",
+        "stress90_crash_fill_recovery",
     }
 )
 

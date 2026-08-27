@@ -242,6 +242,19 @@ def build_parser() -> argparse.ArgumentParser:
     stress90_settlement.add_argument("--snapshot-wait", type=float, default=12.0)
     stress90_settlement.add_argument("--shadow-account", action="store_true")
 
+    stress90_crash_fill_recovery = sub.add_parser(
+        "stress90-crash-fill-recover",
+        help="在 HALTED、零报单下持久化 authorized Stress-90 crash fills",
+    )
+    stress90_crash_fill_recovery.add_argument("--config", required=True)
+    stress90_crash_fill_recovery.add_argument("--confirm-live", action="store_true")
+    stress90_crash_fill_recovery.add_argument("--confirm-recovery", action="store_true")
+    stress90_crash_fill_recovery.add_argument("--operator-reason", required=True)
+    stress90_crash_fill_recovery.add_argument("--operation-id", required=True)
+    stress90_crash_fill_recovery.add_argument("--runtime-dir", default="")
+    stress90_crash_fill_recovery.add_argument("--startup-timeout", type=float, default=60.0)
+    stress90_crash_fill_recovery.add_argument("--snapshot-wait", type=float, default=12.0)
+
     stress90_order_epoch = sub.add_parser(
         "stress90-order-journal-rollover",
         help="在完整停机安全门后封存已满的 CTP order journal epoch",
@@ -2273,19 +2286,366 @@ def _require_no_unpersisted_lifecycle_crash_fill_adoption(
     adopted_state: RuntimeState,
     *,
     pending_lifecycle,
+    persisted_record=None,
+    runtime_dir: Path | None = None,
 ) -> None:
     """Never let a lifecycle target erase recovered Broker-owned fill identity."""
 
-    if adopted_state == persisted_state:
+    if adopted_state != persisted_state:
+        pending = bool(
+            pending_lifecycle is not None and getattr(pending_lifecycle, "status", "") == "prepared"
+        )
+        detail = "prepared lifecycle coordinator" if pending else "lifecycle preparation"
+        raise RuntimeError(
+            "Stress-90 authorized crash fills require a durable HALTED recovery "
+            f"checkpoint before {detail}; lifecycle commit is blocked"
+        )
+    marker = persisted_state.strategy_states.get("stress90_crash_fill_recovery")
+    if marker is None:
         return
-    pending = bool(
-        pending_lifecycle is not None and getattr(pending_lifecycle, "status", "") == "prepared"
+    if (
+        persisted_record is None
+        or getattr(persisted_record, "state", None) != persisted_state
+        or runtime_dir is None
+    ):
+        raise RuntimeError("Stress-90 lifecycle lacks the exact crash-fill recovery proof")
+    from .stress90_crash_fill_recovery import (
+        Stress90CrashFillRecoveryStore,
+        require_committed_stress90_crash_fill_recovery,
     )
-    detail = "prepared lifecycle coordinator" if pending else "lifecycle preparation"
-    raise RuntimeError(
-        "Stress-90 authorized crash fills require a durable HALTED recovery "
-        f"checkpoint before {detail}; lifecycle commit is blocked"
+
+    try:
+        require_committed_stress90_crash_fill_recovery(
+            Stress90CrashFillRecoveryStore(runtime_dir / "stress90_crash_fill_recovery.json"),
+            persisted_record,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Stress-90 lifecycle crash-fill recovery proof is not exact and committed"
+        ) from exc
+
+
+def _run_stress90_crash_fill_recovery(config, args) -> int:
+    """Persist exact authorized current-session fills while remaining HALTED."""
+
+    from .account_runtime_registry import AccountRuntimeRegistry
+    from .broker.ctp import CtpBroker
+    from .broker.ctp_session_query import CtpSessionActivityEvidenceStore
+    from .directional_policy_activation import require_directional_policy_identity
+    from .directional_stress90_policy import STRESS90_POLICY
+    from .directional_stress90_state import Stress90PolicyStateStore, Stress90SeedStore
+    from .journal import AuditJournal
+    from .reconcile import compare_positions
+    from .runtime_lease import AccountExclusiveRuntimeLease
+    from .state import StateIntegrityError
+    from .stress90_crash_fill_recovery import (
+        STRESS90_CRASH_FILL_RECOVERY_CONFIRMATION,
+        Stress90CrashFillRecoveryAuthority,
+        Stress90CrashFillRecoveryError,
+        Stress90CrashFillRecoveryStore,
+        apply_stress90_crash_fill_recovery,
+        build_stress90_crash_fill_recovery_checkpoint,
+        stress90_crash_fill_positions_digest,
     )
+    from .stress90_lifecycle_transaction import Stress90LifecycleTransactionStore
+    from .trading_day_evidence import (
+        TradingDayEvidenceStore,
+        require_authoritative_trading_day_evidence,
+    )
+
+    _validate_stress90_lifecycle_config(config)
+    _require_production_confirmation(config, args)
+    operation_nonce = str(args.operation_id).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", operation_nonce) is None:
+        raise RuntimeError("Stress-90 crash-fill recovery operation-id must be 64-hex")
+    operator_reason = str(args.operator_reason).strip()
+    if not operator_reason:
+        raise RuntimeError("Stress-90 crash-fill recovery operator reason is required")
+    if (
+        not args.confirm_recovery
+        or os.getenv("AFUTURE_STRESS90_CRASH_FILL_RECOVERY_ACK")
+        != STRESS90_CRASH_FILL_RECOVERY_CONFIRMATION
+    ):
+        raise RuntimeError(
+            "Stress-90 crash-fill recovery requires strong confirmation "
+            "--confirm-recovery and AFUTURE_STRESS90_CRASH_FILL_RECOVERY_ACK="
+            + STRESS90_CRASH_FILL_RECOVERY_CONFIRMATION
+        )
+
+    paths = _stress90_lifecycle_paths(config, args.runtime_dir, shadow_account=False)
+    runtime_dir = paths["runtime"]
+    state_store = StateStore(paths["state"])
+    policy_store = Stress90PolicyStateStore(runtime_dir / "stress90_policy_state.json")
+    seed_store = Stress90SeedStore(runtime_dir / "stress90_bootstrap_seed.json")
+    registry = AccountRuntimeRegistry(_stress90_account_registry_path(config))
+    trading_day_store = TradingDayEvidenceStore(runtime_dir / "ctp_trading_day_evidence.json")
+    session_store = CtpSessionActivityEvidenceStore(
+        runtime_dir / "stress90_ctp_session_evidence.json"
+    )
+    lifecycle_store = Stress90LifecycleTransactionStore(
+        runtime_dir / "stress90_lifecycle_transaction.json"
+    )
+    recovery_store = Stress90CrashFillRecoveryStore(
+        runtime_dir / "stress90_crash_fill_recovery.json"
+    )
+    broker = CtpBroker(config.ctp)
+    account_identity = broker.get_account_identity_digest()
+    lease = AccountExclusiveRuntimeLease(
+        runtime_dir,
+        account_identity,
+        role="stress90-crash-fill-recover",
+    )
+
+    def authority_snapshot():
+        policy_record = policy_store.load_required_record()
+        policy = policy_record.state
+        if (
+            policy.live_account_identity_digest != account_identity
+            or policy.live_account_epoch is None
+        ):
+            raise RuntimeError("Stress-90 crash-fill recovery policy account lineage mismatch")
+        receipt = registry.require_binding_evidence(
+            account_identity,
+            runtime_dir,
+            policy.live_account_epoch,
+        )
+        evidence = trading_day_store.load_required()
+        lifecycle = lifecycle_store.load()
+        if lifecycle is not None and lifecycle.status == "prepared":
+            raise RuntimeError(
+                "Stress-90 crash-fill recovery is blocked by a prepared lifecycle transaction"
+            )
+        try:
+            require_authoritative_trading_day_evidence(
+                evidence,
+                policy_state=policy,
+                registry=registry,
+                runtime_dir=runtime_dir,
+                lifecycle_transaction=lifecycle,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Stress-90 crash-fill recovery trading-day evidence authority mismatch"
+            ) from exc
+        authority = Stress90CrashFillRecoveryAuthority(
+            account_identity_digest=account_identity,
+            account_epoch=policy.live_account_epoch,
+            canonical_runtime=receipt.binding.canonical_runtime,
+            runtime_identity_digest=receipt.binding.runtime_identity_digest,
+            account_binding_payload_digest=receipt.binding_payload_digest,
+            account_binding_revision=receipt.binding_revision,
+            account_binding_last_operation_id=receipt.binding.last_operation_id,
+            account_binding_receipt_digest=receipt.binding_receipt_digest,
+            registry_sequence=receipt.registry_sequence,
+            registry_checksum=receipt.registry_checksum,
+            policy_state_sequence=policy_record.sequence,
+            policy_state_checksum=policy_record.checksum,
+        )
+        return policy_record, authority, evidence
+
+    def account_authority_identity(current):
+        return (
+            current.account_identity_digest,
+            current.account_epoch,
+            current.canonical_runtime,
+            current.runtime_identity_digest,
+            current.account_binding_payload_digest,
+            current.account_binding_revision,
+            current.account_binding_last_operation_id,
+            current.account_binding_receipt_digest,
+            current.policy_state_sequence,
+            current.policy_state_checksum,
+        )
+
+    lease.acquire()
+    try:
+        if not lease.authorizes_technical_activation(account_identity, runtime_dir):
+            raise RuntimeError("exact account/runtime lease is not held for crash-fill recovery")
+        _require_stress90_order_journal_full_audit(runtime_dir)
+        source_record = state_store.load_required_record()
+        source_state = source_record.state
+        if source_state.runtime_mode != RuntimeMode.HALTED.value:
+            raise RuntimeError("Stress-90 crash-fill recovery requires HALTED state")
+        if not source_state.kill_switch:
+            raise RuntimeError("Stress-90 crash-fill recovery requires the kill switch")
+        seed = seed_store.load_required()
+        policy_record, authority, trading_day_evidence = authority_snapshot()
+        require_directional_policy_identity(
+            source_state,
+            policy_id=STRESS90_POLICY.policy_id,
+            policy_definition_digest=STRESS90_POLICY.policy_definition_digest,
+            products_manifest_digest=STRESS90_POLICY.products_manifest_digest,
+            bootstrap_seed_digest=seed.seed_digest,
+            account_identity_digest=account_identity,
+        )
+        _configure_stress90_lifecycle_order_journal(broker, runtime_dir)
+        _seed_state_aware_ctp_broker(broker, source_state, reject_ambiguous=True)
+        broker.start()
+    except BaseException:
+        try:
+            broker.stop()
+        finally:
+            lease.release()
+        raise
+
+    try:
+        _wait_until_ready(broker, args.startup_timeout)
+        wait_for_fresh_snapshot(broker, args.snapshot_wait)
+        mechanical = _require_lifecycle_mechanical_snapshot(
+            broker,
+            runtime_dir=runtime_dir,
+            timeout_seconds=max(0.1, float(args.snapshot_wait)),
+        )
+        if mechanical.active_orders:
+            raise RuntimeError(
+                "Stress-90 crash-fill recovery is blocked by active orders; "
+                "no cancellation is permitted"
+            )
+        if (
+            mechanical.trading_day != trading_day_evidence.trading_day
+            or mechanical.session_proof.evidence.account_identity_digest != account_identity
+            or mechanical.session_proof.evidence.trading_day != mechanical.trading_day
+        ):
+            raise RuntimeError("Stress-90 crash-fill recovery session identity mismatch")
+        broker_positions = list(mechanical.positions)
+        persisted_state = source_state
+        adopted_state = _adopt_stress90_lifecycle_crash_fills(
+            config,
+            broker,
+            runtime_dir=runtime_dir,
+            state=persisted_state,
+            broker_positions=broker_positions,
+        )
+        local_after_adoption = state_store.positions_from_state(adopted_state)
+        reconciliation = compare_positions(local_after_adoption, broker_positions)
+        if not reconciliation.matched:
+            raise RuntimeError(
+                "Stress-90 crash-fill recovery Broker/local reconciliation failed: "
+                + reconciliation.details
+            )
+        before_ids = set(persisted_state.recent_trade_ids)
+        adopted_ids = tuple(
+            item for item in adopted_state.recent_trade_ids if item not in before_ids
+        )
+        session_fill_ids = {item.fill_key for item in mechanical.session_proof.evidence.trades}
+        existing_recovery = recovery_store.load_record()
+
+        if existing_recovery is not None and (
+            existing_recovery.checkpoint.operation_nonce == operation_nonce
+        ):
+            checkpoint = existing_recovery.checkpoint
+            stable_authority = account_authority_identity(checkpoint.authority)
+            current_authority = account_authority_identity(authority)
+            evidence = mechanical.session_proof.evidence
+            if (
+                checkpoint.operator_reason != operator_reason
+                or stable_authority != current_authority
+                or checkpoint.trading_day != mechanical.trading_day
+                or checkpoint.session_evidence.account_identity_digest
+                != evidence.account_identity_digest
+                or checkpoint.session_evidence.orders_digest != evidence.orders_digest
+                or checkpoint.session_evidence.trades_digest != evidence.trades_digest
+                or checkpoint.session_ownership_digest != mechanical.session_proof.ownership_digest
+                or checkpoint.target_positions_digest
+                != stress90_crash_fill_positions_digest(broker_positions)
+                or not set(checkpoint.adopted_fill_ids).issubset(session_fill_ids)
+            ):
+                raise RuntimeError(
+                    "Stress-90 crash-fill recovery nonce was reused with changed evidence"
+                )
+        else:
+            if not adopted_ids:
+                raise RuntimeError("no unpersisted authorized Stress-90 crash fills were found")
+            if not set(adopted_ids).issubset(session_fill_ids):
+                raise RuntimeError(
+                    "adopted crash-fill identities are not bound to complete session evidence"
+                )
+            target_state = replace(
+                adopted_state,
+                kill_switch=True,
+                kill_reason=(
+                    "Stress-90 crash fills recovered; lifecycle/Doctor gates remain required"
+                ),
+                runtime_mode=RuntimeMode.HALTED.value,
+                reconciled=True,
+                metadata_verified=False,
+            )
+            session_record = session_store.load_required_record()
+            if session_record.evidence != mechanical.session_proof.evidence:
+                raise RuntimeError("persisted complete session recovery evidence changed")
+            checkpoint = build_stress90_crash_fill_recovery_checkpoint(
+                operation_nonce=operation_nonce,
+                operator_reason=operator_reason,
+                authority=authority,
+                trading_day=mechanical.trading_day,
+                session_evidence=mechanical.session_proof.evidence,
+                session_evidence_sequence=session_record.sequence,
+                session_evidence_checksum=session_record.checksum,
+                session_ownership_digest=mechanical.session_proof.ownership_digest,
+                generic_source=source_record,
+                generic_target=target_state,
+                source_positions_digest=stress90_crash_fill_positions_digest(
+                    state_store.positions_from_state(persisted_state)
+                ),
+                target_positions_digest=stress90_crash_fill_positions_digest(broker_positions),
+                adopted_fill_ids=adopted_ids,
+            )
+
+        with _stress90_lifecycle_broker_fence(broker):
+            _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
+            if not lease.authorizes_technical_activation(account_identity, runtime_dir):
+                raise RuntimeError(
+                    "exact account/runtime lease changed before crash-fill recovery commit"
+                )
+            current_policy, current_authority, current_trading_day = authority_snapshot()
+            if (
+                current_policy != policy_record
+                or current_trading_day != trading_day_evidence
+                or account_authority_identity(current_authority)
+                != account_authority_identity(authority)
+            ):
+                raise RuntimeError("Stress-90 crash-fill recovery authority changed before commit")
+            broker.require_session_activity_evidence_current(mechanical.session_proof.evidence)
+            if checkpoint.status == "prepared":
+                recovery_store.begin(checkpoint)
+            completed = apply_stress90_crash_fill_recovery(recovery_store, state_store)
+            _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
+
+        _record_lifecycle_completion_once(
+            AuditJournal(paths["journal"]),
+            "stress90_crash_fill_recovery",
+            completed.checkpoint.transaction_id,
+            {
+                "operation_nonce": completed.checkpoint.operation_nonce,
+                "trading_day": completed.checkpoint.trading_day,
+                "adopted_fill_ids": list(completed.checkpoint.adopted_fill_ids),
+                "runtime_mode": RuntimeMode.HALTED.value,
+                "kill_switch": True,
+                "orders_sent": 0,
+            },
+        )
+        print(
+            json.dumps(
+                {
+                    "recovered": True,
+                    "exact_retry": existing_recovery is not None,
+                    "transaction_id": completed.checkpoint.transaction_id,
+                    "trading_day": completed.checkpoint.trading_day,
+                    "adopted_fill_ids": list(completed.checkpoint.adopted_fill_ids),
+                    "runtime_mode": RuntimeMode.HALTED.value,
+                    "kill_switch": True,
+                    "orders_sent": 0,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    except (StateIntegrityError, Stress90CrashFillRecoveryError) as exc:
+        raise RuntimeError(str(exc)) from exc
+    finally:
+        broker.stop()
+        lease.release()
 
 
 def _run_stress90_prepare_decision(config, args) -> int:
@@ -2981,6 +3341,8 @@ def _run_stress90_activate(config, args) -> int:
             persisted_state,
             state,
             pending_lifecycle=existing_lifecycle,
+            persisted_record=generic_record,
+            runtime_dir=paths["runtime"],
         )
         local_positions = store.positions_from_state(state) if existed else []
         reconciliation = compare_positions(local_positions, positions)
@@ -3523,12 +3885,20 @@ def _run_stress90_order_journal_rollover(config, args) -> int:
         )
         if account.trading_day != trading_day:
             raise RuntimeError("Stress-90 order journal rollover trading day mismatch")
+        persisted_state = state
         state = _adopt_stress90_lifecycle_crash_fills(
             config,
             broker,
             runtime_dir=paths["runtime"],
             state=state,
             broker_positions=positions,
+        )
+        _require_no_unpersisted_lifecycle_crash_fill_adoption(
+            persisted_state,
+            state,
+            pending_lifecycle=None,
+            persisted_record=state_record,
+            runtime_dir=paths["runtime"],
         )
         local_positions = store.positions_from_state(state)
         reconciliation = compare_positions(local_positions, positions)
@@ -3842,6 +4212,8 @@ def _run_stress90_account_rebase(config, args) -> int:
                 persisted_state,
                 state,
                 pending_lifecycle=preexisting_lifecycle,
+                persisted_record=state_record,
+                runtime_dir=paths["runtime"],
             )
         local_positions = store.positions_from_state(state)
         account_identity_digest = broker.get_account_identity_digest()
@@ -4427,6 +4799,8 @@ def _run_directional_policy_migrate(config, args) -> int:
             persisted_state,
             state,
             pending_lifecycle=pending_lifecycle,
+            persisted_record=state_record,
+            runtime_dir=paths["runtime"],
         )
         local_positions = state_store.positions_from_state(state)
         account_identity_digest = broker.get_account_identity_digest()
@@ -4925,6 +5299,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "stress90-account-rebase":
         return _run_stress90_account_rebase(config, args)
+
+    if args.command == "stress90-crash-fill-recover":
+        return _run_stress90_crash_fill_recovery(config, args)
 
     if args.command == "stress90-settlement-roll-forward":
         return _run_stress90_settlement_roll_forward(config, args)
