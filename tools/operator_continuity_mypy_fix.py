@@ -38,7 +38,11 @@ if "if TYPE_CHECKING:" not in text:
     )
 text = text.replace(
     "    targets: object\n",
+    "    targets: Stress90SettlementRollForwardTargets\n",
+    1,
+).replace(
     '    targets: "Stress90SettlementRollForwardTargets"\n',
+    "    targets: Stress90SettlementRollForwardTargets\n",
     1,
 )
 path.write_text(text, encoding="utf-8")
