@@ -53,7 +53,7 @@ jobs:
           block = block.replace('replace_once(', 'replace_all(', 1)
           block = block.replace(
               'risk_overlay_digest: str,\\n    operator_reason: str,\\n',
-              'risk_overlay_digest: str = "",\\n    operator_reason: str,\\n',
+              'risk_overlay_digest: str = \\"\\",\\n    operator_reason: str,\\n',
           )
           block = block[:-2] + '    minimum=2,\n)\n'
           text = text[:start] + block + text[end:]
