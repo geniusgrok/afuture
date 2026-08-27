@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -235,16 +236,52 @@ class TradingDayEvidenceStore:
         return self.path.with_name(self.path.name + ".prev")
 
     def _read_raw(self) -> Mapping[str, object]:
-        if not self.path.exists():
-            raise TradingDayEvidenceError("Broker-derived CTP trading-day evidence is missing")
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                self.path,
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise OSError("CTP trading-day evidence is not a regular file")
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            visible = os.stat(self.path, follow_symlinks=False)
+            if not stat.S_ISREG(visible.st_mode) or (visible.st_dev, visible.st_ino) != (
+                opened.st_dev,
+                opened.st_ino,
+            ):
+                raise OSError("CTP trading-day evidence path identity changed")
+            encoded = b"".join(chunks)
+        except FileNotFoundError as exc:
+            raise TradingDayEvidenceError(
+                "Broker-derived CTP trading-day evidence is missing"
+            ) from exc
+        except OSError as exc:
+            raise TradingDayEvidenceError(
+                "CTP trading-day evidence cannot be opened safely as a regular file"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as exc:
+                    raise TradingDayEvidenceError(
+                        "CTP trading-day evidence descriptor cleanup failed"
+                    ) from exc
         try:
             raw = json.loads(
-                self.path.read_text(encoding="utf-8"),
+                encoded.decode("utf-8"),
                 object_pairs_hook=_reject_duplicate_keys,
             )
         except TradingDayEvidenceError:
             raise
-        except json.JSONDecodeError as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise TradingDayEvidenceError("invalid CTP trading-day evidence JSON") from exc
         if not isinstance(raw, Mapping):
             raise TradingDayEvidenceError("CTP trading-day evidence fields are invalid")

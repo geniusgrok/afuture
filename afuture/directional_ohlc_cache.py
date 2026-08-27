@@ -258,6 +258,10 @@ class DirectionalOHLCCacheStore:
     def pending_path(self) -> Path:
         return self.path.with_name(self.path.name + ".pending")
 
+    @property
+    def cleanup_guard_path(self) -> Path:
+        return self.pending_path.with_name(self.pending_path.name + ".cleanup")
+
     @contextmanager
     def authority(self) -> Iterator[Path]:
         """Hold canonical ownership from path validation through durable commit."""
@@ -271,18 +275,19 @@ class DirectionalOHLCCacheStore:
             yield canonical
 
     def _require_safe_paths_unlocked(self) -> None:
-        try:
-            pending = os.lstat(self.pending_path)
-        except FileNotFoundError:
-            pending = None
-        except OSError as exc:
-            raise DirectionalOHLCCacheIntegrityError(
-                "directional OHLC cache pending witness cannot be inspected"
-            ) from exc
-        if pending is not None:
-            raise DirectionalOHLCCacheIntegrityError(
-                "directional OHLC cache has a pending mutation witness"
-            )
+        for witness_path in (self.pending_path, self.cleanup_guard_path):
+            try:
+                pending = os.lstat(witness_path)
+            except FileNotFoundError:
+                pending = None
+            except OSError as exc:
+                raise DirectionalOHLCCacheIntegrityError(
+                    "directional OHLC cache pending witness cannot be inspected"
+                ) from exc
+            if pending is not None:
+                raise DirectionalOHLCCacheIntegrityError(
+                    "directional OHLC cache has a pending mutation witness"
+                )
         try:
             current = os.lstat(self.path)
         except FileNotFoundError:
@@ -595,10 +600,26 @@ class DirectionalOHLCCacheStore:
                 os.close(descriptor)
 
     def _create_pending_unlocked(self, payload: bytes) -> tuple[int, int]:
+        try:
+            return self._create_witness_unlocked(self.pending_path, payload)
+        except FileExistsError as exc:
+            raise DirectionalOHLCCacheIntegrityError(
+                "directional OHLC cache has a pending mutation witness"
+            ) from exc
+        except BaseException as exc:
+            raise DirectionalOHLCCacheIntegrityError(
+                "directional OHLC pending witness creation failed; witness preserved"
+            ) from exc
+
+    def _create_witness_unlocked(
+        self,
+        path: Path,
+        payload: bytes,
+    ) -> tuple[int, int]:
         descriptor: int | None = None
         try:
             descriptor = os.open(
-                self.pending_path,
+                path,
                 os.O_WRONLY
                 | os.O_CREAT
                 | os.O_EXCL
@@ -611,7 +632,7 @@ class DirectionalOHLCCacheStore:
                 raise OSError("pending witness is not regular")
             self._write_all(descriptor, payload)
             os.fsync(descriptor)
-            visible = os.stat(self.pending_path, follow_symlinks=False)
+            visible = os.stat(path, follow_symlinks=False)
             if not stat.S_ISREG(visible.st_mode) or (visible.st_dev, visible.st_ino) != (
                 opened.st_dev,
                 opened.st_ino,
@@ -619,14 +640,6 @@ class DirectionalOHLCCacheStore:
                 raise OSError("pending witness identity changed")
             self._fsync_parent()
             return opened.st_dev, opened.st_ino
-        except FileExistsError as exc:
-            raise DirectionalOHLCCacheIntegrityError(
-                "directional OHLC cache has a pending mutation witness"
-            ) from exc
-        except BaseException as exc:
-            raise DirectionalOHLCCacheIntegrityError(
-                "directional OHLC pending witness creation failed; witness preserved"
-            ) from exc
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -640,36 +653,38 @@ class DirectionalOHLCCacheStore:
             visible = os.stat(self.pending_path, follow_symlinks=False)
             if not stat.S_ISREG(visible.st_mode) or (visible.st_dev, visible.st_ino) != identity:
                 raise OSError("pending witness identity changed")
+            os.link(
+                self.pending_path,
+                self.cleanup_guard_path,
+                follow_symlinks=False,
+            )
+            guard = os.stat(self.cleanup_guard_path, follow_symlinks=False)
+            if not stat.S_ISREG(guard.st_mode) or (guard.st_dev, guard.st_ino) != identity:
+                raise OSError("pending cleanup guard identity changed")
+            self._fsync_parent()
             os.unlink(self.pending_path)
             try:
+                os.unlink(self.cleanup_guard_path)
                 self._fsync_parent()
-            except BaseException:
-                self._restore_pending_after_cleanup_failure(payload)
+            except BaseException as cleanup_exc:
+                if not self.cleanup_guard_path.exists():
+                    try:
+                        self._create_witness_unlocked(self.cleanup_guard_path, payload)
+                    except BaseException as restoration_exc:
+                        failure = DirectionalOHLCCacheIntegrityError(
+                            "directional OHLC pending witness cleanup restoration failed "
+                            f"after cleanup failure: {cleanup_exc!r}"
+                        )
+                        raise failure from restoration_exc
                 raise
         except BaseException as exc:
+            if isinstance(exc, DirectionalOHLCCacheIntegrityError) and (
+                "restoration failed" in str(exc)
+            ):
+                raise
             raise DirectionalOHLCCacheIntegrityError(
                 "directional OHLC pending witness cleanup failed; witness preserved"
             ) from exc
-
-    def _restore_pending_after_cleanup_failure(self, payload: bytes) -> None:
-        descriptor: int | None = None
-        try:
-            descriptor = os.open(
-                self.pending_path,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-            )
-            self._write_all(descriptor, payload)
-            os.fsync(descriptor)
-        except OSError:
-            pass
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
 
     def _require_descriptor_current_unlocked(self, descriptor: int) -> None:
         opened = os.fstat(descriptor)

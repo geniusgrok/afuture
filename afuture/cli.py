@@ -4637,7 +4637,6 @@ def _run_directional_ohlc_refresh(config, args) -> int:
 
     if config.directional.policy != "stress90":
         raise ValueError("directional-ohlc-refresh requires directional.policy=stress90")
-    import stat
 
     from .account_runtime_registry import AccountRuntimeRegistry
     from .directional_ohlc_cache import DirectionalOHLCCacheStore
@@ -4669,13 +4668,6 @@ def _run_directional_ohlc_refresh(config, args) -> int:
         raise RuntimeError(
             "directional-ohlc-refresh trading-day evidence must use the fixed runtime path"
         )
-    try:
-        evidence_stat = os.stat(evidence_path, follow_symlinks=False)
-    except OSError as exc:
-        raise RuntimeError("directional-ohlc-refresh evidence path is unavailable") from exc
-    if not stat.S_ISREG(evidence_stat.st_mode):
-        raise RuntimeError("directional-ohlc-refresh evidence path must be a regular file")
-
     policy_store = Stress90PolicyStateStore(runtime_dir / "stress90_policy_state.json")
     evidence_store = TradingDayEvidenceStore(evidence_path)
     preliminary_policy = policy_store.load_required()
@@ -4684,35 +4676,57 @@ def _run_directional_ohlc_refresh(config, args) -> int:
         preliminary_policy.live_account_identity_digest
         or preliminary_evidence.account_identity_digest
     )
-    lease = AccountExclusiveRuntimeLease(
-        runtime_dir,
-        lease_account,
-        role="directional-ohlc-refresh",
-    )
-    lease.acquire()
-    try:
-        policy_state = policy_store.load_required()
-        evidence = evidence_store.load_required()
-        registry = AccountRuntimeRegistry(_stress90_account_registry_path(config))
-        lifecycle = Stress90LifecycleTransactionStore(
-            runtime_dir / "stress90_lifecycle_transaction.json"
-        ).load()
-        require_authoritative_trading_day_evidence(
-            evidence,
-            policy_state=policy_state,
-            registry=registry,
-            runtime_dir=runtime_dir,
-            lifecycle_transaction=lifecycle,
+    entry = None
+    authoritative_evidence = None
+    for attempt in range(2):
+        lease = AccountExclusiveRuntimeLease(
+            runtime_dir,
+            lease_account,
+            role="directional-ohlc-refresh",
         )
-        entry = refresh_directional_ohlc_cache(
-            DirectionalOHLCCacheStore(cache_path),
-            provider_factory=SinaContinuousOHLCProvider,
-            products=tuple(config.directional.products),
-            current_ctp_trading_day=args.current_trading_day,
-            authoritative_ctp_trading_day=evidence.trading_day,
-        )
-    finally:
-        lease.release()
+        lease.acquire()
+        try:
+            policy_state = policy_store.load_required()
+            evidence = evidence_store.load_required()
+            authoritative_account = (
+                policy_state.live_account_identity_digest or evidence.account_identity_digest
+            )
+            if not lease.authorizes_technical_activation(
+                authoritative_account,
+                runtime_dir,
+            ):
+                if attempt == 1:
+                    raise RuntimeError(
+                        "directional-ohlc-refresh authoritative account changed during "
+                        "lease acquisition"
+                    )
+                lease_account = authoritative_account
+                continue
+            registry = AccountRuntimeRegistry(_stress90_account_registry_path(config))
+            lifecycle = Stress90LifecycleTransactionStore(
+                runtime_dir / "stress90_lifecycle_transaction.json"
+            ).load()
+            require_authoritative_trading_day_evidence(
+                evidence,
+                policy_state=policy_state,
+                registry=registry,
+                runtime_dir=runtime_dir,
+                lifecycle_transaction=lifecycle,
+            )
+            entry = refresh_directional_ohlc_cache(
+                DirectionalOHLCCacheStore(cache_path),
+                provider_factory=SinaContinuousOHLCProvider,
+                products=tuple(config.directional.products),
+                current_ctp_trading_day=args.current_trading_day,
+                authoritative_ctp_trading_day=evidence.trading_day,
+            )
+            authoritative_evidence = evidence
+            break
+        finally:
+            lease.release()
+    if entry is None or authoritative_evidence is None:
+        raise RuntimeError("directional-ohlc-refresh authority could not be acquired")
+    evidence = authoritative_evidence
     print(
         json.dumps(
             {
