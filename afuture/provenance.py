@@ -86,8 +86,7 @@ def _git(repo: Path, *args: str, text: bool = True) -> str | bytes:
         result = subprocess.run(
             [_git_binary(), "-C", str(repo), *args],
             check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=text,
             timeout=30,
         )
