@@ -27,8 +27,9 @@ jobs:
           python tools/operator_continuity_cli_patch.py
           python tools/operator_continuity_mypy_fix.py
           python tools/operator_continuity_permit_patch.py
+          python tools/operator_continuity_status_patch.py
           python tools/operator_continuity_test_fix.py
-          python -m ruff format afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py
+          python -m ruff format afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py
       - name: Targeted tests
         run: |
           python -m pytest -q \
@@ -48,9 +49,9 @@ jobs:
             tests/test_cli_runtime_factory.py
       - name: Targeted quality
         run: |
-          python -m ruff check afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py
-          python -m ruff format --check afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py
-          python -m mypy afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/cli.py
+          python -m ruff check afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py
+          python -m ruff format --check afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py
+          python -m mypy afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py
           python -m compileall -q afuture
       - name: Commit generated implementation checkpoint
         shell: bash
@@ -60,6 +61,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py
-          git commit -m "feat: bind technical permits to operator continuity evidence"
+          git add afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py
+          git commit -m "feat: surface operator continuity status and permit state"
           git push origin HEAD:codex/operator-managed-continuity
