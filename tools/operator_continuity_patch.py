@@ -86,3 +86,23 @@ replace_once(
     '            f"runtime:{runtime.resolve()}".encode()\n'
     '        ).hexdigest(),\n',
 )
+replace_once(
+    "afuture/stress90_operator_continuity.py",
+    "from typing import Any\n\n",
+    "",
+)
+replace_once(
+    "tests/test_stress90_operator_continuity.py",
+    "import json\nimport os\nfrom hashlib import sha256\nfrom dataclasses import replace\n",
+    "import json\nimport os\nfrom dataclasses import replace\nfrom hashlib import sha256\n",
+)
+replace_once(
+    "tests/test_stress90_operator_continuity.py",
+    "from afuture.account_runtime_registry import (\n    AccountRuntimeRegistry,\n    AccountRuntimeRegistryError,\n    ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,\n)\n",
+    "from afuture.account_runtime_registry import (\n    ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,\n    AccountRuntimeRegistry,\n    AccountRuntimeRegistryError,\n)\n",
+)
+replace_once(
+    "tests/test_stress90_operator_continuity.py",
+    "    Stress90OperatorContinuityEvidence,\n    Stress90OperatorContinuityError,\n",
+    "    Stress90OperatorContinuityError,\n    Stress90OperatorContinuityEvidence,\n",
+)
