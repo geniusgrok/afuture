@@ -24,6 +24,7 @@ jobs:
       - name: Apply staged implementation
         run: |
           python tools/operator_continuity_patch.py
+          python tools/operator_continuity_plan_patch.py
           python tools/operator_continuity_test_fix.py
           python -m ruff format afuture/stress90_operator_continuity.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
       - name: Targeted tests
@@ -51,5 +52,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add afuture/stress90_operator_continuity.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py
-          git commit -m "feat: add operator roll-forward continuity boundary"
+          git commit -m "feat: build operator continuity roll-forward plan"
           git push origin HEAD:codex/operator-managed-continuity
