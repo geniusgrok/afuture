@@ -24,4 +24,21 @@ text = text.replace(
     "    ):\n        _finite(equity_value, name, positive=True)\n    if (",
     1,
 )
+if "from typing import TYPE_CHECKING\n" not in text:
+    text = text.replace(
+        "from tempfile import NamedTemporaryFile\n",
+        "from tempfile import NamedTemporaryFile\nfrom typing import TYPE_CHECKING\n",
+        1,
+    )
+if "if TYPE_CHECKING:" not in text:
+    text = text.replace(
+        "STRESS90_OPERATOR_CONTINUITY_CONFIRMATION =",
+        "if TYPE_CHECKING:\n    from .stress90_lifecycle_transaction import Stress90SettlementRollForwardTargets\n\n\nSTRESS90_OPERATOR_CONTINUITY_CONFIRMATION =",
+        1,
+    )
+text = text.replace(
+    "    targets: object\n",
+    '    targets: "Stress90SettlementRollForwardTargets"\n',
+    1,
+)
 path.write_text(text, encoding="utf-8")
