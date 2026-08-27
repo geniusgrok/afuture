@@ -2,8 +2,6 @@ name: operator-continuity-targeted
 
 on:
   push:
-    branches:
-      - codex/operator-managed-continuity
 
 permissions:
   contents: write
