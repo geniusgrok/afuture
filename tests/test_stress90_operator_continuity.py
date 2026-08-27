@@ -3,20 +3,21 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
 from afuture.account_runtime_registry import (
+    ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
     AccountRuntimeRegistry,
     AccountRuntimeRegistryError,
-    ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
 )
 from afuture.directional import DirectionalConfig
 from afuture.stress90_operator_continuity import (
     STRESS90_OPERATOR_CONTINUITY_CONFIRMATION,
-    Stress90OperatorContinuityEvidence,
     Stress90OperatorContinuityError,
+    Stress90OperatorContinuityEvidence,
     Stress90OperatorContinuityStore,
     stress90_operator_continuity_request_digest,
 )
@@ -50,7 +51,9 @@ def _evidence(runtime: Path, **changes: object) -> Stress90OperatorContinuityEvi
         account_identity_digest=_SHA_E,
         account_epoch=_SHA_F,
         canonical_runtime=str(runtime.resolve()),
-        canonical_runtime_digest=_SHA_1,
+        canonical_runtime_digest=sha256(
+            f"runtime:{runtime.resolve()}".encode()
+        ).hexdigest(),
         source_account_registry_receipt_digest=_SHA_2,
         fresh_account_snapshot_digest=_SHA_3,
         position_reconciliation_digest=_SHA_4,

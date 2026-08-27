@@ -492,6 +492,17 @@ def _load_directional(raw: Mapping[str, object], mode: str) -> DirectionalConfig
             values[name] = require_string_sequence(values[name], f"directional.{name}")
     config = DirectionalConfig(**cast(Any, values))
     config.validate()
+    if config.account_continuity_mode == "operator_managed" and (
+        mode != "live"
+        or not config.enabled
+        or config.policy != "stress90"
+        or not config.account_exclusive
+    ):
+        raise ValueError(
+            "directional.account_continuity_mode=operator_managed requires "
+            "system.mode=live, directional.enabled=true, policy=stress90, "
+            "and account_exclusive=true"
+        )
     if config.enabled and mode == "live" and not config.policy:
         raise ValueError("directional.policy must be explicit in live mode")
     if config.enabled and config.policy == "stress90":

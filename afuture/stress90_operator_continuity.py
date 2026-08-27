@@ -18,7 +18,6 @@ from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
 
 _KIND = "afuture.stress90-operator-continuity"
 _SCHEMA_VERSION = 1
@@ -178,7 +177,7 @@ def _validate_evidence(
     if type(evidence.natural_day_gap) is not int or evidence.natural_day_gap != natural_gap:
         raise Stress90OperatorContinuityError("natural day gap does not match source/target days")
 
-    for value, name in (
+    for sequence_value, name in (
         (evidence.source_generic_state_sequence, "source generic state sequence"),
         (evidence.source_policy_state_sequence, "source policy state sequence"),
         (
@@ -186,8 +185,8 @@ def _validate_evidence(
             "source TradingDayEvidence sequence",
         ),
     ):
-        _positive_sequence(value, name)
-    for value, name in (
+        _positive_sequence(sequence_value, name)
+    for digest_value, name in (
         (evidence.source_generic_state_checksum, "source generic state checksum"),
         (evidence.source_policy_state_checksum, "source policy state checksum"),
         (
@@ -205,7 +204,7 @@ def _validate_evidence(
         (evidence.session_ownership_digest, "session ownership digest"),
         (evidence.ctp_order_journal_digest, "CTP order journal digest"),
     ):
-        _sha(value, name)
+        _sha(digest_value, name)
 
     canonical, runtime_digest = _canonical_runtime(evidence.canonical_runtime)
     if evidence.canonical_runtime != canonical:
@@ -221,7 +220,7 @@ def _validate_evidence(
         raise Stress90OperatorContinuityError(
             "operator continuity requires current Deposit/Withdraw to both be zero"
         )
-    for value, name in (
+    for equity_value, name in (
         (evidence.source_last_account_equity, "source last-account equity"),
         (evidence.source_day_start_equity, "source day-start equity"),
         (evidence.source_hwm_equity, "source HWM equity"),
@@ -230,7 +229,7 @@ def _validate_evidence(
             "target previous-settlement equity",
         ),
     ):
-        _finite(value, name, positive=True)
+        _finite(equity_value, name, positive=True)
     if (
         not isinstance(evidence.source_settlement_id, str)
         or not evidence.source_settlement_id.strip()

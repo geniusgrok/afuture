@@ -538,6 +538,7 @@ class TradingDayEvidenceStore:
             "reactivation",
             "account_rebase",
             "stress90_to_execution_aligned",
+            "settlement_roll_forward",
         } or status not in {"prepared", "committed"}:
             raise TradingDayEvidenceError(
                 "CTP trading-day evidence requires an exact lifecycle transaction"

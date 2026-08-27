@@ -4,7 +4,7 @@ from pathlib import Path
 def replace_once(path: str, old: str, new: str) -> None:
     file_path = Path(path)
     text = file_path.read_text(encoding="utf-8")
-    if new in text:
+    if new and new in text:
         return
     if old not in text:
         raise SystemExit(f"patch anchor missing: {path}: {old[:80]!r}")

@@ -305,6 +305,7 @@ def _decode_binding(raw: object, *, schema_version: int) -> AccountRuntimeBindin
         "acknowledgement",
         "transfer",
         "stress90_crash_fill_recovery",
+        "operator_managed_continuity",
         "legacy",
     }
     if (
@@ -2054,6 +2055,91 @@ class AccountRuntimeRegistry:
                 binding.operation_kinds,
                 operation,
                 "stress90_crash_fill_recovery",
+            )
+            bindings[account] = _advance_binding_authority(
+                binding,
+                replace(
+                    binding,
+                    last_operation_id=operation,
+                    operation_history=operation_history,
+                    operation_kinds=operation_kinds,
+                    last_operation_receipt_digest=operation_receipt,
+                ),
+                operation_receipt=operation_receipt,
+            )
+            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)
+
+    def acknowledge_operator_continuity_operation(
+        self,
+        account_identity_digest: str,
+        runtime_dir: str | Path,
+        source_epoch: str,
+        operation_id: str,
+        request_digest: str,
+    ) -> AccountRuntimeRegistryRecord:
+        """Globally consume one semantic operator-continuity request nonce."""
+
+        account = _sha(account_identity_digest, "economic account identity")
+        runtime, runtime_digest = _canonical_runtime(runtime_dir)
+        source = _sha(source_epoch, "source account runtime epoch")
+        operation = _sha(operation_id, "operator continuity operation")
+        request = _sha(request_digest, "operator continuity request")
+        operation_receipt = _operation_receipt(
+            "operator_managed_continuity",
+            operation_id=operation,
+            request_digest=request,
+            account_identity_digest=account,
+            canonical_runtime=runtime,
+            account_epoch=source,
+        )
+        nonce_receipt = self._nonce_receipt_for(
+            operation=operation,
+            kind="operator_managed_continuity",
+            account=account,
+            runtime=runtime,
+            runtime_digest=runtime_digest,
+            epoch=source,
+            semantic_request_digest=operation_receipt,
+        )
+        with self._exclusive_lock() as lock:
+            current = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=lock.legacy_lock_evidence,
+            )
+            assert current is not None
+            self._require_schema3_nonce_ledger(current)
+            self._reconcile_nonce_pending_unlocked(current)
+            bindings = {item.account_identity_digest: item for item in current.bindings}
+            binding = bindings.get(account)
+            if binding is None:
+                raise AccountRuntimeRegistryError(
+                    "operator continuity registry binding is missing"
+                )
+            if (
+                binding.canonical_runtime != runtime
+                or binding.runtime_identity_digest != runtime_digest
+                or binding.account_epoch != source
+            ):
+                raise AccountRuntimeRegistryError(
+                    "operator continuity registry source CAS mismatch"
+                )
+            existing_nonce = self._nonce_ledger().lookup(current.nonce_root, operation)
+            if existing_nonce is not None:
+                if (
+                    binding.last_operation_id == operation
+                    and binding.operation_kinds[-1] == "operator_managed_continuity"
+                    and binding.last_operation_receipt_digest == operation_receipt
+                    and existing_nonce == nonce_receipt
+                ):
+                    return current
+                raise AccountRuntimeRegistryError(
+                    "operator continuity operation was already consumed for a different request"
+                )
+            operation_history, operation_kinds = _bound_operation_heads(
+                binding.operation_history,
+                binding.operation_kinds,
+                operation,
+                "operator_managed_continuity",
             )
             bindings[account] = _advance_binding_authority(
                 binding,
