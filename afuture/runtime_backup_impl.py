@@ -397,14 +397,14 @@ def _scan_secrets(members: dict[str, bytes]) -> None:
 def _load_optional_authority(runtime: Path) -> None:
     Stress90ExecutionIntentStore(runtime / "stress90_execution_intent.json").load_record()
     Stress90ActivationPermitStore(runtime / "stress90_activation_permit.json").load_record()
-    try:
-        from .broker.ctp_session_query import CtpSessionActivityEvidenceStore
 
-        CtpSessionActivityEvidenceStore(
-            runtime / "stress90_ctp_session_evidence.json"
-        ).load_record()
-    except FileNotFoundError:
-        pass
+    from .broker.ctp_session_query import CtpSessionActivityEvidenceStore
+
+    session_store = CtpSessionActivityEvidenceStore(
+        runtime / "stress90_ctp_session_evidence.json"
+    )
+    if session_store.path.exists():
+        session_store.load_required_record()
     try:
         from .stress90_crash_fill_recovery import Stress90CrashFillRecoveryStore
 
@@ -946,7 +946,6 @@ def restore_runtime(
                 raise RuntimeBackupError("restore artifact root is invalid")
             _write_exact(target, payload)
 
-        # Validate staged bytes against their original canonical bindings before publication.
         observed = _semantic_verify(
             runtime=runtime_stage,
             state_path=runtime_stage / state_filename,
