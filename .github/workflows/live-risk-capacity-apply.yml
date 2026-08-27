@@ -23,7 +23,7 @@ jobs:
           python-version: "3.10"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]" -c constraints/core-dev.txt
-      - name: Patch runner with exact source blocks
+      - name: Patch runner using unique source needles
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -31,48 +31,36 @@ jobs:
           path = Path('.github/live-risk-capacity-apply.py')
           text = path.read_text(encoding='utf-8')
 
-          signature_old = '''replace_once(
-              "afuture/directional_policy_activation.py",
-              "    bootstrap_seed_digest: str,\\n    account_identity_digest: str,\\n    operator_reason: str,\\n",
-              "    bootstrap_seed_digest: str,\\n    account_identity_digest: str,\\n    risk_overlay_digest: str,\\n    operator_reason: str,\\n",
-          )
-          '''.replace('          ', '')
-          signature_new = '''replace_all(
-              "afuture/directional_policy_activation.py",
-              "    bootstrap_seed_digest: str,\\n    account_identity_digest: str,\\n    operator_reason: str,\\n",
-              "    bootstrap_seed_digest: str,\\n    account_identity_digest: str,\\n    risk_overlay_digest: str,\\n    operator_reason: str,\\n",
-              minimum=2,
-          )
-          '''.replace('          ', '')
+          def call_bounds(source: str, needle: str) -> tuple[int, int]:
+              index = source.find(needle)
+              if index < 0:
+                  raise RuntimeError(f'runner needle not found: {needle}')
+              start = source.rfind('replace_once(', 0, index)
+              if start < 0:
+                  start = source.rfind('replace_all(', 0, index)
+              if start < 0:
+                  raise RuntimeError(f'runner call start not found: {needle}')
+              end = source.find('\n)\n', index)
+              if end < 0:
+                  raise RuntimeError(f'runner call end not found: {needle}')
+              return start, end + 3
 
-          ambiguous = '''replace_once(
-              "afuture/directional_policy_activation.py",
-              "                account_identity_digest=account_identity_digest,\\n            )\\n",
-              "                account_identity_digest=account_identity_digest,\\n"
-              "                risk_overlay_digest=(\\n"
-              "                    str(existing_marker.get(\\"risk_overlay_digest\\"))\\n"
-              "                    if \\"risk_overlay_digest\\" in existing_marker\\n"
-              "                    else None\\n"
-              "                ),\\n"
-              "            )\\n",
-          )
-          '''.replace('          ', '')
+          signature_needle = 'bootstrap_seed_digest: str,\\n    account_identity_digest: str,\\n    operator_reason: str,\\n'
+          start, end = call_bounds(text, signature_needle)
+          block = text[start:end]
+          if not block.startswith('replace_once('):
+              raise RuntimeError('shared activation signature patch is not replace_once')
+          block = block.replace('replace_once(', 'replace_all(', 1)
+          block = block[:-2] + '    minimum=2,\n)\n'
+          text = text[:start] + block + text[end:]
 
-          redundant = '''replace_once(
-              "afuture/directional_policy_activation.py",
-              "    account_identity_digest: str,\\n    operator_reason: str,\\n    activation_confirmation: str,\\n",
-              "    account_identity_digest: str,\\n    risk_overlay_digest: str,\\n    operator_reason: str,\\n    activation_confirmation: str,\\n",
-          )
-          '''.replace('          ', '')
+          ambiguous_needle = 'account_identity_digest=account_identity_digest,\\n            )\\n'
+          start, end = call_bounds(text, ambiguous_needle)
+          text = text[:start] + text[end:]
 
-          for old, new, label in (
-              (signature_old, signature_new, 'shared activation signature'),
-              (ambiguous, '', 'redundant marker self-check'),
-              (redundant, '', 'redundant reactivation signature'),
-          ):
-              if text.count(old) != 1:
-                  raise RuntimeError(f'{label}: expected one exact runner block, got {text.count(old)}')
-              text = text.replace(old, new, 1)
+          redundant_needle = 'account_identity_digest: str,\\n    operator_reason: str,\\n    activation_confirmation: str,\\n'
+          start, end = call_bounds(text, redundant_needle)
+          text = text[:start] + text[end:]
 
           path.write_text(text, encoding='utf-8')
           PY
