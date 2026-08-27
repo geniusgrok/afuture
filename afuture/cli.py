@@ -4639,14 +4639,15 @@ def _run_stress90_operator_roll_forward(config, args) -> int:
                 account_identity, runtime_dir, account_epoch
             )
             current_tde = trading_day_store.load_required()
-            if (
-                current_registry.binding_receipt_digest != receipt.target_registry_receipt_digest
-                or current_tde.sequence != receipt.target_trading_day_evidence_sequence
-                or current_tde.checksum != receipt.target_trading_day_evidence_checksum
-            ):
-                raise RuntimeError(
-                    "operator continuity exact retry target registry/TDE evidence changed"
-                )
+            from .stress90_operator_continuity import (
+                require_stress90_operator_continuity_authority,
+            )
+
+            require_stress90_operator_continuity_authority(
+                receipt,
+                registry_evidence=current_registry,
+                trading_day_evidence=current_tde,
+            )
             apply_stress90_lifecycle_transaction(
                 lifecycle_store,
                 generic_store=state_store,
@@ -4891,15 +4892,19 @@ def _run_stress90_operator_roll_forward(config, args) -> int:
             account_identity, runtime_dir, account_epoch
         )
         target_tde = trading_day_store.load_required()
-        if (
-            receipt.request_digest != completed.account_day_continuity_digest
-            or receipt.target_registry_receipt_digest != target_registry.binding_receipt_digest
-            or receipt.target_trading_day_evidence_sequence != target_tde.sequence
-            or receipt.target_trading_day_evidence_checksum != target_tde.checksum
-        ):
+        from .stress90_operator_continuity import (
+            require_stress90_operator_continuity_authority,
+        )
+
+        if receipt.request_digest != completed.account_day_continuity_digest:
             raise RuntimeError(
-                "operator continuity committed receipt/registry/TDE identity mismatch"
+                "operator continuity committed lifecycle/receipt request identity mismatch"
             )
+        require_stress90_operator_continuity_authority(
+            receipt,
+            registry_evidence=target_registry,
+            trading_day_evidence=target_tde,
+        )
         final_record = state_store.load_required_record()
         final_state = final_record.state
         final_policy = policy_store.load_required_record().state

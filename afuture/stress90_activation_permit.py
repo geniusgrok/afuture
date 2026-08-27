@@ -518,13 +518,24 @@ def collect_stress90_activation_evidence(
             canonical_runtime=runtime,
             target_ctp_trading_day=day,
         )
-        if (
-            operator_receipt.target_registry_receipt_digest
-            != registry_evidence.binding_receipt_digest
-        ):
-            raise Stress90ActivationPermitIntegrityError(
-                "operator continuity receipt is not bound to the current account registry receipt"
+        from .stress90_operator_continuity import (
+            Stress90OperatorContinuityError,
+            require_stress90_operator_continuity_authority,
+        )
+        from .trading_day_evidence import TradingDayEvidenceStore
+
+        try:
+            require_stress90_operator_continuity_authority(
+                operator_receipt,
+                registry_evidence=registry_evidence,
+                trading_day_evidence=TradingDayEvidenceStore(
+                    runtime / "ctp_trading_day_evidence.json"
+                ).load_required(),
             )
+        except Stress90OperatorContinuityError as exc:
+            raise Stress90ActivationPermitIntegrityError(
+                "operator continuity receipt authority is stale or untrusted"
+            ) from exc
         operator_continuity_receipt_digest = operator_receipt.checksum
     else:
         raise Stress90ActivationPermitIntegrityError(

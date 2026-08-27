@@ -324,9 +324,22 @@ def _stress90_account_continuity_status(config, runtime_state: RuntimeState | No
         registry_evidence = AccountRuntimeRegistry(registry_path).require_binding_evidence(
             account, runtime_dir, epoch
         )
-        binding_current = (
-            registry_evidence.binding_receipt_digest == record.target_registry_receipt_digest
+        from .stress90_operator_continuity import (
+            require_stress90_operator_continuity_authority,
         )
+        from .trading_day_evidence import TradingDayEvidenceStore
+
+        current_tde = TradingDayEvidenceStore(
+            runtime_dir / "ctp_trading_day_evidence.json"
+        ).load_required()
+        require_stress90_operator_continuity_authority(
+            record,
+            registry_evidence=registry_evidence,
+            trading_day_evidence=current_tde,
+        )
+        binding_current = True
+        facts["target_trading_day_evidence_sequence"] = current_tde.sequence
+        facts["target_trading_day_evidence_checksum"] = current_tde.checksum
     except (OSError, RuntimeError) as exc:
         binding_current = False
         facts["binding_error"] = str(exc)

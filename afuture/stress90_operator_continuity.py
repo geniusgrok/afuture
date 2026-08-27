@@ -470,6 +470,57 @@ class Stress90OperatorContinuityRecord:
     schema_version: int = _SCHEMA_VERSION
 
 
+def require_stress90_operator_continuity_authority(
+    record: Stress90OperatorContinuityRecord,
+    *,
+    registry_evidence,
+    trading_day_evidence,
+) -> Stress90OperatorContinuityRecord:
+    """Require the receipt to be anchored by the exact registry operation and target TDE."""
+
+    if not isinstance(record, Stress90OperatorContinuityRecord):
+        raise Stress90OperatorContinuityError("operator continuity receipt type is invalid")
+    evidence = record.evidence
+    binding = getattr(registry_evidence, "binding", None)
+    operation_kinds = getattr(binding, "operation_kinds", ()) if binding is not None else ()
+    if (
+        binding is None
+        or getattr(registry_evidence, "binding_receipt_digest", None)
+        != record.target_registry_receipt_digest
+        or getattr(binding, "account_identity_digest", None) != evidence.account_identity_digest
+        or getattr(binding, "account_epoch", None) != evidence.account_epoch
+        or getattr(binding, "canonical_runtime", None) != evidence.canonical_runtime
+        or getattr(binding, "runtime_identity_digest", None) != evidence.canonical_runtime_digest
+        or getattr(binding, "last_operation_id", None) != evidence.operation_id
+        or not operation_kinds
+        or operation_kinds[-1] != "operator_managed_continuity"
+    ):
+        raise Stress90OperatorContinuityError(
+            "operator continuity registry operation authority mismatch"
+        )
+    if (
+        getattr(trading_day_evidence, "sequence", None)
+        != record.target_trading_day_evidence_sequence
+        or getattr(trading_day_evidence, "checksum", None)
+        != record.target_trading_day_evidence_checksum
+        or getattr(trading_day_evidence, "trading_day", None) != evidence.target_ctp_trading_day
+        or getattr(trading_day_evidence, "account_identity_digest", None)
+        != evidence.account_identity_digest
+        or getattr(trading_day_evidence, "account_epoch", None) != evidence.account_epoch
+        or getattr(trading_day_evidence, "canonical_runtime", None) != evidence.canonical_runtime
+        or getattr(trading_day_evidence, "runtime_identity_digest", None)
+        != evidence.canonical_runtime_digest
+        or getattr(trading_day_evidence, "account_binding_receipt_digest", None)
+        != record.target_registry_receipt_digest
+        or getattr(trading_day_evidence, "account_binding_last_operation_id", None)
+        != evidence.operation_id
+    ):
+        raise Stress90OperatorContinuityError(
+            "operator continuity target TradingDayEvidence authority mismatch"
+        )
+    return record
+
+
 def _canonical_json(value: object) -> bytes:
     try:
         return json.dumps(

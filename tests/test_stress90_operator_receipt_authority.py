@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from afuture.stress90_operator_continuity import (
-    Stress90OperatorContinuityEvidence,
     Stress90OperatorContinuityError,
+    Stress90OperatorContinuityEvidence,
     Stress90OperatorContinuityStore,
 )
 
@@ -68,9 +68,7 @@ def _record(tmp_path: Path):
         evidence_authority="operator_trust",
         authoritative_broker_or_exchange_evidence=False,
     )
-    return Stress90OperatorContinuityStore(
-        tmp_path / "stress90_operator_continuity.json"
-    ).save(
+    return Stress90OperatorContinuityStore(tmp_path / "stress90_operator_continuity.json").save(
         evidence,
         target_registry_receipt_digest=_C,
         target_trading_day_evidence_sequence=6,
@@ -78,7 +76,9 @@ def _record(tmp_path: Path):
     )
 
 
-def _registry(record, *, operation_id: str = _A, operation_kind: str = "operator_managed_continuity"):
+def _registry(
+    record, *, operation_id: str = _A, operation_kind: str = "operator_managed_continuity"
+):
     evidence = record.evidence
     return SimpleNamespace(
         binding_receipt_digest=record.target_registry_receipt_digest,
@@ -114,13 +114,17 @@ def test_receipt_authority_requires_registry_operation_id_and_kind(tmp_path: Pat
     )
 
     record = _record(tmp_path)
-    with pytest.raises(Stress90OperatorContinuityError, match="registry.*operation|operation.*registry"):
+    with pytest.raises(
+        Stress90OperatorContinuityError, match="registry.*operation|operation.*registry"
+    ):
         require_stress90_operator_continuity_authority(
             record,
             registry_evidence=_registry(record, operation_id=_B),
             trading_day_evidence=_tde(record),
         )
-    with pytest.raises(Stress90OperatorContinuityError, match="registry.*operation|operation.*registry"):
+    with pytest.raises(
+        Stress90OperatorContinuityError, match="registry.*operation|operation.*registry"
+    ):
         require_stress90_operator_continuity_authority(
             record,
             registry_evidence=_registry(record, operation_kind="account_rebase"),
