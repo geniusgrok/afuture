@@ -80,8 +80,7 @@ def _parser(command: str) -> argparse.ArgumentParser:
 def _is_stress90(config) -> bool:
     directional = getattr(config, "directional", None)
     return bool(
-        getattr(directional, "enabled", False)
-        and getattr(directional, "policy", "") == "stress90"
+        getattr(directional, "enabled", False) and getattr(directional, "policy", "") == "stress90"
     )
 
 
@@ -306,9 +305,7 @@ def _deployment_preflight(command: str, argv: list[str]) -> int | None:
     try:
         from .deployment_identity import require_matching_deployment
 
-        shadow = command == "shadow" or (
-            command == "doctor" and "--shadow-account" in argv
-        )
+        shadow = command == "shadow" or (command == "doctor" and "--shadow-account" in argv)
         require_matching_deployment(
             config=config,
             config_path=config_path,
