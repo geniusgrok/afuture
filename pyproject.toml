@@ -29,7 +29,7 @@ dev = [
 ]
 
 [project.scripts]
-afuture = "afuture.cli:main"
+afuture = "afuture.command_router:main"
 
 [tool.setuptools.packages.find]
 include = ["afuture*"]
