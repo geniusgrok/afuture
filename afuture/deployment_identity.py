@@ -89,7 +89,9 @@ def _reject_secrets(value: object, *, path: str = "identity") -> None:
         for raw_key, item in value.items():
             key = str(raw_key).lower()
             if any(fragment in key for fragment in _SECRET_KEY_FRAGMENTS):
-                raise DeploymentIdentityError(f"deployment identity secret-like field is forbidden: {path}.{raw_key}")
+                raise DeploymentIdentityError(
+                    f"deployment identity secret-like field is forbidden: {path}.{raw_key}"
+                )
             _reject_secrets(item, path=f"{path}.{raw_key}")
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
@@ -162,7 +164,9 @@ class DeploymentIdentityStore:
         try:
             canonical_json_bytes(identity)
         except Exception as exc:
-            raise DeploymentIdentityError("deployment identity payload is not canonical JSON") from exc
+            raise DeploymentIdentityError(
+                "deployment identity payload is not canonical JSON"
+            ) from exc
         current = self.load_record()
         sequence = 1 if current is None else current.sequence + 1
         parent = None if current is None else current.checksum
@@ -231,7 +235,10 @@ class DeploymentIdentityStore:
         previous = self._decode(_read_json_file(self.previous_path))
         if previous.sequence == current.sequence and previous.checksum == current.checksum:
             return
-        if previous.sequence + 1 != current.sequence or current.parent_checksum != previous.checksum:
+        if (
+            previous.sequence + 1 != current.sequence
+            or current.parent_checksum != previous.checksum
+        ):
             raise DeploymentIdentityError("deployment identity predecessor chain mismatch")
 
     @staticmethod
