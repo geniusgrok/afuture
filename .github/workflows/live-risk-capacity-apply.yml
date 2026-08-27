@@ -75,6 +75,23 @@ jobs:
           '''.replace('          ', '')
           text = text[:start] + marker_patch + text[end:]
 
+          permit_needle = 'products_manifest_digest=STRESS90_POLICY.products_manifest_digest,\\n        bootstrap_seed_digest=seed.seed_digest,\\n'
+          start, end = call_bounds(text, permit_needle)
+          permit_patch = r'''replace_once(
+              "afuture/stress90_activation_permit.py",
+              "        policy_manifest_digest=STRESS90_POLICY.policy_manifest_digest,\n"
+              "        products_manifest_digest=STRESS90_POLICY.products_manifest_digest,\n"
+              "        bootstrap_seed_digest=seed.seed_digest,\n",
+              "        policy_manifest_digest=STRESS90_POLICY.policy_manifest_digest,\n"
+              "        products_manifest_digest=STRESS90_POLICY.products_manifest_digest,\n"
+              "        bootstrap_seed_digest=seed.seed_digest,\n"
+              "        risk_overlay_digest=str(\n"
+              "            state.strategy_states[\"directional_policy_identity\"].get(\"risk_overlay_digest\", \"\")\n"
+              "        ),\n",
+          )
+          '''.replace('          ', '')
+          text = text[:start] + permit_patch + text[end:]
+
           path.write_text(text, encoding='utf-8')
           PY
       - name: Apply TDD implementation and focused verification
