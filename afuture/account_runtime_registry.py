@@ -17,17 +17,20 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 _KIND = "afuture.account-runtime-registry"
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
+_HISTORY_SCHEMA_VERSION = 2
 _LEGACY_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _F_OFD_SETLKW = getattr(fcntl, "F_OFD_SETLKW", 38)
 _MAX_ACCOUNTS = 256
 _MAX_RUNTIME_PATH = 4_096
 _MAX_OPERATION_HISTORY = 1_024
+_MAX_INLINE_OPERATION_HEADS = 8
 _LINEAGE_MARKER = b'{"kind":"afuture.account-runtime-registry-lineage","schema_version":1}\n'
 PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH = Path("/var/lib/afuture/account-runtime-registry.json")
 ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION = "INITIALIZE_AFUTURE_MACHINE_ACCOUNT_REGISTRY"
 ACCOUNT_RUNTIME_TRANSFER_CONFIRMATION = "TRANSFER_STRESS90_ACCOUNT_RUNTIME"
+ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION = "MIGRATE_AFUTURE_MACHINE_ACCOUNT_NONCE_LEDGER"
 
 
 class AccountRuntimeRegistryError(RuntimeError):
@@ -44,6 +47,8 @@ class AccountRuntimeBinding:
     operation_history: tuple[str, ...]
     operation_kinds: tuple[str, ...] = ()
     last_operation_receipt_digest: str = ""
+    binding_revision: int = 0
+    binding_payload_digest: str = ""
     retired_runtime_identity_digests: tuple[str, ...] = ()
     retired_account_identity_digests: tuple[str, ...] = ()
     retired_lineage_digests: tuple[str, ...] = ()
@@ -55,6 +60,9 @@ class AccountRuntimeRegistryRecord:
     parent_checksum: str | None
     bindings: tuple[AccountRuntimeBinding, ...]
     checksum: str
+    nonce_root: str = ""
+    nonce_count: int = 0
+    schema_version: int = _SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -112,7 +120,7 @@ def _canonical_runtime(value: str | Path) -> tuple[str, str]:
     return encoded, sha256(f"runtime:{encoded}".encode()).hexdigest()
 
 
-def _binding_payload(binding: AccountRuntimeBinding) -> dict[str, object]:
+def _binding_payload_v2(binding: AccountRuntimeBinding) -> dict[str, object]:
     return {
         "account_identity_digest": binding.account_identity_digest,
         "canonical_runtime": binding.canonical_runtime,
@@ -128,12 +136,20 @@ def _binding_payload(binding: AccountRuntimeBinding) -> dict[str, object]:
     }
 
 
+def _binding_payload(binding: AccountRuntimeBinding) -> dict[str, object]:
+    return {
+        **_binding_payload_v2(binding),
+        "binding_revision": binding.binding_revision,
+        "binding_payload_digest": binding.binding_payload_digest,
+    }
+
+
 def _binding_evidence(
     record: AccountRuntimeRegistryRecord,
     binding: AccountRuntimeBinding,
 ) -> AccountRuntimeBindingEvidence:
-    payload_digest = _digest(_binding_payload(binding))
-    revision = len(binding.operation_history)
+    payload_digest = binding.binding_payload_digest
+    revision = binding.binding_revision
     receipt = _digest(
         {
             "account_identity_digest": binding.account_identity_digest,
@@ -161,21 +177,32 @@ def _record_payload(
     parent_checksum: str | None,
     bindings: tuple[AccountRuntimeBinding, ...],
     schema_version: int = _SCHEMA_VERSION,
+    nonce_root: str = "",
+    nonce_count: int = 0,
 ) -> dict[str, object]:
     binding_payloads = []
     for item in bindings:
         payload = _binding_payload(item)
         if schema_version == _LEGACY_SCHEMA_VERSION:
+            payload.pop("binding_revision")
+            payload.pop("binding_payload_digest")
             payload.pop("operation_kinds")
             payload.pop("last_operation_receipt_digest")
+        elif schema_version == _HISTORY_SCHEMA_VERSION:
+            payload.pop("binding_revision")
+            payload.pop("binding_payload_digest")
         binding_payloads.append(payload)
-    return {
+    payload = {
         "kind": _KIND,
         "schema_version": schema_version,
         "sequence": sequence,
         "parent_checksum": parent_checksum,
         "bindings": binding_payloads,
     }
+    if schema_version == _SCHEMA_VERSION:
+        payload["nonce_root"] = nonce_root
+        payload["nonce_count"] = nonce_count
+    return payload
 
 
 def _new_record(
@@ -183,14 +210,26 @@ def _new_record(
     sequence: int,
     parent_checksum: str | None,
     bindings: tuple[AccountRuntimeBinding, ...],
+    nonce_root: str,
+    nonce_count: int,
 ) -> AccountRuntimeRegistryRecord:
     ordered = tuple(sorted(bindings, key=lambda item: item.account_identity_digest))
     payload = _record_payload(
         sequence=sequence,
         parent_checksum=parent_checksum,
         bindings=ordered,
+        nonce_root=nonce_root,
+        nonce_count=nonce_count,
     )
-    return AccountRuntimeRegistryRecord(sequence, parent_checksum, ordered, _digest(payload))
+    return AccountRuntimeRegistryRecord(
+        sequence,
+        parent_checksum,
+        ordered,
+        _digest(payload),
+        nonce_root,
+        nonce_count,
+        _SCHEMA_VERSION,
+    )
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -212,13 +251,20 @@ def _decode_binding(raw: object, *, schema_version: int) -> AccountRuntimeBindin
         "operation_history",
         "operation_kinds",
         "last_operation_receipt_digest",
+        "binding_revision",
+        "binding_payload_digest",
         "retired_runtime_identity_digests",
         "retired_account_identity_digests",
         "retired_lineage_digests",
     }
     if schema_version == _LEGACY_SCHEMA_VERSION:
+        expected.remove("binding_revision")
+        expected.remove("binding_payload_digest")
         expected.remove("operation_kinds")
         expected.remove("last_operation_receipt_digest")
+    elif schema_version == _HISTORY_SCHEMA_VERSION:
+        expected.remove("binding_revision")
+        expected.remove("binding_payload_digest")
     if not isinstance(raw, Mapping) or set(raw) != expected:
         raise AccountRuntimeRegistryError("account runtime binding schema is invalid")
     runtime, runtime_digest = _canonical_runtime(str(raw["canonical_runtime"]))
@@ -266,7 +312,11 @@ def _decode_binding(raw: object, *, schema_version: int) -> AccountRuntimeBindin
             kind == "legacy" and any(later != "legacy" for later in operation_kinds[:index])
             for index, kind in enumerate(operation_kinds)
         )
-        or (operation_kinds[0] not in {"bind", "legacy"} or "bind" in operation_kinds[1:])
+        or (
+            schema_version != _SCHEMA_VERSION
+            and (operation_kinds[0] not in {"bind", "legacy"} or "bind" in operation_kinds[1:])
+        )
+        or (schema_version == _SCHEMA_VERSION and "bind" in operation_kinds[1:])
     ):
         raise AccountRuntimeRegistryError("account runtime operation kind history is invalid")
     operation_receipt_raw = raw.get("last_operation_receipt_digest", "")
@@ -294,7 +344,7 @@ def _decode_binding(raw: object, *, schema_version: int) -> AccountRuntimeBindin
     last_operation = _sha(raw["last_operation_id"], "last account runtime operation")
     if history[-1] != last_operation:
         raise AccountRuntimeRegistryError("account runtime last operation is inconsistent")
-    return AccountRuntimeBinding(
+    binding = AccountRuntimeBinding(
         account_identity_digest=_sha(raw["account_identity_digest"], "economic account identity"),
         canonical_runtime=runtime,
         runtime_identity_digest=runtime_digest,
@@ -303,10 +353,34 @@ def _decode_binding(raw: object, *, schema_version: int) -> AccountRuntimeBindin
         operation_history=history,
         operation_kinds=operation_kinds,
         last_operation_receipt_digest=operation_receipt,
+        binding_revision=(
+            len(history) if schema_version != _SCHEMA_VERSION else raw["binding_revision"]
+        ),
+        binding_payload_digest=(
+            ""
+            if schema_version != _SCHEMA_VERSION
+            else _sha(raw["binding_payload_digest"], "account binding payload digest")
+        ),
         retired_runtime_identity_digests=retired,
         retired_account_identity_digests=retired_accounts,
         retired_lineage_digests=retired_lineages,
     )
+    if (
+        type(binding.binding_revision) is not int
+        or binding.binding_revision <= 0
+        or binding.binding_revision < len(binding.operation_history)
+        or (
+            schema_version == _SCHEMA_VERSION
+            and len(binding.operation_history) > _MAX_INLINE_OPERATION_HEADS
+        )
+    ):
+        raise AccountRuntimeRegistryError("account runtime binding revision is invalid")
+    if schema_version != _SCHEMA_VERSION:
+        binding = replace(
+            binding,
+            binding_payload_digest=_digest(_binding_payload_v2(binding)),
+        )
+    return binding
 
 
 def _lineage_digest(account: str, runtime_digest: str, epoch: str) -> str:
@@ -328,6 +402,33 @@ def _operation_receipt(kind: str, **identity: object) -> str:
     )
 
 
+def _bound_operation_heads(
+    history: tuple[str, ...],
+    kinds: tuple[str, ...],
+    operation: str,
+    kind: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return (
+        (*history, operation)[-_MAX_INLINE_OPERATION_HEADS:],
+        (*kinds, kind)[-_MAX_INLINE_OPERATION_HEADS:],
+    )
+
+
+def _advance_binding_authority(
+    previous: AccountRuntimeBinding | None,
+    binding: AccountRuntimeBinding,
+    *,
+    operation_receipt: str,
+) -> AccountRuntimeBinding:
+    revision = 1 if previous is None else previous.binding_revision + 1
+    payload_digest = _digest(_binding_payload_v2(binding))
+    return replace(
+        binding,
+        binding_revision=revision,
+        binding_payload_digest=payload_digest,
+    )
+
+
 def _decode_record(data: bytes) -> AccountRuntimeRegistryRecord:
     try:
         raw = json.loads(data.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
@@ -343,7 +444,7 @@ def _decode_record(data: bytes) -> AccountRuntimeRegistryRecord:
         "bindings",
         "checksum",
     }
-    if not isinstance(raw, Mapping) or set(raw) != expected:
+    if not isinstance(raw, Mapping):
         raise AccountRuntimeRegistryError("account runtime registry schema is invalid")
     schema_version = raw["schema_version"]
     if (
@@ -353,10 +454,15 @@ def _decode_record(data: bytes) -> AccountRuntimeRegistryRecord:
         or schema_version
         not in {
             _LEGACY_SCHEMA_VERSION,
+            _HISTORY_SCHEMA_VERSION,
             _SCHEMA_VERSION,
         }
     ):
         raise AccountRuntimeRegistryError("account runtime registry identity is invalid")
+    if schema_version == _SCHEMA_VERSION:
+        expected |= {"nonce_root", "nonce_count"}
+    if set(raw) != expected:
+        raise AccountRuntimeRegistryError("account runtime registry schema is invalid")
     sequence = raw["sequence"]
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
         raise AccountRuntimeRegistryError("account runtime registry sequence is invalid")
@@ -373,22 +479,40 @@ def _decode_record(data: bytes) -> AccountRuntimeRegistryRecord:
     ) or len({item.account_identity_digest for item in bindings}) != len(bindings):
         raise AccountRuntimeRegistryError("account runtime registry binding order is invalid")
     operations = [operation for binding in bindings for operation in binding.operation_history]
-    if len(operations) != len(set(operations)):
+    if schema_version != _SCHEMA_VERSION and len(operations) != len(set(operations)):
         raise AccountRuntimeRegistryError(
             "account runtime registry operation history is globally duplicated"
         )
     checksum = _sha(raw["checksum"], "account runtime registry checksum")
+    if schema_version == _SCHEMA_VERSION:
+        nonce_root = _sha(raw["nonce_root"], "account runtime nonce root")
+        nonce_count = raw["nonce_count"]
+        if type(nonce_count) is not int or nonce_count < 0:
+            raise AccountRuntimeRegistryError("account runtime nonce count is invalid")
+    else:
+        nonce_root = ""
+        nonce_count = 0
     expected_checksum = _digest(
         _record_payload(
             sequence=sequence,
             parent_checksum=parent,
             bindings=bindings,
             schema_version=schema_version,
+            nonce_root=nonce_root,
+            nonce_count=nonce_count,
         )
     )
     if checksum != expected_checksum:
         raise AccountRuntimeRegistryError("account runtime registry checksum mismatch")
-    return AccountRuntimeRegistryRecord(sequence, parent, bindings, checksum)
+    return AccountRuntimeRegistryRecord(
+        sequence,
+        parent,
+        bindings,
+        checksum,
+        nonce_root,
+        nonce_count,
+        schema_version,
+    )
 
 
 class AccountRuntimeRegistry:
@@ -403,6 +527,198 @@ class AccountRuntimeRegistry:
         self.previous_path = self.path.with_name(self.path.name + ".prev")
         self.lock_path = self.path.with_name(self.path.name + ".lock")
         self.lineage_path = self.path.with_name(self.path.name + ".lineage")
+
+    def _nonce_ledger(self):
+        from .account_runtime_nonce_ledger import AccountRuntimeNonceLedger
+
+        return AccountRuntimeNonceLedger.for_registry(self.path)
+
+    def _validate_nonce_anchor_unlocked(self, record: AccountRuntimeRegistryRecord) -> None:
+        if record.schema_version != _SCHEMA_VERSION:
+            return
+        from .account_runtime_nonce_ledger import (
+            MAX_NONCE_RECEIPTS,
+            AccountRuntimeNonceLedgerError,
+        )
+
+        try:
+            ledger = self._nonce_ledger()
+            ledger.load_ready_root()
+            if record.nonce_count > MAX_NONCE_RECEIPTS:
+                raise AccountRuntimeNonceLedgerError("nonce ledger count exceeds capacity cap")
+            for binding in record.bindings:
+                receipt = ledger.require_receipt(record.nonce_root, binding.last_operation_id)
+                legacy_tombstone = (
+                    receipt.legacy_tombstone and receipt.operation_kind == "legacy_tombstone"
+                )
+                if (
+                    (
+                        not legacy_tombstone
+                        and (
+                            receipt.operation_kind != binding.operation_kinds[-1]
+                            or receipt.semantic_request_digest
+                            != binding.last_operation_receipt_digest
+                        )
+                    )
+                    or receipt.account_identity_digest != binding.account_identity_digest
+                    or receipt.canonical_runtime != binding.canonical_runtime
+                    or receipt.account_epoch != binding.account_epoch
+                ):
+                    raise AccountRuntimeNonceLedgerError(
+                        "last account binding nonce receipt does not match registry"
+                    )
+        except AccountRuntimeNonceLedgerError as exc:
+            raise AccountRuntimeRegistryError(
+                "account runtime nonce ledger integrity validation failed"
+            ) from exc
+
+    def _reconcile_nonce_pending_unlocked(self, record: AccountRuntimeRegistryRecord) -> None:
+        ledger = self._nonce_ledger()
+        if not ledger.pending_path.exists():
+            return
+        try:
+            raw = json.loads(
+                ledger._read_exact(
+                    ledger.pending_path,
+                    maximum=16_000,
+                    label="pending transition",
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, OSError) as exc:
+            raise AccountRuntimeRegistryError("account runtime nonce pending is invalid") from exc
+        expected = {
+            "kind",
+            "schema_version",
+            "old_registry_checksum",
+            "old_root",
+            "old_count",
+            "new_root",
+            "new_count",
+            "operation_nonce",
+            "receipt_checksum",
+            "checksum",
+        }
+        if type(raw) is not dict or set(raw) != expected:
+            raise AccountRuntimeRegistryError("account runtime nonce pending is invalid")
+        unsigned = {key: value for key, value in raw.items() if key != "checksum"}
+        if raw["checksum"] != _digest(unsigned):
+            raise AccountRuntimeRegistryError("account runtime nonce pending checksum mismatch")
+        if record.nonce_root == raw["new_root"] and record.nonce_count == raw["new_count"]:
+            ledger.require_receipt(record.nonce_root, raw["operation_nonce"])
+            ledger.pending_path.unlink()
+            ledger._fsync_parent(ledger.pending_path)
+            return
+        if not (
+            record.checksum == raw["old_registry_checksum"]
+            and record.nonce_root == raw["old_root"]
+            and record.nonce_count == raw["old_count"]
+        ):
+            raise AccountRuntimeRegistryError(
+                "account runtime nonce pending does not match registry CAS"
+            )
+
+    @staticmethod
+    def _nonce_receipt_for(
+        *,
+        operation: str,
+        kind: str,
+        account: str,
+        runtime: str,
+        runtime_digest: str,
+        epoch: str,
+        semantic_request_digest: str,
+        legacy_tombstone: bool = False,
+    ):
+        from .account_runtime_nonce_ledger import build_nonce_receipt
+
+        return build_nonce_receipt(
+            operation_nonce=operation,
+            operation_kind=kind,
+            account_identity_digest=account,
+            canonical_runtime=runtime,
+            runtime_identity_digest=runtime_digest,
+            account_epoch=epoch,
+            semantic_request_digest=semantic_request_digest,
+            legacy_tombstone=legacy_tombstone,
+        )
+
+    def _require_nonce_unused_unlocked(
+        self,
+        current: AccountRuntimeRegistryRecord,
+        receipt,
+    ) -> None:
+        from .account_runtime_nonce_ledger import AccountRuntimeNonceLedgerError
+
+        if current.schema_version != _SCHEMA_VERSION:
+            raise AccountRuntimeRegistryError("account runtime nonce ledger migration is required")
+        try:
+            existing = self._nonce_ledger().lookup(current.nonce_root, receipt.operation_nonce)
+        except AccountRuntimeNonceLedgerError as exc:
+            raise AccountRuntimeRegistryError(
+                "account runtime nonce ledger integrity failed"
+            ) from exc
+        if existing is not None:
+            if existing == receipt:
+                raise AccountRuntimeRegistryError(
+                    "account runtime operation was already consumed for this exact request"
+                )
+            raise AccountRuntimeRegistryError(
+                "account runtime operation was already consumed for a different request"
+            )
+
+    @staticmethod
+    def _require_schema3_nonce_ledger(current: AccountRuntimeRegistryRecord) -> None:
+        if current.schema_version != _SCHEMA_VERSION:
+            raise AccountRuntimeRegistryError("account runtime nonce ledger migration is required")
+
+    def _save_with_nonce_unlocked(
+        self,
+        current: AccountRuntimeRegistryRecord,
+        bindings: tuple[AccountRuntimeBinding, ...],
+        receipt,
+    ) -> AccountRuntimeRegistryRecord:
+        from .account_runtime_nonce_ledger import AccountRuntimeNonceLedgerError
+
+        if current.schema_version != _SCHEMA_VERSION:
+            raise AccountRuntimeRegistryError("account runtime nonce ledger migration is required")
+        ledger = self._nonce_ledger()
+        try:
+            insertion = ledger.insert(
+                old_root=current.nonce_root,
+                old_count=current.nonce_count,
+                receipt=receipt,
+                fault_after_receipt=(
+                    getattr(self, "_nonce_commit_fault", None) == "after_receipt_before_registry"
+                ),
+            )
+            pending_unsigned = {
+                "kind": "afuture.account-runtime-nonce-pending",
+                "schema_version": 1,
+                "old_registry_checksum": current.checksum,
+                "old_root": insertion.old_root,
+                "old_count": insertion.old_count,
+                "new_root": insertion.new_root,
+                "new_count": insertion.new_count,
+                "operation_nonce": receipt.operation_nonce,
+                "receipt_checksum": receipt.checksum,
+            }
+            pending = _canonical_json({**pending_unsigned, "checksum": _digest(pending_unsigned)})
+            ledger._durable_create_exact(
+                ledger.pending_path,
+                pending,
+                maximum=16_000,
+            )
+            self._next_nonce_anchor = (insertion.new_root, insertion.new_count)
+            try:
+                saved = self._save_unlocked(current, bindings)
+            finally:
+                del self._next_nonce_anchor
+            ledger.require_receipt(saved.nonce_root, receipt.operation_nonce)
+            ledger.pending_path.unlink()
+            ledger._fsync_parent(ledger.pending_path)
+            return saved
+        except AccountRuntimeNonceLedgerError as exc:
+            raise AccountRuntimeRegistryError(str(exc)) from exc
 
     def _read_bytes(self, path: Path) -> bytes:
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -480,6 +796,7 @@ class AccountRuntimeRegistry:
             self._validate_and_refsync_lineage_marker_unlocked()
         else:
             self._create_lineage_marker_unlocked()
+        self._validate_nonce_anchor_unlocked(validated)
         return validated
 
     @staticmethod
@@ -769,17 +1086,33 @@ class AccountRuntimeRegistry:
         self,
         previous: AccountRuntimeRegistryRecord | None,
         bindings: tuple[AccountRuntimeBinding, ...],
+        *,
+        nonce_root: str | None = None,
+        nonce_count: int | None = None,
     ) -> AccountRuntimeRegistryRecord:
+        staged_anchor = getattr(self, "_next_nonce_anchor", None)
+        if nonce_root is None and staged_anchor is not None:
+            nonce_root = staged_anchor[0]
+        if nonce_count is None and staged_anchor is not None:
+            nonce_count = staged_anchor[1]
+        if nonce_root is None:
+            nonce_root = "" if previous is None else previous.nonce_root
+        if nonce_count is None:
+            nonce_count = 0 if previous is None else previous.nonce_count
         record = _new_record(
             sequence=1 if previous is None else previous.sequence + 1,
             parent_checksum=None if previous is None else previous.checksum,
             bindings=bindings,
+            nonce_root=nonce_root,
+            nonce_count=nonce_count,
         )
         payload = {
             **_record_payload(
                 sequence=record.sequence,
                 parent_checksum=record.parent_checksum,
                 bindings=record.bindings,
+                nonce_root=record.nonce_root,
+                nonce_count=record.nonce_count,
             ),
             "checksum": record.checksum,
         }
@@ -831,7 +1164,14 @@ class AccountRuntimeRegistry:
                 raise AccountRuntimeRegistryError("account runtime registry is already initialized")
             self._create_lineage_marker_unlocked()
             self._claim_initial_visible_lock_unlocked(lock)
-            initialized = self._save_unlocked(None, ())
+            from .account_runtime_nonce_ledger import EMPTY_NONCE_ROOT
+
+            self._nonce_ledger().initialize_ready(source_digest=sha256(_LINEAGE_MARKER).hexdigest())
+            self._next_nonce_anchor = (EMPTY_NONCE_ROOT, 0)
+            try:
+                initialized = self._save_unlocked(None, ())
+            finally:
+                del self._next_nonce_anchor
             durable = self._load_unlocked(
                 required=True,
                 legacy_lock_evidence=lock.legacy_lock_evidence,
@@ -841,6 +1181,142 @@ class AccountRuntimeRegistry:
                     "account runtime registry initialization revalidation failed"
                 )
             return durable
+
+    def migrate_nonce_ledger(
+        self,
+        *,
+        strong_confirmation: str,
+    ) -> AccountRuntimeRegistryRecord:
+        """Explicitly migrate schema-1/2 nonce history into immutable membership proof."""
+
+        if strong_confirmation != ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION:
+            raise AccountRuntimeRegistryError(
+                "account runtime nonce ledger migration confirmation is invalid"
+            )
+        from .account_runtime_nonce_ledger import (
+            EMPTY_NONCE_ROOT,
+            AccountRuntimeNonceLedgerError,
+        )
+
+        with self._exclusive_lock() as lock:
+            current = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=lock.legacy_lock_evidence,
+            )
+            assert current is not None
+            if current.schema_version == _SCHEMA_VERSION:
+                self._validate_nonce_anchor_unlocked(current)
+                return current
+            manifest = tuple(
+                sorted(
+                    (
+                        operation,
+                        binding.operation_kinds[index],
+                        binding.account_identity_digest,
+                        binding.canonical_runtime,
+                        binding.runtime_identity_digest,
+                        binding.account_epoch,
+                        index,
+                    )
+                    for binding in current.bindings
+                    for index, operation in enumerate(binding.operation_history)
+                )
+            )
+            marker_unsigned = {
+                "kind": "afuture.account-runtime-nonce-migration",
+                "schema_version": 1,
+                "registry_path": str(self.path),
+                "lineage_digest": sha256(_LINEAGE_MARKER).hexdigest(),
+                "source_registry_sequence": current.sequence,
+                "source_registry_checksum": current.checksum,
+                "source_previous_checksum": current.parent_checksum,
+                "manifest_digest": _digest(manifest),
+                "manifest_count": len(manifest),
+            }
+            marker_checksum = _digest(marker_unsigned)
+            marker_payload = _canonical_json({**marker_unsigned, "checksum": marker_checksum})
+            ledger = self._nonce_ledger()
+            try:
+                ledger._durable_create_exact(
+                    ledger.migration_path,
+                    marker_payload,
+                    maximum=16_000,
+                )
+                if getattr(self, "_nonce_migration_fault", None) in {
+                    "migration_marker_file",
+                    "migration_marker_parent",
+                }:
+                    raise AccountRuntimeRegistryError("injected nonce migration marker crash")
+                root = EMPTY_NONCE_ROOT
+                count = 0
+                for index, item in enumerate(manifest):
+                    (
+                        operation,
+                        recorded_kind,
+                        account,
+                        runtime,
+                        runtime_digest,
+                        epoch,
+                        history_index,
+                    ) = item
+                    tombstone_digest = _digest(
+                        {
+                            "kind": "legacy_history_tombstone",
+                            "source_registry_checksum": current.checksum,
+                            "manifest_digest": marker_unsigned["manifest_digest"],
+                            "manifest_index": index,
+                            "binding_history_index": history_index,
+                            "recorded_kind": recorded_kind,
+                        }
+                    )
+                    receipt = self._nonce_receipt_for(
+                        operation=operation,
+                        kind="legacy_tombstone",
+                        account=account,
+                        runtime=runtime,
+                        runtime_digest=runtime_digest,
+                        epoch=epoch,
+                        semantic_request_digest=tombstone_digest,
+                        legacy_tombstone=True,
+                    )
+                    insertion = ledger.insert(
+                        old_root=root,
+                        old_count=count,
+                        receipt=receipt,
+                        fault_after_receipt=(
+                            index == 0
+                            and getattr(self, "_nonce_migration_fault", None) == "legacy_receipt"
+                        ),
+                    )
+                    root, count = insertion.new_root, insertion.new_count
+                    if (
+                        index == 0
+                        and getattr(self, "_nonce_migration_fault", None) == "legacy_node"
+                    ):
+                        raise AccountRuntimeRegistryError("injected nonce migration node crash")
+                ledger.write_ready(
+                    source_digest=marker_checksum,
+                    initial_root=root,
+                    initial_count=count,
+                )
+                if getattr(self, "_nonce_migration_fault", None) in {
+                    "ready_file",
+                    "ready_parent",
+                }:
+                    raise AccountRuntimeRegistryError("injected nonce migration ready crash")
+                if getattr(self, "_nonce_migration_fault", None) == "registry_cas":
+                    raise AccountRuntimeRegistryError("injected nonce migration registry CAS crash")
+                self._next_nonce_anchor = (root, count)
+                try:
+                    migrated = self._save_unlocked(current, current.bindings)
+                finally:
+                    del self._next_nonce_anchor
+                self._validate_nonce_anchor_unlocked(migrated)
+                return migrated
+            except AccountRuntimeNonceLedgerError as exc:
+                raise AccountRuntimeRegistryError(
+                    "account runtime nonce ledger migration failed"
+                ) from exc
 
     def bind_new(
         self,
@@ -860,12 +1336,22 @@ class AccountRuntimeRegistry:
             canonical_runtime=runtime,
             account_epoch=epoch,
         )
+        nonce_receipt = self._nonce_receipt_for(
+            operation=operation,
+            kind="bind",
+            account=account,
+            runtime=runtime,
+            runtime_digest=runtime_digest,
+            epoch=epoch,
+            semantic_request_digest=operation_receipt,
+        )
         with self._exclusive_lock() as lock:
             current = self._load_unlocked(
                 required=True,
                 legacy_lock_evidence=lock.legacy_lock_evidence,
             )
             assert current is not None
+            self._require_schema3_nonce_ledger(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             existing = bindings.get(account)
             if (
@@ -877,11 +1363,13 @@ class AccountRuntimeRegistry:
                 and existing.operation_kinds[-1] == "bind"
                 and existing.last_operation_receipt_digest == operation_receipt
             ):
+                if (
+                    self._nonce_ledger().require_receipt(current.nonce_root, operation)
+                    != nonce_receipt
+                ):
+                    raise AccountRuntimeRegistryError("exact bind retry nonce receipt changed")
                 return current
-            if operation in {
-                consumed for item in bindings.values() for consumed in item.operation_history
-            }:
-                raise AccountRuntimeRegistryError("account runtime operation was already consumed")
+            self._require_nonce_unused_unlocked(current, nonce_receipt)
             if existing is not None:
                 if existing.runtime_identity_digest != runtime_digest:
                     raise AccountRuntimeRegistryError(
@@ -917,17 +1405,21 @@ class AccountRuntimeRegistry:
                 )
             if len(bindings) >= _MAX_ACCOUNTS:
                 raise AccountRuntimeRegistryError("account runtime registry capacity exhausted")
-            bindings[account] = AccountRuntimeBinding(
-                account_identity_digest=account,
-                canonical_runtime=runtime,
-                runtime_identity_digest=runtime_digest,
-                account_epoch=epoch,
-                last_operation_id=operation,
-                operation_history=(operation,),
-                operation_kinds=("bind",),
-                last_operation_receipt_digest=operation_receipt,
+            bindings[account] = _advance_binding_authority(
+                None,
+                AccountRuntimeBinding(
+                    account_identity_digest=account,
+                    canonical_runtime=runtime,
+                    runtime_identity_digest=runtime_digest,
+                    account_epoch=epoch,
+                    last_operation_id=operation,
+                    operation_history=(operation,),
+                    operation_kinds=("bind",),
+                    last_operation_receipt_digest=operation_receipt,
+                ),
+                operation_receipt=operation_receipt,
             )
-            return self._save_unlocked(current, tuple(bindings.values()))
+            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)
 
     def switch_account_binding(
         self,
@@ -962,6 +1454,15 @@ class AccountRuntimeRegistry:
             source_account_epoch=source,
             target_account_epoch=target,
         )
+        nonce_receipt = self._nonce_receipt_for(
+            operation=operation,
+            kind="switch",
+            account=target_account,
+            runtime=runtime,
+            runtime_digest=runtime_digest,
+            epoch=target,
+            semantic_request_digest=operation_receipt,
+        )
         if source_account == target_account or source == target:
             raise AccountRuntimeRegistryError(
                 "account switch must change account identity and epoch"
@@ -974,6 +1475,7 @@ class AccountRuntimeRegistry:
                 legacy_lock_evidence=lock.legacy_lock_evidence,
             )
             assert current is not None
+            self._require_schema3_nonce_ledger(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             target_binding = bindings.get(target_account)
             if (
@@ -987,11 +1489,13 @@ class AccountRuntimeRegistry:
                 and source_account in target_binding.retired_account_identity_digests
                 and source_lineage in target_binding.retired_lineage_digests
             ):
+                if (
+                    self._nonce_ledger().require_receipt(current.nonce_root, operation)
+                    != nonce_receipt
+                ):
+                    raise AccountRuntimeRegistryError("exact switch retry nonce receipt changed")
                 return current
-            if operation in {
-                consumed for item in bindings.values() for consumed in item.operation_history
-            }:
-                raise AccountRuntimeRegistryError("account switch operation was already consumed")
+            self._require_nonce_unused_unlocked(current, nonce_receipt)
             source_binding = bindings.get(source_account)
             if source_binding is None:
                 raise AccountRuntimeRegistryError("account switch source binding is missing")
@@ -1018,22 +1522,32 @@ class AccountRuntimeRegistry:
             retired_accounts = tuple(
                 dict.fromkeys((*source_binding.retired_account_identity_digests, source_account))
             )
-            bindings.pop(source_account)
-            bindings[target_account] = replace(
-                source_binding,
-                account_identity_digest=target_account,
-                account_epoch=target,
-                last_operation_id=operation,
-                operation_history=(*source_binding.operation_history, operation),
-                operation_kinds=(*source_binding.operation_kinds, "switch"),
-                last_operation_receipt_digest=operation_receipt,
-                retired_account_identity_digests=retired_accounts,
-                retired_lineage_digests=(
-                    *source_binding.retired_lineage_digests,
-                    source_lineage,
-                ),
+            operation_history, operation_kinds = _bound_operation_heads(
+                source_binding.operation_history,
+                source_binding.operation_kinds,
+                operation,
+                "switch",
             )
-            return self._save_unlocked(current, tuple(bindings.values()))
+            bindings.pop(source_account)
+            bindings[target_account] = _advance_binding_authority(
+                source_binding,
+                replace(
+                    source_binding,
+                    account_identity_digest=target_account,
+                    account_epoch=target,
+                    last_operation_id=operation,
+                    operation_history=operation_history,
+                    operation_kinds=operation_kinds,
+                    last_operation_receipt_digest=operation_receipt,
+                    retired_account_identity_digests=retired_accounts,
+                    retired_lineage_digests=(
+                        *source_binding.retired_lineage_digests,
+                        source_lineage,
+                    ),
+                ),
+                operation_receipt=operation_receipt,
+            )
+            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)
 
     def require_binding(
         self,
@@ -1125,6 +1639,15 @@ class AccountRuntimeRegistry:
             source_account_epoch=source,
             target_account_epoch=target,
         )
+        nonce_receipt = self._nonce_receipt_for(
+            operation=operation,
+            kind="advance",
+            account=account,
+            runtime=runtime,
+            runtime_digest=runtime_digest,
+            epoch=target,
+            semantic_request_digest=operation_receipt,
+        )
         if source == target:
             raise AccountRuntimeRegistryError("account runtime epoch CAS requires a new epoch")
         with self._exclusive_lock() as lock:
@@ -1133,6 +1656,7 @@ class AccountRuntimeRegistry:
                 legacy_lock_evidence=lock.legacy_lock_evidence,
             )
             assert current is not None
+            self._require_schema3_nonce_ledger(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
             if binding is None:
@@ -1148,22 +1672,34 @@ class AccountRuntimeRegistry:
                 and binding.operation_kinds[-1] == "advance"
                 and binding.last_operation_receipt_digest == operation_receipt
             ):
+                if (
+                    self._nonce_ledger().require_receipt(current.nonce_root, operation)
+                    != nonce_receipt
+                ):
+                    raise AccountRuntimeRegistryError("exact epoch retry nonce receipt changed")
                 return current
-            if operation in {
-                consumed for item in bindings.values() for consumed in item.operation_history
-            }:
-                raise AccountRuntimeRegistryError("account runtime operation was already consumed")
+            self._require_nonce_unused_unlocked(current, nonce_receipt)
             if binding.account_epoch != source:
                 raise AccountRuntimeRegistryError("account runtime epoch CAS source mismatch")
-            bindings[account] = replace(
-                binding,
-                account_epoch=target,
-                last_operation_id=operation,
-                operation_history=(*binding.operation_history, operation),
-                operation_kinds=(*binding.operation_kinds, "advance"),
-                last_operation_receipt_digest=operation_receipt,
+            operation_history, operation_kinds = _bound_operation_heads(
+                binding.operation_history,
+                binding.operation_kinds,
+                operation,
+                "advance",
             )
-            return self._save_unlocked(current, tuple(bindings.values()))
+            bindings[account] = _advance_binding_authority(
+                binding,
+                replace(
+                    binding,
+                    account_epoch=target,
+                    last_operation_id=operation,
+                    operation_history=operation_history,
+                    operation_kinds=operation_kinds,
+                    last_operation_receipt_digest=operation_receipt,
+                ),
+                operation_receipt=operation_receipt,
+            )
+            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)
 
     def acknowledge_binding_operation(
         self,
@@ -1185,12 +1721,22 @@ class AccountRuntimeRegistry:
             canonical_runtime=runtime,
             account_epoch=source,
         )
+        nonce_receipt = self._nonce_receipt_for(
+            operation=operation,
+            kind="acknowledgement",
+            account=account,
+            runtime=runtime,
+            runtime_digest=runtime_digest,
+            epoch=source,
+            semantic_request_digest=operation_receipt,
+        )
         with self._exclusive_lock() as lock:
             current = self._load_unlocked(
                 required=True,
                 legacy_lock_evidence=lock.legacy_lock_evidence,
             )
             assert current is not None
+            self._require_schema3_nonce_ledger(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
             if binding is None:
@@ -1205,9 +1751,8 @@ class AccountRuntimeRegistry:
                 raise AccountRuntimeRegistryError(
                     "account runtime acknowledgement source CAS mismatch"
                 )
-            if operation in {
-                consumed for item in bindings.values() for consumed in item.operation_history
-            }:
+            existing_nonce = self._nonce_ledger().lookup(current.nonce_root, operation)
+            if existing_nonce is not None:
                 exact_acknowledgement = (
                     binding.operation_kinds[-1] == "acknowledgement"
                     and binding.last_operation_receipt_digest == operation_receipt
@@ -1219,21 +1764,33 @@ class AccountRuntimeRegistry:
                     account,
                     operation,
                 )
-                if binding.last_operation_id == operation and (
-                    exact_acknowledgement or legacy_exact_retry
+                if (
+                    binding.last_operation_id == operation
+                    and (exact_acknowledgement or legacy_exact_retry)
+                    and existing_nonce == nonce_receipt
                 ):
                     return current
                 raise AccountRuntimeRegistryError(
                     "account runtime acknowledgement operation was already consumed"
                 )
-            bindings[account] = replace(
-                binding,
-                last_operation_id=operation,
-                operation_history=(*binding.operation_history, operation),
-                operation_kinds=(*binding.operation_kinds, "acknowledgement"),
-                last_operation_receipt_digest=operation_receipt,
+            operation_history, operation_kinds = _bound_operation_heads(
+                binding.operation_history,
+                binding.operation_kinds,
+                operation,
+                "acknowledgement",
             )
-            return self._save_unlocked(current, tuple(bindings.values()))
+            bindings[account] = _advance_binding_authority(
+                binding,
+                replace(
+                    binding,
+                    last_operation_id=operation,
+                    operation_history=operation_history,
+                    operation_kinds=operation_kinds,
+                    last_operation_receipt_digest=operation_receipt,
+                ),
+                operation_receipt=operation_receipt,
+            )
+            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)
 
     def acknowledge_stress90_recovery_operation(
         self,
@@ -1258,12 +1815,22 @@ class AccountRuntimeRegistry:
             canonical_runtime=runtime,
             account_epoch=source,
         )
+        nonce_receipt = self._nonce_receipt_for(
+            operation=operation,
+            kind="stress90_crash_fill_recovery",
+            account=account,
+            runtime=runtime,
+            runtime_digest=runtime_digest,
+            epoch=source,
+            semantic_request_digest=operation_receipt,
+        )
         with self._exclusive_lock() as lock:
             current = self._load_unlocked(
                 required=True,
                 legacy_lock_evidence=lock.legacy_lock_evidence,
             )
             assert current is not None
+            self._require_schema3_nonce_ledger(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
             if binding is None:
@@ -1274,29 +1841,36 @@ class AccountRuntimeRegistry:
                 or binding.account_epoch != source
             ):
                 raise AccountRuntimeRegistryError("Stress-90 recovery registry source CAS mismatch")
-            if operation in {
-                consumed for item in bindings.values() for consumed in item.operation_history
-            }:
+            existing_nonce = self._nonce_ledger().lookup(current.nonce_root, operation)
+            if existing_nonce is not None:
                 if (
                     binding.last_operation_id == operation
                     and binding.operation_kinds[-1] == "stress90_crash_fill_recovery"
                     and binding.last_operation_receipt_digest == operation_receipt
+                    and existing_nonce == nonce_receipt
                 ):
                     return current
                 raise AccountRuntimeRegistryError(
                     "Stress-90 recovery operation was already consumed for a different request"
                 )
-            bindings[account] = replace(
-                binding,
-                last_operation_id=operation,
-                operation_history=(*binding.operation_history, operation),
-                operation_kinds=(
-                    *binding.operation_kinds,
-                    "stress90_crash_fill_recovery",
-                ),
-                last_operation_receipt_digest=operation_receipt,
+            operation_history, operation_kinds = _bound_operation_heads(
+                binding.operation_history,
+                binding.operation_kinds,
+                operation,
+                "stress90_crash_fill_recovery",
             )
-            return self._save_unlocked(current, tuple(bindings.values()))
+            bindings[account] = _advance_binding_authority(
+                binding,
+                replace(
+                    binding,
+                    last_operation_id=operation,
+                    operation_history=operation_history,
+                    operation_kinds=operation_kinds,
+                    last_operation_receipt_digest=operation_receipt,
+                ),
+                operation_receipt=operation_receipt,
+            )
+            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)
 
     def _is_exact_unchanged_binding_acknowledgement_retry(
         self,
@@ -1383,6 +1957,15 @@ class AccountRuntimeRegistry:
             target_account_epoch=target,
             operator_reason=operator_reason,
         )
+        nonce_receipt = self._nonce_receipt_for(
+            operation=operation,
+            kind="transfer",
+            account=account,
+            runtime=target_runtime,
+            runtime_digest=target_runtime_digest,
+            epoch=target,
+            semantic_request_digest=operation_receipt,
+        )
         if source_runtime_digest == target_runtime_digest or source == target:
             raise AccountRuntimeRegistryError("account runtime transfer must change lineage")
         with self._exclusive_lock() as lock:
@@ -1391,6 +1974,7 @@ class AccountRuntimeRegistry:
                 legacy_lock_evidence=lock.legacy_lock_evidence,
             )
             assert current is not None
+            self._require_schema3_nonce_ledger(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
             if binding is None:
@@ -1404,13 +1988,13 @@ class AccountRuntimeRegistry:
                 and binding.last_operation_receipt_digest == operation_receipt
                 and source_runtime_digest in binding.retired_runtime_identity_digests
             ):
+                if (
+                    self._nonce_ledger().require_receipt(current.nonce_root, operation)
+                    != nonce_receipt
+                ):
+                    raise AccountRuntimeRegistryError("exact transfer retry nonce receipt changed")
                 return current
-            if operation in {
-                consumed for item in bindings.values() for consumed in item.operation_history
-            }:
-                raise AccountRuntimeRegistryError(
-                    "account runtime transfer operation was already consumed"
-                )
+            self._require_nonce_unused_unlocked(current, nonce_receipt)
             if (
                 binding.canonical_runtime != source_runtime
                 or binding.runtime_identity_digest != source_runtime_digest
@@ -1423,18 +2007,28 @@ class AccountRuntimeRegistry:
                 )
             if len(binding.retired_runtime_identity_digests) >= _MAX_OPERATION_HISTORY:
                 raise AccountRuntimeRegistryError("account runtime transfer history exhausted")
-            bindings[account] = replace(
-                binding,
-                canonical_runtime=target_runtime,
-                runtime_identity_digest=target_runtime_digest,
-                account_epoch=target,
-                last_operation_id=operation,
-                operation_history=(*binding.operation_history, operation),
-                operation_kinds=(*binding.operation_kinds, "transfer"),
-                last_operation_receipt_digest=operation_receipt,
-                retired_runtime_identity_digests=(
-                    *binding.retired_runtime_identity_digests,
-                    source_runtime_digest,
-                ),
+            operation_history, operation_kinds = _bound_operation_heads(
+                binding.operation_history,
+                binding.operation_kinds,
+                operation,
+                "transfer",
             )
-            return self._save_unlocked(current, tuple(bindings.values()))
+            bindings[account] = _advance_binding_authority(
+                binding,
+                replace(
+                    binding,
+                    canonical_runtime=target_runtime,
+                    runtime_identity_digest=target_runtime_digest,
+                    account_epoch=target,
+                    last_operation_id=operation,
+                    operation_history=operation_history,
+                    operation_kinds=operation_kinds,
+                    last_operation_receipt_digest=operation_receipt,
+                    retired_runtime_identity_digests=(
+                        *binding.retired_runtime_identity_digests,
+                        source_runtime_digest,
+                    ),
+                ),
+                operation_receipt=operation_receipt,
+            )
+            return self._save_with_nonce_unlocked(current, tuple(bindings.values()), nonce_receipt)

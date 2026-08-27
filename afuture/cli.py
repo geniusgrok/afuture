@@ -145,6 +145,15 @@ def build_parser() -> argparse.ArgumentParser:
     stress90_registry_init.add_argument("--confirm-initialize", action="store_true")
     stress90_registry_init.add_argument("--operator-reason", required=True)
 
+    stress90_registry_nonce_migrate = sub.add_parser(
+        "stress90-registry-nonce-migrate",
+        help="显式迁移机器 registry 历史 nonce 到认证永久 ledger",
+    )
+    stress90_registry_nonce_migrate.add_argument("--config", required=True)
+    stress90_registry_nonce_migrate.add_argument("--confirm-live", action="store_true")
+    stress90_registry_nonce_migrate.add_argument("--confirm-nonce-migration", action="store_true")
+    stress90_registry_nonce_migrate.add_argument("--operator-reason", required=True)
+
     stress90_activate = sub.add_parser(
         "stress90-activate",
         help="在停机、空仓、无活动委托并完成对账后显式绑定 Stress-90 identity",
@@ -1468,6 +1477,59 @@ def _run_stress90_registry_init(config, args) -> int:
                 "sequence": record.sequence,
                 "checksum": record.checksum,
                 "bindings": len(record.bindings),
+                "orders_sent": 0,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _run_stress90_registry_nonce_migrate(config, args) -> int:
+    """Explicitly migrate legacy nonce history without constructing a Broker."""
+
+    from .account_runtime_registry import (
+        ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION,
+        PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH,
+        AccountRuntimeRegistry,
+    )
+
+    if (
+        config.mode != "live"
+        or not config.directional.enabled
+        or config.directional.policy != "stress90"
+        or not config.directional.account_exclusive
+        or not args.confirm_live
+        or not args.confirm_nonce_migration
+    ):
+        raise RuntimeError(
+            "nonce migration requires live account-exclusive Stress-90 confirmations"
+        )
+    if Path(config.account_registry_path) != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH:
+        raise ValueError("nonce migration requires the fixed machine registry path")
+    reason = args.operator_reason
+    if type(reason) is not str or not reason.strip() or reason != reason.strip():
+        raise ValueError("nonce migration operator reason is invalid")
+    if (
+        os.getenv("AFUTURE_ACCOUNT_RUNTIME_NONCE_MIGRATION_ACK")
+        != ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION
+    ):
+        raise RuntimeError(
+            "nonce migration requires AFUTURE_ACCOUNT_RUNTIME_NONCE_MIGRATION_ACK="
+            + ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION
+        )
+    migrated = AccountRuntimeRegistry(
+        PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH
+    ).migrate_nonce_ledger(strong_confirmation=ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION)
+    print(
+        json.dumps(
+            {
+                "migrated": True,
+                "registry_sequence": migrated.sequence,
+                "registry_checksum": migrated.checksum,
+                "nonce_root": migrated.nonce_root,
+                "nonce_count": migrated.nonce_count,
                 "orders_sent": 0,
             },
             ensure_ascii=False,
@@ -5362,6 +5424,7 @@ def main(argv: list[str] | None = None) -> int:
             "status",
             "stress90-bootstrap",
             "stress90-registry-init",
+            "stress90-registry-nonce-migrate",
             "stress90-oi-compare",
             "directional-ohlc-refresh",
         },
@@ -5372,6 +5435,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_stress90_bootstrap(config, args)
     if args.command == "stress90-registry-init":
         return _run_stress90_registry_init(config, args)
+    if args.command == "stress90-registry-nonce-migrate":
+        return _run_stress90_registry_nonce_migrate(config, args)
     if args.command == "directional-ohlc-refresh":
         return _run_directional_ohlc_refresh(config, args)
     if args.command == "stress90-oi-compare":

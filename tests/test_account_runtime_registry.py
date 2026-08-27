@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import stat
 from multiprocessing import get_context
 from pathlib import Path
@@ -402,7 +403,7 @@ def test_operation_nonce_is_globally_unique_for_every_registry_mutation(
         )
 
 
-def test_legacy_registry_record_is_rewritten_with_explicit_operation_kinds(
+def test_legacy_registry_requires_explicit_nonce_migration_before_rewrite(
     tmp_path: Path,
 ) -> None:
     from afuture import account_runtime_registry as registry_module
@@ -413,18 +414,31 @@ def test_legacy_registry_record_is_rewritten_with_explicit_operation_kinds(
     source_epoch = "2" * 64
     registry.bind_new(account, runtime, source_epoch, "3" * 64)
 
-    legacy = json.loads(registry.path.read_text(encoding="utf-8"))
-    legacy["schema_version"] = 1
-    for binding in legacy["bindings"]:
-        binding.pop("operation_kinds")
-        binding.pop("last_operation_receipt_digest")
-    legacy["checksum"] = registry_module._digest(
-        {key: value for key, value in legacy.items() if key != "checksum"}
+    record = registry.load_required()
+    unsigned = registry_module._record_payload(
+        sequence=1,
+        parent_checksum=None,
+        bindings=record.bindings,
+        schema_version=1,
     )
+    legacy = {**unsigned, "checksum": registry_module._digest(unsigned)}
     registry.path.write_text(json.dumps(legacy), encoding="utf-8")
+    registry.previous_path.unlink(missing_ok=True)
+    shutil.rmtree(registry.path.with_name(registry.path.name + ".nonce-ledger"))
 
     loaded = registry.load_required()
     assert loaded.bindings[0].operation_kinds == ("legacy",)
+    with pytest.raises(registry_module.AccountRuntimeRegistryError, match="migration"):
+        registry.advance_epoch(
+            account,
+            runtime,
+            source_epoch,
+            "4" * 64,
+            "5" * 64,
+        )
+    registry.migrate_nonce_ledger(
+        strong_confirmation=(registry_module.ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION)
+    )
     registry.advance_epoch(
         account,
         runtime,
@@ -434,7 +448,7 @@ def test_legacy_registry_record_is_rewritten_with_explicit_operation_kinds(
     )
 
     rewritten = json.loads(registry.path.read_text(encoding="utf-8"))
-    assert rewritten["schema_version"] == 2
+    assert rewritten["schema_version"] == 3
     assert rewritten["bindings"][0]["operation_kinds"] == ["legacy", "advance"]
     assert len(rewritten["bindings"][0]["last_operation_receipt_digest"]) == 64
     assert registry.load_required().bindings[0].operation_kinds == (
@@ -458,7 +472,7 @@ def test_registry_decoder_rejects_historical_cross_account_duplicate_nonces(
     raw["checksum"] = _test_digest(unsigned)
     registry.path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(AccountRuntimeRegistryError, match="operation.*duplicated"):
+    with pytest.raises(AccountRuntimeRegistryError, match="nonce ledger|integrity"):
         registry.load_required()
 
 
