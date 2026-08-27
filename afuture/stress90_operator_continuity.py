@@ -25,9 +25,7 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _MAX_FILE_BYTES = 1_000_000
 _MAX_RUNTIME_PATH = 4_096
 _LINEAGE_MARKER = b'{"kind":"afuture.stress90-operator-continuity-lineage","schema_version":1}\n'
-STRESS90_OPERATOR_CONTINUITY_CONFIRMATION = (
-    "I_CONFIRM_EXCLUSIVE_ACCOUNT_AND_NO_EXTERNAL_ACTIVITY"
-)
+STRESS90_OPERATOR_CONTINUITY_CONFIRMATION = "I_CONFIRM_EXCLUSIVE_ACCOUNT_AND_NO_EXTERNAL_ACTIVITY"
 _OPERATOR_CONFIRMATION_TYPE = "exclusive_account_no_external_activity"
 
 
@@ -77,6 +75,128 @@ class Stress90OperatorContinuityEvidence:
     no_withdrawal: bool
     evidence_authority: str
     authoritative_broker_or_exchange_evidence: bool
+
+
+@dataclass(frozen=True)
+class Stress90OperatorAccountDayContinuityEvidence:
+    completed_account_day: str
+    current_ctp_trading_day: str
+    natural_day_gap: int
+    ohlc_content_digest: str
+    oi_store_checksum: str
+    completed_oi_evidence_digest: str
+    observed_transition_digest: str
+    continuity_digest: str
+
+
+def load_stress90_operator_account_day_continuity_evidence(
+    ohlc_store,
+    oi_store,
+    *,
+    completed_account_day: str,
+    current_ctp_trading_day: str,
+) -> Stress90OperatorAccountDayContinuityEvidence:
+    """Prove one observed market-session transition without guessing a trading calendar."""
+
+    from .directional_ohlc_refresh import load_stress90_completed_ohlc
+    from .directional_stress90_policy import STRESS90_POLICY
+    from .directional_stress90_runtime import stress90_target_transitions
+
+    source_dt = _day(completed_account_day, "completed account trading day")
+    target_dt = _day(current_ctp_trading_day, "current CTP trading day")
+    if target_dt <= source_dt:
+        raise Stress90OperatorContinuityError(
+            "operator continuity target CTP day must be strictly later than source day"
+        )
+    source = source_dt.strftime("%Y%m%d")
+    target = target_dt.strftime("%Y%m%d")
+    natural_gap = (target_dt.date() - source_dt.date()).days
+    try:
+        entry = load_stress90_completed_ohlc(
+            ohlc_store,
+            products=STRESS90_POLICY.products,
+            current_ctp_trading_day=target,
+            authoritative_ctp_trading_day=target,
+            required_completed_day=source,
+        )
+        transitions = stress90_target_transitions(
+            last_completed_target_day=source,
+            current_ctp_trading_day=target,
+            completed_close_index=entry.close.index,
+        )
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise Stress90OperatorContinuityError(
+            "operator continuity OHLC session chain is not contiguous"
+        ) from exc
+    if transitions != ((source, target),):
+        raise Stress90OperatorContinuityError(
+            "operator continuity cannot skip intermediate completed OHLC session data"
+        )
+
+    try:
+        oi_record = oi_store.load_required_record()
+        completed_rows = tuple(
+            item for item in oi_record.state.completed if source <= item.trading_day < target
+        )
+        observed = tuple(
+            item
+            for item in oi_record.state.observed_transitions
+            if item.source_trading_day == source and item.target_trading_day == target
+        )
+    except Exception as exc:
+        raise Stress90OperatorContinuityError(
+            "operator continuity OI session evidence is unavailable"
+        ) from exc
+    if len(completed_rows) != 1 or completed_rows[0].trading_day != source:
+        raise Stress90OperatorContinuityError(
+            "operator continuity cannot skip intermediate completed OI session data"
+        )
+    completed = completed_rows[0]
+    if (
+        completed.complete is not True
+        or set(completed.flows) != set(STRESS90_POLICY.oi_products)
+        or any(value not in (-1, 0, 1) for value in completed.flows.values())
+    ):
+        raise Stress90OperatorContinuityError(
+            "operator continuity completed OI evidence is incomplete"
+        )
+    if len(observed) != 1:
+        raise Stress90OperatorContinuityError(
+            "operator continuity requires one observed CTP source/target transition"
+        )
+    transition = observed[0]
+    if transition.completed_oi_evidence_digest != completed.evidence_digest:
+        raise Stress90OperatorContinuityError(
+            "operator continuity observed transition/OI digest mismatch"
+        )
+    observed_transition_digest = _digest(
+        {
+            "source_trading_day": transition.source_trading_day,
+            "target_trading_day": transition.target_trading_day,
+            "completed_oi_evidence_digest": transition.completed_oi_evidence_digest,
+        }
+    )
+    identity = {
+        "kind": "afuture.stress90-operator-market-session-continuity",
+        "schema_version": 1,
+        "completed_account_day": source,
+        "current_ctp_trading_day": target,
+        "natural_day_gap": natural_gap,
+        "ohlc_content_digest": entry.content_digest,
+        "oi_store_checksum": oi_record.checksum,
+        "completed_oi_evidence_digest": completed.evidence_digest,
+        "observed_transition_digest": observed_transition_digest,
+    }
+    return Stress90OperatorAccountDayContinuityEvidence(
+        completed_account_day=source,
+        current_ctp_trading_day=target,
+        natural_day_gap=natural_gap,
+        ohlc_content_digest=entry.content_digest,
+        oi_store_checksum=oi_record.checksum,
+        completed_oi_evidence_digest=completed.evidence_digest,
+        observed_transition_digest=observed_transition_digest,
+        continuity_digest=_digest(identity),
+    )
 
 
 @dataclass(frozen=True)
@@ -611,13 +731,14 @@ class Stress90OperatorContinuityStore:
                 )
             return current
         if current.parent_checksum is None or not previous_exists:
-            raise Stress90OperatorContinuityError(
-                "operator continuity .prev chain is missing"
-            )
+            raise Stress90OperatorContinuityError("operator continuity .prev chain is missing")
         previous = _decode_record(self._read_bytes(self.previous_path))
         if previous == current:
             return current
-        if previous.sequence != current.sequence - 1 or previous.checksum != current.parent_checksum:
+        if (
+            previous.sequence != current.sequence - 1
+            or previous.checksum != current.parent_checksum
+        ):
             raise Stress90OperatorContinuityError(
                 "operator continuity current/.prev chain is inconsistent"
             )
@@ -626,9 +747,7 @@ class Stress90OperatorContinuityStore:
     def load_required_record(self) -> Stress90OperatorContinuityRecord:
         record = self.load_record()
         if record is None:
-            raise Stress90OperatorContinuityError(
-                "operator continuity current receipt is missing"
-            )
+            raise Stress90OperatorContinuityError("operator continuity current receipt is missing")
         return record
 
     def load_previous_record(self) -> Stress90OperatorContinuityRecord | None:
@@ -638,7 +757,10 @@ class Stress90OperatorContinuityStore:
         previous = _decode_record(self._read_bytes(self.previous_path))
         if previous == current:
             return current
-        if previous.sequence != current.sequence - 1 or previous.checksum != current.parent_checksum:
+        if (
+            previous.sequence != current.sequence - 1
+            or previous.checksum != current.parent_checksum
+        ):
             raise Stress90OperatorContinuityError(
                 "operator continuity current/.prev chain is inconsistent"
             )

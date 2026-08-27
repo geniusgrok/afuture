@@ -51,9 +51,7 @@ def _evidence(runtime: Path, **changes: object) -> Stress90OperatorContinuityEvi
         account_identity_digest=_SHA_E,
         account_epoch=_SHA_F,
         canonical_runtime=str(runtime.resolve()),
-        canonical_runtime_digest=sha256(
-            f"runtime:{runtime.resolve()}".encode()
-        ).hexdigest(),
+        canonical_runtime_digest=sha256(f"runtime:{runtime.resolve()}".encode()).hexdigest(),
         source_account_registry_receipt_digest=_SHA_2,
         fresh_account_snapshot_digest=_SHA_3,
         position_reconciliation_digest=_SHA_4,
@@ -89,7 +87,9 @@ def test_continuity_mode_defaults_to_strict_and_validates_enum():
         DirectionalConfig(account_continuity_mode="operator").validate()
 
 
-def test_operator_evidence_accepts_explicit_weekend_gap_but_not_same_or_backward_day(tmp_path: Path):
+def test_operator_evidence_accepts_explicit_weekend_gap_but_not_same_or_backward_day(
+    tmp_path: Path,
+):
     evidence = _evidence(tmp_path)
     digest = stress90_operator_continuity_request_digest(evidence)
     assert len(digest) == 64
@@ -110,9 +110,7 @@ def test_operator_evidence_requires_zero_cash_flow_no_orders_and_all_assertions(
     with pytest.raises(Stress90OperatorContinuityError, match="operator assertions"):
         stress90_operator_continuity_request_digest(replace(evidence, no_manual_trade=False))
     with pytest.raises(Stress90OperatorContinuityError, match="operator_trust"):
-        stress90_operator_continuity_request_digest(
-            replace(evidence, evidence_authority="broker")
-        )
+        stress90_operator_continuity_request_digest(replace(evidence, evidence_authority="broker"))
     with pytest.raises(Stress90OperatorContinuityError, match="authoritative"):
         stress90_operator_continuity_request_digest(
             replace(evidence, authoritative_broker_or_exchange_evidence=True)
@@ -128,9 +126,7 @@ def test_operator_evidence_requires_source_policy_and_data_alignment(tmp_path: P
         "policy_latest_completed_day",
     ):
         with pytest.raises(Stress90OperatorContinuityError, match="source day"):
-            stress90_operator_continuity_request_digest(
-                replace(evidence, **{field: "20260827"})
-            )
+            stress90_operator_continuity_request_digest(replace(evidence, **{field: "20260827"}))
 
 
 def test_store_chains_current_prev_and_exact_retry_is_idempotent(tmp_path: Path):
@@ -292,9 +288,7 @@ def test_store_rejects_nan_and_infinity_even_with_recomputed_text_untrusted(tmp_
 
 
 def test_artifact_is_bound_to_runtime_account_and_epoch(tmp_path: Path):
-    record = Stress90OperatorContinuityStore(
-        tmp_path / "stress90_operator_continuity.json"
-    ).save(
+    record = Stress90OperatorContinuityStore(tmp_path / "stress90_operator_continuity.json").save(
         _evidence(tmp_path),
         target_registry_receipt_digest=_SHA_C,
         target_trading_day_evidence_sequence=6,
@@ -339,15 +333,11 @@ def test_registry_consumes_operator_continuity_nonce_with_semantic_digest(tmp_pa
     assert binding.operation_kinds[-1] == "operator_managed_continuity"
     assert record.sequence >= 3
     assert (
-        registry.acknowledge_operator_continuity_operation(
-            _SHA_E, runtime, _SHA_F, _SHA_C, request
-        )
+        registry.acknowledge_operator_continuity_operation(_SHA_E, runtime, _SHA_F, _SHA_C, request)
         == record
     )
     with pytest.raises(AccountRuntimeRegistryError, match="different request"):
-        registry.acknowledge_operator_continuity_operation(
-            _SHA_E, runtime, _SHA_F, _SHA_C, _SHA_D
-        )
+        registry.acknowledge_operator_continuity_operation(_SHA_E, runtime, _SHA_F, _SHA_C, _SHA_D)
 
 
 def test_confirmation_constant_is_deliberately_strong():

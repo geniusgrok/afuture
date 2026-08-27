@@ -7,7 +7,9 @@ import pandas as pd
 import pytest
 
 
-def _market_stores(*, include_intermediate_ohlc: bool = False, include_intermediate_oi: bool = False):
+def _market_stores(
+    *, include_intermediate_ohlc: bool = False, include_intermediate_oi: bool = False
+):
     from afuture.directional_stress90_policy import STRESS90_POLICY
 
     source = pd.Timestamp("2026-08-28")
@@ -157,7 +159,6 @@ def test_operator_roll_forward_missing_operator_ack_fails_before_broker_construc
         ),
         state_path=str(tmp_path / "state.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
-        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
     )
     args = SimpleNamespace(
         command="stress90-operator-roll-forward",

@@ -251,6 +251,20 @@ def build_parser() -> argparse.ArgumentParser:
     stress90_settlement.add_argument("--snapshot-wait", type=float, default=12.0)
     stress90_settlement.add_argument("--shadow-account", action="store_true")
 
+    stress90_operator_roll_forward = sub.add_parser(
+        "stress90-operator-roll-forward",
+        help="在 operator-managed 模式下显式确认独占账户并安全推进一个 CTP 交易日",
+    )
+    stress90_operator_roll_forward.add_argument("--config", required=True)
+    stress90_operator_roll_forward.add_argument("--confirm-live", action="store_true")
+    stress90_operator_roll_forward.add_argument(
+        "--confirm-operator-continuity", action="store_true"
+    )
+    stress90_operator_roll_forward.add_argument("--operation-id", required=True)
+    stress90_operator_roll_forward.add_argument("--operator-reason", required=True)
+    stress90_operator_roll_forward.add_argument("--startup-timeout", type=float, default=60.0)
+    stress90_operator_roll_forward.add_argument("--snapshot-wait", type=float, default=12.0)
+
     stress90_crash_fill_recovery = sub.add_parser(
         "stress90-crash-fill-recover",
         help="在 HALTED、零报单下持久化 authorized Stress-90 crash fills",
@@ -4285,6 +4299,43 @@ def _run_stress90_order_journal_rollover(config, args) -> int:
         lease.release()
 
 
+def _run_stress90_operator_roll_forward(config, args) -> int:
+    """Advance one Stress-90 account day under the explicit operator trust model."""
+
+    from .stress90_operator_continuity import STRESS90_OPERATOR_CONTINUITY_CONFIRMATION
+
+    _validate_stress90_lifecycle_config(config)
+    if config.directional.account_continuity_mode != "operator_managed":
+        raise ValueError(
+            "stress90-operator-roll-forward requires "
+            "directional.account_continuity_mode=operator_managed"
+        )
+    _require_production_confirmation(config, args)
+    _require_lifecycle_operation_nonce(args)
+    reason = str(args.operator_reason)
+    if not reason.strip() or reason != reason.strip() or len(reason) > 1_000:
+        raise ValueError("operator continuity operator reason is invalid")
+    if (
+        not args.confirm_operator_continuity
+        or os.getenv("AFUTURE_OPERATOR_CONTINUITY_ACK")
+        != STRESS90_OPERATOR_CONTINUITY_CONFIRMATION
+    ):
+        raise RuntimeError(
+            "operator continuity requires --confirm-operator-continuity and "
+            "AFUTURE_OPERATOR_CONTINUITY_ACK="
+            + STRESS90_OPERATOR_CONTINUITY_CONFIRMATION
+        )
+    runtime_dir = Path(config.state_path).parent.resolve(strict=False)
+    if runtime_dir == Path(runtime_dir.anchor):
+        raise ValueError("operator continuity runtime path must not be a filesystem root")
+
+    # Broker construction is deliberately after every static/config/operator gate.
+    from .broker.ctp import CtpBroker
+
+    CtpBroker(config.ctp)
+    raise RuntimeError("operator-managed roll-forward runtime implementation is incomplete")
+
+
 def _run_stress90_settlement_roll_forward(config, args) -> int:
     """Fail closed until authoritative prior-day funding closure is available."""
 
@@ -5608,6 +5659,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "stress90-settlement-roll-forward":
         return _run_stress90_settlement_roll_forward(config, args)
+
+    if args.command == "stress90-operator-roll-forward":
+        return _run_stress90_operator_roll_forward(config, args)
 
     if args.command == "stress90-order-journal-rollover":
         return _run_stress90_order_journal_rollover(config, args)
