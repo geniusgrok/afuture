@@ -17,7 +17,8 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 _KIND = "afuture.account-runtime-registry"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+_LEGACY_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _F_OFD_SETLKW = getattr(fcntl, "F_OFD_SETLKW", 38)
 _MAX_ACCOUNTS = 256
@@ -41,6 +42,8 @@ class AccountRuntimeBinding:
     account_epoch: str
     last_operation_id: str
     operation_history: tuple[str, ...]
+    operation_kinds: tuple[str, ...] = ()
+    last_operation_receipt_digest: str = ""
     retired_runtime_identity_digests: tuple[str, ...] = ()
     retired_account_identity_digests: tuple[str, ...] = ()
     retired_lineage_digests: tuple[str, ...] = ()
@@ -59,6 +62,9 @@ class AccountRuntimeBindingEvidence:
     registry_sequence: int
     registry_checksum: str
     binding: AccountRuntimeBinding
+    binding_payload_digest: str
+    binding_revision: int
+    binding_receipt_digest: str
 
 
 @dataclass
@@ -114,10 +120,39 @@ def _binding_payload(binding: AccountRuntimeBinding) -> dict[str, object]:
         "account_epoch": binding.account_epoch,
         "last_operation_id": binding.last_operation_id,
         "operation_history": list(binding.operation_history),
+        "operation_kinds": list(binding.operation_kinds),
+        "last_operation_receipt_digest": binding.last_operation_receipt_digest,
         "retired_runtime_identity_digests": list(binding.retired_runtime_identity_digests),
         "retired_account_identity_digests": list(binding.retired_account_identity_digests),
         "retired_lineage_digests": list(binding.retired_lineage_digests),
     }
+
+
+def _binding_evidence(
+    record: AccountRuntimeRegistryRecord,
+    binding: AccountRuntimeBinding,
+) -> AccountRuntimeBindingEvidence:
+    payload_digest = _digest(_binding_payload(binding))
+    revision = len(binding.operation_history)
+    receipt = _digest(
+        {
+            "account_identity_digest": binding.account_identity_digest,
+            "canonical_runtime": binding.canonical_runtime,
+            "runtime_identity_digest": binding.runtime_identity_digest,
+            "account_epoch": binding.account_epoch,
+            "binding_payload_digest": payload_digest,
+            "binding_revision": revision,
+            "last_operation_id": binding.last_operation_id,
+        }
+    )
+    return AccountRuntimeBindingEvidence(
+        registry_sequence=record.sequence,
+        registry_checksum=record.checksum,
+        binding=binding,
+        binding_payload_digest=payload_digest,
+        binding_revision=revision,
+        binding_receipt_digest=receipt,
+    )
 
 
 def _record_payload(
@@ -125,13 +160,21 @@ def _record_payload(
     sequence: int,
     parent_checksum: str | None,
     bindings: tuple[AccountRuntimeBinding, ...],
+    schema_version: int = _SCHEMA_VERSION,
 ) -> dict[str, object]:
+    binding_payloads = []
+    for item in bindings:
+        payload = _binding_payload(item)
+        if schema_version == _LEGACY_SCHEMA_VERSION:
+            payload.pop("operation_kinds")
+            payload.pop("last_operation_receipt_digest")
+        binding_payloads.append(payload)
     return {
         "kind": _KIND,
-        "schema_version": _SCHEMA_VERSION,
+        "schema_version": schema_version,
         "sequence": sequence,
         "parent_checksum": parent_checksum,
-        "bindings": [_binding_payload(item) for item in bindings],
+        "bindings": binding_payloads,
     }
 
 
@@ -159,7 +202,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
     return result
 
 
-def _decode_binding(raw: object) -> AccountRuntimeBinding:
+def _decode_binding(raw: object, *, schema_version: int) -> AccountRuntimeBinding:
     expected = {
         "account_identity_digest",
         "canonical_runtime",
@@ -167,16 +210,26 @@ def _decode_binding(raw: object) -> AccountRuntimeBinding:
         "account_epoch",
         "last_operation_id",
         "operation_history",
+        "operation_kinds",
+        "last_operation_receipt_digest",
         "retired_runtime_identity_digests",
         "retired_account_identity_digests",
         "retired_lineage_digests",
     }
+    if schema_version == _LEGACY_SCHEMA_VERSION:
+        expected.remove("operation_kinds")
+        expected.remove("last_operation_receipt_digest")
     if not isinstance(raw, Mapping) or set(raw) != expected:
         raise AccountRuntimeRegistryError("account runtime binding schema is invalid")
     runtime, runtime_digest = _canonical_runtime(str(raw["canonical_runtime"]))
     if raw["canonical_runtime"] != runtime or raw["runtime_identity_digest"] != runtime_digest:
         raise AccountRuntimeRegistryError("account runtime binding path identity is invalid")
     history_raw = raw["operation_history"]
+    operation_kinds_raw = raw.get("operation_kinds")
+    if schema_version == _LEGACY_SCHEMA_VERSION:
+        operation_kinds_raw = (
+            ["legacy"] * len(history_raw) if isinstance(history_raw, list) else None
+        )
     retired_raw = raw["retired_runtime_identity_digests"]
     retired_accounts_raw = raw["retired_account_identity_digests"]
     retired_lineages_raw = raw["retired_lineage_digests"]
@@ -184,6 +237,8 @@ def _decode_binding(raw: object) -> AccountRuntimeBinding:
         not isinstance(history_raw, list)
         or not history_raw
         or len(history_raw) > _MAX_OPERATION_HISTORY
+        or not isinstance(operation_kinds_raw, list)
+        or len(operation_kinds_raw) != len(history_raw)
         or not isinstance(retired_raw, list)
         or len(retired_raw) > _MAX_OPERATION_HISTORY
         or not isinstance(retired_accounts_raw, list)
@@ -193,6 +248,37 @@ def _decode_binding(raw: object) -> AccountRuntimeBinding:
     ):
         raise AccountRuntimeRegistryError("account runtime binding history is invalid")
     history = tuple(_sha(item, "account runtime operation") for item in history_raw)
+    operation_kinds = tuple(operation_kinds_raw)
+    allowed_operation_kinds = {
+        "bind",
+        "advance",
+        "switch",
+        "acknowledgement",
+        "transfer",
+        "legacy",
+    }
+    if (
+        any(
+            not isinstance(item, str) or item not in allowed_operation_kinds
+            for item in operation_kinds
+        )
+        or any(
+            kind == "legacy" and any(later != "legacy" for later in operation_kinds[:index])
+            for index, kind in enumerate(operation_kinds)
+        )
+        or (operation_kinds[0] not in {"bind", "legacy"} or "bind" in operation_kinds[1:])
+    ):
+        raise AccountRuntimeRegistryError("account runtime operation kind history is invalid")
+    operation_receipt_raw = raw.get("last_operation_receipt_digest", "")
+    if operation_kinds[-1] == "legacy":
+        if operation_receipt_raw != "":
+            raise AccountRuntimeRegistryError("legacy account runtime operation receipt is invalid")
+        operation_receipt = ""
+    else:
+        operation_receipt = _sha(
+            operation_receipt_raw,
+            "last account runtime operation receipt",
+        )
     retired = tuple(_sha(item, "retired runtime identity") for item in retired_raw)
     retired_accounts = tuple(
         _sha(item, "retired economic account identity") for item in retired_accounts_raw
@@ -215,6 +301,8 @@ def _decode_binding(raw: object) -> AccountRuntimeBinding:
         account_epoch=_sha(raw["account_epoch"], "account runtime epoch"),
         last_operation_id=last_operation,
         operation_history=history,
+        operation_kinds=operation_kinds,
+        last_operation_receipt_digest=operation_receipt,
         retired_runtime_identity_digests=retired,
         retired_account_identity_digests=retired_accounts,
         retired_lineage_digests=retired_lineages,
@@ -227,6 +315,15 @@ def _lineage_digest(account: str, runtime_digest: str, epoch: str) -> str:
             "account_identity_digest": account,
             "runtime_identity_digest": runtime_digest,
             "account_epoch": epoch,
+        }
+    )
+
+
+def _operation_receipt(kind: str, **identity: object) -> str:
+    return _digest(
+        {
+            "kind": kind,
+            **identity,
         }
     )
 
@@ -248,7 +345,17 @@ def _decode_record(data: bytes) -> AccountRuntimeRegistryRecord:
     }
     if not isinstance(raw, Mapping) or set(raw) != expected:
         raise AccountRuntimeRegistryError("account runtime registry schema is invalid")
-    if raw["kind"] != _KIND or raw["schema_version"] != _SCHEMA_VERSION:
+    schema_version = raw["schema_version"]
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or raw["kind"] != _KIND
+        or schema_version
+        not in {
+            _LEGACY_SCHEMA_VERSION,
+            _SCHEMA_VERSION,
+        }
+    ):
         raise AccountRuntimeRegistryError("account runtime registry identity is invalid")
     sequence = raw["sequence"]
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
@@ -260,14 +367,24 @@ def _decode_record(data: bytes) -> AccountRuntimeRegistryRecord:
     bindings_raw = raw["bindings"]
     if not isinstance(bindings_raw, list) or len(bindings_raw) > _MAX_ACCOUNTS:
         raise AccountRuntimeRegistryError("account runtime registry bindings are invalid")
-    bindings = tuple(_decode_binding(item) for item in bindings_raw)
+    bindings = tuple(_decode_binding(item, schema_version=schema_version) for item in bindings_raw)
     if tuple(item.account_identity_digest for item in bindings) != tuple(
         sorted(item.account_identity_digest for item in bindings)
     ) or len({item.account_identity_digest for item in bindings}) != len(bindings):
         raise AccountRuntimeRegistryError("account runtime registry binding order is invalid")
+    operations = [operation for binding in bindings for operation in binding.operation_history]
+    if len(operations) != len(set(operations)):
+        raise AccountRuntimeRegistryError(
+            "account runtime registry operation history is globally duplicated"
+        )
     checksum = _sha(raw["checksum"], "account runtime registry checksum")
     expected_checksum = _digest(
-        _record_payload(sequence=sequence, parent_checksum=parent, bindings=bindings)
+        _record_payload(
+            sequence=sequence,
+            parent_checksum=parent,
+            bindings=bindings,
+            schema_version=schema_version,
+        )
     )
     if checksum != expected_checksum:
         raise AccountRuntimeRegistryError("account runtime registry checksum mismatch")
@@ -736,6 +853,13 @@ class AccountRuntimeRegistry:
         runtime, runtime_digest = _canonical_runtime(runtime_dir)
         epoch = _sha(account_epoch, "account runtime epoch")
         operation = _sha(operation_id, "account runtime operation")
+        operation_receipt = _operation_receipt(
+            "bind",
+            operation_id=operation,
+            account_identity_digest=account,
+            canonical_runtime=runtime,
+            account_epoch=epoch,
+        )
         with self._exclusive_lock() as lock:
             current = self._load_unlocked(
                 required=True,
@@ -744,18 +868,25 @@ class AccountRuntimeRegistry:
             assert current is not None
             bindings = {item.account_identity_digest: item for item in current.bindings}
             existing = bindings.get(account)
+            if (
+                existing is not None
+                and existing.canonical_runtime == runtime
+                and existing.runtime_identity_digest == runtime_digest
+                and existing.account_epoch == epoch
+                and existing.last_operation_id == operation
+                and existing.operation_kinds[-1] == "bind"
+                and existing.last_operation_receipt_digest == operation_receipt
+            ):
+                return current
+            if operation in {
+                consumed for item in bindings.values() for consumed in item.operation_history
+            }:
+                raise AccountRuntimeRegistryError("account runtime operation was already consumed")
             if existing is not None:
                 if existing.runtime_identity_digest != runtime_digest:
                     raise AccountRuntimeRegistryError(
                         "economic account is already bound to a different runtime"
                     )
-                if (
-                    existing.canonical_runtime == runtime
-                    and existing.account_epoch == epoch
-                    and existing.last_operation_id == operation
-                ):
-                    assert current is not None
-                    return current
                 raise AccountRuntimeRegistryError(
                     "economic account binding already exists; explicit epoch CAS is required"
                 )
@@ -793,6 +924,8 @@ class AccountRuntimeRegistry:
                 account_epoch=epoch,
                 last_operation_id=operation,
                 operation_history=(operation,),
+                operation_kinds=("bind",),
+                last_operation_receipt_digest=operation_receipt,
             )
             return self._save_unlocked(current, tuple(bindings.values()))
 
@@ -820,6 +953,15 @@ class AccountRuntimeRegistry:
         source = _sha(source_epoch, "source account runtime epoch")
         target = _sha(target_epoch, "target account runtime epoch")
         operation = _sha(operation_id, "account switch operation")
+        operation_receipt = _operation_receipt(
+            "switch",
+            operation_id=operation,
+            source_account_identity_digest=source_account,
+            target_account_identity_digest=target_account,
+            canonical_runtime=runtime,
+            source_account_epoch=source,
+            target_account_epoch=target,
+        )
         if source_account == target_account or source == target:
             raise AccountRuntimeRegistryError(
                 "account switch must change account identity and epoch"
@@ -840,10 +982,16 @@ class AccountRuntimeRegistry:
                 and target_binding.runtime_identity_digest == runtime_digest
                 and target_binding.account_epoch == target
                 and target_binding.last_operation_id == operation
+                and target_binding.operation_kinds[-1] == "switch"
+                and target_binding.last_operation_receipt_digest == operation_receipt
                 and source_account in target_binding.retired_account_identity_digests
                 and source_lineage in target_binding.retired_lineage_digests
             ):
                 return current
+            if operation in {
+                consumed for item in bindings.values() for consumed in item.operation_history
+            }:
+                raise AccountRuntimeRegistryError("account switch operation was already consumed")
             source_binding = bindings.get(source_account)
             if source_binding is None:
                 raise AccountRuntimeRegistryError("account switch source binding is missing")
@@ -859,10 +1007,6 @@ class AccountRuntimeRegistry:
                 raise AccountRuntimeRegistryError("account switch source CAS mismatch")
             if target_lineage in source_binding.retired_lineage_digests:
                 raise AccountRuntimeRegistryError("account switch target lineage is retired")
-            if operation in {
-                consumed for item in bindings.values() for consumed in item.operation_history
-            }:
-                raise AccountRuntimeRegistryError("account switch operation was already consumed")
             if any(
                 len(items) >= _MAX_OPERATION_HISTORY
                 for items in (
@@ -882,6 +1026,8 @@ class AccountRuntimeRegistry:
                 account_epoch=target,
                 last_operation_id=operation,
                 operation_history=(*source_binding.operation_history, operation),
+                operation_kinds=(*source_binding.operation_kinds, "switch"),
+                last_operation_receipt_digest=operation_receipt,
                 retired_account_identity_digests=retired_accounts,
                 retired_lineage_digests=(
                     *source_binding.retired_lineage_digests,
@@ -932,11 +1078,32 @@ class AccountRuntimeRegistry:
                 )
             if epoch is not None and binding.account_epoch != epoch:
                 raise AccountRuntimeRegistryError("economic account runtime epoch mismatch")
-            return AccountRuntimeBindingEvidence(
-                registry_sequence=record.sequence,
-                registry_checksum=record.checksum,
-                binding=binding,
+            return _binding_evidence(record, binding)
+
+    def require_no_active_binding(
+        self,
+        account_identity_digest: str,
+        runtime_dir: str | Path,
+    ) -> None:
+        """Prove commissioning has no active account or runtime registry owner."""
+
+        account = _sha(account_identity_digest, "economic account identity")
+        runtime, runtime_digest = _canonical_runtime(runtime_dir)
+        with self._exclusive_lock() as lock:
+            record = self._load_unlocked(
+                required=True,
+                legacy_lock_evidence=lock.legacy_lock_evidence,
             )
+            assert record is not None
+            if any(
+                binding.account_identity_digest == account
+                or binding.canonical_runtime == runtime
+                or binding.runtime_identity_digest == runtime_digest
+                for binding in record.bindings
+            ):
+                raise AccountRuntimeRegistryError(
+                    "unbound commissioning evidence conflicts with an active binding"
+                )
 
     def advance_epoch(
         self,
@@ -951,6 +1118,14 @@ class AccountRuntimeRegistry:
         source = _sha(source_epoch, "source account runtime epoch")
         target = _sha(target_epoch, "target account runtime epoch")
         operation = _sha(operation_id, "account runtime operation")
+        operation_receipt = _operation_receipt(
+            "advance",
+            operation_id=operation,
+            account_identity_digest=account,
+            canonical_runtime=runtime,
+            source_account_epoch=source,
+            target_account_epoch=target,
+        )
         if source == target:
             raise AccountRuntimeRegistryError("account runtime epoch CAS requires a new epoch")
         with self._exclusive_lock() as lock:
@@ -968,12 +1143,19 @@ class AccountRuntimeRegistry:
                 or binding.runtime_identity_digest != runtime_digest
             ):
                 raise AccountRuntimeRegistryError("account runtime epoch CAS runtime mismatch")
-            if binding.account_epoch == target and binding.last_operation_id == operation:
+            if (
+                binding.account_epoch == target
+                and binding.last_operation_id == operation
+                and binding.operation_kinds[-1] == "advance"
+                and binding.last_operation_receipt_digest == operation_receipt
+            ):
                 return current
+            if operation in {
+                consumed for item in bindings.values() for consumed in item.operation_history
+            }:
+                raise AccountRuntimeRegistryError("account runtime operation was already consumed")
             if binding.account_epoch != source:
                 raise AccountRuntimeRegistryError("account runtime epoch CAS source mismatch")
-            if operation in binding.operation_history:
-                raise AccountRuntimeRegistryError("account runtime operation was already consumed")
             if len(binding.operation_history) >= _MAX_OPERATION_HISTORY:
                 raise AccountRuntimeRegistryError("account runtime operation history exhausted")
             bindings[account] = replace(
@@ -981,6 +1163,8 @@ class AccountRuntimeRegistry:
                 account_epoch=target,
                 last_operation_id=operation,
                 operation_history=(*binding.operation_history, operation),
+                operation_kinds=(*binding.operation_kinds, "advance"),
+                last_operation_receipt_digest=operation_receipt,
             )
             return self._save_unlocked(current, tuple(bindings.values()))
 
@@ -997,6 +1181,13 @@ class AccountRuntimeRegistry:
         runtime, runtime_digest = _canonical_runtime(runtime_dir)
         source = _sha(source_epoch, "source account runtime epoch")
         operation = _sha(operation_id, "account runtime acknowledgement operation")
+        operation_receipt = _operation_receipt(
+            "acknowledgement",
+            operation_id=operation,
+            account_identity_digest=account,
+            canonical_runtime=runtime,
+            account_epoch=source,
+        )
         with self._exclusive_lock() as lock:
             current = self._load_unlocked(
                 required=True,
@@ -1020,12 +1211,19 @@ class AccountRuntimeRegistry:
             if operation in {
                 consumed for item in bindings.values() for consumed in item.operation_history
             }:
+                exact_acknowledgement = (
+                    binding.operation_kinds[-1] == "acknowledgement"
+                    and binding.last_operation_receipt_digest == operation_receipt
+                )
+                legacy_exact_retry = binding.operation_kinds[
+                    -1
+                ] == "legacy" and self._is_exact_unchanged_binding_acknowledgement_retry(
+                    current,
+                    account,
+                    operation,
+                )
                 if binding.last_operation_id == operation and (
-                    self._is_exact_unchanged_binding_acknowledgement_retry(
-                        current,
-                        account,
-                        operation,
-                    )
+                    exact_acknowledgement or legacy_exact_retry
                 ):
                     return current
                 raise AccountRuntimeRegistryError(
@@ -1039,6 +1237,8 @@ class AccountRuntimeRegistry:
                 binding,
                 last_operation_id=operation,
                 operation_history=(*binding.operation_history, operation),
+                operation_kinds=(*binding.operation_kinds, "acknowledgement"),
+                last_operation_receipt_digest=operation_receipt,
             )
             return self._save_unlocked(current, tuple(bindings.values()))
 
@@ -1065,6 +1265,7 @@ class AccountRuntimeRegistry:
             prior,
             last_operation_id=operation,
             operation_history=(*prior.operation_history, operation),
+            operation_kinds=(*prior.operation_kinds, "legacy"),
         )
         return current.bindings == tuple(
             sorted(
@@ -1116,6 +1317,16 @@ class AccountRuntimeRegistry:
         source = _sha(source_epoch, "source account runtime epoch")
         target = _sha(target_epoch, "target account runtime epoch")
         operation = _sha(operation_id, "account runtime transfer operation")
+        operation_receipt = _operation_receipt(
+            "transfer",
+            operation_id=operation,
+            account_identity_digest=account,
+            source_canonical_runtime=source_runtime,
+            target_canonical_runtime=target_runtime,
+            source_account_epoch=source,
+            target_account_epoch=target,
+            operator_reason=operator_reason,
+        )
         if source_runtime_digest == target_runtime_digest or source == target:
             raise AccountRuntimeRegistryError("account runtime transfer must change lineage")
         with self._exclusive_lock() as lock:
@@ -1133,19 +1344,24 @@ class AccountRuntimeRegistry:
                 and binding.runtime_identity_digest == target_runtime_digest
                 and binding.account_epoch == target
                 and binding.last_operation_id == operation
+                and binding.operation_kinds[-1] == "transfer"
+                and binding.last_operation_receipt_digest == operation_receipt
                 and source_runtime_digest in binding.retired_runtime_identity_digests
             ):
                 return current
+            if operation in {
+                consumed for item in bindings.values() for consumed in item.operation_history
+            }:
+                raise AccountRuntimeRegistryError(
+                    "account runtime transfer operation was already consumed"
+                )
             if (
                 binding.canonical_runtime != source_runtime
                 or binding.runtime_identity_digest != source_runtime_digest
                 or binding.account_epoch != source
             ):
                 raise AccountRuntimeRegistryError("account runtime transfer source CAS mismatch")
-            if (
-                operation in binding.operation_history
-                or target_runtime_digest in binding.retired_runtime_identity_digests
-            ):
+            if target_runtime_digest in binding.retired_runtime_identity_digests:
                 raise AccountRuntimeRegistryError(
                     "account runtime transfer lineage was already consumed"
                 )
@@ -1161,6 +1377,8 @@ class AccountRuntimeRegistry:
                 account_epoch=target,
                 last_operation_id=operation,
                 operation_history=(*binding.operation_history, operation),
+                operation_kinds=(*binding.operation_kinds, "transfer"),
+                last_operation_receipt_digest=operation_receipt,
                 retired_runtime_identity_digests=(
                     *binding.retired_runtime_identity_digests,
                     source_runtime_digest,

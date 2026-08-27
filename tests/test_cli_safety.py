@@ -1502,6 +1502,9 @@ def test_lifecycle_commit_linearizes_precheck_registry_and_all_state_writes(
         apply_registry_transition=lambda current: events.append(
             "registry" if current is transaction else "wrong"
         ),
+        apply_evidence_transition=lambda current: events.append(
+            "evidence" if current is transaction else "wrong"
+        ),
         precommit_check=lambda: events.append("precheck"),
     )
 
@@ -1511,6 +1514,7 @@ def test_lifecycle_commit_linearizes_precheck_registry_and_all_state_writes(
         "precheck",
         "prepare",
         "registry",
+        "evidence",
         "policy+generic",
         "precheck",
         "coordinator",
@@ -1531,6 +1535,7 @@ def test_lifecycle_commit_rejects_broker_without_ingress_fence() -> None:
                 AssertionError("must not prepare without a Broker fence")
             ),
             apply_registry_transition=lambda _transaction: None,
+            apply_evidence_transition=lambda _transaction: None,
             precommit_check=lambda: None,
         )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import stat
@@ -9,6 +10,18 @@ from pathlib import Path
 from threading import BrokenBarrierError, Timer
 
 import pytest
+
+
+def _test_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _initialized_registry(path: Path):
@@ -233,6 +246,222 @@ def test_account_epoch_advance_is_exact_cas_and_idempotent(tmp_path: Path) -> No
         )
 
 
+def test_binding_receipt_is_account_scoped_and_stable_across_other_accounts(
+    tmp_path: Path,
+) -> None:
+    registry = _initialized_registry(tmp_path / "registry.json")
+    first_account = "1" * 64
+    first_epoch = "2" * 64
+    first_operation = "3" * 64
+    first_runtime = tmp_path / "runtime-a"
+    registry.bind_new(first_account, first_runtime, first_epoch, first_operation)
+
+    before = registry.require_binding_evidence(first_account, first_runtime, first_epoch)
+    registry.bind_new("4" * 64, tmp_path / "runtime-b", "5" * 64, "6" * 64)
+    after = registry.require_binding_evidence(first_account, first_runtime, first_epoch)
+
+    operation_receipt = _test_digest(
+        {
+            "kind": "bind",
+            "operation_id": first_operation,
+            "account_identity_digest": first_account,
+            "canonical_runtime": str(first_runtime),
+            "account_epoch": first_epoch,
+        }
+    )
+    binding_payload = {
+        "account_identity_digest": first_account,
+        "canonical_runtime": str(first_runtime),
+        "runtime_identity_digest": before.binding.runtime_identity_digest,
+        "account_epoch": first_epoch,
+        "last_operation_id": first_operation,
+        "operation_history": [first_operation],
+        "operation_kinds": ["bind"],
+        "last_operation_receipt_digest": operation_receipt,
+        "retired_runtime_identity_digests": [],
+        "retired_account_identity_digests": [],
+        "retired_lineage_digests": [],
+    }
+    payload_digest = _test_digest(binding_payload)
+    expected_receipt = _test_digest(
+        {
+            "account_identity_digest": first_account,
+            "canonical_runtime": str(first_runtime),
+            "runtime_identity_digest": before.binding.runtime_identity_digest,
+            "account_epoch": first_epoch,
+            "binding_payload_digest": payload_digest,
+            "binding_revision": 1,
+            "last_operation_id": first_operation,
+        }
+    )
+    assert before.binding_payload_digest == payload_digest
+    assert before.binding_revision == 1
+    assert before.binding_receipt_digest == expected_receipt
+    assert after.binding_payload_digest == before.binding_payload_digest
+    assert after.binding_revision == before.binding_revision
+    assert after.binding_receipt_digest == before.binding_receipt_digest
+    assert after.registry_sequence > before.registry_sequence
+    assert after.registry_checksum != before.registry_checksum
+
+
+def test_operation_nonce_is_globally_unique_for_every_registry_mutation(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_TRANSFER_CONFIRMATION,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    consumed = "a" * 64
+    first_account = "1" * 64
+    second_account = "2" * 64
+    first_runtime = tmp_path / "runtime-a"
+    second_runtime = tmp_path / "runtime-b"
+    registry.bind_new(first_account, first_runtime, "3" * 64, consumed)
+
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.bind_new(second_account, second_runtime, "4" * 64, consumed)
+
+    registry.bind_new(second_account, second_runtime, "4" * 64, "b" * 64)
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.advance_epoch(
+            second_account,
+            second_runtime,
+            "4" * 64,
+            "5" * 64,
+            consumed,
+        )
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.acknowledge_binding_operation(
+            second_account,
+            second_runtime,
+            "4" * 64,
+            consumed,
+        )
+    advance_operation = "7" * 64
+    registry.advance_epoch(
+        second_account,
+        second_runtime,
+        "4" * 64,
+        "5" * 64,
+        advance_operation,
+    )
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.advance_epoch(
+            second_account,
+            second_runtime,
+            "9" * 64,
+            "5" * 64,
+            advance_operation,
+        )
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.acknowledge_binding_operation(
+            second_account,
+            second_runtime,
+            "5" * 64,
+            advance_operation,
+        )
+    acknowledgement = "8" * 64
+    registry.acknowledge_binding_operation(
+        second_account,
+        second_runtime,
+        "5" * 64,
+        acknowledgement,
+    )
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.bind_new(
+            second_account,
+            second_runtime,
+            "5" * 64,
+            acknowledgement,
+        )
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.advance_epoch(
+            second_account,
+            second_runtime,
+            "4" * 64,
+            "5" * 64,
+            acknowledgement,
+        )
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.transfer_binding(
+            account_identity_digest=second_account,
+            source_runtime_dir=second_runtime,
+            target_runtime_dir=tmp_path / "runtime-c",
+            source_epoch="5" * 64,
+            target_epoch="6" * 64,
+            operation_id=consumed,
+            operator_reason="prove cross-kind nonce uniqueness",
+            halted=True,
+            broker_flat=True,
+            local_flat=True,
+            no_active_orders=True,
+            reconciled=True,
+            strong_confirmation=ACCOUNT_RUNTIME_TRANSFER_CONFIRMATION,
+        )
+
+
+def test_legacy_registry_record_is_rewritten_with_explicit_operation_kinds(
+    tmp_path: Path,
+) -> None:
+    from afuture import account_runtime_registry as registry_module
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    account = "1" * 64
+    runtime = tmp_path / "runtime"
+    source_epoch = "2" * 64
+    registry.bind_new(account, runtime, source_epoch, "3" * 64)
+
+    legacy = json.loads(registry.path.read_text(encoding="utf-8"))
+    legacy["schema_version"] = 1
+    for binding in legacy["bindings"]:
+        binding.pop("operation_kinds")
+        binding.pop("last_operation_receipt_digest")
+    legacy["checksum"] = registry_module._digest(
+        {key: value for key, value in legacy.items() if key != "checksum"}
+    )
+    registry.path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = registry.load_required()
+    assert loaded.bindings[0].operation_kinds == ("legacy",)
+    registry.advance_epoch(
+        account,
+        runtime,
+        source_epoch,
+        "4" * 64,
+        "5" * 64,
+    )
+
+    rewritten = json.loads(registry.path.read_text(encoding="utf-8"))
+    assert rewritten["schema_version"] == 2
+    assert rewritten["bindings"][0]["operation_kinds"] == ["legacy", "advance"]
+    assert len(rewritten["bindings"][0]["last_operation_receipt_digest"]) == 64
+    assert registry.load_required().bindings[0].operation_kinds == (
+        "legacy",
+        "advance",
+    )
+
+
+def test_registry_decoder_rejects_historical_cross_account_duplicate_nonces(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistryError
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    registry.bind_new("1" * 64, tmp_path / "runtime-a", "2" * 64, "3" * 64)
+    registry.bind_new("4" * 64, tmp_path / "runtime-b", "5" * 64, "6" * 64)
+    raw = json.loads(registry.path.read_text(encoding="utf-8"))
+    raw["bindings"][1]["operation_history"] = ["3" * 64]
+    raw["bindings"][1]["last_operation_id"] = "3" * 64
+    unsigned = {key: value for key, value in raw.items() if key != "checksum"}
+    raw["checksum"] = _test_digest(unsigned)
+    registry.path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(AccountRuntimeRegistryError, match="operation.*duplicated"):
+        registry.load_required()
+
+
 def test_account_switch_atomically_retires_source_lineage(tmp_path: Path) -> None:
     from afuture.account_runtime_registry import (
         AccountRuntimeRegistryError,
@@ -410,6 +639,20 @@ def test_account_runtime_transfer_requires_all_gates_and_preserves_lineage(
     assert retry == transferred
     assert retry.sequence == 3
     assert binding.runtime_identity_digest != binding.retired_runtime_identity_digests[-1]
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.transfer_binding(
+            **{
+                **kwargs,
+                "source_epoch": "1" * 64,
+            }
+        )
+    with pytest.raises(AccountRuntimeRegistryError, match="already consumed"):
+        registry.transfer_binding(
+            **{
+                **kwargs,
+                "operator_reason": "different transfer claim",
+            }
+        )
     with pytest.raises(AccountRuntimeRegistryError, match="different runtime"):
         registry.bind_new(account, runtime_a, source_epoch, "f" * 64)
 
@@ -842,12 +1085,37 @@ def test_registry_acknowledges_unchanged_binding_operation_exactly_once(
     assert after.retired_account_identity_digests == before.retired_account_identity_digests
     assert after.retired_lineage_digests == before.retired_lineage_digests
     assert after.operation_history == (*before.operation_history, acknowledgement)
+    assert after.operation_kinds == ("bind", "acknowledgement")
     assert after.last_operation_id == acknowledgement
     next_epoch = "e" * 64
     registry.advance_epoch(account, runtime, epoch, next_epoch, "f" * 64)
     assert (
         acknowledgement in registry.require_binding(account, runtime, next_epoch).operation_history
     )
+
+
+def test_acknowledgement_exact_retry_survives_unrelated_account_registry_advance(
+    tmp_path: Path,
+) -> None:
+    registry = _initialized_registry(tmp_path / "registry.json")
+    account = "a" * 64
+    runtime = tmp_path / "runtime-a"
+    epoch = "b" * 64
+    acknowledgement = "d" * 64
+    registry.bind_new(account, runtime, epoch, "c" * 64)
+    registry.acknowledge_binding_operation(account, runtime, epoch, acknowledgement)
+    registry.bind_new("1" * 64, tmp_path / "runtime-b", "2" * 64, "3" * 64)
+    before_retry = registry.load_required()
+
+    exact_retry = registry.acknowledge_binding_operation(
+        account,
+        runtime,
+        epoch,
+        acknowledgement,
+    )
+
+    assert exact_retry == before_retry
+    assert exact_retry.sequence == before_retry.sequence
 
 
 def test_registry_unchanged_binding_acknowledgement_fails_closed(

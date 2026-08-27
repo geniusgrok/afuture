@@ -664,7 +664,13 @@ def test_order_journal_rollover_is_zero_order_and_keeps_runtime_halted(
         activate_stress90_policy,
     )
     from afuture.directional_stress90_policy import STRESS90_POLICY, Stress90CandidateState
-    from afuture.directional_stress90_state import Stress90BootstrapSeed, Stress90SeedStore
+    from afuture.directional_stress90_state import (
+        Stress90BootstrapSeed,
+        Stress90PolicyState,
+        Stress90PolicyStateStore,
+        Stress90SeedStore,
+        bind_stress90_account_identity,
+    )
     from afuture.execution_aligned_policy import FROZEN_PRODUCTS
     from afuture.models import AccountSnapshot, RuntimeMode
     from afuture.state import RuntimeState, StateStore
@@ -681,6 +687,13 @@ def test_order_journal_rollover_is_zero_order_and_keeps_runtime_halted(
         last_completed_input_day="20260821",
     )
     Stress90SeedStore(tmp_path / "stress90_bootstrap_seed.json").save_new(seed)
+    account_epoch = "d" * 64
+    policy = bind_stress90_account_identity(
+        Stress90PolicyState.from_seed(seed),
+        "b" * 64,
+        account_epoch=account_epoch,
+    )
+    Stress90PolicyStateStore(tmp_path / "stress90_policy_state.json").save(policy)
     halted = RuntimeState(
         kill_switch=True,
         kill_reason="capacity rollover",
@@ -702,6 +715,43 @@ def test_order_journal_rollover_is_zero_order_and_keeps_runtime_halted(
             operator_reason="commissioned",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
+    )
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
+    from afuture.trading_day_evidence import TradingDayEvidenceStore
+
+    registry = AccountRuntimeRegistry(tmp_path / ".account-runtime-registry.json")
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+    registry_operation = "e" * 64
+    registry.bind_new(
+        "b" * 64,
+        tmp_path,
+        account_epoch,
+        registry_operation,
+    )
+    TradingDayEvidenceStore(tmp_path / "ctp_trading_day_evidence.json").bind_for_lifecycle(
+        transaction=SimpleNamespace(
+            operation="activation",
+            status="committed",
+            transaction_id="c" * 64,
+            operation_nonce=registry_operation,
+            source_account_identity_digest="",
+            source_account_epoch="",
+            account_identity_digest="b" * 64,
+            trading_day="20260825",
+            policy_target=SimpleNamespace(
+                live_account_identity_digest="b" * 64,
+                live_account_epoch=account_epoch,
+            ),
+        ),
+        runtime_dir=tmp_path,
+        binding_evidence=registry.require_binding_evidence(
+            "b" * 64,
+            tmp_path,
+            account_epoch,
+        ),
     )
 
     class FakeBroker:

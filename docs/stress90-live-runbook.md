@@ -132,6 +132,22 @@ afuture directional-ohlc-refresh \
 
 该命令可以访问外部 provider，但 live `run_once()`、Tick 和 Broker callback 只读已验证 cache，不同步访问网络。provider 修订重叠历史、缺少 required completed day 或 cache checksum 不可信时不得继续开仓。
 
+刷新命令只接受配置中 state 所在 canonical runtime 下的固定文件名
+`directional_ohlc_cache.json` 和 `ctp_trading_day_evidence.json`。它取得与 lifecycle
+相同的 account/runtime lease 后，重新读取 policy、trading-day evidence、machine registry
+和 lifecycle coordinator；任一 account、epoch、runtime、account-specific receipt 不一致，或
+coordinator 仍为 `prepared`，都必须在构造 provider 前失败。registry 的 machine-wide
+sequence/checksum 只作审计快照；另一账户推进 registry 不会废除本账户由 binding payload、
+account revision、last operation 和 receipt digest 固定的证据。registry schema 2 还为每次
+bind/advance/switch/acknowledgement/transfer 持久化 operation kind 和精确参数 receipt；nonce
+全 machine、全账户、全 operation kind 唯一，只有 kind 与全部参数都相同的重试可以复用。
+
+cache artifact lock 从 final-path 检查一直持有到 provider load 和 durable commit。首次创建使用
+`O_EXCL|O_NOFOLLOW`，更新只写入已验证身份的 `O_NOFOLLOW` regular-file fd。写前会 durable
+创建 `.pending` witness；truncate、write、file/directory `fsync` 或 witness cleanup 的歧义失败
+都会保留 witness，后续 load/save/refresh 在 provider side effect 前持续失败关闭。不得手工删除
+`.pending`；必须按事故流程保全并核验 cache、witness、目录和外部备份。
+
 ## 6. 无报单 status 和 doctor
 
 ```bash
@@ -190,11 +206,10 @@ afuture stress90-bootstrap \
   --runtime-dir runtime/shadow \
   --through YYYYMMDD
 
-# 使用同一权威 CTP current trading day，但写入 Shadow 自己的 verified cache。
+# 使用 state_path 指向 runtime/shadow 的独立 Shadow 配置；固定写入该 runtime 的 cache。
 afuture directional-ohlc-refresh \
-  --config /secure/path/afuture.directional-stress90.toml \
-  --current-trading-day YYYYMMDD \
-  --cache runtime/shadow/directional_ohlc_cache.json
+  --config /secure/path/afuture.directional-stress90-shadow.toml \
+  --current-trading-day YYYYMMDD
 
 export AFUTURE_STRESS90_ACTIVATION_ACK=I_CONFIRM_STRESS90_POLICY_ACTIVATION
 
@@ -391,6 +406,20 @@ schema 2 没有可验证的 predecessor checksum，不能原地升级、补写 p
 目录和外部备份；当前代码故意不提供自动恢复。只有单独审批的部署/恢复流程可以配置真正
 pristine 的新 evidence 路径，并从柜台 raw evidence 重新观察一个完整、权威的 counter trading
 day 后建立 schema 3 sequence 1。在该证据完成前，Stress-90 activation 持续阻断。
+
+`ctp_trading_day_evidence.json` schema 3 明确区分 `unbound` commissioning 与 `bound`
+account lineage。unbound 不包含伪造 epoch、registry revision 或 receipt，只能在 policy
+account identity/epoch 均未绑定且 machine registry 对该 account/runtime 没有 active binding 时
+使用。bound 必须逐字段匹配 policy 的精确 `live_account_epoch` 和 registry 的稳定账户 receipt；
+operation nonce 不是 account epoch。schema 1/2 或任何不完整的中间 schema 均不得从 account
+identity、nonce、日期、policy checksum 或 `.prev` 推断升级。部署发现旧 evidence 时必须保持
+`HALTED` 并保全 current/`.prev`；只有现存的精确 lifecycle transaction 加上其精确 registry
+binding 能确定性地产生 schema 3，否则这是部署阻断，必须重新走批准的 commissioning/recovery。
+
+lifecycle 的 broker-fenced durable 顺序固定为 registry CAS/acknowledgement、精确 trading-day
+evidence CAS、generic/policy targets、coordinator committed。prepared command 重试先识别同一
+transaction；registry 或 evidence 已完成时只接受同一 nonce、account、epoch、runtime 和 receipt
+的 exact retry。任一字段不同均保持 `HALTED` 并失败关闭。
 
 首次 bootstrap 的 durable 顺序固定为 OHLC cache、activity、bootstrap seed、policy state，最后
 才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。整个 write bootstrap 从 source

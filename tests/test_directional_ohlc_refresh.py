@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -117,6 +118,156 @@ def test_explicit_refresh_is_append_only_and_rejects_current_day_or_revision(tmp
         )
 
 
+@pytest.mark.parametrize("blocked_path", ["cache-symlink", "pending-witness"])
+def test_refresh_rejects_unsafe_artifact_before_provider_effects(
+    tmp_path: Path,
+    blocked_path: str,
+) -> None:
+    from afuture.directional_ohlc_cache import (
+        DirectionalOHLCCacheIntegrityError,
+        DirectionalOHLCCacheStore,
+    )
+    from afuture.directional_ohlc_refresh import refresh_directional_ohlc_cache
+
+    path = tmp_path / "directional_ohlc_cache.json"
+    store = DirectionalOHLCCacheStore(path)
+    if blocked_path == "cache-symlink":
+        target = tmp_path / "other.json"
+        target.write_text("not authority", encoding="utf-8")
+        path.symlink_to(target)
+    else:
+        store.pending_path.write_text("ambiguous prior mutation", encoding="utf-8")
+    provider_calls = 0
+
+    def provider_factory():
+        nonlocal provider_calls
+        provider_calls += 1
+        raise AssertionError("provider must not be constructed")
+
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="symlink|pending"):
+        refresh_directional_ohlc_cache(
+            store,
+            provider_factory=provider_factory,
+            products=("A", "M"),
+            current_ctp_trading_day="20260525",
+            authoritative_ctp_trading_day="20260525",
+        )
+    assert provider_calls == 0
+
+
+def test_refresh_holds_one_artifact_lock_through_provider_and_cache_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    from afuture import directional_ohlc_cache as cache_module
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_ohlc_refresh import refresh_directional_ohlc_cache
+
+    products = ("A", "M")
+    open_prices, close = _frames(products)
+    store = DirectionalOHLCCacheStore(tmp_path / "directional_ohlc_cache.json")
+    lock_depth = 0
+    provider_saw_lock = False
+    commit_saw_lock = False
+    real_lock = cache_module.durable_file_lock
+    real_commit = store.commit_encoded_unlocked
+
+    @contextmanager
+    def tracked_lock(path):
+        nonlocal lock_depth
+        with real_lock(path) as canonical:
+            lock_depth += 1
+            try:
+                yield canonical
+            finally:
+                lock_depth -= 1
+
+    def provider_factory():
+        nonlocal provider_saw_lock
+        provider_saw_lock = lock_depth == 1
+        return SimpleNamespace(
+            load=lambda _products: SimpleNamespace(open=open_prices, close=close)
+        )
+
+    def tracked_commit(*args, **kwargs):
+        nonlocal commit_saw_lock
+        commit_saw_lock = lock_depth == 1
+        return real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(cache_module, "durable_file_lock", tracked_lock)
+    monkeypatch.setattr(store, "commit_encoded_unlocked", tracked_commit)
+    refresh_directional_ohlc_cache(
+        store,
+        provider_factory=provider_factory,
+        products=products,
+        current_ctp_trading_day="20260525",
+        authoritative_ctp_trading_day="20260525",
+    )
+
+    assert provider_saw_lock is True
+    assert commit_saw_lock is True
+    assert lock_depth == 0
+
+
+def test_ambiguous_cache_truncate_preserves_pending_witness_and_blocks_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    from afuture.directional_ohlc_cache import (
+        DirectionalOHLCCacheIntegrityError,
+        DirectionalOHLCCacheStore,
+    )
+    from afuture.directional_ohlc_refresh import refresh_directional_ohlc_cache
+
+    products = ("A", "M")
+    open_prices, close = _frames(products)
+    store = DirectionalOHLCCacheStore(tmp_path / "directional_ohlc_cache.json")
+    store.save(products, open_prices.iloc[:-1], close.iloc[:-1])
+    real_ftruncate = os.ftruncate
+    provider_calls = 0
+
+    def truncate_then_fail(descriptor: int, length: int) -> None:
+        real_ftruncate(descriptor, length)
+        raise OSError("injected ambiguous truncate failure")
+
+    def provider_factory():
+        nonlocal provider_calls
+        provider_calls += 1
+        return SimpleNamespace(
+            load=lambda _products: SimpleNamespace(open=open_prices, close=close)
+        )
+
+    monkeypatch.setattr(os, "ftruncate", truncate_then_fail)
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="commit failed"):
+        refresh_directional_ohlc_cache(
+            store,
+            provider_factory=provider_factory,
+            products=products,
+            current_ctp_trading_day="20260525",
+            authoritative_ctp_trading_day="20260525",
+        )
+    assert provider_calls == 1
+    assert store.pending_path.is_file()
+
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending"):
+        refresh_directional_ohlc_cache(
+            store,
+            provider_factory=provider_factory,
+            products=products,
+            current_ctp_trading_day="20260525",
+            authoritative_ctp_trading_day="20260525",
+        )
+    assert provider_calls == 1
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending"):
+        store.load(products)
+    with pytest.raises(DirectionalOHLCCacheIntegrityError, match="pending"):
+        store.save(products, open_prices, close)
+
+
 def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
     tmp_path,
     monkeypatch,
@@ -150,7 +301,7 @@ def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
     def fake_refresh(
         store,
         *,
-        provider,
+        provider_factory,
         products,
         current_ctp_trading_day,
         authoritative_ctp_trading_day,
@@ -158,7 +309,7 @@ def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
         calls.append(
             (
                 store.path,
-                provider,
+                provider_factory,
                 products,
                 current_ctp_trading_day,
                 authoritative_ctp_trading_day,
@@ -175,11 +326,30 @@ def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
         "afuture.directional_ohlc_refresh.refresh_directional_ohlc_cache",
         fake_refresh,
     )
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
     from afuture.trading_day_evidence import TradingDayEvidenceStore
 
-    TradingDayEvidenceStore(tmp_path / "runtime" / "ctp_trading_day_evidence.json").save(
+    registry = AccountRuntimeRegistry(tmp_path / "runtime" / ".account-runtime-registry.json")
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+    policy_state = SimpleNamespace(
+        live_account_identity_digest=None,
+        live_account_epoch=None,
+    )
+    monkeypatch.setattr(
+        "afuture.directional_stress90_state.Stress90PolicyStateStore",
+        lambda _path: SimpleNamespace(load_required=lambda: policy_state),
+    )
+    TradingDayEvidenceStore(
+        tmp_path / "runtime" / "ctp_trading_day_evidence.json"
+    ).save_observation(
         trading_day="20260825",
         account_identity_digest="a" * 64,
+        runtime_dir=tmp_path / "runtime",
+        policy_state=policy_state,
+        registry=registry,
     )
 
     assert (
@@ -198,3 +368,74 @@ def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
     assert calls[0][0] == tmp_path / "runtime" / "directional_ohlc_cache.json"
     assert calls[0][2:] == (("A", "M"), "20260825", "20260825")
     assert '"latest_completed_day": "20260824"' in capsys.readouterr().out
+
+
+def test_cache_refresh_cli_rejects_policy_epoch_mismatch_before_provider_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
+    from afuture.cli import _run_directional_ohlc_refresh
+    from afuture.trading_day_evidence import TradingDayEvidenceStore
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    registry = AccountRuntimeRegistry(runtime / ".account-runtime-registry.json")
+    registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+    account = "a" * 64
+    epoch = "b" * 64
+    operation = "c" * 64
+    registry.bind_new(account, runtime, epoch, operation)
+    TradingDayEvidenceStore(runtime / "ctp_trading_day_evidence.json").bind_for_lifecycle(
+        transaction=SimpleNamespace(
+            operation="activation",
+            status="committed",
+            transaction_id="d" * 64,
+            operation_nonce=operation,
+            source_account_identity_digest="",
+            source_account_epoch="",
+            account_identity_digest=account,
+            trading_day="20260825",
+            policy_target=SimpleNamespace(
+                live_account_identity_digest=account,
+                live_account_epoch=epoch,
+            ),
+        ),
+        runtime_dir=runtime,
+        binding_evidence=registry.require_binding_evidence(account, runtime, epoch),
+    )
+    mismatched_policy = SimpleNamespace(
+        live_account_identity_digest=account,
+        live_account_epoch="e" * 64,
+    )
+    monkeypatch.setattr(
+        "afuture.directional_stress90_state.Stress90PolicyStateStore",
+        lambda _path: SimpleNamespace(load_required=lambda: mismatched_policy),
+    )
+    provider_constructions = 0
+
+    def provider_factory():
+        nonlocal provider_constructions
+        provider_constructions += 1
+        raise AssertionError("provider must not be constructed")
+
+    monkeypatch.setattr(
+        "afuture.execution_aligned_runtime.SinaContinuousOHLCProvider",
+        provider_factory,
+    )
+    config = SimpleNamespace(
+        state_path=str(runtime / "state.json"),
+        directional=SimpleNamespace(policy="stress90", products=("A", "M")),
+    )
+    args = SimpleNamespace(
+        cache="",
+        trading_day_evidence="",
+        current_trading_day="20260825",
+    )
+
+    with pytest.raises(RuntimeError, match="policy account/epoch mismatch"):
+        _run_directional_ohlc_refresh(config, args)
+    assert provider_constructions == 0

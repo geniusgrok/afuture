@@ -86,6 +86,30 @@ def _seeded_stress90_runtime(runtime_dir: Path, *, account_identity: str = "b" *
         _ACCOUNT_EPOCH,
         "e" * 64,
     )
+    from afuture.trading_day_evidence import TradingDayEvidenceStore
+
+    TradingDayEvidenceStore(runtime_dir / "ctp_trading_day_evidence.json").bind_for_lifecycle(
+        transaction=SimpleNamespace(
+            operation="activation",
+            status="committed",
+            transaction_id="f" * 64,
+            operation_nonce="e" * 64,
+            source_account_identity_digest="",
+            source_account_epoch="",
+            account_identity_digest=account_identity,
+            trading_day="20260825",
+            policy_target=SimpleNamespace(
+                live_account_identity_digest=account_identity,
+                live_account_epoch=_ACCOUNT_EPOCH,
+            ),
+        ),
+        runtime_dir=runtime_dir,
+        binding_evidence=registry.require_binding_evidence(
+            account_identity,
+            runtime_dir,
+            _ACCOUNT_EPOCH,
+        ),
+    )
     return seed, generic_store, policy_store, generic, policy
 
 
@@ -1000,7 +1024,6 @@ def test_explicit_account_switch_rebase_can_rebind_trading_day_evidence(
 
     _seeded_stress90_runtime(tmp_path, account_identity="b" * 64)
     evidence_store = TradingDayEvidenceStore(tmp_path / "ctp_trading_day_evidence.json")
-    evidence_store.save(trading_day="20260825", account_identity_digest="b" * 64)
 
     assert (
         _run_pending_rebase(

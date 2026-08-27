@@ -1018,12 +1018,6 @@ def test_account_rebase_cli_resets_only_soft_path_and_records_operator_reason(
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
     StateStore(tmp_path / "state.json").save(generic)
-    from afuture.trading_day_evidence import TradingDayEvidenceStore
-
-    TradingDayEvidenceStore(tmp_path / "ctp_trading_day_evidence.json").save(
-        trading_day="20260825",
-        account_identity_digest="b" * 64,
-    )
     policy_store = Stress90PolicyStateStore(tmp_path / "stress90_policy_state.json")
     policy_store.save(
         record_completed_account_day(
@@ -1044,6 +1038,26 @@ def test_account_rebase_cli_resets_only_soft_path_and_records_operator_reason(
     registry = AccountRuntimeRegistry(tmp_path / ".account-runtime-registry.json")
     registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
     registry.bind_new("b" * 64, tmp_path, "e" * 64, "a" * 64)
+    from afuture.trading_day_evidence import TradingDayEvidenceStore
+
+    TradingDayEvidenceStore(tmp_path / "ctp_trading_day_evidence.json").bind_for_lifecycle(
+        transaction=SimpleNamespace(
+            operation="activation",
+            status="committed",
+            transaction_id="d" * 64,
+            operation_nonce="a" * 64,
+            source_account_identity_digest="",
+            source_account_epoch="",
+            account_identity_digest="b" * 64,
+            trading_day="20260825",
+            policy_target=SimpleNamespace(
+                live_account_identity_digest="b" * 64,
+                live_account_epoch="e" * 64,
+            ),
+        ),
+        runtime_dir=tmp_path,
+        binding_evidence=registry.require_binding_evidence("b" * 64, tmp_path, "e" * 64),
+    )
     permit_store = _issue_synthetic_technical_permit(tmp_path)
 
     class FakeBroker:

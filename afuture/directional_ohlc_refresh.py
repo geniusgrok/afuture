@@ -66,7 +66,8 @@ def load_stress90_completed_ohlc(
 def refresh_directional_ohlc_cache(
     store: DirectionalOHLCCacheStore,
     *,
-    provider,
+    provider=None,
+    provider_factory=None,
     products: tuple[str, ...],
     current_ctp_trading_day: str,
     authoritative_ctp_trading_day: str | None = None,
@@ -82,18 +83,30 @@ def refresh_directional_ohlc_cache(
     )
     if current != authoritative:
         raise RuntimeError("requested current trading day mismatches Broker-derived evidence")
-    history = provider.load(products)
-    if not hasattr(history, "open") or not hasattr(history, "close"):
-        raise RuntimeError("directional OHLC provider returned an invalid history")
-    open_prices, close = canonicalize_ohlc_frames(
-        products,
-        history.open,
-        history.close,
-        name="directional OHLC refresh",
-    )
-    if bool((close.index >= current).any()):
-        raise RuntimeError("directional OHLC provider returned current/future data")
-    existing = store.load(products)
-    if existing is not None:
-        require_unchanged_overlap(existing, open_prices, close)
-    return store.save(products, open_prices, close)
+    if (provider is None) == (provider_factory is None):
+        raise RuntimeError("exactly one directional OHLC provider source is required")
+    with store.authority():
+        existing, descriptor = store.load_for_update_unlocked(products)
+        try:
+            active_provider = provider if provider_factory is None else provider_factory()
+            history = active_provider.load(products)
+            if not hasattr(history, "open") or not hasattr(history, "close"):
+                raise RuntimeError("directional OHLC provider returned an invalid history")
+            open_prices, close = canonicalize_ohlc_frames(
+                products,
+                history.open,
+                history.close,
+                name="directional OHLC refresh",
+            )
+            if bool((close.index >= current).any()):
+                raise RuntimeError("directional OHLC provider returned current/future data")
+            if existing is not None:
+                require_unchanged_overlap(existing, open_prices, close)
+            envelope, encoded = store._encoded_envelope(products, open_prices, close)
+            store.commit_encoded_unlocked(encoded, existing_descriptor=descriptor)
+            return store._entry_from_envelope(envelope, products)
+        finally:
+            if descriptor is not None:
+                import os
+
+                os.close(descriptor)

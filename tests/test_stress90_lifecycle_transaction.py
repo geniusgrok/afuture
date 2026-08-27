@@ -1761,6 +1761,7 @@ def test_real_prepared_migration_retries_after_registry_acknowledgement_crash(
     )
     from afuture.cli import (
         _apply_stress90_account_runtime_registry_transition,
+        _apply_stress90_trading_day_evidence_transition,
         _commit_stress90_lifecycle_under_broker_fence,
     )
     from afuture.directional_policy_activation import (
@@ -1798,6 +1799,31 @@ def test_real_prepared_migration_retries_after_registry_acknowledgement_crash(
     registry = AccountRuntimeRegistry(tmp_path / ".account-runtime-registry.json")
     registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
     registry.bind_new("b" * 64, tmp_path, _SOURCE_ACCOUNT_EPOCH, "e" * 64)
+    from afuture.trading_day_evidence import TradingDayEvidenceStore
+
+    evidence_store = TradingDayEvidenceStore(tmp_path / "ctp_trading_day_evidence.json")
+    evidence_store.bind_for_lifecycle(
+        transaction=SimpleNamespace(
+            operation="activation",
+            status="committed",
+            transaction_id="d" * 64,
+            operation_nonce="e" * 64,
+            source_account_identity_digest="",
+            source_account_epoch="",
+            account_identity_digest="b" * 64,
+            trading_day="20260825",
+            policy_target=SimpleNamespace(
+                live_account_identity_digest="b" * 64,
+                live_account_epoch=_SOURCE_ACCOUNT_EPOCH,
+            ),
+        ),
+        runtime_dir=tmp_path,
+        binding_evidence=registry.require_binding_evidence(
+            "b" * 64,
+            tmp_path,
+            _SOURCE_ACCOUNT_EPOCH,
+        ),
+    )
     registry_before = registry.load_required()
     config = SimpleNamespace(state_path=str(tmp_path / "state.json"))
 
@@ -1807,6 +1833,34 @@ def test_real_prepared_migration_retries_after_registry_acknowledgement_crash(
             yield
 
     real_apply = lifecycle_module.apply_stress90_lifecycle_transaction
+
+    def crash_before_evidence(_transaction) -> None:
+        raise OSError("injected post-registry evidence crash")
+
+    with pytest.raises(OSError, match="post-registry evidence crash"):
+        _commit_stress90_lifecycle_under_broker_fence(
+            Broker(),
+            transaction_store=lifecycle_store,
+            generic_store=generic_store,
+            policy_store=policy_store,
+            prepare_transaction=lambda: prepared,
+            apply_registry_transition=lambda transaction: (
+                _apply_stress90_account_runtime_registry_transition(
+                    config,
+                    runtime_dir=tmp_path,
+                    lifecycle_transaction=transaction,
+                )
+            ),
+            apply_evidence_transition=crash_before_evidence,
+            precommit_check=lambda: None,
+        )
+
+    acknowledged = AccountRuntimeRegistry(registry.path).load_required()
+    evidence_before_retry = evidence_store.load_required()
+    assert acknowledged.sequence == registry_before.sequence + 1
+    assert evidence_before_retry.account_binding_last_operation_id == "e" * 64
+    assert evidence_before_retry.rebind_transaction_id == "d" * 64
+    assert lifecycle_store.load_required().status == "prepared"
 
     def crash_before_state_commit(*_args, **_kwargs):
         raise OSError("injected post-registry state crash")
@@ -1830,11 +1884,21 @@ def test_real_prepared_migration_retries_after_registry_acknowledgement_crash(
                     lifecycle_transaction=transaction,
                 )
             ),
+            apply_evidence_transition=lambda transaction: (
+                _apply_stress90_trading_day_evidence_transition(
+                    config,
+                    runtime_dir=tmp_path,
+                    lifecycle_transaction=transaction,
+                )
+            ),
             precommit_check=lambda: None,
         )
 
-    acknowledged = AccountRuntimeRegistry(registry.path).load_required()
-    assert acknowledged.sequence == registry_before.sequence + 1
+    evidence_after_crash = evidence_store.load_required()
+    assert AccountRuntimeRegistry(registry.path).load_required() == acknowledged
+    assert evidence_after_crash.account_epoch == _SOURCE_ACCOUNT_EPOCH
+    assert evidence_after_crash.account_binding_last_operation_id == prepared.operation_nonce
+    assert evidence_after_crash.rebind_transaction_id == prepared.transaction_id
     assert lifecycle_store.load_required().status == "prepared"
 
     monkeypatch.setattr(lifecycle_module, "apply_stress90_lifecycle_transaction", real_apply)
@@ -1854,12 +1918,20 @@ def test_real_prepared_migration_retries_after_registry_acknowledgement_crash(
                 lifecycle_transaction=transaction,
             )
         ),
+        apply_evidence_transition=lambda transaction: (
+            _apply_stress90_trading_day_evidence_transition(
+                config,
+                runtime_dir=tmp_path,
+                lifecycle_transaction=transaction,
+            )
+        ),
         precommit_check=lambda: None,
     )
 
     after_retry = AccountRuntimeRegistry(registry.path).load_required()
     assert committed.status == "committed"
     assert fresh_lifecycle.load_required().status == "committed"
+    assert evidence_store.load_required() == evidence_after_crash
     assert after_retry.sequence == acknowledged.sequence
     assert after_retry.bindings[0].operation_history == (
         "e" * 64,

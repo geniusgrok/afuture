@@ -740,12 +740,7 @@ def _checkpoint_ctp_trading_day(
     broker,
     trading_day: str,
     *,
-    lifecycle_transaction=None,
-    broker_flat: bool = False,
-    local_flat: bool = False,
-    no_active_orders: bool = False,
-    reconciled: bool = False,
-    strong_confirmation: str = "",
+    required: bool = True,
 ) -> None:
     try:
         account = broker.get_account()
@@ -807,25 +802,31 @@ def _checkpoint_ctp_trading_day(
     if any(trading_day < prior for prior in prior_days):
         raise RuntimeError("CTP trading-day checkpoint authoritative day moved backward")
 
+    stress90_enabled = bool(
+        getattr(getattr(config, "directional", None), "enabled", False)
+        and getattr(config.directional, "policy", "") == "stress90"
+    )
+    if not stress90_enabled:
+        return
+    from .account_runtime_registry import AccountRuntimeRegistry
+    from .directional_stress90_state import Stress90PolicyStateStore
     from .trading_day_evidence import TradingDayEvidenceStore
 
+    runtime_dir = Path(config.state_path).resolve(strict=False).parent
+    policy_path = runtime_dir / "stress90_policy_state.json"
+    registry_path = _stress90_account_registry_path(config)
+    if not required and (not policy_path.exists() or not registry_path.exists()):
+        return
     evidence_store = TradingDayEvidenceStore(
         Path(config.state_path).with_name("ctp_trading_day_evidence.json")
     )
-    if lifecycle_transaction is not None:
-        evidence_store.rebind_for_lifecycle(
-            transaction=lifecycle_transaction,
-            halted=True,
-            broker_flat=broker_flat,
-            local_flat=local_flat,
-            no_active_orders=no_active_orders,
-            reconciled=reconciled,
-            strong_confirmation=strong_confirmation,
-        )
-        return
-    evidence_store.save(
+    policy_state = Stress90PolicyStateStore(policy_path).load_required()
+    evidence_store.save_observation(
         trading_day=trading_day,
         account_identity_digest=broker.get_account_identity_digest(),
+        runtime_dir=runtime_dir,
+        policy_state=policy_state,
+        registry=AccountRuntimeRegistry(registry_path),
     )
 
 
@@ -1250,7 +1251,12 @@ def _run_doctor(config, args) -> int:
             positions = list(mechanical.positions)
             active_orders = list(mechanical.active_orders)
         if not shadow_account:
-            _checkpoint_ctp_trading_day(live_config, live_broker, trading_day)
+            _checkpoint_ctp_trading_day(
+                live_config,
+                live_broker,
+                trading_day,
+                required=False,
+            )
         quotes: dict[str, Tick] = {}
         symbols: list[str]
         if config.directional.enabled and config.directional.policy == "stress90":
@@ -1541,6 +1547,7 @@ def _commit_stress90_lifecycle_under_broker_fence(
     policy_store,
     prepare_transaction,
     apply_registry_transition,
+    apply_evidence_transition,
     precommit_check,
 ):
     """Linearize every irreversible lifecycle participant under Broker ingress."""
@@ -1553,6 +1560,7 @@ def _commit_stress90_lifecycle_under_broker_fence(
         precommit_check()
         transaction = prepare_transaction()
         apply_registry_transition(transaction)
+        apply_evidence_transition(transaction)
         return apply_stress90_lifecycle_transaction(
             transaction_store,
             generic_store=generic_store,
@@ -1619,6 +1627,30 @@ def _apply_stress90_account_runtime_registry_transition(
         )
         return
     raise RuntimeError("unsupported Stress-90 account registry lifecycle operation")
+
+
+def _apply_stress90_trading_day_evidence_transition(
+    config,
+    *,
+    runtime_dir: Path,
+    lifecycle_transaction,
+) -> None:
+    """Commit the exact post-registry account receipt before lifecycle state targets."""
+
+    from .account_runtime_registry import AccountRuntimeRegistry
+    from .trading_day_evidence import TradingDayEvidenceStore
+
+    account = lifecycle_transaction.account_identity_digest
+    epoch = lifecycle_transaction.policy_target.live_account_epoch
+    if not account or not epoch:
+        raise RuntimeError("Stress-90 lifecycle evidence target identity is missing")
+    registry = AccountRuntimeRegistry(_stress90_account_registry_path(config))
+    receipt = registry.require_binding_evidence(account, runtime_dir, epoch)
+    TradingDayEvidenceStore(runtime_dir / "ctp_trading_day_evidence.json").bind_for_lifecycle(
+        transaction=lifecycle_transaction,
+        runtime_dir=runtime_dir,
+        binding_evidence=receipt,
+    )
 
 
 def _require_stress90_account_runtime_registry_binding(
@@ -2924,7 +2956,9 @@ def _run_stress90_activate(config, args) -> int:
             account,
             operation=f"Stress-90 {lifecycle_operation}",
         )
-        if not shadow_account:
+        if not shadow_account and not (
+            existing_lifecycle is not None and existing_lifecycle.status == "prepared"
+        ):
             _checkpoint_ctp_trading_day(config, live_broker, trading_day)
         if account.trading_day != trading_day:
             raise RuntimeError("Stress-90 activation account/CTP trading day mismatch")
@@ -3089,6 +3123,13 @@ def _run_stress90_activate(config, args) -> int:
                         lifecycle_transaction=transaction,
                     )
                 ),
+                apply_evidence_transition=lambda transaction: (
+                    _apply_stress90_trading_day_evidence_transition(
+                        config,
+                        runtime_dir=paths["runtime"],
+                        lifecycle_transaction=transaction,
+                    )
+                ),
                 precommit_check=lambda: _require_lifecycle_mechanical_snapshot_current(
                     broker, mechanical
                 ),
@@ -3215,6 +3256,13 @@ def _run_stress90_activate(config, args) -> int:
             prepare_transaction=prepare_fresh_activation,
             apply_registry_transition=lambda transaction: (
                 _apply_stress90_account_runtime_registry_transition(
+                    config,
+                    runtime_dir=paths["runtime"],
+                    lifecycle_transaction=transaction,
+                )
+            ),
+            apply_evidence_transition=lambda transaction: (
+                _apply_stress90_trading_day_evidence_transition(
                     config,
                     runtime_dir=paths["runtime"],
                     lifecycle_transaction=transaction,
@@ -3868,17 +3916,6 @@ def _run_stress90_account_rebase(config, args) -> int:
                     strong_confirmation=os.environ["AFUTURE_STRESS90_REBASE_ACK"],
                 )
                 if not shadow_account:
-                    _checkpoint_ctp_trading_day(
-                        config,
-                        live_broker,
-                        trading_day,
-                        lifecycle_transaction=pending_lifecycle,
-                        broker_flat=not any(not position.empty for position in positions),
-                        local_flat=not any(not position.empty for position in local_positions),
-                        no_active_orders=not active_orders,
-                        reconciled=reconciliation.matched,
-                        strong_confirmation=os.environ["AFUTURE_STRESS90_REBASE_ACK"],
-                    )
                     _seal_stress90_account_switch_order_epoch(
                         runtime_dir=paths["runtime"],
                         lifecycle_transaction=pending_lifecycle,
@@ -3931,6 +3968,13 @@ def _run_stress90_account_rebase(config, args) -> int:
                 ),
                 apply_registry_transition=lambda transaction: (
                     _apply_stress90_account_runtime_registry_transition(
+                        config,
+                        runtime_dir=paths["runtime"],
+                        lifecycle_transaction=transaction,
+                    )
+                ),
+                apply_evidence_transition=lambda transaction: (
+                    _apply_stress90_trading_day_evidence_transition(
                         config,
                         runtime_dir=paths["runtime"],
                         lifecycle_transaction=transaction,
@@ -4109,17 +4153,6 @@ def _run_stress90_account_rebase(config, args) -> int:
                 strong_confirmation=os.environ["AFUTURE_STRESS90_REBASE_ACK"],
             )
             if not shadow_account:
-                _checkpoint_ctp_trading_day(
-                    config,
-                    live_broker,
-                    trading_day,
-                    lifecycle_transaction=prepared,
-                    broker_flat=not any(not position.empty for position in positions),
-                    local_flat=not any(not position.empty for position in local_positions),
-                    no_active_orders=not active_orders,
-                    reconciled=reconciliation.matched,
-                    strong_confirmation=os.environ["AFUTURE_STRESS90_REBASE_ACK"],
-                )
                 _seal_stress90_account_switch_order_epoch(
                     runtime_dir=paths["runtime"],
                     lifecycle_transaction=prepared,
@@ -4165,6 +4198,13 @@ def _run_stress90_account_rebase(config, args) -> int:
             ),
             apply_registry_transition=lambda transaction: (
                 _apply_stress90_account_runtime_registry_transition(
+                    config,
+                    runtime_dir=paths["runtime"],
+                    lifecycle_transaction=transaction,
+                )
+            ),
+            apply_evidence_transition=lambda transaction: (
+                _apply_stress90_trading_day_evidence_transition(
                     config,
                     runtime_dir=paths["runtime"],
                     lifecycle_transaction=transaction,
@@ -4363,7 +4403,9 @@ def _run_directional_policy_migrate(config, args) -> int:
             account,
             operation="directional policy migration",
         )
-        if not shadow_account:
+        if not shadow_account and not (
+            pending_lifecycle is not None and pending_lifecycle.status == "prepared"
+        ):
             _checkpoint_ctp_trading_day(config, live_broker, trading_day)
         if account.trading_day != trading_day:
             raise RuntimeError("directional policy migration account/CTP day mismatch")
@@ -4438,6 +4480,13 @@ def _run_directional_policy_migrate(config, args) -> int:
                         lifecycle_transaction=transaction,
                     )
                 ),
+                apply_evidence_transition=lambda transaction: (
+                    _apply_stress90_trading_day_evidence_transition(
+                        config,
+                        runtime_dir=paths["runtime"],
+                        lifecycle_transaction=transaction,
+                    )
+                ),
                 precommit_check=lambda: _require_lifecycle_mechanical_snapshot_current(
                     broker, mechanical
                 ),
@@ -4486,6 +4535,13 @@ def _run_directional_policy_migrate(config, args) -> int:
                 ),
                 apply_registry_transition=lambda transaction: (
                     _apply_stress90_account_runtime_registry_transition(
+                        config,
+                        runtime_dir=paths["runtime"],
+                        lifecycle_transaction=transaction,
+                    )
+                ),
+                apply_evidence_transition=lambda transaction: (
+                    _apply_stress90_trading_day_evidence_transition(
                         config,
                         runtime_dir=paths["runtime"],
                         lifecycle_transaction=transaction,
@@ -4581,29 +4637,82 @@ def _run_directional_ohlc_refresh(config, args) -> int:
 
     if config.directional.policy != "stress90":
         raise ValueError("directional-ohlc-refresh requires directional.policy=stress90")
+    import stat
+
+    from .account_runtime_registry import AccountRuntimeRegistry
     from .directional_ohlc_cache import DirectionalOHLCCacheStore
     from .directional_ohlc_refresh import refresh_directional_ohlc_cache
+    from .directional_stress90_state import Stress90PolicyStateStore
+    from .durable_file_creation import canonical_file_path
     from .execution_aligned_runtime import SinaContinuousOHLCProvider
-    from .trading_day_evidence import TradingDayEvidenceStore
+    from .runtime_lease import AccountExclusiveRuntimeLease
+    from .stress90_lifecycle_transaction import Stress90LifecycleTransactionStore
+    from .trading_day_evidence import (
+        TradingDayEvidenceStore,
+        require_authoritative_trading_day_evidence,
+    )
 
-    cache_path = (
-        Path(args.cache)
-        if args.cache
-        else Path(config.state_path).with_name("directional_ohlc_cache.json")
+    runtime_dir = Path(config.state_path).resolve(strict=False).parent
+    expected_cache = runtime_dir / "directional_ohlc_cache.json"
+    expected_evidence = runtime_dir / "ctp_trading_day_evidence.json"
+    requested_cache = Path(args.cache) if args.cache else expected_cache
+    requested_evidence = (
+        Path(args.trading_day_evidence) if args.trading_day_evidence else expected_evidence
     )
-    evidence_path = (
-        Path(args.trading_day_evidence)
-        if args.trading_day_evidence
-        else Path(config.state_path).with_name("ctp_trading_day_evidence.json")
+    cache_path = canonical_file_path(requested_cache)
+    evidence_path = canonical_file_path(requested_evidence)
+    if cache_path != expected_cache or cache_path.name != "directional_ohlc_cache.json":
+        raise RuntimeError(
+            "directional-ohlc-refresh cache must use the fixed evidence runtime path"
+        )
+    if evidence_path != expected_evidence or evidence_path.name != "ctp_trading_day_evidence.json":
+        raise RuntimeError(
+            "directional-ohlc-refresh trading-day evidence must use the fixed runtime path"
+        )
+    try:
+        evidence_stat = os.stat(evidence_path, follow_symlinks=False)
+    except OSError as exc:
+        raise RuntimeError("directional-ohlc-refresh evidence path is unavailable") from exc
+    if not stat.S_ISREG(evidence_stat.st_mode):
+        raise RuntimeError("directional-ohlc-refresh evidence path must be a regular file")
+
+    policy_store = Stress90PolicyStateStore(runtime_dir / "stress90_policy_state.json")
+    evidence_store = TradingDayEvidenceStore(evidence_path)
+    preliminary_policy = policy_store.load_required()
+    preliminary_evidence = evidence_store.load_required()
+    lease_account = (
+        preliminary_policy.live_account_identity_digest
+        or preliminary_evidence.account_identity_digest
     )
-    evidence = TradingDayEvidenceStore(evidence_path).load_required()
-    entry = refresh_directional_ohlc_cache(
-        DirectionalOHLCCacheStore(cache_path),
-        provider=SinaContinuousOHLCProvider(),
-        products=tuple(config.directional.products),
-        current_ctp_trading_day=args.current_trading_day,
-        authoritative_ctp_trading_day=evidence.trading_day,
+    lease = AccountExclusiveRuntimeLease(
+        runtime_dir,
+        lease_account,
+        role="directional-ohlc-refresh",
     )
+    lease.acquire()
+    try:
+        policy_state = policy_store.load_required()
+        evidence = evidence_store.load_required()
+        registry = AccountRuntimeRegistry(_stress90_account_registry_path(config))
+        lifecycle = Stress90LifecycleTransactionStore(
+            runtime_dir / "stress90_lifecycle_transaction.json"
+        ).load()
+        require_authoritative_trading_day_evidence(
+            evidence,
+            policy_state=policy_state,
+            registry=registry,
+            runtime_dir=runtime_dir,
+            lifecycle_transaction=lifecycle,
+        )
+        entry = refresh_directional_ohlc_cache(
+            DirectionalOHLCCacheStore(cache_path),
+            provider_factory=SinaContinuousOHLCProvider,
+            products=tuple(config.directional.products),
+            current_ctp_trading_day=args.current_trading_day,
+            authoritative_ctp_trading_day=evidence.trading_day,
+        )
+    finally:
+        lease.release()
     print(
         json.dumps(
             {
