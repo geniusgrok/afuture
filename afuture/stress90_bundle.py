@@ -70,7 +70,9 @@ def create_stress90_bundle(
         repo = repository_root()
         if git_head(repo) != source_commit:
             raise Stress90BundleError("production bundle source commit does not match current HEAD")
-        seed = Stress90SeedStore(Path(source_runtime) / "stress90_bootstrap_seed.json").load_required()
+        seed = Stress90SeedStore(
+            Path(source_runtime) / "stress90_bootstrap_seed.json"
+        ).load_required()
         if seed.bootstrap_through_day != through_day:
             raise Stress90BundleError("production bundle through day differs from clean seed")
         result = _create_production_bundle(
