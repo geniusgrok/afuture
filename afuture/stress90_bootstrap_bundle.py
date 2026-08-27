@@ -164,7 +164,9 @@ def _require_clean_bootstrap(runtime: Path) -> tuple[object, object, object]:
         or policy.completed_account_wealth != 1.0
         or policy.completed_account_high_watermark != 1.0
     ):
-        raise BootstrapBundleError("production bundle policy state is already bound to live account path")
+        raise BootstrapBundleError(
+            "production bundle policy state is already bound to live account path"
+        )
     if policy.bootstrap_seed_digest != seed.seed_digest:
         raise BootstrapBundleError("bootstrap seed/policy identity mismatch")
     oi_store = Stress90OiEvidenceStore(runtime / "stress90_oi_evidence.json")
@@ -307,7 +309,10 @@ def _validate_manifest(
         _hex40(manifest["source_commit"], label="bundle source commit")
         if manifest.get("historical_candidate_parity") is not True:
             raise BootstrapBundleError("production bundle historical parity is false")
-        if manifest.get("candidate_weight_sha256") != STRESS90_POLICY.historical_candidate_weight_sha256:
+        if (
+            manifest.get("candidate_weight_sha256")
+            != STRESS90_POLICY.historical_candidate_weight_sha256
+        ):
             raise BootstrapBundleError("production bundle candidate identity mismatch")
         if manifest.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest:
             raise BootstrapBundleError("production bundle policy identity mismatch")
@@ -344,8 +349,12 @@ def _validate_artifacts_in_directory(runtime: Path, manifest: dict[str, Any]) ->
     seed = Stress90SeedStore(runtime / "stress90_bootstrap_seed.json").load_required(
         expected_source_manifest=FIXED_STRESS90_INPUT_SHA256
     )
-    policy_record = Stress90PolicyStateStore(runtime / "stress90_policy_state.json").load_required_record()
-    oi_record = Stress90OiEvidenceStore(runtime / "stress90_oi_evidence.json").load_required_record()
+    policy_record = Stress90PolicyStateStore(
+        runtime / "stress90_policy_state.json"
+    ).load_required_record()
+    oi_record = Stress90OiEvidenceStore(
+        runtime / "stress90_oi_evidence.json"
+    ).load_required_record()
     ohlc = DirectionalOHLCCacheStore(runtime / "directional_ohlc_cache.json").load(
         STRESS90_POLICY.products
     )
@@ -401,7 +410,9 @@ def verify_stress90_bundle(
             current_head = git_head(repo)
             source_commit = _hex40(manifest["source_commit"], label="bundle source commit")
             if not git_commit_is_ancestor(repo, source_commit, current_head):
-                raise BootstrapBundleError("bundle source commit is not compatible with current checkout")
+                raise BootstrapBundleError(
+                    "bundle source commit is not compatible with current checkout"
+                )
             if manifest["constraints"] != _constraints(repo):
                 raise BootstrapBundleError("bundle constraints differ from current implementation")
 
