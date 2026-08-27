@@ -1,5 +1,74 @@
 # Stress-90 live productionization handoff — 2026-08-26
 
+## Final continuation update — 2026-08-27
+
+本节是当前权威续作现场，并取代本文后续 2026-08-26 snapshot、红色 CI、open code blocker
+和 continuation order；旧内容保留为审计历史，不得再据此回退代码或重新执行已关闭任务。
+
+- Repository: `ychenracing/afuture`
+- Base `main`: `da8de59304963c7b1d6737a63e8dadd6eaecd860`
+- Feature branch: `codex/stress90-live-productionization`
+- Draft PR: <https://github.com/ychenracing/afuture/pull/29>
+- Final reviewed code head: `48a16d181c0bf7820fd156714d0c45177aa8ad28`
+- Final reviewed code tree: `87da8c84fa341640e32aeb908badc9a5d818554c`
+- Latest code CI: run `33044030711` / #1767, quality + Python 3.10 + Python 3.13 success
+
+普通 HTTPS push 在本地仍没有 GitHub 用户名凭证。所有续作提交均通过 authenticated GitHub
+Git-data API 从远端 parent 重建，并使用 `force=false` fast-forward；远端每个最终 tree
+均与本地审查通过 tree 精确一致。禁止 force-push。
+
+### Closed code milestones
+
+- 原始 24 个 pytest failure 与 51 个 MyPy error 已关闭，目标 Python 3.10/3.13 CI 全绿。
+- Registry migration nonce、reactivation returns、missing-lineage、account-specific receipt、
+  exact epoch binding 与 OI/bootstrap interprocess CAS 已关闭。
+- Machine registry 的永久全局 nonce 使用 authenticated Patricia-Merkle ledger、immutable
+  count-indexed transition proof、显式 schema-2 migration 与 crash-retry CAS；跨账户/跨 kind
+  重用失败关闭。
+- `TradingDayEvidence` schema 3 精确绑定 account epoch/receipt/runtime；OHLC authority、路径
+  别名、symlink、provider-effect 和 durable pending-witness crash window 已关闭。
+- 独立 `stress90-crash-fill-recover` 在 HALTED + kill switch 下持有 account lease 和 Broker
+  critical-ingress fence，绑定完整 session/order/trade/account/TDE/global nonce，按
+  registry → TDE → checkpoint prepared → generic CAS → committed 顺序 exactly-once；不发送或
+  取消订单，未知活动继续 HALT。
+- 持久化 decoder、current/`.prev`、lineage、OFD lock、atomic replace、file/parent fsync 和
+  interprocess CAS 的已知 Critical/Important finding 已关闭。
+- 非相邻 civil-day transition 在在线 aggregator、持久化 decoder、account-day consumer 和
+  engine 均失败关闭，不能用伪造 manager callback 绕过。
+
+### Final verification
+
+```text
+Final adversarial review      APPROVE; Critical 0, Important 0; 312 passed
+L3 production safety         659 passed; production mechanics passed
+Final L4 pytest              1554 passed, 1 skipped
+Ruff lint / format           passed; 247 files formatted
+MyPy                         102 source files clean
+compileall / pip check       passed
+wheel + sdist                built successfully
+five example configs         validated
+Shadow zero-write smoke      4 passed
+fixed-pair + Auto replay     4 trades, flat, zero margin
+CLI help                     current production commands passed
+```
+
+最终 L4 在稳定代码候选上只运行一次。其后只允许更新证据文档，不重复 L4。
+
+### Deliberately open external blockers
+
+1. Pinned `vnpy_ctp 6.7.11.4` 不能提供权威的 prior-day final funding/settlement witness。
+   D+1 `PreBalance`、current-day `Deposit/Withdraw`、`TransferSerial` alone、opaque
+   `SettlementInfo` 和 operator assertion 均不充分；`stress90-settlement-roll-forward`
+   继续在 Broker 构造和状态写入前失败关闭。
+2. Pinned ABI 也没有 official immutable trading-calendar/session ledger。禁止 `BDay`、
+   本机日期、猜测节假日、OHLC endpoints 或长连接替代；周末/节假日 gap 继续失败关闭。
+3. 五份固定历史输入仍缺失。本次没有复现 candidate SHA、Stress-90 `112.100053%` 或
+   Stress-80 `80.067891%`，不得替换输入或声称 parity 已完成。
+4. 目标机 CTP ABI/callback、multi-day Shadow、测试柜台、真实 fees/margin、FAK partial、
+   disconnect/reconnect、tiny-live、risk-scale approval 和 branch protection 仍是现场/治理证据。
+
+因此当前最终结论仍是：**PR 保持 Draft，不 merge `main`，不授权真实资金。**
+
 ## Safety status
 
 This branch is a production-safety checkpoint, not a completed live release. Keep the pull
