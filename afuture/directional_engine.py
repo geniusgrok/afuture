@@ -371,6 +371,17 @@ class DirectionalTradingEngine(TradingEngine):
                 raise RuntimeError(
                     "Stress-90 requires explicit settlement roll-forward before runtime day advance"
                 )
+            try:
+                natural_days = (
+                    datetime.strptime(new_day, "%Y%m%d") - datetime.strptime(old_day, "%Y%m%d")
+                ).days
+            except ValueError as exc:
+                raise RuntimeError("Stress-90 trading-day gap identity is invalid") from exc
+            if natural_days != 1:
+                raise RuntimeError(
+                    "Stress-90 trading-day gap is non-adjacent and requires an official "
+                    "immutable session ledger"
+                )
             continuity = getattr(
                 self.directional_manager,
                 "completed_account_day_is_contiguous",

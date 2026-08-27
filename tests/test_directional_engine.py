@@ -591,6 +591,7 @@ def test_stress90_unproven_target_day_gap_enters_reduce_only_when_exposed(tmp_pa
 def test_stress90_weekend_rollover_rejects_without_official_session_ledger(tmp_path):
     _broker, manager, engine = _engine(tmp_path)
     manager.runtime_policy_id = "directional.stress90"
+    manager.verified_completed_account_transitions.add(("20260821", "20260824"))
     engine.state.trading_day = "20260821"
     engine.state.day_start_equity = 100_000.0
     engine.state.last_account_trading_day = "20260821"
