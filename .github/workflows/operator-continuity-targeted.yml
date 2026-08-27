@@ -24,6 +24,7 @@ jobs:
       - name: Apply staged implementation
         run: |
           python tools/operator_continuity_patch.py
+          python tools/operator_continuity_test_fix.py
           python -m ruff format afuture/stress90_operator_continuity.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py
       - name: Targeted tests
         run: |
