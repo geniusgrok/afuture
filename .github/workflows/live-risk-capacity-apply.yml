@@ -62,6 +62,19 @@ jobs:
           start, end = call_bounds(text, redundant_needle)
           text = text[:start] + text[end:]
 
+          marker_needle = '"account_identity_digest": account_identity_digest,\\n        "operator_reason": operator_reason.strip(),\\n'
+          start, end = call_bounds(text, marker_needle)
+          marker_patch = r'''replace_once(
+              "afuture/directional_policy_activation.py",
+              '        "bootstrap_seed_digest": bootstrap_seed_digest,\n        "account_identity_digest": account_identity_digest,\n        "operator_reason": operator_reason.strip(),\n',
+              '        "bootstrap_seed_digest": bootstrap_seed_digest,\n'
+              '        "account_identity_digest": account_identity_digest,\n'
+              '        "risk_overlay_digest": risk_overlay_digest,\n'
+              '        "operator_reason": operator_reason.strip(),\n',
+          )
+          '''.replace('          ', '')
+          text = text[:start] + marker_patch + text[end:]
+
           path.write_text(text, encoding='utf-8')
           PY
       - name: Apply TDD implementation and focused verification
