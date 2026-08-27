@@ -432,3 +432,84 @@ def test_crash_after_receipt_before_registry_cas_rolls_forward_only_exact_reques
             nonce,
             "c" * 64,
         )
+
+
+def test_immutable_nonce_head_rejects_rollback_to_valid_authenticated_subset(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistryError
+
+    registry = _registry(tmp_path / "registry.json")
+    initial_bytes = registry.path.read_bytes()
+    account, runtime, epoch = _binding_inputs(tmp_path)
+    registry.bind_new(account, runtime, epoch, "a" * 64)
+    subset_bytes = registry.path.read_bytes()
+    omitted_nonce = "b" * 64
+    registry.acknowledge_binding_operation(account, runtime, epoch, omitted_nonce)
+
+    # Both restored records and the old nonce root are independently valid, but
+    # immutable count-2 transition evidence proves this is a signed rollback.
+    registry.previous_path.write_bytes(initial_bytes)
+    registry.path.write_bytes(subset_bytes)
+    with pytest.raises(AccountRuntimeRegistryError, match="rollback|head|transition|nonce"):
+        registry.acknowledge_binding_operation(account, runtime, epoch, omitted_nonce)
+
+
+def test_exact_retry_reconciles_pending_after_registry_cas_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _registry(tmp_path / "registry.json")
+    account, runtime, epoch = _binding_inputs(tmp_path)
+    registry.bind_new(account, runtime, epoch, "a" * 64)
+    ledger = _ledger(registry)
+    operation = "b" * 64
+    original_unlink = Path.unlink
+    failed = False
+
+    def fail_pending_cleanup(path: Path, *args, **kwargs) -> None:
+        nonlocal failed
+        if path == ledger.pending_path and not failed:
+            failed = True
+            raise OSError("injected pending unlink ambiguity")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_pending_cleanup)
+    with pytest.raises(OSError, match="pending unlink"):
+        registry.acknowledge_binding_operation(account, runtime, epoch, operation)
+    assert ledger.pending_path.exists()
+
+    exact = registry.acknowledge_binding_operation(account, runtime, epoch, operation)
+    assert exact.nonce_count == 2
+    assert not ledger.pending_path.exists()
+    following = registry.acknowledge_binding_operation(account, runtime, epoch, "c" * 64)
+    assert following.nonce_count == 3
+
+
+@pytest.mark.parametrize(
+    "crash_point",
+    [
+        "after_pending_before_transition",
+        "after_transition_before_registry",
+        "after_registry_before_cleanup",
+    ],
+)
+def test_nonce_transition_crash_prefixes_roll_forward_exactly_once(
+    tmp_path: Path,
+    crash_point: str,
+) -> None:
+    from afuture.account_runtime_registry import AccountRuntimeRegistryError
+
+    registry = _registry(tmp_path / f"{crash_point}.json")
+    account, runtime, epoch = _binding_inputs(tmp_path / crash_point)
+    registry.bind_new(account, runtime, epoch, "a" * 64)
+    operation = "b" * 64
+    registry._nonce_commit_fault = crash_point  # type: ignore[attr-defined]
+    with pytest.raises(AccountRuntimeRegistryError, match="injected crash"):
+        registry.acknowledge_binding_operation(account, runtime, epoch, operation)
+    del registry._nonce_commit_fault  # type: ignore[attr-defined]
+
+    exact = registry.acknowledge_binding_operation(account, runtime, epoch, operation)
+    assert exact.nonce_count == 2
+    assert registry.acknowledge_binding_operation(account, runtime, epoch, operation) == exact
+    assert not _ledger(registry).pending_path.exists()

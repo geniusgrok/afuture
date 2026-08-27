@@ -547,9 +547,53 @@ class AccountRuntimeRegistry:
 
         try:
             ledger = self._nonce_ledger()
-            ledger.load_ready_root()
+            anchor = ledger.load_ready_anchor()
             if record.nonce_count > MAX_NONCE_RECEIPTS:
                 raise AccountRuntimeNonceLedgerError("nonce ledger count exceeds capacity cap")
+            base_sequence = anchor["base_registry_sequence"]
+            base_checksum = anchor["base_registry_checksum"]
+            base_root = anchor["initial_root"]
+            base_count = anchor["initial_count"]
+            if base_sequence is None or base_checksum is None:
+                raise AccountRuntimeNonceLedgerError(
+                    "nonce ledger ready marker lacks registry anchor"
+                )
+            if record.nonce_count == base_count:
+                if (
+                    record.sequence != base_sequence
+                    or record.checksum != base_checksum
+                    or record.nonce_root != base_root
+                ):
+                    raise AccountRuntimeNonceLedgerError(
+                        "registry nonce anchor was rolled back or substituted"
+                    )
+            else:
+                head = ledger.load_transition(record.nonce_count)
+                if head is None or (
+                    head["new_registry_sequence"] != record.sequence
+                    or head["new_registry_checksum"] != record.checksum
+                    or head["new_root"] != record.nonce_root
+                    or head["new_count"] != record.nonce_count
+                ):
+                    raise AccountRuntimeNonceLedgerError(
+                        "registry nonce transition head does not match current"
+                    )
+            next_head = ledger.load_transition(record.nonce_count + 1)
+            if next_head is not None:
+                pending = self._load_nonce_pending_unlocked()
+                if pending is None or not self._pending_matches_transition(pending, next_head):
+                    raise AccountRuntimeNonceLedgerError(
+                        "registry nonce rollback has a later immutable transition head"
+                    )
+                if (
+                    next_head["old_registry_sequence"] != record.sequence
+                    or next_head["old_registry_checksum"] != record.checksum
+                    or next_head["old_root"] != record.nonce_root
+                    or next_head["old_count"] != record.nonce_count
+                ):
+                    raise AccountRuntimeNonceLedgerError(
+                        "registry nonce next transition does not extend current"
+                    )
             for binding in record.bindings:
                 receipt = ledger.require_receipt(record.nonce_root, binding.last_operation_id)
                 legacy_tombstone = (
@@ -576,10 +620,10 @@ class AccountRuntimeRegistry:
                 "account runtime nonce ledger integrity validation failed"
             ) from exc
 
-    def _reconcile_nonce_pending_unlocked(self, record: AccountRuntimeRegistryRecord) -> None:
+    def _load_nonce_pending_unlocked(self) -> dict[str, object] | None:
         ledger = self._nonce_ledger()
         if not ledger.pending_path.exists():
-            return
+            return None
         try:
             raw = json.loads(
                 ledger._read_exact(
@@ -594,12 +638,16 @@ class AccountRuntimeRegistry:
             "kind",
             "schema_version",
             "old_registry_checksum",
+            "old_registry_sequence",
             "old_root",
             "old_count",
+            "new_registry_checksum",
+            "new_registry_sequence",
             "new_root",
             "new_count",
             "operation_nonce",
             "receipt_checksum",
+            "transition_checksum",
             "checksum",
         }
         if type(raw) is not dict or set(raw) != expected:
@@ -607,16 +655,67 @@ class AccountRuntimeRegistry:
         unsigned = {key: value for key, value in raw.items() if key != "checksum"}
         if raw["checksum"] != _digest(unsigned):
             raise AccountRuntimeRegistryError("account runtime nonce pending checksum mismatch")
-        if record.nonce_root == raw["new_root"] and record.nonce_count == raw["new_count"]:
+        return raw
+
+    @staticmethod
+    def _pending_matches_transition(
+        pending: dict[str, object], transition: dict[str, object]
+    ) -> bool:
+        return (
+            all(
+                pending[key] == transition[key]
+                for key in (
+                    "old_registry_sequence",
+                    "old_registry_checksum",
+                    "old_root",
+                    "old_count",
+                    "new_registry_sequence",
+                    "new_registry_checksum",
+                    "new_root",
+                    "new_count",
+                    "operation_nonce",
+                    "receipt_checksum",
+                )
+            )
+            and pending["transition_checksum"] == transition["checksum"]
+        )
+
+    def _reconcile_nonce_pending_unlocked(self, record: AccountRuntimeRegistryRecord) -> None:
+        ledger = self._nonce_ledger()
+        raw = self._load_nonce_pending_unlocked()
+        if raw is None:
+            return
+        new_count = raw["new_count"]
+        if type(new_count) is not int:
+            raise AccountRuntimeRegistryError("account runtime nonce pending count is invalid")
+        transition = ledger.load_transition(new_count)
+        base_matches = (
+            record.sequence == raw["old_registry_sequence"]
+            and record.checksum == raw["old_registry_checksum"]
+            and record.nonce_root == raw["old_root"]
+            and record.nonce_count == raw["old_count"]
+        )
+        if transition is None:
+            if base_matches:
+                return
+            raise AccountRuntimeRegistryError(
+                "account runtime nonce pending transition proof is missing"
+            )
+        if not self._pending_matches_transition(raw, transition):
+            raise AccountRuntimeRegistryError(
+                "account runtime nonce pending transition proof is invalid"
+            )
+        if (
+            record.sequence == raw["new_registry_sequence"]
+            and record.checksum == raw["new_registry_checksum"]
+            and record.nonce_root == raw["new_root"]
+            and record.nonce_count == raw["new_count"]
+        ):
             ledger.require_receipt(record.nonce_root, raw["operation_nonce"])
             ledger.pending_path.unlink()
             ledger._fsync_parent(ledger.pending_path)
             return
-        if not (
-            record.checksum == raw["old_registry_checksum"]
-            and record.nonce_root == raw["old_root"]
-            and record.nonce_count == raw["old_count"]
-        ):
+        if not base_matches:
             raise AccountRuntimeRegistryError(
                 "account runtime nonce pending does not match registry CAS"
             )
@@ -695,16 +794,42 @@ class AccountRuntimeRegistry:
                     getattr(self, "_nonce_commit_fault", None) == "after_receipt_before_registry"
                 ),
             )
-            pending_unsigned = {
-                "kind": "afuture.account-runtime-nonce-pending",
+            target = _new_record(
+                sequence=current.sequence + 1,
+                parent_checksum=current.checksum,
+                bindings=bindings,
+                nonce_root=insertion.new_root,
+                nonce_count=insertion.new_count,
+            )
+            transition_unsigned = {
+                "kind": "afuture.account-runtime-nonce-transition",
                 "schema_version": 1,
+                "old_registry_sequence": current.sequence,
                 "old_registry_checksum": current.checksum,
                 "old_root": insertion.old_root,
                 "old_count": insertion.old_count,
+                "new_registry_sequence": target.sequence,
+                "new_registry_checksum": target.checksum,
                 "new_root": insertion.new_root,
                 "new_count": insertion.new_count,
                 "operation_nonce": receipt.operation_nonce,
                 "receipt_checksum": receipt.checksum,
+            }
+            transition_checksum = _digest(transition_unsigned)
+            pending_unsigned = {
+                "kind": "afuture.account-runtime-nonce-pending",
+                "schema_version": 1,
+                "old_registry_sequence": current.sequence,
+                "old_registry_checksum": current.checksum,
+                "old_root": insertion.old_root,
+                "old_count": insertion.old_count,
+                "new_registry_sequence": target.sequence,
+                "new_registry_checksum": target.checksum,
+                "new_root": insertion.new_root,
+                "new_count": insertion.new_count,
+                "operation_nonce": receipt.operation_nonce,
+                "receipt_checksum": receipt.checksum,
+                "transition_checksum": transition_checksum,
             }
             pending = _canonical_json({**pending_unsigned, "checksum": _digest(pending_unsigned)})
             ledger._durable_create_exact(
@@ -712,11 +837,32 @@ class AccountRuntimeRegistry:
                 pending,
                 maximum=16_000,
             )
+            if getattr(self, "_nonce_commit_fault", None) == "after_pending_before_transition":
+                raise AccountRuntimeRegistryError(
+                    "injected crash after nonce pending before transition"
+                )
+            transition = ledger.create_transition(transition_unsigned)
+            if transition["checksum"] != transition_checksum:
+                raise AccountRuntimeNonceLedgerError(
+                    "nonce transition checksum changed before registry CAS"
+                )
+            if getattr(self, "_nonce_commit_fault", None) == "after_transition_before_registry":
+                raise AccountRuntimeRegistryError(
+                    "injected crash after nonce transition before registry"
+                )
             self._next_nonce_anchor = (insertion.new_root, insertion.new_count)
             try:
                 saved = self._save_unlocked(current, bindings)
             finally:
                 del self._next_nonce_anchor
+            if saved != target:
+                raise AccountRuntimeNonceLedgerError(
+                    "nonce transition target changed during registry CAS"
+                )
+            if getattr(self, "_nonce_commit_fault", None) == "after_registry_before_cleanup":
+                raise AccountRuntimeRegistryError(
+                    "injected crash after registry CAS before pending cleanup"
+                )
             ledger.require_receipt(saved.nonce_root, receipt.operation_nonce)
             ledger.pending_path.unlink()
             ledger._fsync_parent(ledger.pending_path)
@@ -1170,7 +1316,18 @@ class AccountRuntimeRegistry:
             self._claim_initial_visible_lock_unlocked(lock)
             from .account_runtime_nonce_ledger import EMPTY_NONCE_ROOT
 
-            self._nonce_ledger().initialize_ready(source_digest=sha256(_LINEAGE_MARKER).hexdigest())
+            initial_record = _new_record(
+                sequence=1,
+                parent_checksum=None,
+                bindings=(),
+                nonce_root=EMPTY_NONCE_ROOT,
+                nonce_count=0,
+            )
+            self._nonce_ledger().initialize_ready(
+                source_digest=sha256(_LINEAGE_MARKER).hexdigest(),
+                base_registry_sequence=initial_record.sequence,
+                base_registry_checksum=initial_record.checksum,
+            )
             self._next_nonce_anchor = (EMPTY_NONCE_ROOT, 0)
             try:
                 initialized = self._save_unlocked(None, ())
@@ -1298,10 +1455,19 @@ class AccountRuntimeRegistry:
                         and getattr(self, "_nonce_migration_fault", None) == "legacy_node"
                     ):
                         raise AccountRuntimeRegistryError("injected nonce migration node crash")
+                migration_target = _new_record(
+                    sequence=current.sequence + 1,
+                    parent_checksum=current.checksum,
+                    bindings=current.bindings,
+                    nonce_root=root,
+                    nonce_count=count,
+                )
                 ledger.write_ready(
                     source_digest=marker_checksum,
                     initial_root=root,
                     initial_count=count,
+                    base_registry_sequence=migration_target.sequence,
+                    base_registry_checksum=migration_target.checksum,
                 )
                 if getattr(self, "_nonce_migration_fault", None) in {
                     "ready_file",
@@ -1315,6 +1481,10 @@ class AccountRuntimeRegistry:
                     migrated = self._save_unlocked(current, current.bindings)
                 finally:
                     del self._next_nonce_anchor
+                if migrated != migration_target:
+                    raise AccountRuntimeRegistryError(
+                        "account runtime nonce migration target changed"
+                    )
                 self._validate_nonce_anchor_unlocked(migrated)
                 return migrated
             except AccountRuntimeNonceLedgerError as exc:
@@ -1356,6 +1526,7 @@ class AccountRuntimeRegistry:
             )
             assert current is not None
             self._require_schema3_nonce_ledger(current)
+            self._reconcile_nonce_pending_unlocked(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             existing = bindings.get(account)
             if (
@@ -1480,6 +1651,7 @@ class AccountRuntimeRegistry:
             )
             assert current is not None
             self._require_schema3_nonce_ledger(current)
+            self._reconcile_nonce_pending_unlocked(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             target_binding = bindings.get(target_account)
             if (
@@ -1661,6 +1833,7 @@ class AccountRuntimeRegistry:
             )
             assert current is not None
             self._require_schema3_nonce_ledger(current)
+            self._reconcile_nonce_pending_unlocked(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
             if binding is None:
@@ -1741,6 +1914,7 @@ class AccountRuntimeRegistry:
             )
             assert current is not None
             self._require_schema3_nonce_ledger(current)
+            self._reconcile_nonce_pending_unlocked(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
             if binding is None:
@@ -1835,6 +2009,7 @@ class AccountRuntimeRegistry:
             )
             assert current is not None
             self._require_schema3_nonce_ledger(current)
+            self._reconcile_nonce_pending_unlocked(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
             if binding is None:
@@ -1979,6 +2154,7 @@ class AccountRuntimeRegistry:
             )
             assert current is not None
             self._require_schema3_nonce_ledger(current)
+            self._reconcile_nonce_pending_unlocked(current)
             bindings = {item.account_identity_digest: item for item in current.bindings}
             binding = bindings.get(account)
             if binding is None:

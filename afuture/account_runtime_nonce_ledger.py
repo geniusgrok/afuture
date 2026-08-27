@@ -20,6 +20,7 @@ _SHA = re.compile(r"[0-9a-f]{64}")
 _KIND_RECEIPT = "afuture.account-runtime-nonce-receipt"
 _KIND_NODE = "afuture.account-runtime-nonce-node"
 _KIND_READY = "afuture.account-runtime-nonce-ready"
+_KIND_TRANSITION = "afuture.account-runtime-nonce-transition"
 _SCHEMA = 1
 EMPTY_NONCE_ROOT = sha256(b"afuture.account-runtime-nonce-empty-v1").hexdigest()
 MAX_NONCE_RECEIPTS = 1_000_000
@@ -217,6 +218,7 @@ class AccountRuntimeNonceLedger:
         self.directory = directory
         self.receipts = directory / "receipts"
         self.nodes = directory / "nodes"
+        self.transitions = directory / "transitions"
         self.ready_path = directory / "ready.json"
         self.pending_path = directory / "pending.json"
         self.migration_path = directory / "migration.json"
@@ -328,11 +330,24 @@ class AccountRuntimeNonceLedger:
                     if not created:
                         raise
 
-    def initialize_ready(self, *, source_digest: str) -> None:
+    def transition_path(self, nonce_count: int) -> Path:
+        if type(nonce_count) is not int or nonce_count <= 0:
+            raise AccountRuntimeNonceLedgerError("nonce transition count is invalid")
+        return self.transitions / f"{nonce_count:016d}.json"
+
+    def initialize_ready(
+        self,
+        *,
+        source_digest: str,
+        base_registry_sequence: int | None = None,
+        base_registry_checksum: str | None = None,
+    ) -> None:
         self.write_ready(
             source_digest=source_digest,
             initial_root=EMPTY_NONCE_ROOT,
             initial_count=0,
+            base_registry_sequence=base_registry_sequence,
+            base_registry_checksum=base_registry_checksum,
         )
 
     def write_ready(
@@ -341,24 +356,37 @@ class AccountRuntimeNonceLedger:
         source_digest: str,
         initial_root: str,
         initial_count: int,
+        base_registry_sequence: int | None = None,
+        base_registry_checksum: str | None = None,
     ) -> None:
         _sha(source_digest, "nonce ledger source digest")
         _sha(initial_root, "nonce ledger initial root")
         if type(initial_count) is not int or initial_count < 0:
             raise AccountRuntimeNonceLedgerError("nonce ledger initial count is invalid")
+        if (base_registry_sequence is None) != (base_registry_checksum is None):
+            raise AccountRuntimeNonceLedgerError("nonce ledger base registry anchor is invalid")
+        if base_registry_sequence is not None and (
+            type(base_registry_sequence) is not int or base_registry_sequence <= 0
+        ):
+            raise AccountRuntimeNonceLedgerError("nonce ledger base registry sequence is invalid")
+        if base_registry_checksum is not None:
+            _sha(base_registry_checksum, "nonce ledger base registry checksum")
         self.receipts.mkdir(parents=True, exist_ok=True)
         self.nodes.mkdir(parents=True, exist_ok=True)
+        self.transitions.mkdir(parents=True, exist_ok=True)
         unsigned = {
             "kind": _KIND_READY,
             "schema_version": _SCHEMA,
             "source_digest": source_digest,
             "initial_root": initial_root,
             "initial_count": initial_count,
+            "base_registry_sequence": base_registry_sequence,
+            "base_registry_checksum": base_registry_checksum,
         }
         payload = _canonical({**unsigned, "checksum": _digest(unsigned)})
         self._durable_create_exact(self.ready_path, payload, maximum=_MAX_RECEIPT_BYTES)
 
-    def load_ready_root(self) -> tuple[str, int]:
+    def load_ready_anchor(self) -> dict[str, object]:
         raw = _decode_json(
             self._read_exact(self.ready_path, maximum=_MAX_RECEIPT_BYTES, label="ready marker"),
             maximum=_MAX_RECEIPT_BYTES,
@@ -370,6 +398,8 @@ class AccountRuntimeNonceLedger:
             "source_digest",
             "initial_root",
             "initial_count",
+            "base_registry_sequence",
+            "base_registry_checksum",
             "checksum",
         }
         if set(raw) != fields or raw["kind"] != _KIND_READY or raw["schema_version"] != _SCHEMA:
@@ -381,7 +411,94 @@ class AccountRuntimeNonceLedger:
         count = raw["initial_count"]
         if type(count) is not int or count < 0:
             raise AccountRuntimeNonceLedgerError("nonce ledger ready count is invalid")
+        base_sequence = raw["base_registry_sequence"]
+        base_checksum = raw["base_registry_checksum"]
+        if (base_sequence is None) != (base_checksum is None):
+            raise AccountRuntimeNonceLedgerError("nonce ledger base registry anchor is invalid")
+        if base_sequence is not None and (type(base_sequence) is not int or base_sequence <= 0):
+            raise AccountRuntimeNonceLedgerError("nonce ledger base registry sequence is invalid")
+        if base_checksum is not None:
+            _sha(base_checksum, "nonce ledger base registry checksum")
+        return {
+            "initial_root": root,
+            "initial_count": count,
+            "base_registry_sequence": base_sequence,
+            "base_registry_checksum": base_checksum,
+        }
+
+    def load_ready_root(self) -> tuple[str, int]:
+        anchor = self.load_ready_anchor()
+        root = anchor["initial_root"]
+        count = anchor["initial_count"]
+        if type(root) is not str or type(count) is not int:
+            raise AccountRuntimeNonceLedgerError("nonce ledger ready anchor types are invalid")
         return root, count
+
+    def create_transition(self, unsigned: dict[str, object]) -> dict[str, object]:
+        expected = {
+            "kind",
+            "schema_version",
+            "old_registry_sequence",
+            "old_registry_checksum",
+            "old_root",
+            "old_count",
+            "new_registry_sequence",
+            "new_registry_checksum",
+            "new_root",
+            "new_count",
+            "operation_nonce",
+            "receipt_checksum",
+        }
+        if set(unsigned) != expected or unsigned["kind"] != _KIND_TRANSITION:
+            raise AccountRuntimeNonceLedgerError("nonce transition schema is invalid")
+        if unsigned["schema_version"] != _SCHEMA:
+            raise AccountRuntimeNonceLedgerError("nonce transition version is invalid")
+        old_count = unsigned["old_count"]
+        new_count = unsigned["new_count"]
+        old_sequence = unsigned["old_registry_sequence"]
+        new_sequence = unsigned["new_registry_sequence"]
+        if (
+            type(old_count) is not int
+            or type(new_count) is not int
+            or new_count != old_count + 1
+            or type(old_sequence) is not int
+            or type(new_sequence) is not int
+            or new_sequence != old_sequence + 1
+        ):
+            raise AccountRuntimeNonceLedgerError("nonce transition progression is invalid")
+        for key in (
+            "old_registry_checksum",
+            "old_root",
+            "new_registry_checksum",
+            "new_root",
+            "operation_nonce",
+            "receipt_checksum",
+        ):
+            _sha(unsigned[key], f"nonce transition {key}")
+        transition = {**unsigned, "checksum": _digest(unsigned)}
+        self._durable_create_exact(
+            self.transition_path(new_count),
+            _canonical(transition),
+            maximum=_MAX_RECEIPT_BYTES,
+        )
+        return transition
+
+    def load_transition(self, nonce_count: int) -> dict[str, object] | None:
+        path = self.transition_path(nonce_count)
+        if not path.exists():
+            return None
+        raw = _decode_json(
+            self._read_exact(path, maximum=_MAX_RECEIPT_BYTES, label="transition"),
+            maximum=_MAX_RECEIPT_BYTES,
+            label="transition",
+        )
+        checksum = raw.pop("checksum", None)
+        if checksum != _digest(raw):
+            raise AccountRuntimeNonceLedgerError("nonce transition checksum mismatch")
+        canonical = self.create_transition(raw)
+        if canonical["checksum"] != checksum:
+            raise AccountRuntimeNonceLedgerError("nonce transition is not canonical")
+        return {**raw, "checksum": checksum}
 
     def _create_receipt(self, receipt: AccountRuntimeNonceReceipt) -> None:
         self._durable_create_exact(
