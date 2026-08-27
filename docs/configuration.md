@@ -32,6 +32,7 @@ CTP 凭证不进入 TOML：
 | `AFUTURE_STRESS90_ACTIVATION_ACK` | Stress-90 首次 identity 绑定必需 | 必须为 `I_CONFIRM_STRESS90_POLICY_ACTIVATION`，并同时传入 `--confirm-activation`。 |
 | `AFUTURE_STRESS90_REBASE_ACK` | Stress-90 账户路径 rebase 必需 | 必须为 `RESET_STRESS90_ACCOUNT_PATH`，并同时传入 `--confirm-rebase`。 |
 | `AFUTURE_STRESS90_ORDER_EPOCH_ACK` | Stress-90 CTP order journal 容量 epoch 封存必需 | 必须为 `I_CONFIRM_STRESS90_CTP_ORDER_JOURNAL_EPOCH_ROLLOVER`，并同时传入 `--confirm-rollover`。 |
+| `AFUTURE_OPERATOR_CONTINUITY_ACK` | Stress-90 `operator_managed` 跨日必需 | 必须为 `I_CONFIRM_EXCLUSIVE_ACCOUNT_AND_NO_EXTERNAL_ACTIVITY`，并同时传入 `--confirm-operator-continuity`。 |
 
 `stress90-activate`、`stress90-account-rebase`、`directional-policy-migrate` 和
 `stress90-order-journal-rollover` 还要求 operator 生成的唯一 64 位十六进制
@@ -209,6 +210,7 @@ CTP 凭证不进入 TOML：
 | `directional.rebalance_window` | `21:00-21:10` | 允许产生方向调仓的中国期货本地时间窗口，可跨午夜。 |
 | `directional.signal_max_age_hours` | `36.0` | 信号时间戳的第二层最长年龄，小时；交易日对齐仍是主要新鲜度判断。 |
 | `directional.account_exclusive` | `true` | 必须保持 `true`；同一账户不能混入手工或其他程序持仓。 |
+| `directional.account_continuity_mode` | `strict` | `strict` 保持官方结算/session 证据门；`operator_managed` 仅允许 `system.mode=live`、Stress-90、directional enabled 且账户独占，用操作者信任凭证推进跨日，但不伪造 Broker 验证字段。 |
 
 `stress90` 还强制以下配置身份：
 
@@ -217,6 +219,8 @@ CTP 凭证不进入 TOML：
 - `max_gross_leverage <= 2.0`、`max_contract_volume <= 35`；
 - `[risk]` 不得宽于 margin 35%、available 25%、daily loss 5%、total drawdown 30%、margin buffer 1.25 和 35 手；
 - `account_exclusive = true`；运行期间禁止手工交易、其他策略、充值和出金；
+- `account_continuity_mode` 默认 `strict`；`operator_managed` 只适用于个人专用、单账户、账户独占运行。其 receipt 明确标记为 `operator_trust`，不能替代官方结算见证或官方 session ledger；
+- `operator_managed` 期间一旦发生人工交易、外部委托、入金或出金，必须保持停机并先执行现有 `stress90-account-rebase`；跨日成功后仍需新的 Doctor 技术 permit；
 - `rebalance_window` 只保留旧 manager 的外层兼容校验，实际新风险 entry 使用不可变的产品/交易所 first-session manifest；错过首个窗口当日不追单。
 
 更严格 commissioning 值可以减少风险，但会偏离固定历史矩阵。`status`/`doctor` 会显示该差异；不得把更严格配置下的 live/Shadow 结果表述为历史 Stress-90 的精确复现。
