@@ -209,7 +209,8 @@ afuture stress90-bootstrap \
 # 使用 state_path 指向 runtime/shadow 的独立 Shadow 配置；固定写入该 runtime 的 cache。
 afuture directional-ohlc-refresh \
   --config /secure/path/afuture.directional-stress90-shadow.toml \
-  --current-trading-day YYYYMMDD
+  --current-trading-day YYYYMMDD \
+  --cache runtime/shadow/directional_ohlc_cache.json
 
 export AFUTURE_STRESS90_ACTIVATION_ACK=I_CONFIRM_STRESS90_POLICY_ACTIVATION
 

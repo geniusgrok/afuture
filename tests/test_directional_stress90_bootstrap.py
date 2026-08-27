@@ -1295,6 +1295,10 @@ def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
 ) -> None:
     from types import SimpleNamespace
 
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+    )
     from afuture.cli import _run_stress90_oi_collect
     from afuture.directional import DirectionalConfig
     from afuture.directional_sessions import PRODUCT_SESSION_MANIFEST
@@ -1317,6 +1321,9 @@ def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
     monkeypatch.setattr(AccountExclusiveRuntimeLease, "acquire", acquire_then_mark)
     through, expectations = _write_synthetic_archive(runtime)
     expectations = _promote_synthetic_profile(monkeypatch, expectations)
+    AccountRuntimeRegistry(runtime / ".account-runtime-registry.json").initialize(
+        strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+    )
     bootstrap_stress90(
         runtime_dir=runtime,
         through_day=through,
