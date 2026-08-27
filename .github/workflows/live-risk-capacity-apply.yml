@@ -118,6 +118,19 @@ jobs:
           '''.replace('          ', '')
           text = text[:start] + delegate_patch + text[end:]
 
+          replacements = {
+              'text.replace(anchor, textwrap.dedent(block) + anchor, 1)':
+                  'text.replace(anchor, block.lstrip("\\n") + anchor, 1)',
+              'text = text[:idx] + textwrap.dedent(source_block) + text[idx:]':
+                  'text = text[:idx] + source_block.lstrip("\\n") + text[idx:]',
+              'text = text[:idx] + textwrap.dedent(transition_block) + text[idx:]':
+                  'text = text[:idx] + transition_block.lstrip("\\n") + text[idx:]',
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise RuntimeError(f'lifecycle indentation runner patch mismatch: {old}')
+              text = text.replace(old, new, 1)
+
           path.write_text(text, encoding='utf-8')
           PY
       - name: Apply TDD implementation and focused verification
