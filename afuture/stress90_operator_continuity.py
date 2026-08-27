@@ -18,6 +18,7 @@ from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import TYPE_CHECKING
 
 _KIND = "afuture.stress90-operator-continuity"
 _SCHEMA_VERSION = 1
@@ -25,6 +26,10 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _MAX_FILE_BYTES = 1_000_000
 _MAX_RUNTIME_PATH = 4_096
 _LINEAGE_MARKER = b'{"kind":"afuture.stress90-operator-continuity-lineage","schema_version":1}\n'
+if TYPE_CHECKING:
+    from .stress90_lifecycle_transaction import Stress90SettlementRollForwardTargets
+
+
 STRESS90_OPERATOR_CONTINUITY_CONFIRMATION = "I_CONFIRM_EXCLUSIVE_ACCOUNT_AND_NO_EXTERNAL_ACTIVITY"
 _OPERATOR_CONFIRMATION_TYPE = "exclusive_account_no_external_activity"
 
@@ -201,7 +206,7 @@ def load_stress90_operator_account_day_continuity_evidence(
 
 @dataclass(frozen=True)
 class Stress90OperatorRollForwardPlan:
-    targets: object
+    targets: Stress90SettlementRollForwardTargets
     evidence: Stress90OperatorContinuityEvidence
     request_digest: str
 

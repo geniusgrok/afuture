@@ -1403,6 +1403,7 @@ def _run_doctor(config, args) -> int:
                     "",
                 ),
                 account_registry_path=_stress90_account_registry_path(config),
+                account_continuity_mode=config.directional.account_continuity_mode,
             )
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         return 0 if issue_permit or report.passed else 2
@@ -4302,7 +4303,42 @@ def _run_stress90_order_journal_rollover(config, args) -> int:
 def _run_stress90_operator_roll_forward(config, args) -> int:
     """Advance one Stress-90 account day under the explicit operator trust model."""
 
-    from .stress90_operator_continuity import STRESS90_OPERATOR_CONTINUITY_CONFIRMATION
+    from hashlib import sha256
+    from types import SimpleNamespace
+
+    from .account_runtime_registry import AccountRuntimeRegistry
+    from .broker.ctp import CtpBroker
+    from .broker.ctp_order_journal import CtpOrderSubmissionJournal
+    from .directional_activity import (
+        DirectionalActivityStore,
+        validate_directional_activity_snapshot,
+    )
+    from .directional_ohlc_cache import DirectionalOHLCCacheStore
+    from .directional_policy_activation import require_directional_policy_identity
+    from .directional_stress90_oi_runtime import Stress90OiEvidenceStore
+    from .directional_stress90_policy import STRESS90_POLICY
+    from .directional_stress90_state import Stress90PolicyStateStore, Stress90SeedStore
+    from .journal import AuditJournal
+    from .reconcile import compare_positions
+    from .runtime_lease import AccountExclusiveRuntimeLease
+    from .stress90_activation_permit import Stress90ActivationPermitStore
+    from .stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        Stress90LifecycleTransactionStore,
+        apply_stress90_lifecycle_transaction,
+        require_matching_stress90_lifecycle_account_evidence,
+    )
+    from .stress90_operator_continuity import (
+        STRESS90_OPERATOR_CONTINUITY_CONFIRMATION,
+        Stress90OperatorContinuityError,
+        Stress90OperatorContinuityStore,
+        build_stress90_operator_roll_forward_plan,
+        load_stress90_operator_account_day_continuity_evidence,
+    )
+    from .trading_day_evidence import (
+        TradingDayEvidenceStore,
+        require_authoritative_trading_day_evidence,
+    )
 
     _validate_stress90_lifecycle_config(config)
     if config.directional.account_continuity_mode != "operator_managed":
@@ -4311,29 +4347,625 @@ def _run_stress90_operator_roll_forward(config, args) -> int:
             "directional.account_continuity_mode=operator_managed"
         )
     _require_production_confirmation(config, args)
-    _require_lifecycle_operation_nonce(args)
+    operation_nonce = _require_lifecycle_operation_nonce(args)
     reason = str(args.operator_reason)
     if not reason.strip() or reason != reason.strip() or len(reason) > 1_000:
         raise ValueError("operator continuity operator reason is invalid")
     if (
         not args.confirm_operator_continuity
-        or os.getenv("AFUTURE_OPERATOR_CONTINUITY_ACK")
-        != STRESS90_OPERATOR_CONTINUITY_CONFIRMATION
+        or os.getenv("AFUTURE_OPERATOR_CONTINUITY_ACK") != STRESS90_OPERATOR_CONTINUITY_CONFIRMATION
     ):
         raise RuntimeError(
             "operator continuity requires --confirm-operator-continuity and "
-            "AFUTURE_OPERATOR_CONTINUITY_ACK="
-            + STRESS90_OPERATOR_CONTINUITY_CONFIRMATION
+            "AFUTURE_OPERATOR_CONTINUITY_ACK=" + STRESS90_OPERATOR_CONTINUITY_CONFIRMATION
         )
-    runtime_dir = Path(config.state_path).parent.resolve(strict=False)
+
+    configured_state = Path(config.state_path)
+    runtime_dir = configured_state.parent.resolve(strict=False)
     if runtime_dir == Path(runtime_dir.anchor):
         raise ValueError("operator continuity runtime path must not be a filesystem root")
+    if configured_state.resolve(strict=False).parent != runtime_dir:
+        raise ValueError("operator continuity state path is not bound to canonical runtime")
 
-    # Broker construction is deliberately after every static/config/operator gate.
-    from .broker.ctp import CtpBroker
+    state_store = StateStore(configured_state.resolve(strict=False))
+    state_store._require_fresh_or_current()
+    policy_store = Stress90PolicyStateStore(runtime_dir / "stress90_policy_state.json")
+    seed_store = Stress90SeedStore(runtime_dir / "stress90_bootstrap_seed.json")
+    lifecycle_store = Stress90LifecycleTransactionStore(
+        runtime_dir / "stress90_lifecycle_transaction.json"
+    )
+    registry = AccountRuntimeRegistry(_stress90_account_registry_path(config))
+    trading_day_store = TradingDayEvidenceStore(runtime_dir / "ctp_trading_day_evidence.json")
+    operator_store = Stress90OperatorContinuityStore(
+        runtime_dir / "stress90_operator_continuity.json"
+    )
+    # Validate surviving operator evidence before Broker construction.  This is read-only.
+    preflight_operator_record = operator_store.load_record()
+    broker = CtpBroker(config.ctp)
+    account_identity = broker.get_account_identity_digest()
+    lease = AccountExclusiveRuntimeLease(
+        runtime_dir,
+        account_identity,
+        role="stress90-operator-roll-forward",
+    )
 
-    CtpBroker(config.ctp)
-    raise RuntimeError("operator-managed roll-forward runtime implementation is incomplete")
+    def canonical_positions(positions) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for position in positions:
+            position.validate()
+            rows.append(asdict(position))
+        return sorted(rows, key=lambda row: (str(row["symbol"]), str(row["exchange"])))
+
+    def position_reconciliation_digest(local_positions, broker_positions) -> str:
+        payload = {
+            "local": canonical_positions(local_positions),
+            "broker": canonical_positions(broker_positions),
+            "matched": True,
+        }
+        return sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def order_journal_digest() -> str:
+        audit = CtpOrderSubmissionJournal(runtime_dir / "stress90_ctp_orders.json").audit_epochs()
+        record = audit.current_record
+        manifest = audit.manifest
+        payload = {
+            "current_sequence": 0 if record is None else record.sequence,
+            "current_checksum": "" if record is None else record.checksum,
+            "archive_head_checksum": (
+                "" if record is None else (record.archive_head_checksum or "")
+            ),
+            "runtime_index_checksum": (
+                "" if record is None else (record.runtime_index_checksum or "")
+            ),
+            "manifest_sequence": 0 if manifest is None else manifest.sequence,
+            "manifest_checksum": "" if manifest is None else manifest.checksum,
+            "sealed_epoch_count": audit.sealed_epoch_count,
+            "sealed_entry_count": audit.sealed_entry_count,
+            "sealed_fill_identity_count": audit.sealed_fill_identity_count,
+        }
+        return sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def semantic_source_trading_day_evidence(transaction, current_registry):
+        current_tde = trading_day_store.load_required()
+        source_day = transaction.account_day_continuity_source_day
+        if (
+            current_tde.trading_day == source_day
+            and current_tde.account_binding_last_operation_id != transaction.operation_nonce
+        ):
+            return current_tde
+        if (
+            current_tde.trading_day == transaction.trading_day
+            and current_tde.rebind_transaction_id == transaction.transaction_id
+            and current_tde.account_binding_last_operation_id == transaction.operation_nonce
+        ):
+            if not trading_day_store.previous_path.exists():
+                raise RuntimeError(
+                    "operator continuity prepared retry source TradingDayEvidence is missing"
+                )
+            return TradingDayEvidenceStore(trading_day_store.previous_path).load_required()
+        binding = current_registry.binding
+        if (
+            current_tde.trading_day == source_day
+            and binding.last_operation_id == transaction.operation_nonce
+        ):
+            return current_tde
+        raise RuntimeError(
+            "operator continuity prepared retry TradingDayEvidence is not the exact source/target"
+        )
+
+    def source_registry_evidence_from_tde(source_tde, current_registry, transaction):
+        binding = current_registry.binding
+        current_is_source = bool(
+            current_registry.binding_receipt_digest == source_tde.account_binding_receipt_digest
+            and current_registry.registry_sequence == source_tde.registry_sequence
+            and current_registry.registry_checksum == source_tde.registry_checksum
+        )
+        if current_is_source:
+            return current_registry
+        if (
+            binding.account_identity_digest != source_tde.account_identity_digest
+            or binding.account_epoch != source_tde.account_epoch
+            or binding.canonical_runtime != source_tde.canonical_runtime
+            or binding.runtime_identity_digest != source_tde.runtime_identity_digest
+            or binding.last_operation_id != transaction.operation_nonce
+            or not binding.operation_kinds
+            or binding.operation_kinds[-1] != "operator_managed_continuity"
+            or current_registry.binding_revision != source_tde.account_binding_revision + 1
+            or len(binding.operation_history) < 2
+            or binding.operation_history[-2] != source_tde.account_binding_last_operation_id
+        ):
+            raise RuntimeError(
+                "operator continuity prepared retry registry does not extend exact source"
+            )
+        source_binding = SimpleNamespace(
+            account_identity_digest=source_tde.account_identity_digest,
+            account_epoch=source_tde.account_epoch,
+            canonical_runtime=source_tde.canonical_runtime,
+            runtime_identity_digest=source_tde.runtime_identity_digest,
+        )
+        return SimpleNamespace(
+            binding=source_binding,
+            binding_receipt_digest=source_tde.account_binding_receipt_digest,
+            registry_sequence=source_tde.registry_sequence,
+            registry_checksum=source_tde.registry_checksum,
+        )
+
+    lease.acquire()
+    started = False
+    try:
+        state_record = state_store.load_required_record()
+        state = state_record.state
+        if state.runtime_mode != RuntimeMode.HALTED.value or not state.kill_switch:
+            raise RuntimeError(
+                "operator continuity requires generic runtime HALTED with kill switch=true"
+            )
+        seed = seed_store.load_required()
+        policy_record = policy_store.load_required_record()
+        policy_state = policy_record.state
+        require_directional_policy_identity(
+            state,
+            policy_id=STRESS90_POLICY.policy_id,
+            policy_definition_digest=STRESS90_POLICY.policy_definition_digest,
+            products_manifest_digest=STRESS90_POLICY.products_manifest_digest,
+            bootstrap_seed_digest=seed.seed_digest,
+            account_identity_digest=account_identity,
+        )
+        if (
+            policy_state.bootstrap_seed_digest != seed.seed_digest
+            or policy_state.live_account_identity_digest != account_identity
+            or policy_state.live_account_epoch is None
+        ):
+            raise RuntimeError("operator continuity Stress-90 policy account lineage mismatch")
+        account_epoch = policy_state.live_account_epoch
+        current_registry = registry.require_binding_evidence(
+            account_identity, runtime_dir, account_epoch
+        )
+        existing_lifecycle = lifecycle_store.load()
+        if existing_lifecycle is not None and existing_lifecycle.status == "prepared":
+            if (
+                existing_lifecycle.operation != "settlement_roll_forward"
+                or existing_lifecycle.operation_nonce != operation_nonce
+            ):
+                raise RuntimeError(
+                    "operator continuity is blocked by a different prepared lifecycle transaction"
+                )
+            _require_lifecycle_operator_reason(existing_lifecycle, reason)
+        exact_committed_retry = bool(
+            existing_lifecycle is not None
+            and existing_lifecycle.status == "committed"
+            and existing_lifecycle.operation == "settlement_roll_forward"
+            and existing_lifecycle.operation_nonce == operation_nonce
+        )
+        operator_record = operator_store.load_record()
+        if operator_record is None and preflight_operator_record is not None:
+            raise RuntimeError("operator continuity evidence changed after preflight")
+        prepared_registry_advance = bool(
+            existing_lifecycle is not None
+            and existing_lifecycle.status == "prepared"
+            and current_registry.binding.last_operation_id == operation_nonce
+            and current_registry.binding.operation_kinds
+            and current_registry.binding.operation_kinds[-1] == "operator_managed_continuity"
+        )
+        if (
+            operator_record is None
+            and "operator_managed_continuity" in current_registry.binding.operation_kinds
+            and not prepared_registry_advance
+        ):
+            raise RuntimeError(
+                "operator continuity artifact is missing but registry proves prior operator continuity"
+            )
+        _require_stress90_order_journal_full_audit(runtime_dir)
+        _configure_stress90_lifecycle_order_journal(broker, runtime_dir)
+        _seed_state_aware_ctp_broker(broker, state, reject_ambiguous=True)
+        broker.start()
+        started = True
+
+        _wait_until_ready(broker, args.startup_timeout)
+        wait_for_fresh_snapshot(broker, args.snapshot_wait)
+        mechanical = _require_lifecycle_mechanical_snapshot(
+            broker,
+            runtime_dir=runtime_dir,
+            timeout_seconds=max(0.1, float(args.snapshot_wait)),
+        )
+        account = mechanical.account
+        target_day = mechanical.trading_day
+        broker_positions = list(mechanical.positions)
+        active_orders = list(mechanical.active_orders)
+        _require_verified_lifecycle_account_snapshot(
+            account, operation="Stress-90 operator-managed roll-forward"
+        )
+        if account.trading_day != target_day:
+            raise RuntimeError("operator continuity account/CTP trading day mismatch")
+        if account_identity != broker.get_account_identity_digest():
+            raise RuntimeError("operator continuity account identity changed after startup")
+        if active_orders:
+            raise RuntimeError(
+                "operator continuity requires zero active orders; no cancellation is permitted"
+            )
+        if float(account.deposit) != 0.0 or float(account.withdrawal) != 0.0:
+            raise RuntimeError(
+                "operator continuity observed Deposit/Withdraw; use stress90-account-rebase"
+            )
+        local_positions = state_store.positions_from_state(state)
+        reconciliation = compare_positions(local_positions, broker_positions)
+        if not reconciliation.matched:
+            raise RuntimeError(
+                "operator continuity Broker/local position reconciliation failed: "
+                + reconciliation.details
+            )
+        reconciliation_digest = position_reconciliation_digest(local_positions, broker_positions)
+        journal_digest = order_journal_digest()
+        session_digest = mechanical.session_proof.ownership_digest
+
+        if exact_committed_retry:
+            assert existing_lifecycle is not None
+            require_matching_stress90_lifecycle_account_evidence(
+                existing_lifecycle,
+                account,
+                account_identity_digest=account_identity,
+            )
+            _require_lifecycle_operator_reason(existing_lifecycle, reason)
+            receipt = operator_store.require_current_binding(
+                account_identity_digest=account_identity,
+                account_epoch=account_epoch,
+                canonical_runtime=runtime_dir,
+                target_ctp_trading_day=target_day,
+            )
+            if (
+                receipt.evidence.operation_id != operation_nonce
+                or receipt.request_digest != existing_lifecycle.account_day_continuity_digest
+                or receipt.evidence.session_ownership_digest != session_digest
+                or receipt.evidence.ctp_order_journal_digest != journal_digest
+                or receipt.evidence.position_reconciliation_digest != reconciliation_digest
+            ):
+                raise RuntimeError("operator continuity exact committed retry evidence changed")
+            current_registry = registry.require_binding_evidence(
+                account_identity, runtime_dir, account_epoch
+            )
+            current_tde = trading_day_store.load_required()
+            if (
+                current_registry.binding_receipt_digest != receipt.target_registry_receipt_digest
+                or current_tde.sequence != receipt.target_trading_day_evidence_sequence
+                or current_tde.checksum != receipt.target_trading_day_evidence_checksum
+            ):
+                raise RuntimeError(
+                    "operator continuity exact retry target registry/TDE evidence changed"
+                )
+            apply_stress90_lifecycle_transaction(
+                lifecycle_store,
+                generic_store=state_store,
+                policy_store=policy_store,
+            )
+            final_state = state_store.load_required_record().state
+            if (
+                final_state.runtime_mode != RuntimeMode.HALTED.value
+                or not final_state.kill_switch
+                or final_state.metadata_verified
+            ):
+                raise RuntimeError("operator continuity exact retry lost HALTED fail-closed state")
+            print(
+                json.dumps(
+                    {
+                        "operation": "stress90-operator-roll-forward",
+                        "status": "committed",
+                        "transaction_id": existing_lifecycle.transaction_id,
+                        "operator_continuity_sequence": receipt.sequence,
+                        "operator_continuity_checksum": receipt.checksum,
+                        "source_ctp_trading_day": receipt.evidence.source_ctp_trading_day,
+                        "target_ctp_trading_day": receipt.evidence.target_ctp_trading_day,
+                        "runtime_mode": final_state.runtime_mode,
+                        "kill_switch": True,
+                        "metadata_verified": False,
+                        "requires_doctor": True,
+                        "requires_new_permit": True,
+                        "external_activation_gates_completed": False,
+                        "orders_sent": 0,
+                        "cancels_sent": 0,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+
+        receipt_for_operation = (
+            operator_record
+            if operator_record is not None
+            and operator_record.evidence.operation_id == operation_nonce
+            else None
+        )
+        plan = None
+        if receipt_for_operation is None:
+            if (
+                existing_lifecycle is not None
+                and existing_lifecycle.status == "prepared"
+                and (
+                    state_record.sequence != existing_lifecycle.generic_source_sequence
+                    or state_record.checksum != existing_lifecycle.generic_source_checksum
+                    or policy_record.sequence != existing_lifecycle.policy_source_sequence
+                    or policy_record.checksum != existing_lifecycle.policy_source_checksum
+                )
+            ):
+                raise RuntimeError(
+                    "operator continuity prepared transaction advanced state before receipt"
+                )
+            transaction_for_source = existing_lifecycle
+            if transaction_for_source is None or transaction_for_source.status != "prepared":
+                current_tde = trading_day_store.load_required()
+                require_authoritative_trading_day_evidence(
+                    current_tde,
+                    policy_state=policy_state,
+                    registry=registry,
+                    runtime_dir=runtime_dir,
+                    lifecycle_transaction=existing_lifecycle,
+                )
+                source_tde = current_tde
+                source_registry = current_registry
+                source_day = state.trading_day
+            else:
+                source_tde = semantic_source_trading_day_evidence(
+                    transaction_for_source, current_registry
+                )
+                source_registry = source_registry_evidence_from_tde(
+                    source_tde, current_registry, transaction_for_source
+                )
+                source_day = transaction_for_source.account_day_continuity_source_day
+            activity = DirectionalActivityStore(runtime_dir / "directional_activity.json").load()
+            if activity is None:
+                raise RuntimeError("operator continuity completed activity evidence is missing")
+            validate_directional_activity_snapshot(activity)
+            if activity.trading_day != source_day:
+                raise RuntimeError(
+                    "operator continuity completed activity day does not match source day"
+                )
+            market = load_stress90_operator_account_day_continuity_evidence(
+                DirectionalOHLCCacheStore(runtime_dir / "directional_ohlc_cache.json"),
+                Stress90OiEvidenceStore(runtime_dir / "stress90_oi_evidence.json"),
+                completed_account_day=source_day,
+                current_ctp_trading_day=target_day,
+            )
+            plan = build_stress90_operator_roll_forward_plan(
+                operation_id=operation_nonce,
+                operator_reason=reason,
+                generic_source=state_record,
+                policy_source=policy_record,
+                source_trading_day_evidence=source_tde,
+                source_registry_evidence=source_registry,
+                runtime_dir=runtime_dir,
+                account_identity_digest=account_identity,
+                account_snapshot=account,
+                active_order_count=len(active_orders),
+                positions_reconciled=reconciliation.matched,
+                position_reconciliation_digest=reconciliation_digest,
+                session_ownership_digest=session_digest,
+                ctp_order_journal_digest=journal_digest,
+                activity_latest_completed_day=activity.trading_day,
+                market_continuity=market,
+            )
+            request_digest = plan.request_digest
+            continuity_evidence = plan.evidence
+        else:
+            request_digest = receipt_for_operation.request_digest
+            continuity_evidence = receipt_for_operation.evidence
+            if (
+                continuity_evidence.operator_reason != reason
+                or continuity_evidence.target_ctp_trading_day != target_day
+                or continuity_evidence.account_identity_digest != account_identity
+                or continuity_evidence.account_epoch != account_epoch
+                or continuity_evidence.session_ownership_digest != session_digest
+                or continuity_evidence.ctp_order_journal_digest != journal_digest
+                or continuity_evidence.position_reconciliation_digest != reconciliation_digest
+            ):
+                raise RuntimeError("operator continuity prepared retry receipt evidence changed")
+
+        if existing_lifecycle is not None and existing_lifecycle.status == "prepared":
+            transaction = existing_lifecycle
+            require_matching_stress90_lifecycle_account_evidence(
+                transaction,
+                account,
+                account_identity_digest=account_identity,
+            )
+            if (
+                transaction.trading_day != target_day
+                or transaction.account_identity_digest != account_identity
+                or transaction.source_account_epoch != account_epoch
+                or transaction.policy_target.live_account_epoch != account_epoch
+                or transaction.account_day_continuity_digest != request_digest
+            ):
+                raise Stress90LifecycleTransactionError(
+                    "prepared lifecycle transaction does not match operator continuity request"
+                )
+            if plan is not None and (
+                transaction.generic_target != plan.targets.generic_target
+                or transaction.policy_target != plan.targets.policy_target
+            ):
+                raise Stress90LifecycleTransactionError(
+                    "prepared lifecycle targets changed for operator continuity retry"
+                )
+        else:
+            if plan is None:
+                raise RuntimeError(
+                    "operator continuity receipt exists without a matching prepared transaction"
+                )
+
+            def begin_transaction():
+                return lifecycle_store.begin(
+                    operation="settlement_roll_forward",
+                    generic_source=state_record,
+                    policy_source=policy_record,
+                    generic_target=plan.targets.generic_target,
+                    policy_target=plan.targets.policy_target,
+                    trading_day=target_day,
+                    account_identity_digest=account_identity,
+                    account_snapshot=account,
+                    operation_nonce=operation_nonce,
+                    operator_reason=reason,
+                    account_day_continuity_digest=request_digest,
+                )
+
+            transaction = None
+
+        permit_store = Stress90ActivationPermitStore(
+            runtime_dir / "stress90_activation_permit.json"
+        )
+        permit_store.invalidate(
+            "operator-managed account continuity advanced; fresh Doctor permit required"
+        )
+
+        def prepare_transaction():
+            if transaction is not None:
+                return transaction
+            return begin_transaction()
+
+        def apply_registry_transition(lifecycle_transaction):
+            registry.acknowledge_operator_continuity_operation(
+                account_identity,
+                runtime_dir,
+                account_epoch,
+                lifecycle_transaction.operation_nonce,
+                request_digest,
+            )
+
+        def apply_evidence_transition(lifecycle_transaction):
+            _apply_stress90_trading_day_evidence_transition(
+                config,
+                runtime_dir=runtime_dir,
+                lifecycle_transaction=lifecycle_transaction,
+            )
+            target_registry = registry.require_binding_evidence(
+                account_identity, runtime_dir, account_epoch
+            )
+            target_tde = trading_day_store.load_required()
+            operator_store.save(
+                continuity_evidence,
+                target_registry_receipt_digest=(target_registry.binding_receipt_digest),
+                target_trading_day_evidence_sequence=target_tde.sequence,
+                target_trading_day_evidence_checksum=target_tde.checksum,
+            )
+
+        def precommit_check():
+            if not lease.authorizes_technical_activation(account_identity, runtime_dir):
+                raise RuntimeError(
+                    "exact account/runtime lease is not held for operator continuity"
+                )
+            _require_lifecycle_mechanical_snapshot_current(broker, mechanical)
+            _require_stress90_order_journal_full_audit(runtime_dir)
+            if broker.get_trading_day() != target_day:
+                raise RuntimeError("operator continuity CTP trading day changed before commit")
+            if broker.get_account_identity_digest() != account_identity:
+                raise RuntimeError("operator continuity account identity changed before commit")
+
+        completed = _commit_stress90_lifecycle_under_broker_fence(
+            broker,
+            transaction_store=lifecycle_store,
+            generic_store=state_store,
+            policy_store=policy_store,
+            prepare_transaction=prepare_transaction,
+            apply_registry_transition=apply_registry_transition,
+            apply_evidence_transition=apply_evidence_transition,
+            precommit_check=precommit_check,
+        )
+        receipt = operator_store.require_current_binding(
+            account_identity_digest=account_identity,
+            account_epoch=account_epoch,
+            canonical_runtime=runtime_dir,
+            target_ctp_trading_day=target_day,
+        )
+        target_registry = registry.require_binding_evidence(
+            account_identity, runtime_dir, account_epoch
+        )
+        target_tde = trading_day_store.load_required()
+        if (
+            receipt.request_digest != completed.account_day_continuity_digest
+            or receipt.target_registry_receipt_digest != target_registry.binding_receipt_digest
+            or receipt.target_trading_day_evidence_sequence != target_tde.sequence
+            or receipt.target_trading_day_evidence_checksum != target_tde.checksum
+        ):
+            raise RuntimeError(
+                "operator continuity committed receipt/registry/TDE identity mismatch"
+            )
+        final_record = state_store.load_required_record()
+        final_state = final_record.state
+        final_policy = policy_store.load_required_record().state
+        if (
+            final_state.runtime_mode != RuntimeMode.HALTED.value
+            or final_state.kill_switch is not True
+            or final_state.metadata_verified is not False
+            or final_state.trading_day != target_day
+            or final_policy.last_completed_account_day != receipt.evidence.source_ctp_trading_day
+        ):
+            raise RuntimeError(
+                "operator continuity committed state did not preserve fail-closed invariants"
+            )
+        AuditJournal(config.journal_path).record(
+            "stress90_operator_continuity_rolled_forward",
+            {
+                "transaction_id": completed.transaction_id,
+                "operation_nonce": completed.operation_nonce,
+                "operator_reason": completed.operator_reason,
+                "source_ctp_trading_day": receipt.evidence.source_ctp_trading_day,
+                "target_ctp_trading_day": receipt.evidence.target_ctp_trading_day,
+                "natural_day_gap": receipt.evidence.natural_day_gap,
+                "operator_continuity_sequence": receipt.sequence,
+                "operator_continuity_checksum": receipt.checksum,
+                "operator_continuity_request_digest": receipt.request_digest,
+                "evidence_authority": "operator_trust",
+                "authoritative_broker_or_exchange_evidence": False,
+                "orders_sent": 0,
+                "cancels_sent": 0,
+            },
+        )
+        print(
+            json.dumps(
+                {
+                    "operation": "stress90-operator-roll-forward",
+                    "status": "committed",
+                    "transaction_id": completed.transaction_id,
+                    "operator_continuity_sequence": receipt.sequence,
+                    "operator_continuity_checksum": receipt.checksum,
+                    "source_ctp_trading_day": receipt.evidence.source_ctp_trading_day,
+                    "target_ctp_trading_day": receipt.evidence.target_ctp_trading_day,
+                    "natural_day_gap": receipt.evidence.natural_day_gap,
+                    "evidence_authority": "operator_trust",
+                    "authoritative_broker_or_exchange_evidence": False,
+                    "runtime_mode": final_state.runtime_mode,
+                    "kill_switch": final_state.kill_switch,
+                    "metadata_verified": final_state.metadata_verified,
+                    "requires_doctor": True,
+                    "requires_new_permit": True,
+                    "external_activation_gates_completed": False,
+                    "orders_sent": 0,
+                    "cancels_sent": 0,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    except Stress90OperatorContinuityError as exc:
+        raise RuntimeError(f"operator continuity evidence is invalid: {exc}") from exc
+    finally:
+        try:
+            if started:
+                broker.stop()
+        finally:
+            lease.release()
 
 
 def _run_stress90_settlement_roll_forward(config, args) -> int:

@@ -228,6 +228,148 @@ def _add_directional_ohlc_cache_status(report: OperationalReport, config) -> Non
     report.facts["directional_ohlc_cache"] = facts
 
 
+def _stress90_account_continuity_status(config, runtime_state: RuntimeState | None):
+    mode = str(getattr(config.directional, "account_continuity_mode", "strict"))
+    runtime_dir = Path(config.state_path).parent.resolve(strict=False)
+    operator_path = runtime_dir / "stress90_operator_continuity.json"
+    facts: dict[str, object] = {
+        "applicable": mode == "operator_managed",
+        "path": str(operator_path),
+        "present": operator_path.exists(),
+        "valid": None,
+        "sequence": None,
+        "checksum": None,
+        "source_ctp_trading_day": None,
+        "target_ctp_trading_day": None,
+        "account_identity_digest": None,
+        "account_epoch": None,
+        "canonical_runtime": str(runtime_dir),
+        "no_manual_trade": None,
+        "no_external_order": None,
+        "no_deposit": None,
+        "no_withdrawal": None,
+        "evidence_authority": "operator_trust" if mode == "operator_managed" else "not_applicable",
+        "authoritative_broker_or_exchange_evidence": False,
+        "binding_current": False,
+    }
+    if mode == "strict":
+        return (
+            facts,
+            False,
+            False,
+            False,
+            True,
+            "strict continuity mode uses external authoritative gates",
+        )
+    if mode != "operator_managed":
+        return facts, True, False, True, False, "unsupported account continuity mode"
+
+    from .account_runtime_registry import AccountRuntimeRegistry
+    from .directional_stress90_state import Stress90PolicyStateStore
+    from .stress90_activation_permit import Stress90ActivationPermitStore
+    from .stress90_operator_continuity import Stress90OperatorContinuityStore
+
+    store = Stress90OperatorContinuityStore(operator_path)
+    try:
+        record = store.load_record()
+    except (OSError, RuntimeError) as exc:
+        facts.update(valid=False, error=str(exc))
+        return facts, True, False, True, False, str(exc)
+    if record is None:
+        return facts, True, False, True, False, "operator continuity receipt is missing"
+
+    evidence = record.evidence
+    facts.update(
+        present=True,
+        valid=True,
+        sequence=record.sequence,
+        checksum=record.checksum,
+        source_ctp_trading_day=evidence.source_ctp_trading_day,
+        target_ctp_trading_day=evidence.target_ctp_trading_day,
+        natural_day_gap=evidence.natural_day_gap,
+        account_identity_digest=evidence.account_identity_digest,
+        account_epoch=evidence.account_epoch,
+        canonical_runtime=evidence.canonical_runtime,
+        no_manual_trade=evidence.no_manual_trade,
+        no_external_order=evidence.no_external_order,
+        no_deposit=evidence.no_deposit,
+        no_withdrawal=evidence.no_withdrawal,
+        target_registry_receipt_digest=record.target_registry_receipt_digest,
+        target_trading_day_evidence_sequence=record.target_trading_day_evidence_sequence,
+        target_trading_day_evidence_checksum=record.target_trading_day_evidence_checksum,
+    )
+    try:
+        policy = Stress90PolicyStateStore(
+            runtime_dir / "stress90_policy_state.json"
+        ).load_required()
+        account = policy.live_account_identity_digest
+        epoch = policy.live_account_epoch
+        if account is None or epoch is None:
+            raise RuntimeError("Stress-90 policy account identity/epoch is missing")
+        store.require_current_binding(
+            account_identity_digest=account,
+            account_epoch=epoch,
+            canonical_runtime=runtime_dir,
+            target_ctp_trading_day=evidence.target_ctp_trading_day,
+        )
+        registry_path = Path(
+            str(
+                getattr(
+                    config,
+                    "account_registry_path",
+                    runtime_dir / ".account-runtime-registry.json",
+                )
+            )
+        )
+        registry_evidence = AccountRuntimeRegistry(registry_path).require_binding_evidence(
+            account, runtime_dir, epoch
+        )
+        binding_current = (
+            registry_evidence.binding_receipt_digest == record.target_registry_receipt_digest
+        )
+    except (OSError, RuntimeError) as exc:
+        binding_current = False
+        facts["binding_error"] = str(exc)
+    facts["binding_current"] = binding_current
+    state_current = bool(
+        runtime_state is not None
+        and runtime_state.trading_day == evidence.target_ctp_trading_day
+        and runtime_state.last_account_trading_day == evidence.target_ctp_trading_day
+    )
+    facts["state_current"] = state_current
+    requires_rebase = bool(
+        runtime_state is not None
+        and (
+            float(runtime_state.last_account_deposit) != 0.0
+            or float(runtime_state.last_account_withdrawal) != 0.0
+        )
+    )
+    requires_roll = bool(not requires_rebase and not (binding_current and state_current))
+
+    permit_current = False
+    try:
+        permit = Stress90ActivationPermitStore(
+            runtime_dir / "stress90_activation_permit.json"
+        ).load_record()
+    except (OSError, RuntimeError) as exc:
+        facts["permit_error"] = str(exc)
+    else:
+        permit_current = bool(
+            permit is not None
+            and permit.permit.status == "issued"
+            and permit.permit.evidence.account_continuity_mode == "operator_managed"
+            and permit.permit.evidence.operator_continuity_receipt_digest == record.checksum
+        )
+    facts["technical_permit_current"] = permit_current
+    passed = bool(binding_current and state_current)
+    detail = (
+        "operator trust receipt is current for account/runtime/epoch"
+        if passed
+        else "operator trust receipt is missing or stale for current account/runtime state"
+    )
+    return facts, requires_roll, requires_rebase, not permit_current, passed, detail
+
+
 def _add_stress90_local_status(
     report: OperationalReport,
     config,
@@ -338,6 +480,32 @@ def _add_stress90_local_status(
         "margin_estimate_buffer": float(config.risk.margin_estimate_buffer),
     }
     historical_risk = dict(STRESS90_POLICY.hard_risk_envelope)
+    (
+        operator_continuity,
+        requires_operator_roll_forward,
+        requires_account_rebase,
+        requires_new_permit,
+        continuity_ready,
+        continuity_detail,
+    ) = _stress90_account_continuity_status(config, runtime_state)
+    facts.update(
+        account_continuity_mode=str(
+            getattr(config.directional, "account_continuity_mode", "strict")
+        ),
+        operator_continuity=operator_continuity,
+        requires_operator_roll_forward=requires_operator_roll_forward,
+        requires_account_rebase=requires_account_rebase,
+        requires_new_permit=requires_new_permit,
+        external_activation_gates_completed=False,
+    )
+    if facts["account_continuity_mode"] == "operator_managed":
+        report.add(
+            "stress90_operator_continuity",
+            continuity_ready,
+            continuity_detail,
+        )
+        if not continuity_ready:
+            blockers.append("stress90_operator_continuity")
     facts["configured_hard_risk_envelope"] = configured_risk
     facts["historical_hard_risk_envelope"] = historical_risk
     facts["commissioning_risk_differences"] = {
@@ -1353,6 +1521,18 @@ def _add_stress90_doctor_status(
     stress["capital_activation_eligible"] = False
     stress["live_eligibility"] = False
     stress["policy_data_gap"] = bool(failures)
+    if str(getattr(config.directional, "account_continuity_mode", "strict")) == "operator_managed":
+        operator = stress.get("operator_continuity")
+        target_day = operator.get("target_ctp_trading_day") if isinstance(operator, dict) else None
+        binding_current = bool(
+            isinstance(operator, dict) and operator.get("binding_current") is True
+        )
+        requires_rebase = bool(float(account.deposit) != 0.0 or float(account.withdrawal) != 0.0)
+        stress["requires_account_rebase"] = requires_rebase
+        stress["requires_operator_roll_forward"] = bool(
+            not requires_rebase and (target_day != trading_day or not binding_current)
+        )
+        stress["external_activation_gates_completed"] = False
 
 
 def build_doctor_report(
@@ -1629,6 +1809,7 @@ def build_doctor_report(
         "contract_catalog_count": len(catalog),
         "metadata_symbols": sorted(metadata),
         "orders_sent": 0,
+        "cancels_sent": 0,
     }
     _add_stress90_doctor_status(
         report,

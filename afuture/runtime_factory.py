@@ -199,6 +199,7 @@ def build_runtime_engine(
             common["technical_activation_authority"] = Stress90TechnicalActivationAuthority(
                 runtime_dir,
                 account_registry_path=config.account_registry_path,
+                account_continuity_mode=config.directional.account_continuity_mode,
             )
         else:  # validated config and direct-construction defense in depth
             raise ValueError(f"unsupported directional policy: {policy_name}")

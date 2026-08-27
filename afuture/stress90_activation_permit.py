@@ -16,7 +16,7 @@ from tempfile import NamedTemporaryFile
 from .models import AccountSnapshot, ContractInfo, ContractPosition, RuntimeMode, Trade
 
 STRESS90_ACTIVATION_PERMIT_KIND = "afuture.directional.stress90.activation-permit"
-STRESS90_ACTIVATION_PERMIT_SCHEMA_VERSION = 4
+STRESS90_ACTIVATION_PERMIT_SCHEMA_VERSION = 5
 STRESS90_ACTIVATION_PERMIT_ACK = "I_CONFIRM_STRESS90_TECHNICAL_ACTIVATION"
 STRESS90_ACTIVATION_PERMIT_SCOPE = "technical-runtime-activation-only"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -98,6 +98,8 @@ class Stress90ActivationEvidence:
     session_activity_trades_digest: str
     session_activity_ownership_digest: str
     active_order_count: int
+    account_continuity_mode: str = "strict"
+    operator_continuity_receipt_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -216,6 +218,20 @@ def _evidence_payload(evidence: Stress90ActivationEvidence) -> dict[str, object]
     ):
         raise Stress90ActivationPermitIntegrityError(
             "active order count must be a non-negative integer"
+        )
+    if evidence.account_continuity_mode not in {"strict", "operator_managed"}:
+        raise Stress90ActivationPermitIntegrityError(
+            "activation evidence account continuity mode is invalid"
+        )
+    if evidence.account_continuity_mode == "strict":
+        if evidence.operator_continuity_receipt_digest != "":
+            raise Stress90ActivationPermitIntegrityError(
+                "strict activation evidence cannot bind an operator continuity receipt"
+            )
+    else:
+        _valid_sha256(
+            evidence.operator_continuity_receipt_digest,
+            name="operator continuity receipt digest",
         )
     return asdict(evidence)
 
@@ -374,6 +390,7 @@ def collect_stress90_activation_evidence(
     session_activity_proof,
     catalog: list[ContractInfo],
     account_registry_path: str | Path | None = None,
+    account_continuity_mode: str = "strict",
 ) -> Stress90ActivationEvidence:
     """Capture the exact trusted local/Broker snapshot a one-shot permit authorizes."""
 
@@ -488,6 +505,31 @@ def collect_stress90_activation_evidence(
         runtime.resolve(strict=False),
         policy.state.live_account_epoch,
     )
+    if account_continuity_mode == "strict":
+        operator_continuity_receipt_digest = ""
+    elif account_continuity_mode == "operator_managed":
+        from .stress90_operator_continuity import Stress90OperatorContinuityStore
+
+        operator_receipt = Stress90OperatorContinuityStore(
+            runtime / "stress90_operator_continuity.json"
+        ).require_current_binding(
+            account_identity_digest=account_identity_digest,
+            account_epoch=policy.state.live_account_epoch,
+            canonical_runtime=runtime,
+            target_ctp_trading_day=day,
+        )
+        if (
+            operator_receipt.target_registry_receipt_digest
+            != registry_evidence.binding_receipt_digest
+        ):
+            raise Stress90ActivationPermitIntegrityError(
+                "operator continuity receipt is not bound to the current account registry receipt"
+            )
+        operator_continuity_receipt_digest = operator_receipt.checksum
+    else:
+        raise Stress90ActivationPermitIntegrityError(
+            "activation evidence account continuity mode is invalid"
+        )
     prepared = policy.state.prepared_decision
     if (
         policy.state.last_completed_target_day != day
@@ -584,6 +626,8 @@ def collect_stress90_activation_evidence(
         session_activity_trades_digest=session_activity_proof.evidence.trades_digest,
         session_activity_ownership_digest=session_activity_proof.ownership_digest,
         active_order_count=0,
+        account_continuity_mode=account_continuity_mode,
+        operator_continuity_receipt_digest=operator_continuity_receipt_digest,
     )
 
 
@@ -956,6 +1000,7 @@ def issue_stress90_doctor_permit(
     catalog: list[ContractInfo],
     strong_confirmation: str,
     account_registry_path: str | Path | None = None,
+    account_continuity_mode: str = "strict",
 ) -> Stress90ActivationPermitRecord:
     """Issue a technical-only permit from one complete, zero-order Doctor report."""
 
@@ -1003,6 +1048,7 @@ def issue_stress90_doctor_permit(
         session_activity_proof=session_activity_proof,
         catalog=catalog,
         account_registry_path=account_registry_path,
+        account_continuity_mode=account_continuity_mode,
     )
     store = Stress90ActivationPermitStore(Path(runtime_dir) / "stress90_activation_permit.json")
     current = store.load_record()
@@ -1036,9 +1082,15 @@ class Stress90TechnicalActivationAuthority:
         runtime_dir: str | Path,
         *,
         account_registry_path: str | Path | None = None,
+        account_continuity_mode: str = "strict",
     ) -> None:
         self.runtime_dir = Path(runtime_dir)
         self.account_registry_path = account_registry_path
+        if account_continuity_mode not in {"strict", "operator_managed"}:
+            raise Stress90ActivationPermitIntegrityError(
+                "technical activation account continuity mode is invalid"
+            )
+        self.account_continuity_mode = account_continuity_mode
         self.permit_store = Stress90ActivationPermitStore(
             self.runtime_dir / "stress90_activation_permit.json"
         )
@@ -1084,6 +1136,7 @@ class Stress90TechnicalActivationAuthority:
             session_activity_proof=session_proof,
             catalog=broker.get_contract_catalog(),
             account_registry_path=self.account_registry_path,
+            account_continuity_mode=self.account_continuity_mode,
         )
         permit = self.permit_store.load_required_record()
         return activate_stress90_from_permit(
