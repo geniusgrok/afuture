@@ -170,7 +170,9 @@ def _plan_inputs(tmp_path: Path, *, deposit: float = 0.0, withdrawal: float = 0.
     )
 
 
-def test_operator_roll_forward_plan_builds_existing_settlement_targets_and_keeps_halt(tmp_path: Path):
+def test_operator_roll_forward_plan_builds_existing_settlement_targets_and_keeps_halt(
+    tmp_path: Path,
+):
     from afuture.stress90_operator_continuity import build_stress90_operator_roll_forward_plan
 
     plan = build_stress90_operator_roll_forward_plan(**_plan_inputs(tmp_path))
@@ -179,7 +181,7 @@ def test_operator_roll_forward_plan_builds_existing_settlement_targets_and_keeps
     assert plan.targets.current_ctp_trading_day == "20260831"
     assert plan.targets.generic_target.trading_day == "20260831"
     assert plan.targets.generic_target.kill_switch is True
-    assert plan.targets.generic_target.runtime_mode == "halted"
+    assert plan.targets.generic_target.runtime_mode == "HALTED"
     assert plan.targets.generic_target.metadata_verified is False
     assert plan.targets.policy_target.last_completed_account_day == "20260828"
     assert plan.evidence.evidence_authority == "operator_trust"

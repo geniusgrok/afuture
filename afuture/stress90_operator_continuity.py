@@ -200,6 +200,259 @@ def load_stress90_operator_account_day_continuity_evidence(
 
 
 @dataclass(frozen=True)
+class Stress90OperatorRollForwardPlan:
+    targets: object
+    evidence: Stress90OperatorContinuityEvidence
+    request_digest: str
+
+
+def build_stress90_operator_roll_forward_plan(
+    *,
+    operation_id: str,
+    operator_reason: str,
+    generic_source,
+    policy_source,
+    source_trading_day_evidence,
+    source_registry_evidence,
+    runtime_dir: str | Path,
+    account_identity_digest: str,
+    account_snapshot,
+    active_order_count: int,
+    positions_reconciled: bool,
+    position_reconciliation_digest: str,
+    session_ownership_digest: str,
+    ctp_order_journal_digest: str,
+    activity_latest_completed_day: str,
+    market_continuity: Stress90OperatorAccountDayContinuityEvidence,
+) -> Stress90OperatorRollForwardPlan:
+    """Build one operator-trust rollover using the existing settlement target math."""
+
+    from .models import AccountSnapshot, RuntimeMode
+    from .stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        build_stress90_settlement_roll_forward_targets,
+        stress90_lifecycle_account_evidence_digest,
+    )
+
+    operation = _sha(operation_id, "operator continuity operation ID")
+    if not isinstance(operator_reason, str) or not operator_reason.strip():
+        raise Stress90OperatorContinuityError("operator continuity reason is required")
+    reason = operator_reason.strip()
+    if reason != operator_reason or len(reason) > 1_000:
+        raise Stress90OperatorContinuityError("operator continuity reason is invalid")
+    if not isinstance(account_snapshot, AccountSnapshot):
+        raise Stress90OperatorContinuityError("fresh account snapshot is invalid")
+    if type(active_order_count) is not int or active_order_count != 0:
+        raise Stress90OperatorContinuityError("operator continuity requires zero active orders")
+    if positions_reconciled is not True:
+        raise Stress90OperatorContinuityError(
+            "operator continuity requires exact Broker/local position reconciliation"
+        )
+    for digest_value, name in (
+        (position_reconciliation_digest, "position reconciliation digest"),
+        (session_ownership_digest, "session ownership digest"),
+        (ctp_order_journal_digest, "CTP order journal digest"),
+    ):
+        _sha(digest_value, name)
+
+    generic_sequence = _positive_sequence(
+        getattr(generic_source, "sequence", None), "source generic state sequence"
+    )
+    generic_checksum = _sha(
+        getattr(generic_source, "checksum", None), "source generic state checksum"
+    )
+    generic_state = getattr(generic_source, "state", None)
+    if generic_state is None:
+        raise Stress90OperatorContinuityError("source generic state is missing")
+    if (
+        getattr(generic_state, "runtime_mode", None) != RuntimeMode.HALTED.value
+        or getattr(generic_state, "kill_switch", None) is not True
+        or getattr(generic_state, "reconciled", None) is not True
+    ):
+        raise Stress90OperatorContinuityError(
+            "operator continuity requires a HALTED, kill-switched, reconciled source"
+        )
+
+    policy_sequence = _positive_sequence(
+        getattr(policy_source, "sequence", None), "source policy state sequence"
+    )
+    policy_checksum = _sha(getattr(policy_source, "checksum", None), "source policy state checksum")
+    policy_state = getattr(policy_source, "state", None)
+    if policy_state is None:
+        raise Stress90OperatorContinuityError("source policy state is missing")
+
+    source_day = str(getattr(generic_state, "trading_day", "") or "")
+    if (
+        not source_day
+        or getattr(generic_state, "last_account_trading_day", None) != source_day
+        or getattr(policy_state, "last_completed_target_day", None) != source_day
+        or market_continuity.completed_account_day != source_day
+        or activity_latest_completed_day != source_day
+    ):
+        raise Stress90OperatorContinuityError(
+            "generic/policy/activity/market source trading day alignment is invalid"
+        )
+    _day(source_day, "operator continuity source day")
+    if getattr(
+        policy_state, "live_account_identity_digest", None
+    ) != account_identity_digest or not getattr(policy_state, "live_account_epoch", None):
+        raise Stress90OperatorContinuityError(
+            "operator continuity policy account identity/epoch mismatch"
+        )
+    account_epoch = _sha(
+        policy_state.live_account_epoch, "operator continuity policy account epoch"
+    )
+    account_identity = _sha(account_identity_digest, "operator continuity account identity")
+
+    canonical_runtime, runtime_digest = _canonical_runtime(os.fspath(runtime_dir))
+    binding = getattr(source_registry_evidence, "binding", None)
+    source_registry_receipt_digest = _sha(
+        getattr(source_registry_evidence, "binding_receipt_digest", None),
+        "source account registry receipt digest",
+    )
+    if (
+        binding is None
+        or getattr(binding, "account_identity_digest", None) != account_identity
+        or getattr(binding, "account_epoch", None) != account_epoch
+        or getattr(binding, "canonical_runtime", None) != canonical_runtime
+        or getattr(binding, "runtime_identity_digest", None) != runtime_digest
+    ):
+        raise Stress90OperatorContinuityError(
+            "operator continuity source account registry binding mismatch"
+        )
+    if (
+        getattr(source_trading_day_evidence, "phase", None) != "bound"
+        or getattr(source_trading_day_evidence, "trading_day", None) != source_day
+        or getattr(source_trading_day_evidence, "account_identity_digest", None) != account_identity
+        or getattr(source_trading_day_evidence, "account_epoch", None) != account_epoch
+        or getattr(source_trading_day_evidence, "canonical_runtime", None) != canonical_runtime
+        or getattr(source_trading_day_evidence, "runtime_identity_digest", None) != runtime_digest
+        or getattr(source_trading_day_evidence, "account_binding_receipt_digest", None)
+        != source_registry_receipt_digest
+        or getattr(source_trading_day_evidence, "registry_sequence", None)
+        != getattr(source_registry_evidence, "registry_sequence", None)
+        or getattr(source_trading_day_evidence, "registry_checksum", None)
+        != getattr(source_registry_evidence, "registry_checksum", None)
+    ):
+        raise Stress90OperatorContinuityError(
+            "operator continuity source TradingDayEvidence/registry receipt mismatch"
+        )
+    tde_sequence = _positive_sequence(
+        getattr(source_trading_day_evidence, "sequence", None),
+        "source TradingDayEvidence sequence",
+    )
+    tde_checksum = _sha(
+        getattr(source_trading_day_evidence, "checksum", None),
+        "source TradingDayEvidence checksum",
+    )
+
+    target_day = market_continuity.current_ctp_trading_day
+    if account_snapshot.trading_day != target_day:
+        raise Stress90OperatorContinuityError(
+            "fresh account snapshot does not match target CTP trading day"
+        )
+    if float(account_snapshot.deposit) != 0.0 or float(account_snapshot.withdrawal) != 0.0:
+        raise Stress90OperatorContinuityError(
+            "operator continuity requires Deposit=0 and Withdraw=0; use stress90-account-rebase"
+        )
+    try:
+        fresh_account_digest = stress90_lifecycle_account_evidence_digest(
+            account_snapshot,
+            account_identity_digest=account_identity,
+            scope="settlement_snapshot",
+        )
+        targets = build_stress90_settlement_roll_forward_targets(
+            generic_state,
+            policy_state,
+            account_snapshot,
+        )
+    except (Stress90LifecycleTransactionError, TypeError, ValueError) as exc:
+        raise Stress90OperatorContinuityError(
+            "operator continuity settlement/account path is not safely roll-forwardable"
+        ) from exc
+    if (
+        targets.completed_account_day != source_day
+        or targets.current_ctp_trading_day != target_day
+        or targets.generic_target.runtime_mode != RuntimeMode.HALTED.value
+        or targets.generic_target.kill_switch is not True
+        or targets.generic_target.metadata_verified is not False
+    ):
+        raise Stress90OperatorContinuityError(
+            "operator continuity target does not preserve HALTED fail-closed state"
+        )
+
+    settlement_raw = getattr(account_snapshot, "previous_settlement_equity", None)
+    settlement_id = getattr(account_snapshot, "settlement_id", None)
+    if settlement_raw is None or settlement_id is None:
+        raise Stress90OperatorContinuityError(
+            "operator continuity target settlement identity is missing"
+        )
+    source_settlement_id = getattr(generic_state, "last_account_settlement_id", None)
+    if type(source_settlement_id) is not int or source_settlement_id < 0:
+        raise Stress90OperatorContinuityError(
+            "operator continuity source settlement identity is missing"
+        )
+    natural_gap = market_continuity.natural_day_gap
+    expected_gap = (
+        _day(target_day, "operator continuity target day").date()
+        - _day(source_day, "operator continuity source day").date()
+    ).days
+    if natural_gap != expected_gap:
+        raise Stress90OperatorContinuityError(
+            "operator continuity natural-day gap evidence is inconsistent"
+        )
+
+    evidence = Stress90OperatorContinuityEvidence(
+        operation_id=operation,
+        operator_reason=reason,
+        confirmation_type=_OPERATOR_CONFIRMATION_TYPE,
+        source_ctp_trading_day=source_day,
+        target_ctp_trading_day=target_day,
+        natural_day_gap=natural_gap,
+        source_generic_state_sequence=generic_sequence,
+        source_generic_state_checksum=generic_checksum,
+        source_policy_state_sequence=policy_sequence,
+        source_policy_state_checksum=policy_checksum,
+        source_trading_day_evidence_sequence=tde_sequence,
+        source_trading_day_evidence_checksum=tde_checksum,
+        account_identity_digest=account_identity,
+        account_epoch=account_epoch,
+        canonical_runtime=canonical_runtime,
+        canonical_runtime_digest=runtime_digest,
+        source_account_registry_receipt_digest=source_registry_receipt_digest,
+        fresh_account_snapshot_digest=fresh_account_digest,
+        position_reconciliation_digest=position_reconciliation_digest,
+        session_ownership_digest=session_ownership_digest,
+        ctp_order_journal_digest=ctp_order_journal_digest,
+        active_order_count=0,
+        deposit=float(account_snapshot.deposit),
+        withdrawal=float(account_snapshot.withdrawal),
+        source_last_account_equity=float(generic_state.last_account_equity),
+        source_day_start_equity=float(generic_state.day_start_equity),
+        source_hwm_equity=float(generic_state.equity_high_watermark),
+        source_settlement_id=str(source_settlement_id),
+        target_previous_settlement_equity=float(settlement_raw),
+        target_settlement_id=str(settlement_id),
+        ohlc_latest_completed_day=source_day,
+        activity_latest_completed_day=source_day,
+        oi_latest_completed_day=source_day,
+        policy_latest_completed_day=source_day,
+        no_manual_trade=True,
+        no_external_order=True,
+        no_deposit=True,
+        no_withdrawal=True,
+        evidence_authority="operator_trust",
+        authoritative_broker_or_exchange_evidence=False,
+    )
+    request_digest = stress90_operator_continuity_request_digest(evidence)
+    return Stress90OperatorRollForwardPlan(
+        targets=targets,
+        evidence=evidence,
+        request_digest=request_digest,
+    )
+
+
+@dataclass(frozen=True)
 class Stress90OperatorContinuityRecord:
     sequence: int
     parent_checksum: str | None
