@@ -24,6 +24,7 @@ jobs:
       - name: Apply authority hardening
         run: |
           python tools/operator_continuity_authority_patch.py
+          python -m ruff check --fix tests/test_stress90_operator_receipt_authority.py
           python -m ruff format \
             afuture/stress90_operator_continuity.py \
             afuture/stress90_activation_permit.py \
