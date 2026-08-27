@@ -9,60 +9,28 @@ permissions:
   contents: write
 
 jobs:
-  targeted:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]" -c constraints/core-dev.txt
-      - name: Apply authority hardening
-        run: |
-          python tools/operator_continuity_authority_patch.py
-          python -m ruff check --fix tests/test_stress90_operator_receipt_authority.py
-          python -m ruff format \
-            afuture/stress90_operator_continuity.py \
-            afuture/stress90_activation_permit.py \
-            afuture/operations.py \
-            afuture/cli.py \
-            tests/test_stress90_operator_receipt_authority.py
-      - name: Targeted tests
-        run: |
-          python -m pytest -q \
-            tests/test_stress90_operator_continuity.py \
-            tests/test_stress90_operator_roll_forward.py \
-            tests/test_stress90_operator_roll_forward_plan.py \
-            tests/test_stress90_operator_permit.py \
-            tests/test_stress90_operator_status.py \
-            tests/test_stress90_operator_rebase_reanchor.py \
-            tests/test_stress90_operator_receipt_authority.py \
-            tests/test_directional_config_risk.py \
-            tests/test_trading_day_evidence.py \
-            tests/test_account_runtime_registry.py \
-            tests/test_stress90_lifecycle_transaction.py \
-            tests/test_stress90_activation_permit.py \
-            tests/test_directional_stress90_activation.py \
-            tests/test_operations.py \
-            tests/test_cli_safety.py \
-            tests/test_cli_runtime_factory.py \
-            tests/test_documentation_consistency.py
-      - name: Targeted quality
-        run: |
-          python -m ruff check afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py tests/test_stress90_operator_rebase_reanchor.py tests/test_stress90_operator_receipt_authority.py
-          python -m ruff format --check afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py tests/test_stress90_operator_continuity.py tests/test_stress90_operator_roll_forward.py tests/test_stress90_operator_roll_forward_plan.py tests/test_stress90_operator_permit.py tests/test_stress90_operator_status.py tests/test_stress90_operator_rebase_reanchor.py tests/test_stress90_operator_receipt_authority.py
-          python -m mypy afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/runtime_factory.py afuture/operations.py afuture/cli.py
-          python -m compileall -q afuture
-      - name: Commit hardened implementation
+      - name: Restore permanent CI and remove development-only files
         shell: bash
         run: |
-          if git diff --quiet; then exit 0; fi
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+          rm -f .github/workflows/operator-continuity-targeted.yml
+          rm -f tools/operator_continuity_*.py
+          git diff --check
+          if find docs -path '*/superpowers/*' -type f -newer .git/HEAD 2>/dev/null | grep -q .; then
+            echo "unexpected temporary Superpowers docs" >&2
+            exit 1
+          fi
+      - name: Commit final candidate cleanup
+        shell: bash
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add afuture/stress90_operator_continuity.py afuture/stress90_activation_permit.py afuture/operations.py afuture/cli.py tests/test_stress90_operator_receipt_authority.py
-          git commit -m "fix: bind operator continuity receipt authority"
+          git add -A
+          git commit -m "chore: restore permanent validation surface"
           git push origin HEAD:codex/operator-managed-continuity
