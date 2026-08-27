@@ -513,3 +513,43 @@ def test_nonce_transition_crash_prefixes_roll_forward_exactly_once(
     assert exact.nonce_count == 2
     assert registry.acknowledge_binding_operation(account, runtime, epoch, operation) == exact
     assert not _ledger(registry).pending_path.exists()
+
+
+def test_forged_transition_cannot_drop_an_old_authenticated_member(tmp_path: Path) -> None:
+    from afuture import account_runtime_registry as registry_module
+    from afuture.account_runtime_registry import AccountRuntimeRegistryError
+
+    registry = _registry(tmp_path / "registry.json")
+    account, runtime, epoch = _binding_inputs(tmp_path)
+    first_nonce = "a" * 64
+    second_nonce = "b" * 64
+    first = registry.bind_new(account, runtime, epoch, first_nonce)
+    second = registry.acknowledge_binding_operation(account, runtime, epoch, second_nonce)
+    ledger = _ledger(registry)
+    second_leaf = ledger.membership_node_paths(second.nonce_root, second_nonce)[-1].stem
+
+    current = json.loads(registry.path.read_text(encoding="utf-8"))
+    current["nonce_root"] = second_leaf
+    current_unsigned = {key: value for key, value in current.items() if key != "checksum"}
+    current["checksum"] = registry_module._digest(current_unsigned)
+    registry.path.write_text(json.dumps(current), encoding="utf-8")
+
+    transition_path = ledger.transition_path(second.nonce_count)
+    transition = json.loads(transition_path.read_text(encoding="utf-8"))
+    transition["old_root"] = first.nonce_root
+    transition["new_root"] = second_leaf
+    transition["new_registry_checksum"] = current["checksum"]
+    transition_unsigned = {key: value for key, value in transition.items() if key != "checksum"}
+    transition["checksum"] = registry_module._digest(transition_unsigned)
+    transition_path.write_text(
+        json.dumps(
+            transition,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AccountRuntimeRegistryError, match="transition|insertion|nonce|root"):
+        registry.load_required()

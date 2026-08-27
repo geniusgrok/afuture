@@ -424,6 +424,7 @@ class AccountRuntimeNonceLedger:
             "initial_count": count,
             "base_registry_sequence": base_sequence,
             "base_registry_checksum": base_checksum,
+            "checksum": raw["checksum"],
         }
 
     def load_ready_root(self) -> tuple[str, int]:
@@ -434,10 +435,11 @@ class AccountRuntimeNonceLedger:
             raise AccountRuntimeNonceLedgerError("nonce ledger ready anchor types are invalid")
         return root, count
 
-    def create_transition(self, unsigned: dict[str, object]) -> dict[str, object]:
+    def _validate_transition_unsigned(self, unsigned: dict[str, object]) -> None:
         expected = {
             "kind",
             "schema_version",
+            "parent_transition_checksum",
             "old_registry_sequence",
             "old_registry_checksum",
             "old_root",
@@ -467,6 +469,7 @@ class AccountRuntimeNonceLedger:
         ):
             raise AccountRuntimeNonceLedgerError("nonce transition progression is invalid")
         for key in (
+            "parent_transition_checksum",
             "old_registry_checksum",
             "old_root",
             "new_registry_checksum",
@@ -475,15 +478,8 @@ class AccountRuntimeNonceLedger:
             "receipt_checksum",
         ):
             _sha(unsigned[key], f"nonce transition {key}")
-        transition = {**unsigned, "checksum": _digest(unsigned)}
-        self._durable_create_exact(
-            self.transition_path(new_count),
-            _canonical(transition),
-            maximum=_MAX_RECEIPT_BYTES,
-        )
-        return transition
 
-    def load_transition(self, nonce_count: int) -> dict[str, object] | None:
+    def _load_transition_raw(self, nonce_count: int) -> dict[str, object] | None:
         path = self.transition_path(nonce_count)
         if not path.exists():
             return None
@@ -495,10 +491,138 @@ class AccountRuntimeNonceLedger:
         checksum = raw.pop("checksum", None)
         if checksum != _digest(raw):
             raise AccountRuntimeNonceLedgerError("nonce transition checksum mismatch")
-        canonical = self.create_transition(raw)
-        if canonical["checksum"] != checksum:
-            raise AccountRuntimeNonceLedgerError("nonce transition is not canonical")
+        self._validate_transition_unsigned(raw)
         return {**raw, "checksum": checksum}
+
+    def _canonical_insertion_root(
+        self,
+        old_root: str,
+        receipt: AccountRuntimeNonceReceipt,
+    ) -> str:
+        proof, old_leaf = self._proof(old_root, receipt.operation_nonce)
+        if old_leaf is not None and old_leaf["operation_nonce"] == receipt.operation_nonce:
+            raise AccountRuntimeNonceLedgerError(
+                "nonce transition old root already contains declared receipt"
+            )
+        new_leaf = _node_hash(
+            {
+                "kind": _KIND_NODE,
+                "schema_version": _SCHEMA,
+                "node_type": "leaf",
+                "operation_nonce": receipt.operation_nonce,
+                "receipt_checksum": receipt.checksum,
+            }
+        )
+        if old_root == EMPTY_NONCE_ROOT:
+            return new_leaf
+        assert old_leaf is not None
+        old_key = str(old_leaf["operation_nonce"])
+        different = _first_different_bit(old_key, receipt.operation_nonce)
+        prefix: list[tuple[dict[str, object], int]] = []
+        subtree = old_root
+        for _, node in proof:
+            if node["node_type"] != "branch":
+                break
+            bit_value = node["bit_index"]
+            if type(bit_value) is not int:
+                raise AccountRuntimeNonceLedgerError("nonce ledger branch bit is invalid")
+            if bit_value >= different:
+                break
+            direction = _bit(receipt.operation_nonce, bit_value)
+            prefix.append((node, direction))
+            subtree = str(node["right"] if direction else node["left"])
+
+        def branch_hash(bit_index: int, left: str, right: str) -> str:
+            return _node_hash(
+                {
+                    "kind": _KIND_NODE,
+                    "schema_version": _SCHEMA,
+                    "node_type": "branch",
+                    "bit_index": bit_index,
+                    "left": left,
+                    "right": right,
+                }
+            )
+
+        rebuilt = (
+            branch_hash(different, subtree, new_leaf)
+            if _bit(receipt.operation_nonce, different)
+            else branch_hash(different, new_leaf, subtree)
+        )
+        for node, direction in reversed(prefix):
+            bit_index = node["bit_index"]
+            assert type(bit_index) is int
+            rebuilt = (
+                branch_hash(bit_index, str(node["left"]), rebuilt)
+                if direction
+                else branch_hash(bit_index, rebuilt, str(node["right"]))
+            )
+        return rebuilt
+
+    def _validate_transition_proof(self, transition: dict[str, object]) -> None:
+        new_count = transition["new_count"]
+        if type(new_count) is not int:
+            raise AccountRuntimeNonceLedgerError("nonce transition count is invalid")
+        anchor = self.load_ready_anchor()
+        base_count = anchor["initial_count"]
+        if type(base_count) is not int:
+            raise AccountRuntimeNonceLedgerError("nonce ready count is invalid")
+        if new_count == base_count + 1:
+            if (
+                transition["parent_transition_checksum"] != anchor["checksum"]
+                or transition["old_registry_sequence"] != anchor["base_registry_sequence"]
+                or transition["old_registry_checksum"] != anchor["base_registry_checksum"]
+                or transition["old_root"] != anchor["initial_root"]
+                or transition["old_count"] != base_count
+            ):
+                raise AccountRuntimeNonceLedgerError(
+                    "first nonce transition does not extend ready anchor"
+                )
+        elif new_count > base_count + 1:
+            previous = self._load_transition_raw(new_count - 1)
+            if previous is None or (
+                transition["parent_transition_checksum"] != previous["checksum"]
+                or transition["old_registry_sequence"] != previous["new_registry_sequence"]
+                or transition["old_registry_checksum"] != previous["new_registry_checksum"]
+                or transition["old_root"] != previous["new_root"]
+                or transition["old_count"] != previous["new_count"]
+            ):
+                raise AccountRuntimeNonceLedgerError("nonce transition chain continuity is invalid")
+        else:
+            raise AccountRuntimeNonceLedgerError("nonce transition precedes ready anchor")
+        nonce = transition["operation_nonce"]
+        if type(nonce) is not str:
+            raise AccountRuntimeNonceLedgerError("nonce transition operation is invalid")
+        receipt = self._load_receipt(nonce)
+        if receipt.checksum != transition["receipt_checksum"]:
+            raise AccountRuntimeNonceLedgerError("nonce transition receipt checksum mismatch")
+        computed = self._canonical_insertion_root(str(transition["old_root"]), receipt)
+        if computed != transition["new_root"]:
+            raise AccountRuntimeNonceLedgerError(
+                "nonce transition root is not the canonical receipt insertion"
+            )
+
+    def create_transition(self, unsigned: dict[str, object]) -> dict[str, object]:
+        self._validate_transition_unsigned(unsigned)
+        self._validate_transition_proof(unsigned)
+        transition = {**unsigned, "checksum": _digest(unsigned)}
+        new_count = unsigned["new_count"]
+        if type(new_count) is not int:
+            raise AccountRuntimeNonceLedgerError("nonce transition count is invalid")
+        self._durable_create_exact(
+            self.transition_path(new_count),
+            _canonical(transition),
+            maximum=_MAX_RECEIPT_BYTES,
+        )
+        return transition
+
+    def load_transition(self, nonce_count: int) -> dict[str, object] | None:
+        transition = self._load_transition_raw(nonce_count)
+        if transition is None:
+            return None
+        unsigned = {key: value for key, value in transition.items() if key != "checksum"}
+        self._validate_transition_proof(unsigned)
+        return transition
 
     def _create_receipt(self, receipt: AccountRuntimeNonceReceipt) -> None:
         self._durable_create_exact(

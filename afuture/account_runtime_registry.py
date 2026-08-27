@@ -637,6 +637,7 @@ class AccountRuntimeRegistry:
         expected = {
             "kind",
             "schema_version",
+            "parent_transition_checksum",
             "old_registry_checksum",
             "old_registry_sequence",
             "old_root",
@@ -667,6 +668,7 @@ class AccountRuntimeRegistry:
                 for key in (
                     "old_registry_sequence",
                     "old_registry_checksum",
+                    "parent_transition_checksum",
                     "old_root",
                     "old_count",
                     "new_registry_sequence",
@@ -801,9 +803,23 @@ class AccountRuntimeRegistry:
                 nonce_root=insertion.new_root,
                 nonce_count=insertion.new_count,
             )
+            ready_anchor = ledger.load_ready_anchor()
+            base_count = ready_anchor["initial_count"]
+            if type(base_count) is not int:
+                raise AccountRuntimeNonceLedgerError("nonce ready count is invalid")
+            if insertion.new_count == base_count + 1:
+                parent_transition_checksum = ready_anchor["checksum"]
+            else:
+                previous_transition = ledger.load_transition(insertion.new_count - 1)
+                if previous_transition is None:
+                    raise AccountRuntimeNonceLedgerError("previous nonce transition is missing")
+                parent_transition_checksum = previous_transition["checksum"]
+            if type(parent_transition_checksum) is not str:
+                raise AccountRuntimeNonceLedgerError("parent nonce transition checksum is invalid")
             transition_unsigned = {
                 "kind": "afuture.account-runtime-nonce-transition",
                 "schema_version": 1,
+                "parent_transition_checksum": parent_transition_checksum,
                 "old_registry_sequence": current.sequence,
                 "old_registry_checksum": current.checksum,
                 "old_root": insertion.old_root,
@@ -819,6 +835,7 @@ class AccountRuntimeRegistry:
             pending_unsigned = {
                 "kind": "afuture.account-runtime-nonce-pending",
                 "schema_version": 1,
+                "parent_transition_checksum": parent_transition_checksum,
                 "old_registry_sequence": current.sequence,
                 "old_registry_checksum": current.checksum,
                 "old_root": insertion.old_root,
