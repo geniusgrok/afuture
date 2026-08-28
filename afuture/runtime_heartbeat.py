@@ -313,7 +313,7 @@ def install_engine_heartbeat_hooks() -> None:
             observer.after_cycle()
         return result
 
-    setattr(directional_run_once, "_afuture_heartbeat_full_cycle", True)
+    directional_run_once._afuture_heartbeat_full_cycle = True  # type: ignore[attr-defined]
 
     def stop(self: Any, *args: object, **kwargs: object):
         global _STOP_HEARTBEAT_OK
