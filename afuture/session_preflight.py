@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from .durable_json import DurableJsonError, atomic_replace_regular, canonical_json_bytes
 
@@ -55,7 +55,7 @@ def _jsonable(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     if hasattr(value, "__dataclass_fields__"):
-        return _jsonable(asdict(value))
+        return _jsonable(asdict(cast(Any, value)))
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return str(value)
