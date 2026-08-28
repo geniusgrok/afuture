@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 SYSTEMD = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
 
 
@@ -37,12 +36,19 @@ def test_watchdog_timer_is_short_bounded_once_runner() -> None:
     assert "--once" in service
     assert "OnUnitActiveSec=" in timer
     assert "Restart=" not in service
-    for forbidden in ("confirm-live", "issue-stress90", "stress90-operator-roll-forward", "stress90-account-rebase"):
+    for forbidden in (
+        "confirm-live",
+        "issue-stress90",
+        "stress90-operator-roll-forward",
+        "stress90-account-rebase",
+    ):
         assert forbidden not in service
 
 
 def test_systemd_assets_contain_no_credentials_or_activation_acks() -> None:
-    combined = "\n".join(path.read_text(encoding="utf-8") for path in sorted(SYSTEMD.iterdir()))
+    combined = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(SYSTEMD.iterdir())
+    )
     for forbidden in (
         "AFUTURE_CTP_USER=",
         "AFUTURE_CTP_PASSWORD=",
@@ -96,7 +102,9 @@ def test_live_service_fence_exit_prevents_restart_loop() -> None:
 
 
 def test_systemd_assets_use_placeholders_not_real_identity() -> None:
-    combined = "\n".join(path.read_text(encoding="utf-8") for path in sorted(SYSTEMD.iterdir()))
+    combined = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(SYSTEMD.iterdir())
+    )
     assert "<AFUTURE_WORKDIR>" in combined
     assert "<AFUTURE_ENV_FILE>" in combined
     assert "ychenracing" not in combined
