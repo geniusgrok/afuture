@@ -175,7 +175,9 @@ def interpreter_identity() -> dict[str, str]:
     }
 
 
-def native_module_identity(package: str = "vnpy_ctp") -> dict[str, str] | None:
+def native_module_identity(package: str = "vnpy_ctp") -> dict[str, object] | None:
+    """Bind every native extension shipped by a package into one stable identity."""
+
     try:
         spec = importlib.util.find_spec(package)
     except (ImportError, AttributeError, ValueError):
@@ -196,8 +198,23 @@ def native_module_identity(package: str = "vnpy_ctp") -> dict[str, str] | None:
         except OSError:
             continue
     if not candidates and spec.origin and spec.origin not in {"built-in", "frozen"}:
-        candidates = [Path(spec.origin)]
+        origin = Path(spec.origin)
+        if any(str(origin).endswith(suffix) for suffix in suffixes):
+            candidates = [origin]
     if not candidates:
         return None
-    target = canonical_safe_path(sorted(candidates, key=os.fspath)[0], label="native module")
-    return {"path": str(target), "sha256": file_sha256(target)}
+
+    files: list[dict[str, str]] = []
+    seen: set[Path] = set()
+    for candidate in sorted(candidates, key=os.fspath):
+        target = canonical_safe_path(candidate, label="native module")
+        if target in seen:
+            continue
+        seen.add(target)
+        files.append({"path": str(target), "sha256": file_sha256(target)})
+    if not files:
+        return None
+    return {
+        "files": files,
+        "sha256": sha256(canonical_json_bytes(files)).hexdigest(),
+    }

@@ -883,6 +883,68 @@ def _publish_registry(stage_registry: Path, final_registry: Path) -> None:
     _fsync_dir(final_registry.parent)
 
 
+def _restore_incident_path(runtime: Path, incident_token: str) -> Path:
+    if not incident_token or any(
+        character not in "0123456789abcdef" for character in incident_token
+    ):
+        raise RuntimeBackupError("restore incident token is invalid")
+    base = runtime.with_name(f".{runtime.name}.failed-restore-{incident_token}")
+    for index in range(1000):
+        candidate = base if index == 0 else base.with_name(f"{base.name}-{index}")
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    raise RuntimeBackupError("restore incident namespace is exhausted")
+
+
+def _quarantine_restore_runtime(runtime: Path, incident_token: str) -> Path:
+    incident = _restore_incident_path(runtime, incident_token)
+    try:
+        os.rename(runtime, incident)
+        _fsync_dir(runtime.parent)
+    except OSError as exc:
+        raise RuntimeBackupError("restore runtime quarantine failed") from exc
+    return incident
+
+
+def _publish_restore_transaction(
+    *,
+    runtime_stage: Path,
+    runtime: Path,
+    stage_registry: Path,
+    registry: Path,
+    registry_stage_root: Path,
+    incident_token: str,
+) -> None:
+    """Publish runtime then registry; quarantine runtime if registry publication fails."""
+
+    if runtime.exists():
+        if not runtime.is_dir() or runtime.is_symlink() or any(runtime.iterdir()):
+            raise RuntimeBackupError("runtime became non-empty before atomic publish")
+        runtime.rmdir()
+        _fsync_dir(runtime.parent)
+    try:
+        os.rename(runtime_stage, runtime)
+        _fsync_dir(runtime.parent)
+    except OSError as exc:
+        raise RuntimeBackupError("restore runtime publication failed") from exc
+
+    try:
+        _publish_registry(stage_registry, registry)
+        if registry_stage_root.exists():
+            registry_stage_root.rmdir()
+            _fsync_dir(registry_stage_root.parent)
+    except Exception as exc:
+        try:
+            incident = _quarantine_restore_runtime(runtime, incident_token)
+        except RuntimeBackupError as quarantine_exc:
+            raise RuntimeBackupError(
+                "restore registry publication failed and canonical runtime quarantine failed"
+            ) from quarantine_exc
+        raise RuntimeBackupError(
+            f"restore registry publication failed; runtime quarantined at {incident}"
+        ) from exc
+
+
 def restore_runtime(
     *,
     backup_path: str | Path,
@@ -972,17 +1034,15 @@ def restore_runtime(
         _fsync_dir(runtime_stage)
         _fsync_dir(registry_stage_root)
 
-        _publish_registry(stage_registry, registry)
-        if runtime.exists():
-            if any(runtime.iterdir()):
-                raise RuntimeBackupError("runtime became non-empty before atomic publish")
-            runtime.rmdir()
-            _fsync_dir(runtime.parent)
-        os.rename(runtime_stage, runtime)
+        _publish_restore_transaction(
+            runtime_stage=runtime_stage,
+            runtime=runtime,
+            stage_registry=stage_registry,
+            registry=registry,
+            registry_stage_root=registry_stage_root,
+            incident_token=verification.archive_sha256[:16],
+        )
         runtime_published = True
-        _fsync_dir(runtime.parent)
-        registry_stage_root.rmdir()
-        _fsync_dir(registry_stage_root.parent)
 
         final_state = StateStore(runtime / state_filename).load_required_record().state
         final_policy = Stress90PolicyStateStore(
@@ -1016,7 +1076,12 @@ def restore_runtime(
             "next_steps": ["status", "deployment-verify", "doctor", "issue-fresh-permit"],
         }
     except Exception:
-        if not runtime_published and runtime_stage.exists():
+        if runtime_published and runtime.exists():
+            try:
+                _quarantine_restore_runtime(runtime, verification.archive_sha256[:16])
+            except RuntimeBackupError:
+                pass
+        elif runtime_stage.exists():
             shutil.rmtree(runtime_stage, ignore_errors=True)
         raise
     finally:
