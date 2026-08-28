@@ -278,3 +278,13 @@
 - [ ] One-lot notional, buffered long/short margin, one-tick/spread cost and 15bp compatibility were reviewed for every selected non-zero product.
 - [ ] Integer zeroing, margin/funding clipping, HHI/drawdown freezes, product HHI, largest product share and tracking error are acceptable for commissioning.
 - [ ] The commissioning example was adjusted from measured one-lot stress and actual account equity; no warning was used to relax hard risk.
+
+## 部署来源与恢复验收
+
+- [ ] production bootstrap bundle 由官方固定摘要与固定 candidate 生成，`stress90-bundle-verify` 明确通过；测试 fixture 没有进入生产路径。
+- [ ] bundle 安装目标为空，安装后 seed/policy/OI/OHLC/activity identity 与 manifest 完全一致，未生成账户绑定、permit 或订单事实。
+- [ ] 最终目标机、最终虚拟环境、最终 `vnpy_ctp` 已就绪后执行 `deployment-seal`；`deployment-verify` 对 Git HEAD、tracked source digest、配置、constraints、Python/OS/CPU/executable、runtime、registry、bundle、risk overlay 和 native module 均无漂移。
+- [ ] production `status` 能显示 deployment 诊断；deployment 不匹配时 `doctor`/`shadow`/`live` 失败关闭，不能依赖旧 permit 继续运行。
+- [ ] 至少完成一次 `HALTED` + `kill_switch=true` 的 `backup-runtime` 与独立 `verify-backup`；备份成员只有 allowlist 权威证据，不含配置、日志、报告、告警和原始凭证。
+- [ ] 至少完成一次离线恢复演练：目标 runtime 为空、registry staging 独立、恢复过程零 Broker writes，恢复结果保持 `HALTED` + kill switch，旧 technical permit 失效。
+- [ ] 恢复演练后按 `status` → `deployment-verify` → 无报单 `doctor` → fresh permit 完成重新准入；任何身份漂移都先停机解释，不手工复制 `.prev` 或修改 checksum。

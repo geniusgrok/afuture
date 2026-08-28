@@ -107,3 +107,11 @@ afuture recover-state \
 If status/Doctor reports `stress90_risk_overlay_identity` failed, do not delete state or edit the bound digest. Stop the runtime, keep it HALTED/kill-switched, finish or retire any current execution intent under its original digest, verify Broker/local flatness and zero active orders, reconcile, then run the explicit `stress90-activate` lifecycle to bind the new overlay. A smaller scale is still an identity change because old orders must retain their original interpretation.
 
 If `stress90-capacity-report` exits `2`, inspect `hard_safety_failures`, `risk_manager_preview`, missing contract capacity/cost evidence and clipped products. Missing margin or all-zero commission evidence is not treated as zero cost. Integer zeroing can be a valid safe target; it is not a reason to enlarge scale automatically.
+
+## Deployment / backup / restore 故障
+
+`deployment-verify` 失败时先查看 `changes`。Git HEAD、tracked source、配置、constraints、Python/OS/CPU/executable、canonical runtime、machine registry、bundle、risk overlay 或 `vnpy_ctp` 任一变化都属于部署身份变化；保持 `HALTED`，确认变化是预期且 runtime 仍与 bundle/policy 一致后才能重新 seal。重新 seal 会要求 fresh Doctor permit，不能保留旧 permit 继续交易。
+
+`verify-backup` 因 archive member、checksum、journal、registry、TradingDayEvidence、deployment 或跨文件 identity 失败时，把原 backup 当事故证据保留，不解压覆盖 current，不删除失败成员，不从 `.prev` 拼接 current。路径穿越、绝对路径、重复项、链接成员、未知成员、超限、截断、尾随字节都按损坏或篡改处理。
+
+`restore-runtime` 报目标非空、runtime/registry identity 不一致或 registry staging 不安全，是预期的 fail-closed 边界。不要为了“恢复成功”清空仍在使用的目录或改 manifest；先确认旧进程停止、目标确实为空且备份对应同一 canonical runtime/registry。恢复完成后仍处于 `HALTED` 且 kill switch 开启，permit 失效属于设计行为；下一步只能是 `status`、`deployment-verify`、无报单 `doctor` 和 fresh permit。
