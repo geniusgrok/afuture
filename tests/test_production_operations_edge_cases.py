@@ -5,7 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from afuture.process_run import ProcessRunStore, apply_unclean_restart_fence
-from afuture.runtime_heartbeat import RuntimeHeartbeatObserver, install_engine_heartbeat_hooks
+from afuture.runtime_heartbeat import (
+    RuntimeHeartbeatObserver,
+    install_engine_heartbeat_hooks,
+)
 from afuture.state import RuntimeState, StateStore
 
 
