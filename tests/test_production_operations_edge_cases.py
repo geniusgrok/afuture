@@ -101,7 +101,9 @@ def test_directional_heartbeat_hook_observes_complete_directional_cycle() -> Non
     from afuture.directional_engine import DirectionalTradingEngine
 
     install_engine_heartbeat_hooks()
-    assert getattr(DirectionalTradingEngine.run_once, "_afuture_heartbeat_full_cycle", False) is True
+    assert (
+        getattr(DirectionalTradingEngine.run_once, "_afuture_heartbeat_full_cycle", False) is True
+    )
 
 
 def test_sigterm_uses_existing_keyboard_interrupt_shutdown_path() -> None:
