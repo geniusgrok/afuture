@@ -56,13 +56,15 @@ def test_engine_heartbeat_hook_leaves_callbacks_untouched() -> None:
 
     callbacks = {
         "on_tick": TradingEngine.on_tick,
-        "on_order": TradingEngine.on_order,
-        "on_trade": TradingEngine.on_trade,
+        "order": TradingEngine._handle_order_event,
+        "trade": TradingEngine._handle_trade_event,
+        "account": TradingEngine._handle_account_event,
     }
     install_engine_heartbeat_hooks()
     assert TradingEngine.on_tick is callbacks["on_tick"]
-    assert TradingEngine.on_order is callbacks["on_order"]
-    assert TradingEngine.on_trade is callbacks["on_trade"]
+    assert TradingEngine._handle_order_event is callbacks["order"]
+    assert TradingEngine._handle_trade_event is callbacks["trade"]
+    assert TradingEngine._handle_account_event is callbacks["account"]
 
 
 def test_systemd_live_template_does_not_embed_confirmation_or_activation() -> None:
