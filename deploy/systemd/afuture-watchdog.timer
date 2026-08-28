@@ -1,0 +1,12 @@
+[Unit]
+Description=Run afuture local watchdog periodically
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=10s
+AccuracySec=1s
+Persistent=false
+Unit=afuture-watchdog.service
+
+[Install]
+WantedBy=timers.target

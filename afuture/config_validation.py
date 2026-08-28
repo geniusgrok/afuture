@@ -5,10 +5,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from math import isfinite
 
+_SECTION_EXTENSION_KEYS: dict[str, frozenset[str]] = {
+    "paths": frozenset({"heartbeat"}),
+    "execution": frozenset({"heartbeat_interval_seconds"}),
+}
+
 
 def require_keys(raw: Mapping[str, object], allowed: set[str], section: str) -> None:
     """Reject misspelled or unsupported fields instead of silently ignoring them."""
-    unknown = sorted(set(raw) - allowed)
+    effective = set(allowed) | set(_SECTION_EXTENSION_KEYS.get(section, ()))
+    unknown = sorted(set(raw) - effective)
     if unknown:
         raise ValueError(f"{section} has unknown field(s): {', '.join(unknown)}")
 

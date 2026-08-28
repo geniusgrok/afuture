@@ -1,10 +1,12 @@
-"""Canonical CLI router for local provenance/recovery commands and deployment gates."""
+"""Canonical CLI router for local provenance, recovery, and production supervision."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 
 try:
@@ -24,6 +26,8 @@ _NEW_COMMANDS = frozenset(
         "backup-runtime",
         "verify-backup",
         "restore-runtime",
+        "prepare-session",
+        "watchdog",
     }
 )
 _DEPLOYMENT_GATED_COMMANDS = frozenset({"doctor", "shadow", "live"})
@@ -72,6 +76,16 @@ def _parser(command: str) -> argparse.ArgumentParser:
         parser.add_argument("--runtime-dir", required=True)
         parser.add_argument("--account-registry-path", required=True)
         parser.add_argument("--registry-staging-path", required=True)
+    elif command == "prepare-session":
+        parser.add_argument("--config", required=True)
+        parser.add_argument("--confirm-live", action="store_true")
+        parser.add_argument("--output", required=True)
+        parser.add_argument("--refresh-ohlc", action="store_true")
+        parser.add_argument("--shadow-account", action="store_true")
+    elif command == "watchdog":
+        parser.add_argument("--config", required=True)
+        parser.add_argument("--once", action="store_true")
+        parser.add_argument("--max-age-seconds", type=float, default=15.0)
     else:  # pragma: no cover - internal dispatch contract
         raise RuntimeError(f"unsupported routed command: {command}")
     return parser
@@ -240,6 +254,57 @@ def _run_new(command: str, argv: list[str]) -> int:
             )
             _canonical_print(restore_result)
             return 0
+        if command == "prepare-session":
+            from .heartbeat_config import activate_heartbeat_settings
+            from .session_preflight import ProductionPreflightBackend, SessionPreflightRunner
+
+            try:
+                config = load_config(args.config, require_ctp_credentials=True)
+                _require_stress90_config(config, command)
+                activate_heartbeat_settings(args.config, state_path=config.state_path)
+                backend = ProductionPreflightBackend(
+                    config=config,
+                    config_path=args.config,
+                    confirm_live=bool(args.confirm_live),
+                    shadow_account=bool(args.shadow_account),
+                )
+                code, payload = SessionPreflightRunner(
+                    config=config,
+                    config_path=args.config,
+                    output_path=args.output,
+                    confirm_live=bool(args.confirm_live),
+                    refresh_ohlc=bool(args.refresh_ohlc),
+                    shadow_account=bool(args.shadow_account),
+                    backend=backend,
+                ).run()
+                _canonical_print(payload)
+                return code
+            except Exception as exc:
+                _canonical_print(
+                    {
+                        "passed": False,
+                        "command": command,
+                        "error": str(exc),
+                        "orders_sent": 0,
+                        "cancels_sent": 0,
+                    }
+                )
+                return 3
+        if command == "watchdog":
+            from .heartbeat_config import load_heartbeat_settings
+            from .watchdog import run_watchdog_once
+
+            config = load_config(args.config, require_ctp_credentials=False)
+            _require_stress90_config(config, command)
+            settings = load_heartbeat_settings(args.config, state_path=config.state_path)
+            result = run_watchdog_once(
+                config=config,
+                config_path=args.config,
+                heartbeat_path=settings.path_for_state(config.state_path),
+                max_age_seconds=float(args.max_age_seconds),
+            )
+            _canonical_print(result.to_dict())
+            return 0 if result.passed else 2
         raise RuntimeError(f"unhandled routed command: {command}")
     except Exception as exc:
         _canonical_print(
@@ -262,6 +327,29 @@ def _extract_option(argv: list[str], option: str) -> str:
     return argv[index + 1] if index + 1 < len(argv) else ""
 
 
+def _heartbeat_extension_preflight(command: str, argv: list[str]) -> int | None:
+    config_path = _extract_option(argv, "--config")
+    if not config_path:
+        return None
+    try:
+        from .heartbeat_config import load_heartbeat_settings
+
+        config = load_config(config_path, require_ctp_credentials=False)
+        load_heartbeat_settings(config_path, state_path=config.state_path)
+    except Exception as exc:
+        _canonical_print(
+            {
+                "passed": False,
+                "command": command,
+                "error": str(exc),
+                "orders_sent": 0,
+                "cancels_sent": 0,
+            }
+        )
+        return 2
+    return None
+
+
 def _deployment_preflight(command: str, argv: list[str]) -> int | None:
     config_path = _extract_option(argv, "--config")
     if not config_path:
@@ -270,7 +358,7 @@ def _deployment_preflight(command: str, argv: list[str]) -> int | None:
     try:
         config = load_config(config_path, require_ctp_credentials=require_credentials)
     except Exception:
-        return None  # Delegate canonical parser/config error semantics to the existing CLI.
+        return None
     if not _is_stress90(config):
         return None
     production = _raw_environment(config_path) == "production"
@@ -331,12 +419,271 @@ def _deployment_preflight(command: str, argv: list[str]) -> int | None:
     return None
 
 
+def _configured_live_account_digest(config) -> str:
+    credentials = getattr(config, "ctp", None)
+    if credentials is None:
+        raise RuntimeError("live account identity requires CTP configuration")
+    broker_id = str(getattr(credentials, "broker_id", ""))
+    user_id = str(getattr(credentials, "user_id", ""))
+    environment = str(getattr(credentials, "environment", "")).lower()
+    account_id = str(getattr(credentials, "account_id", ""))
+    currency_id = str(getattr(credentials, "currency_id", ""))
+    if not account_id or not currency_id:
+        material = "\0".join(("afuture.ctp-account.v1", broker_id, user_id, environment))
+    else:
+        material = "\0".join(
+            (
+                "afuture.ctp-economic-account.v1",
+                broker_id,
+                environment,
+                account_id,
+                currency_id,
+                str(getattr(credentials, "investor_id", "")),
+                str(getattr(credentials, "invest_unit_id", "")),
+            )
+        )
+    return sha256(material.encode("utf-8")).hexdigest()
+
+
+def _runtime_heartbeat_context(
+    *,
+    config,
+    config_path: str,
+    runtime: Path,
+    role: str,
+    deployment_digest: str,
+    process_uuid: str | None,
+):
+    from .heartbeat_config import activate_heartbeat_settings
+    from .runtime_heartbeat import RuntimeHeartbeatContext, runtime_identity_digest
+    from .stress90_risk_overlay import stress90_risk_overlay_digest
+
+    settings = activate_heartbeat_settings(config_path, state_path=config.state_path)
+    live_account = _configured_live_account_digest(config)
+    account_digest = (
+        sha256(f"afuture.shadow-account.v1\0{live_account}".encode("utf-8")).hexdigest()
+        if role == "shadow"
+        else live_account
+    )
+    heartbeat_path = (
+        settings.path_for_state(config.state_path)
+        if role == "live"
+        else (runtime / settings.path.name).resolve(strict=False)
+    )
+    return RuntimeHeartbeatContext(
+        path=str(heartbeat_path),
+        interval_seconds=settings.interval_seconds,
+        mode=role,
+        policy=str(getattr(getattr(config, "directional"), "policy", "")),
+        canonical_runtime_digest=runtime_identity_digest(
+            runtime_dir=str(runtime.resolve(strict=False)),
+            deployment_digest=deployment_digest,
+            role=role,
+        ),
+        account_identity_digest=account_digest,
+        deployment_identity_digest=deployment_digest,
+        risk_overlay_digest=stress90_risk_overlay_digest(config.directional, config.risk),
+        process_uuid=process_uuid,
+    )
+
+
+def _halt_unknown_process_run(config, *, reason: str) -> None:
+    from .state import RuntimeState, StateStore
+    from .stress90_activation_permit import Stress90ActivationPermitStore
+
+    store = StateStore(config.state_path)
+    current = store.load_record()
+    state = RuntimeState() if current is None else current.state
+    halted = replace(
+        state,
+        kill_switch=True,
+        kill_reason=reason,
+        runtime_mode="HALTED",
+        reconciled=False,
+    )
+    store.save(
+        halted,
+        expected_sequence=0 if current is None else current.sequence,
+        expected_checksum="" if current is None else current.checksum,
+    )
+    runtime = Path(config.state_path).resolve(strict=False).parent
+    permit_path = runtime / "stress90_activation_permit.json"
+    previous = permit_path.with_name(permit_path.name + ".prev")
+    if permit_path.exists() or permit_path.is_symlink() or previous.exists() or previous.is_symlink():
+        Stress90ActivationPermitStore(permit_path).invalidate(reason)
+
+
+def _run_live_with_process_fence(argv: list[str]) -> int:
+    from .deployment_identity import DeploymentIdentityStore
+    from .process_run import (
+        PROCESS_FENCE_EXIT_CODE,
+        ProcessRunIntegrityError,
+        ProcessRunStore,
+        apply_unclean_restart_fence,
+        set_current_process_uuid,
+    )
+    from .runtime_heartbeat import (
+        configure_runtime_heartbeat,
+        install_engine_heartbeat_hooks,
+        stopped_heartbeat_succeeded,
+    )
+    from .state import StateStore
+
+    config_path = _extract_option(argv, "--config")
+    config = load_config(config_path, require_ctp_credentials=True)
+    runtime = _runtime_for(config, shadow=False)
+    deployment = DeploymentIdentityStore(runtime / "deployment_identity.json").load_required()
+    state_store = StateStore(config.state_path)
+    start_state = state_store.load_required_record()
+    account_digest = _configured_live_account_digest(config)
+    runtime_digest = sha256(
+        "\0".join(
+            (
+                "afuture.process-runtime.v1",
+                str(runtime.resolve(strict=False)),
+                deployment.checksum,
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+    process_store = ProcessRunStore(runtime / "process_run.json")
+    try:
+        fence = apply_unclean_restart_fence(
+            process_store=process_store,
+            state_store=state_store,
+            runtime_dir=runtime,
+            deployment_digest=deployment.checksum,
+            runtime_identity_digest=runtime_digest,
+            account_identity_digest=account_digest,
+        )
+    except ProcessRunIntegrityError as exc:
+        reason = f"unclean restart fence: process-run integrity failure ({type(exc).__name__})"
+        _halt_unknown_process_run(config, reason=reason)
+        _canonical_print(
+            {
+                "passed": False,
+                "command": "live",
+                "restart_fence": True,
+                "error": reason,
+                "orders_sent": 0,
+                "cancels_sent": 0,
+            }
+        )
+        return PROCESS_FENCE_EXIT_CODE
+    if fence.blocked:
+        _canonical_print(
+            {
+                "passed": False,
+                "command": "live",
+                "restart_fence": True,
+                "reason": fence.reason,
+                "required_next_actions": ["prepare-session", "doctor", "issue fresh activation permit"],
+                "orders_sent": 0,
+                "cancels_sent": 0,
+            }
+        )
+        return fence.exit_code
+
+    record = process_store.begin(
+        deployment_digest=deployment.checksum,
+        runtime_identity_digest=runtime_digest,
+        account_identity_digest=account_digest,
+        start_state_checksum=start_state.checksum,
+    )
+    process_uuid = record.process_uuid
+    set_current_process_uuid(process_uuid)
+    context = _runtime_heartbeat_context(
+        config=config,
+        config_path=config_path,
+        runtime=runtime,
+        role="live",
+        deployment_digest=deployment.checksum,
+        process_uuid=process_uuid,
+    )
+    configure_runtime_heartbeat(context)
+    install_engine_heartbeat_hooks()
+    try:
+        process_store.mark_phase(
+            process_uuid,
+            "broker_constructed",
+            state_checksum=start_state.checksum,
+        )
+        code = _delegate(argv)
+        final_state = state_store.load_required_record()
+        process_store.mark_phase(
+            process_uuid,
+            "shutdown_state_saved",
+            state_checksum=final_state.checksum,
+        )
+        heartbeat_status = stopped_heartbeat_succeeded()
+        if heartbeat_status is False:
+            _canonical_print(
+                {
+                    "passed": False,
+                    "command": "live",
+                    "restart_fence": True,
+                    "error": "final stopped heartbeat was not durably written",
+                    "orders_sent": 0,
+                    "cancels_sent": 0,
+                }
+            )
+            return PROCESS_FENCE_EXIT_CODE
+        if heartbeat_status is True:
+            process_store.mark_phase(
+                process_uuid,
+                "heartbeat_stopped_pending_receipt",
+                state_checksum=final_state.checksum,
+            )
+        process_store.finish_clean(
+            process_uuid,
+            stop_state_checksum=final_state.checksum,
+        )
+        return code
+    except Exception as exc:
+        _canonical_print(
+            {
+                "passed": False,
+                "command": "live",
+                "restart_fence": True,
+                "error_category": type(exc).__name__,
+                "orders_sent": 0,
+                "cancels_sent": 0,
+            }
+        )
+        return PROCESS_FENCE_EXIT_CODE
+    finally:
+        set_current_process_uuid(None)
+        configure_runtime_heartbeat(None)
+
+
+def _configure_shadow_heartbeat(argv: list[str]) -> None:
+    from .deployment_identity import DeploymentIdentityStore
+    from .runtime_heartbeat import configure_runtime_heartbeat, install_engine_heartbeat_hooks
+
+    config_path = _extract_option(argv, "--config")
+    config = load_config(config_path, require_ctp_credentials=True)
+    if not _is_stress90(config):
+        return
+    runtime = _runtime_for(config, shadow=True)
+    deployment = DeploymentIdentityStore(runtime / "deployment_identity.json").load_required()
+    configure_runtime_heartbeat(
+        _runtime_heartbeat_context(
+            config=config,
+            config_path=config_path,
+            runtime=runtime,
+            role="shadow",
+            deployment_digest=deployment.checksum,
+            process_uuid=None,
+        )
+    )
+    install_engine_heartbeat_hooks()
+
+
 def _print_combined_help() -> int:
     from .cli import build_parser
 
     parser = build_parser()
     parser.print_help()
-    print("\nLocal provenance and recovery commands:")
+    print("\nLocal provenance, recovery, and supervision commands:")
     for command in sorted(_NEW_COMMANDS):
         print(f"  {command}")
     return 0
@@ -349,9 +696,35 @@ def main(argv: list[str] | None = None) -> int:
     command = args[0]
     if command in _NEW_COMMANDS:
         return _run_new(command, args[1:])
+    heartbeat_preflight = _heartbeat_extension_preflight(command, args[1:])
+    if heartbeat_preflight is not None:
+        return heartbeat_preflight
     preflight = _deployment_preflight(command, args[1:])
     if preflight is not None:
         return preflight
+    if command == "live":
+        config_path = _extract_option(args[1:], "--config")
+        if config_path:
+            try:
+                config = load_config(config_path, require_ctp_credentials=True)
+            except Exception:
+                return _delegate(args)
+            if _is_stress90(config) and _raw_environment(config_path) == "production":
+                return _run_live_with_process_fence(args)
+    if command == "shadow":
+        try:
+            _configure_shadow_heartbeat(args)
+        except Exception as exc:
+            _canonical_print(
+                {
+                    "passed": False,
+                    "command": "shadow",
+                    "error": str(exc),
+                    "orders_sent": 0,
+                    "cancels_sent": 0,
+                }
+            )
+            return 2
     return _delegate(args)
 
 

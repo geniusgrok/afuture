@@ -1,0 +1,10 @@
+[Unit]
+Description=afuture local heartbeat watchdog
+After=local-fs.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=<AFUTURE_WORKDIR>
+UMask=0077
+ExecStart=<AFUTURE_VENV>/bin/afuture watchdog --config <AFUTURE_CONFIG> --once --max-age-seconds 15
+NoNewPrivileges=true
