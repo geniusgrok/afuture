@@ -26,7 +26,7 @@ class RuntimeHeartbeatContext:
 
 _CONTEXT: RuntimeHeartbeatContext | None = None
 _INSTALLED = False
-_OBSERVERS: dict[int, "RuntimeHeartbeatObserver"] = {}
+_OBSERVERS: dict[int, RuntimeHeartbeatObserver] = {}
 _STOP_HEARTBEAT_OK: bool | None = None
 
 
@@ -42,11 +42,11 @@ def stopped_heartbeat_succeeded() -> bool | None:
 
 def runtime_identity_digest(*, runtime_dir: str, deployment_digest: str, role: str) -> str:
     material = "\0".join(("afuture.runtime-identity.v1", role, runtime_dir, deployment_digest))
-    return sha256(material.encode("utf-8")).hexdigest()
+    return sha256(material.encode()).hexdigest()
 
 
 class RuntimeHeartbeatObserver:
-    def __init__(self, engine: object, context: RuntimeHeartbeatContext) -> None:
+    def __init__(self, engine: Any, context: RuntimeHeartbeatContext) -> None:
         self.engine = engine
         self.context = context
         alerts = getattr(engine, "alerts", None)
@@ -60,7 +60,7 @@ class RuntimeHeartbeatObserver:
         self._last_successful_cycle_utc = ""
 
     def _source_broker(self) -> object:
-        broker = getattr(self.engine, "broker")
+        broker = self.engine.broker
         return getattr(broker, "live", broker)
 
     @staticmethod
@@ -79,11 +79,16 @@ class RuntimeHeartbeatObserver:
         for tick in quotes.values():
             timestamp = getattr(tick, "timestamp", None)
             if isinstance(timestamp, datetime) and timestamp.tzinfo is not None:
-                ages.append(max(0.0, (now - timestamp.astimezone(timezone.utc)).total_seconds()))
+                ages.append(
+                    max(
+                        0.0,
+                        (now - timestamp.astimezone(timezone.utc)).total_seconds(),
+                    )
+                )
         return max(ages, default=0.0)
 
     def _state_records(self):
-        state_store = getattr(self.engine, "state_store")
+        state_store = self.engine.state_store
         generic = state_store.load_required_record()
         runtime_dir = state_store.path.resolve(strict=False).parent
         policy_sequence = 0
@@ -146,7 +151,7 @@ class RuntimeHeartbeatObserver:
             except Exception:
                 health = "health check failed"
         broker_state = "ready" if ready and not health else "unhealthy"
-        broker = getattr(self.engine, "broker")
+        broker = self.engine.broker
         active_count = 0
         get_active = getattr(broker, "get_active_orders", None)
         if callable(get_active):
@@ -161,9 +166,13 @@ class RuntimeHeartbeatObserver:
             "account_identity_digest": self.context.account_identity_digest,
             "ctp_trading_day": str(getattr(state, "trading_day", "")),
             "broker_connection_state": broker_state,
-            "last_account_snapshot_age_seconds": self._age(source, "_last_account_monotonic"),
+            "last_account_snapshot_age_seconds": self._age(
+                source,
+                "_last_account_monotonic",
+            ),
             "last_complete_position_snapshot_age_seconds": self._age(
-                source, "_last_position_snapshot_monotonic"
+                source,
+                "_last_position_snapshot_monotonic",
             ),
             "max_required_quote_age_seconds": self._quote_age(),
             "critical_queue": counters,
@@ -200,7 +209,7 @@ class RuntimeHeartbeatObserver:
 
     def after_stop(self, *, clean: bool) -> bool:
         try:
-            generic = getattr(self.engine, "state_store").load_required_record()
+            generic = self.engine.state_store.load_required_record()
             return self.writer.write_stopped(
                 self.facts(),
                 final_state_checksum=str(generic.checksum),
@@ -210,7 +219,7 @@ class RuntimeHeartbeatObserver:
             return False
 
 
-def _observer(engine: object) -> RuntimeHeartbeatObserver | None:
+def _observer(engine: Any) -> RuntimeHeartbeatObserver | None:
     if _CONTEXT is None:
         return None
     key = id(engine)

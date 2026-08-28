@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from .durable_json import DurableJsonError, atomic_replace_regular, canonical_json_bytes, read_regular_json
+from .durable_json import (
+    DurableJsonError,
+    atomic_replace_regular,
+    canonical_json_bytes,
+    read_regular_json,
+)
 from .models import RuntimeMode
 from .state import RuntimeState, StateIntegrityError, StateStore
 
@@ -255,11 +260,11 @@ class ProcessRunStore:
     def _replace(self, record: ProcessRunRecord, current: ProcessRunRecord | None) -> ProcessRunRecord:
         if current is not None:
             try:
-                current_bytes = self.path.read_bytes()
-            except OSError as exc:
-                raise ProcessRunIntegrityError("process-run current cannot be copied") from exc
-            try:
-                atomic_replace_regular(self.previous_path, current_bytes, label="process-run .prev")
+                atomic_replace_regular(
+                    self.previous_path,
+                    _encode(current),
+                    label="process-run .prev",
+                )
             except DurableJsonError as exc:
                 raise ProcessRunIntegrityError(str(exc)) from exc
         try:

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from afuture import stress90_activation_permit as permit_module
 from afuture.models import RuntimeMode
 from afuture.process_run import (
     PROCESS_FENCE_EXIT_CODE,
@@ -12,7 +13,6 @@ from afuture.process_run import (
     apply_unclean_restart_fence,
 )
 from afuture.state import RuntimeState, StateStore
-
 
 IDENTITY = {
     "deployment_digest": "a" * 64,
@@ -73,8 +73,6 @@ def test_unclean_restart_fence_halts_state_invalidates_permit_and_exits_special_
     )
     state_store.save(initial)
     invalidations: list[str] = []
-
-    from afuture import stress90_activation_permit as permit_module
 
     monkeypatch.setattr(
         permit_module.Stress90ActivationPermitStore,

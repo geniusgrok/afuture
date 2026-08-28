@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from .alerts import AlertManager, FileAlertSink, WebhookAlertSink
+from .alerts import AlertManager, AlertSink, FileAlertSink, WebhookAlertSink
 from .heartbeat import HeartbeatIntegrityError, load_heartbeat
 
 
@@ -169,17 +170,17 @@ def evaluate_heartbeat(
     return result
 
 
-def _alert_manager(config: object) -> AlertManager:
-    sinks: list[object] = [FileAlertSink(str(getattr(config, "alert_path")))]
+def _alert_manager(config: Any) -> AlertManager:
+    sinks: list[AlertSink] = [FileAlertSink(str(config.alert_path))]
     webhook = str(getattr(config, "alert_webhook", ""))
     if webhook:
         sinks.append(WebhookAlertSink(webhook))
-    return AlertManager(sinks)  # type: ignore[arg-type]
+    return AlertManager(sinks)
 
 
 def run_watchdog_once(
     *,
-    config: object,
+    config: Any,
     config_path: str | Path,
     heartbeat_path: str | Path,
     max_age_seconds: float,
@@ -187,7 +188,7 @@ def run_watchdog_once(
     """Read only local evidence; this function deliberately never imports the CTP Broker."""
 
     manager = _alert_manager(config)
-    runtime = Path(str(getattr(config, "state_path"))).resolve(strict=False).parent
+    runtime = Path(str(config.state_path)).resolve(strict=False).parent
     try:
         from .deployment_identity import DeploymentIdentityStore
         from .directional_stress90_state import Stress90PolicyStateStore
@@ -197,10 +198,7 @@ def run_watchdog_once(
 
         heartbeat = load_heartbeat(heartbeat_path)
         deployment = DeploymentIdentityStore(runtime / "deployment_identity.json").load_required()
-        expected_risk = stress90_risk_overlay_digest(
-            getattr(config, "directional"),
-            getattr(config, "risk"),
-        )
+        expected_risk = stress90_risk_overlay_digest(config.directional, config.risk)
         process_ok = False
         process_detail = ""
         try:
@@ -230,7 +228,7 @@ def run_watchdog_once(
             config_path=str(Path(config_path).resolve(strict=False)),
         )
         try:
-            generic = StateStore(str(getattr(config, "state_path"))).load_required_record()
+            generic = StateStore(str(config.state_path)).load_required_record()
             generic_ok = bool(
                 heartbeat.get("generic_state_sequence") == generic.sequence
                 and heartbeat.get("generic_state_checksum") == generic.checksum

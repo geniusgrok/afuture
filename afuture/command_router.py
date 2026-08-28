@@ -442,7 +442,7 @@ def _configured_live_account_digest(config) -> str:
                 str(getattr(credentials, "invest_unit_id", "")),
             )
         )
-    return sha256(material.encode("utf-8")).hexdigest()
+    return sha256(material.encode()).hexdigest()
 
 
 def _runtime_heartbeat_context(
@@ -461,7 +461,7 @@ def _runtime_heartbeat_context(
     settings = activate_heartbeat_settings(config_path, state_path=config.state_path)
     live_account = _configured_live_account_digest(config)
     account_digest = (
-        sha256(f"afuture.shadow-account.v1\0{live_account}".encode("utf-8")).hexdigest()
+        sha256(f"afuture.shadow-account.v1\0{live_account}".encode()).hexdigest()
         if role == "shadow"
         else live_account
     )
@@ -474,7 +474,7 @@ def _runtime_heartbeat_context(
         path=str(heartbeat_path),
         interval_seconds=settings.interval_seconds,
         mode=role,
-        policy=str(getattr(getattr(config, "directional"), "policy", "")),
+        policy=str(getattr(config.directional, "policy", "")),
         canonical_runtime_digest=runtime_identity_digest(
             runtime_dir=str(runtime.resolve(strict=False)),
             deployment_digest=deployment_digest,
@@ -543,7 +543,7 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
                 str(runtime.resolve(strict=False)),
                 deployment.checksum,
             )
-        ).encode("utf-8")
+        ).encode()
     ).hexdigest()
     process_store = ProcessRunStore(runtime / "process_run.json")
     try:
@@ -576,7 +576,11 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
                 "command": "live",
                 "restart_fence": True,
                 "reason": fence.reason,
-                "required_next_actions": ["prepare-session", "doctor", "issue fresh activation permit"],
+                "required_next_actions": [
+                    "prepare-session",
+                    "doctor",
+                    "issue fresh activation permit",
+                ],
                 "orders_sent": 0,
                 "cancels_sent": 0,
             }

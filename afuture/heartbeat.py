@@ -13,7 +13,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from .alerts import AlertManager
-from .durable_json import DurableJsonError, atomic_replace_regular, canonical_json_bytes, read_regular_json
+from .durable_json import (
+    DurableJsonError,
+    atomic_replace_regular,
+    canonical_json_bytes,
+    read_regular_json,
+)
 
 HEARTBEAT_KIND = "afuture.runtime.heartbeat"
 HEARTBEAT_SCHEMA_VERSION = 1

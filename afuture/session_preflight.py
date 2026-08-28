@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from types import SimpleNamespace
-from typing import Any, Mapping
+from typing import Any
 
 from .durable_json import DurableJsonError, atomic_replace_regular, canonical_json_bytes
 
@@ -72,7 +72,7 @@ def _write_payload(path: Path, payload: Mapping[str, object]) -> None:
         raise PreflightCallError(str(exc)) from exc
 
 
-def _check_from_report(report: object, name: str) -> dict[str, object] | None:
+def _check_from_report(report: Any, name: str) -> dict[str, object] | None:
     checks = getattr(report, "checks", ())
     for check in checks:
         if str(getattr(check, "name", "")) == name:
@@ -90,13 +90,13 @@ class SessionPreflightRunner:
     def __init__(
         self,
         *,
-        config: object,
+        config: Any,
         config_path: str | Path,
         output_path: str | Path,
         confirm_live: bool,
         refresh_ohlc: bool,
         shadow_account: bool,
-        backend: object,
+        backend: Any,
     ) -> None:
         self.config = config
         self.config_path = Path(config_path)
@@ -332,7 +332,7 @@ class ProductionPreflightBackend:
     def __init__(
         self,
         *,
-        config: object,
+        config: Any,
         config_path: str | Path,
         confirm_live: bool,
         shadow_account: bool,
@@ -346,21 +346,21 @@ class ProductionPreflightBackend:
         self.startup_timeout = float(startup_timeout)
         self.snapshot_wait = float(snapshot_wait)
         self.config = config
-        self.live_broker: object | None = None
-        self.broker: object | None = None
-        self.local_report: object | None = None
-        self.account: object | None = None
-        self.positions_snapshot: list[object] = []
-        self.active_orders_snapshot: list[object] = []
-        self.catalog_snapshot: list[object] = []
-        self.metadata: dict[str, object] = {}
-        self.quotes: dict[str, object] = {}
+        self.live_broker: Any | None = None
+        self.broker: Any | None = None
+        self.local_report: Any | None = None
+        self.account: Any | None = None
+        self.positions_snapshot: list[Any] = []
+        self.active_orders_snapshot: list[Any] = []
+        self.catalog_snapshot: list[Any] = []
+        self.metadata: dict[str, Any] = {}
+        self.quotes: dict[str, Any] = {}
         self.requested_symbols: list[str] = []
-        self.doctor_report: object | None = None
+        self.doctor_report: Any | None = None
 
     @property
     def runtime_dir(self) -> Path:
-        return Path(str(getattr(self.config, "state_path"))).resolve(strict=False).parent
+        return Path(str(self.config.state_path)).resolve(strict=False).parent
 
     def validate_config(self) -> dict[str, object]:
         from . import cli
@@ -376,14 +376,14 @@ class ProductionPreflightBackend:
         return {
             "valid": True,
             "mode": str(getattr(self.base_config, "mode", "")),
-            "policy": str(getattr(getattr(self.base_config, "directional"), "policy", "")),
+            "policy": str(getattr(self.base_config.directional, "policy", "")),
             "shadow_account": self.shadow_account,
         }
 
     def verify_deployment(self):
         from .deployment_identity import require_matching_deployment
 
-        registry = Path(str(getattr(self.base_config, "account_registry_path")))
+        registry = Path(str(self.base_config.account_registry_path))
         return require_matching_deployment(
             config=self.base_config,
             config_path=self.config_path,
@@ -440,7 +440,7 @@ class ProductionPreflightBackend:
             raise PreflightCallError("prepare-session requires CTP configuration")
         live = CtpBroker(ctp)
         self.live_broker = live
-        broker: object = live
+        broker: Any = live
         if self.shadow_account:
             paths = cli._shadow_runtime_paths(self.base_config)
             shadow_state = paths.get("broker_state")
@@ -451,9 +451,9 @@ class ProductionPreflightBackend:
                 live,
                 shadow_state,
             )
-        state: object | None
+        state: Any | None
         try:
-            state = StateStore(str(getattr(self.config, "state_path"))).load()
+            state = StateStore(str(self.config.state_path)).load()
         except (OSError, ValueError):
             state = None
         cli._configure_stress90_lifecycle_order_journal(broker, self.runtime_dir)
@@ -497,15 +497,15 @@ class ProductionPreflightBackend:
         age = max(0.0, monotonic() - last) if last > 0 else None
         return {"fresh": True, "trading_day": trading_day, "age_seconds": age}
 
-    def positions(self, broker: ReadOnlyBroker) -> list[object]:
+    def positions(self, broker: ReadOnlyBroker) -> list[Any]:
         self.positions_snapshot = list(broker.get_positions())
         return list(self.positions_snapshot)
 
-    def active_orders(self, broker: ReadOnlyBroker) -> list[object]:
+    def active_orders(self, broker: ReadOnlyBroker) -> list[Any]:
         self.active_orders_snapshot = list(broker.get_active_orders())
         return list(self.active_orders_snapshot)
 
-    def catalog(self, broker: ReadOnlyBroker) -> list[object]:
+    def catalog(self, broker: ReadOnlyBroker) -> list[Any]:
         rows = list(broker.get_contract_catalog())
         if not rows:
             raise PreflightBlocked(
@@ -520,8 +520,8 @@ class ProductionPreflightBackend:
         self,
         broker: ReadOnlyBroker,
         trading_day: str,
-        positions: list[object],
-        catalog: list[object],
+        positions: list[Any],
+        catalog: list[Any],
     ) -> dict[str, object]:
         from . import cli
         from .directional_activity import (
@@ -547,7 +547,7 @@ class ProductionPreflightBackend:
             if not bool(getattr(position, "empty", False)) and position.symbol in catalog_by_symbol
         }
         selected = select_contracts_from_activity(
-            getattr(self.config, "directional"),
+            self.config.directional,
             catalog,
             snapshot,
             datetime.strptime(trading_day, "%Y%m%d").date(),
@@ -579,12 +579,17 @@ class ProductionPreflightBackend:
                 float(getattr(self.config, "metadata_timeout_seconds", 10.0)),
             )
         )
-        quote_ages = []
+        quote_ages: list[float] = []
         now = datetime.now(timezone.utc)
         for tick in self.quotes.values():
             timestamp = getattr(tick, "timestamp", None)
             if isinstance(timestamp, datetime) and timestamp.tzinfo is not None:
-                quote_ages.append(max(0.0, (now - timestamp.astimezone(timezone.utc)).total_seconds()))
+                quote_ages.append(
+                    max(
+                        0.0,
+                        (now - timestamp.astimezone(timezone.utc)).total_seconds(),
+                    )
+                )
         return {
             "metadata_fresh": set(self.metadata) == set(self.requested_symbols),
             "quotes_fresh": set(self.quotes) == set(self.requested_symbols),
@@ -605,7 +610,7 @@ class ProductionPreflightBackend:
         entry = refresh_directional_ohlc_cache(
             DirectionalOHLCCacheStore(self.runtime_dir / "directional_ohlc_cache.json"),
             provider_factory=SinaContinuousOHLCProvider,
-            products=tuple(getattr(getattr(self.config, "directional"), "products")),
+            products=tuple(self.config.directional.products),
             current_ctp_trading_day=trading_day,
             authoritative_ctp_trading_day=trading_day,
         )
@@ -626,7 +631,9 @@ class ProductionPreflightBackend:
             from .directional_stress90_oi_runtime import Stress90OiEvidenceStore
             from .directional_stress90_state import Stress90PolicyStateStore
 
-            activity = DirectionalActivityStore(self.runtime_dir / "directional_activity.json").load()
+            activity = DirectionalActivityStore(
+                self.runtime_dir / "directional_activity.json"
+            ).load()
             if activity is None:
                 raise RuntimeError("directional activity is missing")
             validate_directional_activity_snapshot(activity)
@@ -635,7 +642,7 @@ class ProductionPreflightBackend:
             ).load_required()
             ohlc = load_stress90_completed_ohlc(
                 DirectionalOHLCCacheStore(self.runtime_dir / "directional_ohlc_cache.json"),
-                products=tuple(getattr(getattr(self.config, "directional"), "products")),
+                products=tuple(self.config.directional.products),
                 current_ctp_trading_day=trading_day,
                 authoritative_ctp_trading_day=trading_day,
                 required_completed_day=str(policy.last_completed_target_day),
@@ -669,7 +676,7 @@ class ProductionPreflightBackend:
         from .state import StateStore
 
         try:
-            state = StateStore(str(getattr(self.config, "state_path"))).load()
+            state = StateStore(str(self.config.state_path)).load()
         except (OSError, ValueError):
             state = None
         facts, roll, rebase, needs_permit, passed, detail = _stress90_account_continuity_status(
@@ -677,7 +684,7 @@ class ProductionPreflightBackend:
             state,
         )
         return {
-            "mode": str(getattr(getattr(self.config, "directional"), "account_continuity_mode")),
+            "mode": str(getattr(self.config.directional, "account_continuity_mode", "strict")),
             "roll_forward_required": bool(roll),
             "rebase_required": bool(rebase),
             "new_permit_required": bool(needs_permit),
@@ -690,8 +697,8 @@ class ProductionPreflightBackend:
         self,
         broker: ReadOnlyBroker,
         trading_day: str,
-        positions: list[object],
-        catalog: list[object],
+        positions: list[Any],
+        catalog: list[Any],
         _market: object,
     ) -> dict[str, object]:
         from . import cli
