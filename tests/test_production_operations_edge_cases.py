@@ -11,7 +11,6 @@ from afuture.runtime_heartbeat import (
 )
 from afuture.state import RuntimeState, StateStore
 
-
 IDENTITY = {
     "deployment_digest": "a" * 64,
     "runtime_identity_digest": "b" * 64,
