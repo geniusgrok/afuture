@@ -4,7 +4,7 @@ After=local-fs.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=<AFUTURE_WORKDIR>
+WorkingDirectory=/opt/afuture
 UMask=0077
-ExecStart=<AFUTURE_VENV>/bin/afuture watchdog --config <AFUTURE_CONFIG> --once --max-age-seconds 15
+ExecStart=/opt/afuture/.venv/bin/afuture watchdog --config /etc/afuture/afuture.toml --once --max-age-seconds 15
 NoNewPrivileges=true

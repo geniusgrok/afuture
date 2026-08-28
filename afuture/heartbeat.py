@@ -61,7 +61,9 @@ def _reject_secrets(value: object, *, path: str = "heartbeat") -> None:
         for raw_key, item in value.items():
             key = str(raw_key).lower()
             if any(fragment in key for fragment in _SECRET_KEY_FRAGMENTS):
-                raise HeartbeatIntegrityError(f"heartbeat secret-like field is forbidden: {path}.{raw_key}")
+                raise HeartbeatIntegrityError(
+                    f"heartbeat secret-like field is forbidden: {path}.{raw_key}"
+                )
             _reject_secrets(item, path=f"{path}.{raw_key}")
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):

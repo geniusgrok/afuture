@@ -509,7 +509,12 @@ def _halt_unknown_process_run(config, *, reason: str) -> None:
     runtime = Path(config.state_path).resolve(strict=False).parent
     permit_path = runtime / "stress90_activation_permit.json"
     previous = permit_path.with_name(permit_path.name + ".prev")
-    if permit_path.exists() or permit_path.is_symlink() or previous.exists() or previous.is_symlink():
+    if (
+        permit_path.exists()
+        or permit_path.is_symlink()
+        or previous.exists()
+        or previous.is_symlink()
+    ):
         Stress90ActivationPermitStore(permit_path).invalidate(reason)
 
 
@@ -517,7 +522,6 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
     from .deployment_identity import DeploymentIdentityStore
     from .process_run import (
         PROCESS_FENCE_EXIT_CODE,
-        ProcessRunIntegrityError,
         ProcessRunStore,
         apply_unclean_restart_fence,
         set_current_process_uuid,
@@ -555,9 +559,12 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
             runtime_identity_digest=runtime_digest,
             account_identity_digest=account_digest,
         )
-    except ProcessRunIntegrityError as exc:
-        reason = f"unclean restart fence: process-run integrity failure ({type(exc).__name__})"
-        _halt_unknown_process_run(config, reason=reason)
+    except Exception as exc:
+        reason = f"unclean restart fence: local fence failure ({type(exc).__name__})"
+        try:
+            _halt_unknown_process_run(config, reason=reason)
+        except Exception:
+            pass
         _canonical_print(
             {
                 "passed": False,

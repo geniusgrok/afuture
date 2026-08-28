@@ -64,10 +64,10 @@ class RuntimeHeartbeatObserver:
         return getattr(broker, "live", broker)
 
     @staticmethod
-    def _age(source: object, attribute: str) -> float:
-        raw = getattr(source, attribute, 0.0)
+    def _age(source: object, attribute: str) -> float | None:
+        raw = getattr(source, attribute, None)
         if isinstance(raw, bool) or not isinstance(raw, (int, float)) or float(raw) <= 0:
-            return 0.0
+            return None
         return max(0.0, monotonic() - float(raw))
 
     def _quote_age(self) -> float:

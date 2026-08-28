@@ -288,3 +288,14 @@
 - [ ] 至少完成一次 `HALTED` + `kill_switch=true` 的 `backup-runtime` 与独立 `verify-backup`；备份成员只有 allowlist 权威证据，不含配置、日志、报告、告警和原始凭证。
 - [ ] 至少完成一次离线恢复演练：目标 runtime 为空、registry staging 独立、恢复过程零 Broker writes，恢复结果保持 `HALTED` + kill switch，旧 technical permit 失效。
 - [ ] 恢复演练后按 `status` → `deployment-verify` → 无报单 `doctor` → fresh permit 完成重新准入；任何身份漂移都先停机解释，不手工复制 `.prev` 或修改 checksum。
+
+## 盘前、托管与 Watchdog
+
+- [ ] `deployment-verify` 与已安装 bundle/seed/policy/deployment identity 一致。
+- [ ] `prepare-session --confirm-live --output <path>` 返回 0，JSON 明确 `orders_sent=0`、`cancels_sent=0`，continuity/rebase、alignment、Doctor P0 与 capacity 结果已人工复核。
+- [ ] 如 preflight 要求 continuity roll-forward 或 account rebase，只执行报告列出的人工命令；完成后重新跑 `prepare-session` 和 `doctor`。
+- [ ] capacity warnings 已人工确认，随后才签发新的 activation permit；不得由 systemd 或 watchdog 自动签发。
+- [ ] `paths.heartbeat` 位于本机受保护目录，`heartbeat_interval_seconds` 为 1–60 秒，watchdog timer 能以无 CTP 凭证身份运行。
+- [ ] `deploy/systemd/afuture-live.service` 未启用 `PrivateTmp=true`，机器私有 EnvironmentFile 不进入仓库；退出码 75 位于 `RestartPreventExitStatus`。
+- [ ] `process_run.json` current/.prev 完整；若出现 unclean restart fence，保持 HALTED/kill switch，不通过重启循环绕过。
+- [ ] 备份只在 HALTED 且 kill switch=true 时执行；备份失败不应停止或控制交易进程。

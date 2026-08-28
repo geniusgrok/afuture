@@ -681,3 +681,22 @@ afuture restore-runtime \
 ```
 
 恢复成功后仍必须是 `HALTED`、`kill_switch=true`，原 technical activation permit 必须失效。随后严格按 `status` → `deployment-verify` → 无报单 `doctor` → fresh technical permit 的顺序继续；任何 source/config/constraints/native module/runtime/registry/risk overlay 漂移都先保持停机。`.prev` 仍只是诊断前驱证据，bundle 和 backup 也都不能成为自动解除停机或自动恢复交易权限的入口。
+
+## 生产盘前与常驻监督
+
+当前唯一生产操作链：
+
+```bash
+afuture deployment-verify --config <config>
+afuture prepare-session --config <config> --confirm-live --output <session-preflight.json> [--refresh-ohlc]
+# 仅按 preflight 的 allowed_next_actions 处理 operator continuity / account rebase
+afuture doctor --config <config> --confirm-live
+afuture stress90-capacity-report --config <config> --confirm-live
+# 人工复核后按既有机制签发新的 activation permit
+afuture live --config <config> --confirm-live
+afuture watchdog --config <config> --once --max-age-seconds 15
+```
+
+`prepare-session` 一次运行后立即退出，不进入常驻循环；它不会签发 permit、恢复 RUNNING、清除 kill switch、修改 risk scale、自动 roll-forward/rebase，也不会从 live 订单路径同步调用外部 OHLC provider。安全阻断退出码为 2，配置/调用错误使用独立非零码。
+
+systemd live 模板使用 `Restart=on-failure`，但异常/不确定重启围栏使用退出码 75 并列入 `RestartPreventExitStatus`。该围栏在任何 order-capable Broker 构造前运行；旧 permit 被失效，generic state 保持/转为 HALTED 且 kill switch=true。watchdog timer 只读本地证据并告警，不 kill/restart live 进程、不平仓、不解除 HALTED。

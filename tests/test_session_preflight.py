@@ -152,10 +152,14 @@ EXPECTED_ORDER = [
 ]
 
 
-def _runner(backend: FakeBackend, tmp_path: Path, *, refresh: bool = False) -> SessionPreflightRunner:
+def _runner(
+    backend: FakeBackend, tmp_path: Path, *, refresh: bool = False
+) -> SessionPreflightRunner:
     return SessionPreflightRunner(
         config=SimpleNamespace(
-            directional=SimpleNamespace(policy="stress90", account_continuity_mode="operator_managed")
+            directional=SimpleNamespace(
+                policy="stress90", account_continuity_mode="operator_managed"
+            )
         ),
         config_path=tmp_path / "config.toml",
         output_path=tmp_path / "preflight.json",
@@ -226,7 +230,9 @@ def test_prepare_session_ohlc_refresh_failure_is_blocking(tmp_path: Path) -> Non
     assert backend.broker.cancels_sent == 0
 
 
-def test_prepare_session_continuity_required_only_allows_manual_roll_forward(tmp_path: Path) -> None:
+def test_prepare_session_continuity_required_only_allows_manual_roll_forward(
+    tmp_path: Path,
+) -> None:
     backend = FakeBackend(continuity=True)
     code, payload = _runner(backend, tmp_path).run()
     assert code == 2

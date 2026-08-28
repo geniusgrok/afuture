@@ -102,7 +102,9 @@ def test_unclean_restart_fence_halts_state_invalidates_permit_and_exits_special_
     assert receipt.phase == "restart_fenced"
 
 
-def test_restart_fence_uses_exact_state_cas(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_restart_fence_uses_exact_state_cas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     process_store = ProcessRunStore(tmp_path / "process_run.json")
     process_store.begin(**IDENTITY)
     state_store = StateStore(tmp_path / "state.json")

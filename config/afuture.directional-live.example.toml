@@ -64,12 +64,14 @@ latency_ticks = 1
 market_impact_ticks = 1
 require_live_metadata = true
 metadata_timeout_seconds = 15
+heartbeat_interval_seconds = 5
 
 [paths]
 state = "runtime/directional_state.json"
 log = "runtime/directional.log"
 report = "runtime/directional_report.json"
 journal = "runtime/directional_audit.jsonl"
+heartbeat = "runtime/heartbeat.json"
 alert = "runtime/directional_alerts.jsonl"
 
 [alert]

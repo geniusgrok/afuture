@@ -240,3 +240,14 @@ CTP 凭证不进入 TOML：
 `directional.live_risk_scale` defaults to `1.0` and must be finite with `0 < value <= 1`. Only the Stress-90 live/Shadow production lot path consumes it; replay, bootstrap, historical candidate generation and `execution_aligned` ignore it. The production risk-overlay digest includes the scale, directional gross/contract/session-entry limits and all `RiskConfig` fields. A digest change is an identity change, not a hot reload: live/status/Doctor fail closed until explicit HALTED activation/reactivation rebinds it.
 
 The checked-in Stress-90 live example is intentionally a personal commissioning starting point (`live_risk_scale=0.05`, one-lot contract caps, 10% margin, 80% available cash, 1% daily loss and 5% total drawdown). These values are not Alpha parameters or permanent policy requirements. Recalibrate them from real one-lot stress loss, live margin/commission and account equity before committing more capital.
+
+## 生产心跳配置
+
+生产运维扩展由 canonical CLI router 从同一 TOML 读取；`afuture validate` 同样接受这些字段：
+
+| 字段 | 默认值 | 约束与含义 |
+| --- | ---: | --- |
+| `paths.heartbeat` | 与 `paths.state` 同目录的 `heartbeat.json` | Shadow 自动使用其独立 runtime 目录中的同名文件。必须指向本机普通文件；symlink 和非普通文件拒绝写入。 |
+| `execution.heartbeat_interval_seconds` | `5` | 主循环心跳间隔，秒；必须为有限数且位于 `1..60`。Tick、order、trade 和 account callback 不直接写 heartbeat。 |
+
+heartbeat 只包含不可逆账户身份摘要、deployment/risk/state identity、freshness/queue/连接状态和 process receipt 信息，不写原始 AccountID、用户名、密码、AuthCode 或 webhook。写失败会告警，但不能阻止已经决定的撤单、减仓或其他风控动作。

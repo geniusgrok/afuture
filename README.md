@@ -266,3 +266,13 @@ python -m compileall -q afuture
 Stress-90 live/Shadow production can set `directional.live_risk_scale` in `(0, 1]`. The default `1.0` preserves the historical production target; the scale is applied only after the immutable Base/OI/cost/survivor/HHI/drawdown decision and before integer lots and margin fitting. It never scales exits, reductions, hard-risk flattening, crash recovery or cancellation. Production state binds a separate canonical risk-overlay digest; changing any bound risk field fails closed until the existing `stress90-activate` lifecycle is run while HALTED, kill-switched, flat, reconciled and free of active orders.
 
 `afuture stress90-capacity-report --config ... --confirm-live --output ...` is a zero-order, zero-cancel diagnostic that reuses Doctor contract selection, live metadata/cost evidence, the shared Stress-90 lot planner and RiskManager preview. It is capacity evidence, not capital activation approval.
+
+## 生产盘前与进程托管
+
+Stress-90 的当前生产操作顺序只有一条：`deployment-verify` → `prepare-session` → 必要时人工 `stress90-operator-roll-forward` 或 `stress90-account-rebase` → `doctor` → `stress90-capacity-report` 人工复核 → 人工签发新的 activation permit → `live` → `watchdog` → 仅在 `HALTED` 且 kill switch 开启时执行 backup/recovery。
+
+`prepare-session` 是一次性、只读柜台准备命令。它验证 deployment seal、本地状态和 artifact，取得权威 CTP trading day、fresh account、完整持仓、活动委托、catalog、metadata/quote/margin/commission，并复用 Doctor P0、continuity/rebase 与 capacity 逻辑输出 canonical JSON；其 Broker 能力层禁止报单和撤单，永不签发 permit、永不自动 roll-forward/rebase、永不把 runtime 切到 `RUNNING`。可选 `--refresh-ohlc` 仍在 engine 外复用现有 OHLC refresh，不把外部 provider 接入订单路径。
+
+Shadow/Live 的正常主循环按 `execution.heartbeat_interval_seconds`（默认 5 秒，允许 1–60 秒）原子更新 `paths.heartbeat`。外部 `afuture watchdog --once` 只读 heartbeat、deployment 和本地 checksummed state，不连接 CTP、不持有 order-capable lease，也不会 kill/restart、平仓、解除 HALTED 或修改 permit/state。
+
+Live 使用 `runtime/process_run.json` 的 current/.prev receipt 建立异常重启围栏。任何没有 clean shutdown receipt、current 损坏或 current 缺失但 `.prev` 存在的窗口都在构造 order-capable Broker 前 fail closed：失效已签发 permit、保持/转换 `HALTED`、开启 kill switch，并以专用退出码 75 阻止 systemd 重启循环。`deploy/systemd/` 提供只含通用机器路径的 live/watchdog 模板；operator 必须在机器私有 EnvironmentFile 中提供本机运行参数，模板不内置 live confirmation、activation、roll-forward 或 rebase。

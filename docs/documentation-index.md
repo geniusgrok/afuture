@@ -87,3 +87,7 @@
 ### Stress-90 commissioning diagnostics
 
 Risk-scale configuration and overlay identity are specified in `configuration.md` and `live-trading.md`; operational sequencing and the zero-order `stress90-capacity-report` are in `stress90-live-runbook.md`; production gates are in `production-checklist.md`; mismatch/fail-closed recovery is in `troubleshooting.md`.
+
+## 生产运维入口
+
+当前生产顺序以 [`stress90-live-runbook.md`](stress90-live-runbook.md) 为操作权威：deployment verify → prepare-session → 必要人工 continuity/rebase → Doctor → capacity review → permit → Live → Watchdog → HALTED backup/recovery。字段定义见 [`configuration.md`](configuration.md)，实盘安全边界见 [`live-trading.md`](live-trading.md)，逐项验收见 [`production-checklist.md`](production-checklist.md)，故障处置见 [`troubleshooting.md`](troubleshooting.md)。systemd 部署模板位于仓库 `deploy/systemd/`，它们不包含账户凭证、live confirmation、activation 或 operator confirmation。

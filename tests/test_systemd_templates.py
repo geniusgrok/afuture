@@ -46,9 +46,7 @@ def test_watchdog_timer_is_short_bounded_once_runner() -> None:
 
 
 def test_systemd_assets_contain_no_credentials_or_activation_acks() -> None:
-    combined = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(SYSTEMD.iterdir())
-    )
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in sorted(SYSTEMD.iterdir()))
     for forbidden in (
         "AFUTURE_CTP_USER=",
         "AFUTURE_CTP_PASSWORD=",
@@ -102,11 +100,9 @@ def test_live_service_fence_exit_prevents_restart_loop() -> None:
 
 
 def test_systemd_assets_use_placeholders_not_real_identity() -> None:
-    combined = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(SYSTEMD.iterdir())
-    )
-    assert "<AFUTURE_WORKDIR>" in combined
-    assert "<AFUTURE_ENV_FILE>" in combined
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in sorted(SYSTEMD.iterdir()))
+    assert "/opt/afuture" in combined
+    assert "/etc/afuture/afuture.env" in combined
     assert "ychenracing" not in combined
     assert "AccountID" not in combined
 

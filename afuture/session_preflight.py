@@ -221,9 +221,7 @@ class SessionPreflightRunner:
                 payload["final_lots"] = capacity_json.get("final_lots", {})
                 payload["risk_overlay"] = {
                     "digest": capacity_json.get("risk_overlay_digest"),
-                    "configured_live_risk_scale": capacity_json.get(
-                        "configured_live_risk_scale"
-                    ),
+                    "configured_live_risk_scale": capacity_json.get("configured_live_risk_scale"),
                     **(
                         dict(capacity_json.get("risk_overlay", {}))
                         if isinstance(capacity_json.get("risk_overlay"), Mapping)
@@ -530,9 +528,7 @@ class ProductionPreflightBackend:
             validate_directional_activity_snapshot,
         )
 
-        snapshot = DirectionalActivityStore(
-            self.runtime_dir / "directional_activity.json"
-        ).load()
+        snapshot = DirectionalActivityStore(self.runtime_dir / "directional_activity.json").load()
         if snapshot is None:
             raise PreflightBlocked(
                 "directional_activity",

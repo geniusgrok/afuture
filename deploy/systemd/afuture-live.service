@@ -7,10 +7,10 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-WorkingDirectory=<AFUTURE_WORKDIR>
-EnvironmentFile=<AFUTURE_ENV_FILE>
+WorkingDirectory=/opt/afuture
+EnvironmentFile=-/etc/afuture/afuture.env
 UMask=0077
-ExecStart=<AFUTURE_VENV>/bin/afuture live --config <AFUTURE_CONFIG> <AFUTURE_LIVE_CONFIRM_FLAG>
+ExecStart=/opt/afuture/.venv/bin/afuture live --config /etc/afuture/afuture.toml $AFUTURE_LIVE_FLAGS
 KillSignal=SIGTERM
 TimeoutStopSec=45
 Restart=on-failure

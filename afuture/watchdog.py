@@ -81,9 +81,7 @@ def evaluate_heartbeat(
             raise ValueError("timezone is missing")
         heartbeat_age = max(
             0.0,
-            (
-                now_utc.astimezone(timezone.utc) - timestamp.astimezone(timezone.utc)
-            ).total_seconds(),
+            (now_utc.astimezone(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds(),
         )
     except (TypeError, ValueError):
         heartbeat_age = float("inf")
@@ -121,10 +119,7 @@ def evaluate_heartbeat(
     backlog = queue.get("critical_backlog", 0)
     streak = queue.get("critical_backlog_streak", 0)
     backlog_valid = (
-        type(backlog) is int
-        and type(streak) is int
-        and int(backlog) >= 0
-        and int(streak) >= 0
+        type(backlog) is int and type(streak) is int and int(backlog) >= 0 and int(streak) >= 0
     )
     backlog_healthy = bool(backlog_valid and not (int(backlog) > 0 and int(streak) >= 3))
     result.add(

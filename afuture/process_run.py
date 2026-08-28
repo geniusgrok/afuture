@@ -247,7 +247,10 @@ class ProcessRunStore:
         previous = self._read(self.previous_path)
         if previous.sequence == current.sequence and previous.checksum == current.checksum:
             return current
-        if previous.sequence + 1 != current.sequence or current.parent_checksum != previous.checksum:
+        if (
+            previous.sequence + 1 != current.sequence
+            or current.parent_checksum != previous.checksum
+        ):
             raise ProcessRunIntegrityError("process-run predecessor chain mismatch")
         return current
 
@@ -257,7 +260,9 @@ class ProcessRunStore:
             raise ProcessRunIntegrityError("required process-run receipt is missing")
         return record
 
-    def _replace(self, record: ProcessRunRecord, current: ProcessRunRecord | None) -> ProcessRunRecord:
+    def _replace(
+        self, record: ProcessRunRecord, current: ProcessRunRecord | None
+    ) -> ProcessRunRecord:
         if current is not None:
             try:
                 atomic_replace_regular(
@@ -348,6 +353,38 @@ class ProcessRunStore:
         candidate = replace(candidate, checksum=_checksum(_unsigned(candidate)))
         return self._replace(candidate, current)
 
+    def record_restart_fence(
+        self,
+        *,
+        deployment_digest: str,
+        runtime_identity_digest: str,
+        account_identity_digest: str,
+        state_checksum: str,
+    ) -> ProcessRunRecord:
+        current = self.load_required()
+        if current.clean_shutdown:
+            raise ProcessRunIntegrityError("restart fence requires an unclean current process-run")
+        now = _utc_now()
+        state = _hex64(state_checksum, name="restart fence state checksum")
+        candidate = ProcessRunRecord(
+            process_uuid=_uuid(str(uuid4())),
+            phase="restart_fenced",
+            deployment_digest=_hex64(deployment_digest, name="deployment digest"),
+            runtime_identity_digest=_hex64(runtime_identity_digest, name="runtime identity digest"),
+            account_identity_digest=_hex64(account_identity_digest, name="account identity digest"),
+            start_state_checksum=state,
+            latest_state_checksum=state,
+            stop_state_checksum=state,
+            started_utc=now,
+            stopped_utc=now,
+            clean_shutdown=True,
+            sequence=current.sequence + 1,
+            parent_checksum=current.checksum,
+            checksum="",
+        )
+        candidate = replace(candidate, checksum=_checksum(_unsigned(candidate)))
+        return self._replace(candidate, current)
+
     def mark_phase(
         self,
         process_uuid: str,
@@ -399,13 +436,20 @@ def _halt_state_exact(state_store: StateStore, *, reason: str):
             expected_checksum="" if current is None else current.checksum,
         )
     except StateIntegrityError as exc:
-        raise ProcessRunIntegrityError("runtime state changed while applying restart fence") from exc
+        raise ProcessRunIntegrityError(
+            "runtime state changed while applying restart fence"
+        ) from exc
 
 
 def _invalidate_permit(runtime_dir: Path, reason: str) -> None:
     permit_path = runtime_dir / "stress90_activation_permit.json"
     previous = permit_path.with_name(permit_path.name + ".prev")
-    if not permit_path.exists() and not permit_path.is_symlink() and not previous.exists() and not previous.is_symlink():
+    if (
+        not permit_path.exists()
+        and not permit_path.is_symlink()
+        and not previous.exists()
+        and not previous.is_symlink()
+    ):
         return
     from .stress90_activation_permit import Stress90ActivationPermitStore
 
@@ -426,19 +470,15 @@ def apply_unclean_restart_fence(
     previous = process_store.load_record()
     if previous is None or previous.clean_shutdown:
         return RestartFenceResult(False, 0)
-    reason = f"unclean restart fence: prior process {previous.process_uuid} stopped in {previous.phase}"
+    reason = (
+        f"unclean restart fence: prior process {previous.process_uuid} stopped in {previous.phase}"
+    )
     fenced_state = _halt_state_exact(state_store, reason=reason)
     _invalidate_permit(Path(runtime_dir), reason)
-    handler = process_store.begin(
+    finished = process_store.record_restart_fence(
         deployment_digest=deployment_digest,
         runtime_identity_digest=runtime_identity_digest,
         account_identity_digest=account_identity_digest,
-        start_state_checksum=fenced_state.checksum,
-        _allow_unclean_parent=True,
-    )
-    finished = process_store.finish_clean(
-        handler.process_uuid,
-        stop_state_checksum=fenced_state.checksum,
-        phase="restart_fenced",
+        state_checksum=fenced_state.checksum,
     )
     return RestartFenceResult(True, PROCESS_FENCE_EXIT_CODE, reason, finished.process_uuid)

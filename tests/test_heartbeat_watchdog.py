@@ -167,10 +167,16 @@ def test_watchdog_healthy_payload_passes(tmp_path: Path) -> None:
         ({"last_account_snapshot_age_seconds": 30.0}, "account_snapshot_freshness"),
         ({"last_complete_position_snapshot_age_seconds": 30.0}, "position_snapshot_freshness"),
         ({"max_required_quote_age_seconds": 30.0}, "quote_freshness"),
-        ({"critical_queue": {"critical_backlog": 20, "critical_backlog_streak": 4}}, "critical_backlog"),
+        (
+            {"critical_queue": {"critical_backlog": 20, "critical_backlog_streak": 4}},
+            "critical_backlog",
+        ),
         ({"deployment_identity_digest": "1" * 64}, "deployment_identity"),
         ({"risk_overlay_digest": "2" * 64}, "risk_overlay_identity"),
-        ({"runtime_mode": "HALTED", "kill_switch": True, "last_error_category": "risk"}, "runtime_state"),
+        (
+            {"runtime_mode": "HALTED", "kill_switch": True, "last_error_category": "risk"},
+            "runtime_state",
+        ),
     ],
 )
 def test_watchdog_rejects_unhealthy_runtime_facts(
