@@ -1,0 +1,103 @@
+name: branch-targeted-fix
+
+on:
+  push:
+    branches:
+      - codex/production-operations
+    paths:
+      - .github/workflows/branch-targeted-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply targeted test and documentation fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          index = Path("docs/documentation-index.md")
+          text = index.read_text(encoding="utf-8")
+          old = '''## 生产运维入口
+
+当前生产顺序以 [`stress90-live-runbook.md`](stress90-live-runbook.md) 为操作权威：deployment verify → prepare-session → 必要人工 continuity/rebase → Doctor → capacity review → permit → Live → Watchdog → HALTED backup/recovery。字段定义见 [`configuration.md`](configuration.md)，实盘安全边界见 [`live-trading.md`](live-trading.md)，逐项验收见 [`production-checklist.md`](production-checklist.md)，故障处置见 [`troubleshooting.md`](troubleshooting.md)。systemd 部署模板位于仓库 `deploy/systemd/`，它们不包含账户凭证、live confirmation、activation 或 operator confirmation。
+'''
+          new = '''## 生产运维入口
+
+当前生产操作权威是上方已分类的 `docs/stress90-live-runbook.md`：deployment verify → prepare-session → 必要人工 continuity/rebase → Doctor → capacity review → permit → Live → Watchdog → HALTED backup/recovery。配置、安全边界、逐项验收和故障处置分别由上方已分类的 configuration、live-trading、production-checklist 和 troubleshooting 文档负责；此处不重复建立第二组 Markdown 分类链接。systemd 部署模板位于仓库 `deploy/systemd/`，不包含账户凭证、live confirmation、activation 或 operator confirmation。
+'''
+          if old not in text:
+              raise SystemExit("documentation-index target block missing")
+          index.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          test = Path("tests/test_production_operations_edge_cases.py")
+          text = test.read_text(encoding="utf-8")
+          old = '''    callbacks = {
+        "on_tick": TradingEngine.on_tick,
+        "on_order": TradingEngine.on_order,
+        "on_trade": TradingEngine.on_trade,
+    }
+    install_engine_heartbeat_hooks()
+    assert TradingEngine.on_tick is callbacks["on_tick"]
+    assert TradingEngine.on_order is callbacks["on_order"]
+    assert TradingEngine.on_trade is callbacks["on_trade"]
+'''
+          new = '''    callbacks = {
+        "on_tick": TradingEngine.on_tick,
+        "order": TradingEngine._handle_order_event,
+        "trade": TradingEngine._handle_trade_event,
+        "account": TradingEngine._handle_account_event,
+    }
+    install_engine_heartbeat_hooks()
+    assert TradingEngine.on_tick is callbacks["on_tick"]
+    assert TradingEngine._handle_order_event is callbacks["order"]
+    assert TradingEngine._handle_trade_event is callbacks["trade"]
+    assert TradingEngine._handle_account_event is callbacks["account"]
+'''
+          if old not in text:
+              raise SystemExit("edge-case callback test block missing")
+          test.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          checker = Path("tools/check_documentation.py")
+          text = checker.read_text(encoding="utf-8")
+          text = text.replace(
+              '        "metadata_timeout_seconds",\n',
+              '        "metadata_timeout_seconds",\n        "heartbeat_interval_seconds",\n',
+              1,
+          )
+          text = text.replace(
+              '    "paths": ("state", "log", "report", "journal", "alert"),\n',
+              '    "paths": ("state", "log", "report", "journal", "alert", "heartbeat"),\n',
+              1,
+          )
+          checker.write_text(text, encoding="utf-8")
+          PY
+          git diff --check
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" -c constraints/core-dev.txt
+      - name: Verify affected scope
+        run: |
+          python -m pytest -q tests/test_documentation_consistency.py tests/test_production_operations_edge_cases.py
+          python -m ruff check tools/check_documentation.py tests/test_production_operations_edge_cases.py
+          python -m ruff format --check tools/check_documentation.py tests/test_production_operations_edge_cases.py
+      - name: Commit deterministic result
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/documentation-index.md tests/test_production_operations_edge_cases.py tools/check_documentation.py
+          git commit -m "fix: align operations docs and callback regression test"
+          git push origin HEAD:codex/production-operations
