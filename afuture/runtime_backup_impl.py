@@ -400,9 +400,7 @@ def _load_optional_authority(runtime: Path) -> None:
 
     from .broker.ctp_session_query import CtpSessionActivityEvidenceStore
 
-    session_store = CtpSessionActivityEvidenceStore(
-        runtime / "stress90_ctp_session_evidence.json"
-    )
+    session_store = CtpSessionActivityEvidenceStore(runtime / "stress90_ctp_session_evidence.json")
     if session_store.path.exists():
         session_store.load_required_record()
     try:

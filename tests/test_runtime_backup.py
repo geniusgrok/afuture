@@ -65,9 +65,7 @@ def test_backup_rejects_running_or_unprotected_runtime_before_other_authority_re
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     state_path = runtime / "directional_state.json"
-    StateStore(state_path).save(
-        RuntimeState(runtime_mode=runtime_mode, kill_switch=kill_switch)
-    )
+    StateStore(state_path).save(RuntimeState(runtime_mode=runtime_mode, kill_switch=kill_switch))
     with pytest.raises(RuntimeBackupError, match=message):
         backup_module._authority(
             runtime=runtime,
@@ -291,7 +289,9 @@ def test_verify_backup_propagates_journal_or_cross_file_integrity_failure(
         ),
     )
     monkeypatch.setattr(backup_module, "_decode_manifest", lambda _payload: manifest)
-    monkeypatch.setattr(backup_module, "_validate_manifest", lambda _manifest, _members: "state.json")
+    monkeypatch.setattr(
+        backup_module, "_validate_manifest", lambda _manifest, _members: "state.json"
+    )
     monkeypatch.setattr(
         backup_module,
         "_materialize",
