@@ -289,3 +289,23 @@ Stress-90 每个 target day 另记录 Base/OI/cost/survivor、HHI/prior median�
 Never edit Stress-90 live risk fields under a RUNNING process. A configured/bound risk-overlay digest mismatch blocks live startup and invalidates the meaning of an old technical permit. To rebind, stop in `HALTED` with kill switch enabled, require Broker/local flatness, zero active orders and a fresh reconcile, then run the existing `stress90-activate` command with a new operation id and activation confirmation. The lifecycle coordinator changes only the overlay marker for this case; account epoch, strategy returns and historical candidate identity are not reset.
 
 Before first money, run `stress90-capacity-report`. It performs no order or cancel calls and does not checkpoint generic/policy/intent state. Missing real margin or commission evidence is a hard failure. Representation warnings never loosen hard risk limits or automatically increase scale.
+
+## 当前生产启动顺序
+
+生产 Stress-90 只使用以下顺序：
+
+```text
+deployment-verify
+→ prepare-session
+→ [仅在报告要求时] operator roll-forward / account rebase
+→ doctor
+→ capacity review
+→ issue fresh activation permit
+→ live
+→ watchdog
+→ HALTED backup/recovery
+```
+
+`prepare-session` 和 `watchdog` 都不能报单、撤单、修改交易 state、签发 permit 或自动解除 HALTED。`prepare-session` 可以连接只读 CTP/Doctor Broker 取得 fresh facts；`watchdog` 完全不需要 CTP 凭证且不会连接 Broker。
+
+Live 启动在构造 order-capable Broker 前检查 `process_run.json`。上一进程没有 clean receipt、receipt 损坏或链不确定时，启动必须 fail closed 到 `HALTED` + kill switch，并失效旧 permit；operator 重新完成盘前检查、Doctor 和新的 permit 后才允许再次尝试。systemd 的自动 restart 不构成 activation authority。

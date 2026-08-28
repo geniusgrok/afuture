@@ -1,0 +1,23 @@
+[Unit]
+Description=afuture live trading process
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/afuture
+EnvironmentFile=-/etc/afuture/afuture.env
+UMask=0077
+ExecStart=/opt/afuture/.venv/bin/afuture live --config /etc/afuture/afuture.toml $AFUTURE_LIVE_FLAGS
+KillSignal=SIGTERM
+TimeoutStopSec=45
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=75
+NoNewPrivileges=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

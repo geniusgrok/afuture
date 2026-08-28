@@ -1,0 +1,10 @@
+[Unit]
+Description=afuture local heartbeat watchdog
+After=local-fs.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/afuture
+UMask=0077
+ExecStart=/opt/afuture/.venv/bin/afuture watchdog --config /etc/afuture/afuture.toml --once --max-age-seconds 15
+NoNewPrivileges=true

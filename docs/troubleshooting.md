@@ -115,3 +115,11 @@ If `stress90-capacity-report` exits `2`, inspect `hard_safety_failures`, `risk_m
 `verify-backup` 因 archive member、checksum、journal、registry、TradingDayEvidence、deployment 或跨文件 identity 失败时，把原 backup 当事故证据保留，不解压覆盖 current，不删除失败成员，不从 `.prev` 拼接 current。路径穿越、绝对路径、重复项、链接成员、未知成员、超限、截断、尾随字节都按损坏或篡改处理。
 
 `restore-runtime` 报目标非空、runtime/registry identity 不一致或 registry staging 不安全，是预期的 fail-closed 边界。不要为了“恢复成功”清空仍在使用的目录或改 manifest；先确认旧进程停止、目标确实为空且备份对应同一 canonical runtime/registry。恢复完成后仍处于 `HALTED` 且 kill switch 开启，permit 失效属于设计行为；下一步只能是 `status`、`deployment-verify`、无报单 `doctor` 和 fresh permit。
+
+## Heartbeat、Watchdog 与异常重启
+
+`afuture watchdog --config <config> --once --max-age-seconds <N>` 非零时先读取 canonical JSON 中的失败 check，不要用 restart、rebase、roll-forward 或 permit 作为通用修复。常见分类包括 heartbeat missing/corrupt/stale、broker unhealthy、account/position/quote stale、critical backlog、state/deployment/risk digest mismatch、HALTED 严重原因和 unclean restart fence。
+
+heartbeat 路径为 symlink、FIFO/device/目录或无法原子 fsync 时视为本机路径安全故障。修复权限/路径后重新执行 `prepare-session` 和 `doctor`；不要把 heartbeat 写入失败当成解除风控或跳过撤单/减仓的理由。
+
+若 `process_run.json` 表示上一进程没有 clean shutdown receipt，或 current 损坏/缺失而 `.prev` 存在，Live 会在 Broker 构造前以退出码 75 fail closed。此时确认 generic state 为 HALTED、kill switch=true、旧 permit 已失效；随后按 runbook 重新执行 `deployment-verify`、`prepare-session`、必要人工 continuity/rebase、`doctor`、capacity review 和新 permit。不要通过 systemd restart loop 绕过该流程。
