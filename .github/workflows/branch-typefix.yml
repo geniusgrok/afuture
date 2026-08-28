@@ -1,0 +1,43 @@
+name: branch-typefix
+
+on:
+  push:
+    branches:
+      - codex/production-operations
+    paths:
+      - .github/workflows/branch-typefix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply static type narrowing
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("afuture/session_preflight.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace("from typing import Any\n", "from typing import Any, cast\n", 1)
+          text = text.replace("return _jsonable(asdict(value))", "return _jsonable(asdict(cast(Any, value)))", 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+          git diff --check
+      - name: Commit deterministic result
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add afuture/session_preflight.py
+          git commit -m "fix: narrow dataclass serialization for mypy"
+          git push origin HEAD:codex/production-operations
