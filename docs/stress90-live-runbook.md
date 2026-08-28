@@ -620,3 +620,64 @@ afuture stress90-capacity-report \
 ```
 
 The command sends and cancels zero orders. Exit code `2` means hard safety evidence failed. Review raw/scaled weights and gross, raw/scaled/margin/freeze/final lots, real fee/margin/tick/spread cost, 15bp compatibility, margin/cash ratios, clipped products, concentration and tracking error. Portfolio representation warnings are diagnostic only and never expand risk or product scope.
+
+## 部署来源、可验证备份与恢复
+
+生产部署不再把“某个 checkout + 某个 runtime 目录”当成隐含事实。固定历史 bootstrap 完成后，先从**从未绑定实盘账户**的干净 bootstrap runtime 生成确定性 bundle，并在目标机安装、封存部署身份：
+
+```bash
+afuture stress90-bundle-create \
+  --config /secure/path/afuture.directional-stress90.toml \
+  --runtime-dir /secure/path/clean-bootstrap-runtime \
+  --output /secure/backup/stress90-bootstrap.tar
+
+afuture stress90-bundle-verify \
+  --bundle /secure/backup/stress90-bootstrap.tar
+
+afuture stress90-bundle-install \
+  --config /secure/path/afuture.directional-stress90.toml \
+  --bundle /secure/backup/stress90-bootstrap.tar \
+  --runtime-dir runtime
+```
+
+生产 bundle 只接受官方固定输入摘要、固定 candidate、精确历史 parity 和未绑定账户的 seed/policy/OI/OHLC/activity 证据。tar 成员必须是 allowlist 内普通文件；路径穿越、绝对路径、重复成员、软/硬链接、未知成员、超限尺寸、截断、附加垃圾或字节篡改全部失败关闭。测试 fixture 永远不能成为 production-ready bundle。安装目标必须为空，先在同一父目录 staging 并完成语义验证，再原子发布；失败不得留下可被误认为已安装 runtime 的半成品。
+
+在最终目标机、最终 Python 虚拟环境且 `vnpy_ctp` 已安装后封存 deployment identity：
+
+```bash
+afuture deployment-seal \
+  --config /secure/path/afuture.directional-stress90.toml \
+  --bundle /secure/backup/stress90-bootstrap.tar \
+  --runtime-dir runtime
+
+afuture deployment-verify \
+  --config /secure/path/afuture.directional-stress90.toml \
+  --runtime-dir runtime
+```
+
+seal 绑定当前 Git HEAD、tracked production source tree digest、生产配置、core/live constraints、Python/OS/CPU/executable、canonical runtime、machine account registry、bundle/seed/policy/products/risk-overlay 以及目标机 `vnpy_ctp` 原生模块身份。生产配置下 `status` 会显示 deployment 诊断；`doctor`、`shadow`、`live` 在 deployment 不匹配时必须先失败，不允许通过已有 permit 绕过。重新 seal 会使既有 technical activation permit 失效，必须重新 Doctor。
+
+需要备份时先主动停到 `HALTED` 且保持 `kill_switch=true`，确认 lifecycle transaction 不处于 `prepared`，然后只备份显式 allowlist 的账户/策略/执行/交易日/订单 journal/registry/nonce-ledger 权威证据：
+
+```bash
+afuture backup-runtime \
+  --config /secure/path/afuture.directional-stress90.toml \
+  --output /secure/backup/stress90-runtime.tar
+
+afuture verify-backup \
+  --backup /secure/backup/stress90-runtime.tar
+```
+
+备份不会递归打包 runtime，不包含日志、报告、告警、配置或凭证；检测到当前环境中的原始账户/认证秘密出现在待备份字节中也会拒绝。验证会重新 materialize 到临时目录并通过现有 State/Policy/OI/OHLC/Activity/ExecutionIntent/CTP journal/registry/TradingDayEvidence/DeploymentIdentity 等 loader 复核跨文件身份和链路，不能只靠 tar 能解压或单个 checksum 就判定可恢复。
+
+恢复只允许写入**空 runtime** 和明确的 registry staging 路径，并且 source canonical runtime / registry identity 必须与备份一致；此命令不连接 Broker、不会报单或撤单：
+
+```bash
+afuture restore-runtime \
+  --backup /secure/backup/stress90-runtime.tar \
+  --runtime-dir runtime \
+  --account-registry-path /var/lib/afuture/account-runtime-registry.json \
+  --registry-staging-path /var/lib/afuture/account-runtime-registry.restore-stage
+```
+
+恢复成功后仍必须是 `HALTED`、`kill_switch=true`，原 technical activation permit 必须失效。随后严格按 `status` → `deployment-verify` → 无报单 `doctor` → fresh technical permit 的顺序继续；任何 source/config/constraints/native module/runtime/registry/risk overlay 漂移都先保持停机。`.prev` 仍只是诊断前驱证据，bundle 和 backup 也都不能成为自动解除停机或自动恢复交易权限的入口。

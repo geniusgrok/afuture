@@ -1,3 +1,3 @@
-from .cli import main
+from .command_router import main
 
 raise SystemExit(main())
