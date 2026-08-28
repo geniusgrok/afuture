@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import signal
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from time import monotonic
 from typing import Any
 
-from .heartbeat import HeartbeatIntegrityError, HeartbeatWriter
+from .heartbeat import HeartbeatWriter
 
 
 @dataclass(frozen=True)
@@ -28,12 +31,54 @@ _CONTEXT: RuntimeHeartbeatContext | None = None
 _INSTALLED = False
 _OBSERVERS: dict[int, RuntimeHeartbeatObserver] = {}
 _STOP_HEARTBEAT_OK: bool | None = None
+_SIGTERM_PREVIOUS: Any = None
+_SIGTERM_INSTALLED = False
+
+
+def _raise_keyboard_interrupt(_signum: int, _frame: object) -> None:
+    """Route systemd SIGTERM through the existing KeyboardInterrupt shutdown path."""
+
+    raise KeyboardInterrupt
+
+
+@contextmanager
+def sigterm_as_keyboard_interrupt() -> Iterator[None]:
+    """Temporarily translate SIGTERM into the CLI's established clean-stop signal."""
+
+    previous = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _install_sigterm_shutdown_handler() -> None:
+    global _SIGTERM_INSTALLED, _SIGTERM_PREVIOUS
+    if _SIGTERM_INSTALLED:
+        return
+    _SIGTERM_PREVIOUS = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+    _SIGTERM_INSTALLED = True
+
+
+def _restore_sigterm_shutdown_handler() -> None:
+    global _SIGTERM_INSTALLED, _SIGTERM_PREVIOUS
+    if not _SIGTERM_INSTALLED:
+        return
+    signal.signal(signal.SIGTERM, _SIGTERM_PREVIOUS)
+    _SIGTERM_PREVIOUS = None
+    _SIGTERM_INSTALLED = False
 
 
 def configure_runtime_heartbeat(context: RuntimeHeartbeatContext | None) -> None:
     global _CONTEXT, _STOP_HEARTBEAT_OK
     _CONTEXT = context
     _STOP_HEARTBEAT_OK = None
+    if context is None:
+        _restore_sigterm_shutdown_handler()
+    elif context.mode in {"live", "shadow"}:
+        _install_sigterm_shutdown_handler()
 
 
 def stopped_heartbeat_succeeded() -> bool | None:
@@ -195,17 +240,24 @@ class RuntimeHeartbeatObserver:
             ),
         }
 
+    def _alert_failure(self, exc: Exception) -> None:
+        alerts = getattr(self.engine, "alerts", None)
+        if alerts is not None:
+            alerts.critical(
+                "heartbeat collection or write failed",
+                {"error_category": type(exc).__name__},
+            )
+
     def after_cycle(self) -> None:
         self._last_successful_cycle_utc = datetime.now(timezone.utc).isoformat()
+        if not self.writer.is_due():
+            return
         try:
             self.writer.write(self.facts())
-        except HeartbeatIntegrityError as exc:
-            alerts = getattr(self.engine, "alerts", None)
-            if alerts is not None:
-                alerts.critical(
-                    "heartbeat integrity failure",
-                    {"error_category": type(exc).__name__},
-                )
+        except Exception as exc:
+            # Observability must never become a trading-control failure. Risk actions,
+            # cancellation, and reduction decisions have already completed this cycle.
+            self._alert_failure(exc)
 
     def after_stop(self, *, clean: bool) -> bool:
         try:
@@ -215,8 +267,11 @@ class RuntimeHeartbeatObserver:
                 final_state_checksum=str(generic.checksum),
                 clean=clean,
             )
-        except (HeartbeatIntegrityError, OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._alert_failure(exc)
             return False
+        finally:
+            _restore_sigterm_shutdown_handler()
 
 
 def _observer(engine: Any) -> RuntimeHeartbeatObserver | None:
@@ -236,17 +291,29 @@ def install_engine_heartbeat_hooks() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
+    from .directional_engine import DirectionalTradingEngine
     from .engine import TradingEngine
 
     original_run_once = TradingEngine.run_once
+    original_directional_run_once = DirectionalTradingEngine.run_once
     original_stop = TradingEngine.stop
 
     def run_once(self: Any, *args: object, **kwargs: object):
         result = original_run_once(self, *args, **kwargs)
+        if not isinstance(self, DirectionalTradingEngine):
+            observer = _observer(self)
+            if observer is not None:
+                observer.after_cycle()
+        return result
+
+    def directional_run_once(self: Any, *args: object, **kwargs: object):
+        result = original_directional_run_once(self, *args, **kwargs)
         observer = _observer(self)
         if observer is not None:
             observer.after_cycle()
         return result
+
+    setattr(directional_run_once, "_afuture_heartbeat_full_cycle", True)
 
     def stop(self: Any, *args: object, **kwargs: object):
         global _STOP_HEARTBEAT_OK
@@ -254,8 +321,12 @@ def install_engine_heartbeat_hooks() -> None:
         observer = _observer(self)
         if observer is not None:
             _STOP_HEARTBEAT_OK = observer.after_stop(clean=True)
+            _OBSERVERS.pop(id(self), None)
+        else:
+            _restore_sigterm_shutdown_handler()
         return result
 
     TradingEngine.run_once = run_once  # type: ignore[method-assign]
+    DirectionalTradingEngine.run_once = directional_run_once  # type: ignore[method-assign]
     TradingEngine.stop = stop  # type: ignore[method-assign]
     _INSTALLED = True

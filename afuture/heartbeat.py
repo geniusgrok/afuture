@@ -170,6 +170,17 @@ class HeartbeatWriter:
         self.alert_manager = alert_manager or AlertManager()
         self._last_write_monotonic: float | None = None
 
+    def _is_due_at(self, now_monotonic: float) -> bool:
+        return bool(
+            self._last_write_monotonic is None
+            or now_monotonic - self._last_write_monotonic >= self.interval_seconds
+        )
+
+    def is_due(self) -> bool:
+        """Cheap throttle check that performs no filesystem or state access."""
+
+        return self._is_due_at(float(self._monotonic_clock()))
+
     def _payload(
         self,
         facts: Mapping[str, object],
@@ -223,11 +234,7 @@ class HeartbeatWriter:
 
     def write(self, facts: Mapping[str, object], *, force: bool = False) -> bool:
         now = float(self._monotonic_clock())
-        if (
-            not force
-            and self._last_write_monotonic is not None
-            and now - self._last_write_monotonic < self.interval_seconds
-        ):
+        if not force and not self._is_due_at(now):
             return False
         payload = self._payload(
             facts,

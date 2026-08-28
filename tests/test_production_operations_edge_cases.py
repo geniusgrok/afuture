@@ -7,11 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from afuture.command_router import _sigterm_as_keyboard_interrupt
 from afuture.process_run import ProcessRunStore, apply_unclean_restart_fence
 from afuture.runtime_heartbeat import (
     RuntimeHeartbeatObserver,
     install_engine_heartbeat_hooks,
+    sigterm_as_keyboard_interrupt,
 )
 from afuture.state import RuntimeState, StateStore
 
@@ -25,7 +25,10 @@ IDENTITY = {
 
 def test_restart_fence_preserves_crashed_run_as_previous_receipt(tmp_path: Path) -> None:
     process_store = ProcessRunStore(tmp_path / "process_run.json")
-    crashed = process_store.begin(**IDENTITY, process_uuid="11111111-1111-4111-8111-111111111111")
+    crashed = process_store.begin(
+        **IDENTITY,
+        process_uuid="11111111-1111-4111-8111-111111111111",
+    )
     state_store = StateStore(tmp_path / "state.json")
     state_store.save(RuntimeState())
 
@@ -67,8 +70,12 @@ def test_runtime_heartbeat_throttle_skips_state_reads_between_writes() -> None:
     observer.writer = NotDueWriter()
     observer._last_successful_cycle_utc = ""
     reads: list[str] = []
-    observer.facts = lambda: reads.append("state") or {}  # type: ignore[method-assign]
 
+    def facts() -> dict[str, object]:
+        reads.append("state")
+        return {}
+
+    observer.facts = facts  # type: ignore[method-assign]
     observer.after_cycle()
 
     assert reads == []
@@ -99,7 +106,7 @@ def test_directional_heartbeat_hook_observes_complete_directional_cycle() -> Non
 
 def test_sigterm_uses_existing_keyboard_interrupt_shutdown_path() -> None:
     original = signal.getsignal(signal.SIGTERM)
-    with _sigterm_as_keyboard_interrupt():
+    with sigterm_as_keyboard_interrupt():
         handler = signal.getsignal(signal.SIGTERM)
         assert callable(handler)
         with pytest.raises(KeyboardInterrupt):
