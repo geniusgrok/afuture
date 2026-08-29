@@ -1,71 +1,98 @@
-# Linked issue
-
-Closes #
-
 # Objective
 
-<!-- 说明本 PR 要实现的单一、可验证目标。 -->
+<!-- 本 PR 最终解决什么问题？不要只描述修改了哪些文件。 -->
+
+# Acceptance Criteria
+
+<!--
+保留明确的 AND/OR 逻辑、数值阈值和失败条件。
+未完成项保持未勾选，不得把计划写成已经通过。
+-->
+
+- [ ] 
 
 # Scope
 
 ## Included
 
-- 待填写
+- 
 
 ## Excluded
 
-- 待填写
+- 
+
+# Non-Negotiable Constraints
+
+<!-- 本 PR 不得违反的业务、架构、安全、兼容性或数据完整性约束。 -->
+
+- 
 
 # Changes
 
-| File or component | Change | Reason |
-| --- | --- | --- |
-| 待填写 | 待填写 | 待填写 |
+<!-- 按模块说明实际完成的改动。 -->
 
-# Acceptance checklist
+- 
 
-<!-- 将关联 Issue 的 AND/OR、数值阈值和明确失败条件逐项映射到这里。 -->
+# Current Verified State
 
-- [ ] 功能验收条件满足
-- [ ] AND/OR 组合逻辑逐项核对
-- [ ] 数值阈值、单位、否定和例外未被弱化
-- [ ] 明确失败条件均未触发
-- [ ] 非回归、安全和数据完整性要求满足
+<!--
+只保留当前有效状态。更新时替换过期值，不无限追加历史。
+无法核验的字段写“Not verified”或“不适用”，不得猜测。
+-->
+
+- Base branch:
+- Base SHA:
+- Head branch:
+- Head SHA:
+- Related issue:
+- Last verified:
+
+# Completed and Verified
+
+- 
+
+# Remaining Work
+
+1. 
 
 # Verification
 
-<!-- 未运行的检查必须写 NOT RUN 及原因，不能写 PASS。 -->
+<!--
+只记录实际执行的命令或 GitHub workflow。
+未运行的检查必须写 Not run，不得写 Passed。
+-->
 
-| Check | Command or workflow | Result |
-|---|---|---|
-| 待填写 | 待填写 | NOT RUN — 待填写原因 |
+| Check | Command or Workflow | Result | Evidence |
+|---|---|---|---|
+| | | Not run | |
 
-# Risk assessment
+# Risks and Unknowns
 
-- Risk level: 待填写
-- Main risks: 待填写
-- Mitigations: 待填写
-- UNKNOWN: 待核验
-- Rollback or recovery: 待填写
+## Verified Risks
 
-# Compatibility and behavior impact
+- None known
 
-- Business behavior impact: 待核验
-- Production configuration semantic impact: 待核验
-- Dependency/version impact: 待核验
-- Strategy logic/parameter impact: 待核验
-- Data/schema/migration impact: 待核验
-- Backward compatibility: 待核验
+## Unknowns
 
-# Remaining work
+- None known
 
-- 无，或列出不阻塞本 PR 的后续事项并链接 Issue。
+# Behavior and Compatibility Impact
 
-# Merge readiness
+- [ ] Production behavior impact has been assessed and documented
+- [ ] Configuration semantic impact has been assessed and documented
+- [ ] Dependency impact has been assessed and documented
+- [ ] Data, schema, migration, or backward-compatibility impact has been assessed and documented
 
-- [ ] Acceptance criteria satisfied
-- [ ] Required tests passed
-- [ ] Required CI passed
-- [ ] No unresolved blocking review
-- [ ] Issue state refreshed
+# Next Action
+
+- 
+
+# Merge Readiness
+
+- [ ] Acceptance criteria are satisfied
+- [ ] Required tests have passed
+- [ ] Required CI checks have passed
+- [ ] No unresolved blocking review remains
+- [ ] No material correctness, security, or data-integrity issue remains
+- [ ] PR body reflects the latest verified state
 - [ ] Safe to merge
