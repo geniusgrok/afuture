@@ -53,7 +53,7 @@ PASS = files_present
 
 1. 文件与范围：确认三个文件均存在，且任务 diff 只包含这三个文件。
 2. Git 现场：核验当前分支、HEAD、`origin/main`、远端功能分支、merge-base 和完整 `git status --short`。
-3. 文档质量：运行 `git diff --check`，检查 Markdown 无尾随空格、冲突标记和格式错误。
+3. 文档质量：运行 `git diff --check <verified-base>...HEAD`，检查待合并范围内的 Markdown 无尾随空格、冲突标记和格式错误。
 4. 字段完整性：逐项检查用户 Prompt 要求的全部字段与禁止内容。
 5. 语义覆盖：逐行检查下方覆盖表，每项主要归属明确且未弱化。
 6. 交叉一致性：确认 `PROJECT_BRIEF.md` 无临时现场，`TASK_STATE.md` 无过期并列值，`ACCEPTANCE.md` 未把计划写成通过。
@@ -85,7 +85,7 @@ PASS = files_present
 
 只有在以下条件全部满足后才完成：
 
-- 三个文件已创建或安全合并并保存到独立治理分支；
+- 三个文件已创建或安全合并并进入 `main`；
 - 必需验证全部以新鲜证据通过；
 - 功能分支已推送且远端 SHA、`origin/main`、merge-base、工作树状态已重新核验；
 - diff 仅含三个 Markdown 文件；
@@ -109,10 +109,10 @@ PASS = files_present
 | 功能条件与 AND/OR 逻辑 | `ACCEPTANCE.md` | “必须满足的功能条件”“组合逻辑”。 |
 | 非回归、安全、数据完整性、必须/可选验证、失败条件、DoD | `ACCEPTANCE.md` | 各独立章节。 |
 | 同名文件先读后合并 | `ACCEPTANCE.md` | 功能条件与失败条件；本轮已核验三文件原先不存在。 |
-| 原始日志进入 `evidence/`，不复制到状态文件 | `TASK_STATE.md` + `ACCEPTANCE.md` | 状态文件顶部给出存放规则，验收负责阻断复制大型输出。 |
+| 原始日志进入 `evidence/`，不复制到状态文件 | `TASK_STATE.md` | 状态文件规定存放位置；`ACCEPTANCE.md` 负责阻断违规。 |
 | 不删除禁止项、数字、阈值、SHA、路径、验收和风险 | `ACCEPTANCE.md` | 安全完整性要求与失败条件。 |
 | 三文件冲突、重复、过期检查 | `ACCEPTANCE.md` | 必须验证 6；状态文件只保留最新值。 |
-| 只做上下文治理，不改变生产经济行为 | 三文件 | `PROJECT_BRIEF.md` 保存长期禁止项，`TASK_STATE.md` 声明当前范围，`ACCEPTANCE.md` 设非回归阻断门。 |
-| 最小读取、现场高于旧聊天、信息不足才扩大 | `TASK_STATE.md` + `ACCEPTANCE.md` | 记录实际来源；安全要求规定权威顺序和冲突处理。 |
+| 只做上下文治理，不改变生产经济行为 | `PROJECT_BRIEF.md` | 保存长期禁止项；`TASK_STATE.md` 声明当前范围，`ACCEPTANCE.md` 设置非回归阻断门。 |
+| 最小读取、现场高于旧聊天、信息不足才扩大 | `ACCEPTANCE.md` | 规定权威顺序和冲突处理；`TASK_STATE.md` 记录本轮实际来源。 |
 | 旧 Stress-90 交接/续办文件的当前地位 | `TASK_STATE.md` | 按 `docs/documentation-index.md` 归为工程审计记录，非当前运行契约。 |
 | 最终只报告五类信息 | `ACCEPTANCE.md` | Definition of Done 明确最终报告范围。 |
