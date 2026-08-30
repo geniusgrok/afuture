@@ -22,6 +22,7 @@ def test_ci_keeps_a_minimum_python_windows_core_smoke_without_live_adapters() ->
     assert "name: windows-smoke" in windows_job
     assert "runs-on: windows-latest" in windows_job
     assert 'python-version: "3.10"' in windows_job
+    assert 'env:\n      PYTHONUTF8: "1"' in windows_job
     assert 'python -m pip install -e ".[dev]" -c constraints/core-dev.txt' in windows_job
     assert "python -m pip check" in windows_job
     assert "python -m compileall -q afuture" in windows_job
