@@ -27,13 +27,13 @@ def test_ci_keeps_a_minimum_python_windows_core_smoke_without_live_adapters() ->
     assert "python -m compileall -q afuture" in windows_job
     assert "python -m afuture --help" in windows_job
     assert "afuture validate --config config/afuture.example.toml" in windows_job
+    assert (
+        "tests/test_cli_portability.py::test_core_cli_help_and_validation_do_not_import_posix_locking"
+        in windows_job
+    )
     assert "tests/test_config.py::test_load_config_rejects_lossy_integer_values" in windows_job
     assert (
         "tests/test_config.py::test_stationarity_compatibility_defaults_and_explicit_pair_value"
-        in windows_job
-    )
-    assert (
-        "tests/test_candidate_evidence.py::test_auto_selector_records_candidate_statistics_and_reject_reason"
         in windows_job
     )
     assert (

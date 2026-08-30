@@ -126,6 +126,49 @@ def test_intraday_proxy_ignores_each_invalid_zero_exposure_market_cell(open_a, c
     assert result.iloc[0] == pytest.approx(0.1 - 5.0 / 10000.0)
 
 
+@pytest.mark.parametrize("inactive_weight", [1e-16, 1e-15, -1e-15])
+@pytest.mark.parametrize(
+    ("open_a", "close_a"),
+    [
+        (0.0, 110.0),
+        (100.0, -1.0),
+        (100.0, 121.0),
+    ],
+)
+def test_intraday_proxy_invalid_inactive_tolerance_cell_does_not_leak_into_pnl(
+    inactive_weight, open_a, close_a
+):
+    baseline_open, baseline_close, weights = _proxy_frames(
+        open_a=100.0,
+        close_a=100.0,
+        weight_a=inactive_weight,
+    )
+    invalid_open = baseline_open.copy()
+    invalid_close = baseline_close.copy()
+    invalid_open.iloc[0, invalid_open.columns.get_loc("A")] = open_a
+    invalid_close.iloc[0, invalid_close.columns.get_loc("A")] = close_a
+
+    baseline = _intraday_proxy_stream(baseline_open, baseline_close, weights)
+    invalid = _intraday_proxy_stream(invalid_open, invalid_close, weights)
+
+    pd.testing.assert_series_equal(invalid, baseline)
+
+
+@pytest.mark.parametrize(
+    "active_weight",
+    [np.nextafter(1e-15, np.inf), -np.nextafter(1e-15, np.inf)],
+)
+def test_intraday_proxy_rejects_invalid_cell_just_beyond_active_tolerance(active_weight):
+    open_prices, close, weights = _proxy_frames(
+        open_a=100.0,
+        close_a=121.0,
+        weight_a=active_weight,
+    )
+
+    with pytest.raises(ValueError, match="return_exceeds_limit"):
+        _intraday_proxy_stream(open_prices, close, weights)
+
+
 @pytest.mark.parametrize(
     ("source", "axis"),
     [
@@ -190,6 +233,52 @@ def test_weight_history_does_not_fallback_when_an_active_proxy_cell_is_invalid(m
     policy = ExecutionAlignedAggressivePolicy(products=tuple(close.columns))
 
     with pytest.raises(ValueError, match="non_finite_close"):
+        policy.weight_history(open_prices, close)
+
+
+@pytest.mark.parametrize(
+    ("source", "value", "kind"),
+    [
+        ("open", 0.0, "non_positive_open"),
+        ("close", -1.0, "non_positive_close"),
+    ],
+)
+def test_weight_history_preserves_active_nonpositive_proxy_error_kind(
+    monkeypatch, source, value, kind
+):
+    import afuture.execution_aligned_policy as policy_module
+
+    open_prices, close = _history()
+    target = open_prices if source == "open" else close
+    target.iloc[-2, target.columns.get_loc("A")] = value
+
+    def always_active_a(returns, _template):
+        result = pd.DataFrame(0.0, index=returns.index, columns=returns.columns)
+        result["A"] = 1.0
+        return result
+
+    monkeypatch.setattr(policy_module, "_template_weight_path", always_active_a)
+    policy = ExecutionAlignedAggressivePolicy(products=tuple(close.columns))
+
+    with pytest.raises(ValueError, match=kind):
+        policy.weight_history(open_prices, close)
+
+
+def test_weight_history_preserves_active_missing_open_error_kind(monkeypatch):
+    import afuture.execution_aligned_policy as policy_module
+
+    open_prices, close = _history()
+    open_prices = open_prices.drop(index=close.index[-2])
+
+    def always_active_a(returns, _template):
+        result = pd.DataFrame(0.0, index=returns.index, columns=returns.columns)
+        result["A"] = 1.0
+        return result
+
+    monkeypatch.setattr(policy_module, "_template_weight_path", always_active_a)
+    policy = ExecutionAlignedAggressivePolicy(products=tuple(close.columns))
+
+    with pytest.raises(ValueError, match="missing_open"):
         policy.weight_history(open_prices, close)
 
 

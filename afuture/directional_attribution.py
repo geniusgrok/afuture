@@ -188,7 +188,12 @@ def _compounded_return(values) -> float:
     wealth = 1.0
     for value in values:
         wealth *= 1.0 + float(value)
-    return float(wealth - 1.0)
+        if not isfinite(wealth):
+            raise ValueError("robustness diagnostics compounded daily_return must be finite")
+    result = float(wealth - 1.0)
+    if not isfinite(result):
+        raise ValueError("robustness diagnostics compounded daily_return must be finite")
+    return result
 
 
 def _longest_drawdown(
@@ -230,7 +235,10 @@ def _robustness_diagnostics(
     """Summarize offline path fragility without altering the realized simulation path."""
     daily_frame = _as_validated_diagnostic_daily(daily)
     result = _empty_robustness_diagnostics()
-    result["gross_pnl_without_best_product_proxy"] = float(gross_signal_pnl)
+    gross_pnl_without_best = float(gross_signal_pnl)
+    if not isfinite(gross_pnl_without_best):
+        raise ValueError("robustness diagnostics gross_pnl proxy must be finite")
+    result["gross_pnl_without_best_product_proxy"] = gross_pnl_without_best
     product_pnl = _validated_product_gross_pnl(pnl_events)
     positive_product_pnl = {product: value for product, value in product_pnl.items() if value > 0.0}
     if positive_product_pnl:
@@ -244,7 +252,10 @@ def _robustness_diagnostics(
         result["positive_product_pnl_total"] = positive_total
         result["best_product"] = best_product
         result["best_product_gross_pnl"] = float(best_product_pnl)
-        result["gross_pnl_without_best_product_proxy"] = float(gross_signal_pnl - best_product_pnl)
+        gross_pnl_without_best = float(gross_signal_pnl - best_product_pnl)
+        if not isfinite(gross_pnl_without_best):
+            raise ValueError("robustness diagnostics gross_pnl proxy must be finite")
+        result["gross_pnl_without_best_product_proxy"] = gross_pnl_without_best
         shares = [value / positive_total for value in positive_pnl]
         result["best_product_positive_pnl_share"] = float(best_product_pnl / positive_total)
         result["top3_positive_pnl_share"] = float(sum(shares[:3]))

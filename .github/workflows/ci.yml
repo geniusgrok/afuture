@@ -44,9 +44,9 @@ jobs:
       - name: Core boundary, manifest, diagnostics, and compatibility smoke
         run: >-
           python -m pytest -q
+          tests/test_cli_portability.py::test_core_cli_help_and_validation_do_not_import_posix_locking
           tests/test_config.py::test_load_config_rejects_lossy_integer_values
           tests/test_config.py::test_stationarity_compatibility_defaults_and_explicit_pair_value
-          tests/test_candidate_evidence.py::test_auto_selector_records_candidate_statistics_and_reject_reason
           tests/test_directional_stress90_final.py::test_fixed_input_loader_rejects_bad_input_before_any_csv_parser
           tests/test_directional_stress90_final.py::test_fixed_input_loader_verifies_every_file_before_parsing_verified_bytes
           tests/test_execution_aligned_policy.py::test_intraday_proxy_rejects_each_invalid_active_market_cell

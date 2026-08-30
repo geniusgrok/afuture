@@ -235,6 +235,42 @@ def test_robustness_diagnostics_choose_earliest_equal_duration_drawdown():
     assert diagnostics["recovery_date"] == dates[3].date().isoformat()
 
 
+def test_robustness_diagnostics_fail_closed_when_compounded_return_overflows():
+    from afuture.directional_attribution import summarize_production_attribution
+
+    dates = pd.date_range("2026-01-05", periods=2, freq="B")
+    daily = pd.DataFrame(
+        {"equity": [100.0, 100.0], "daily_return": [1e308, 1e308]},
+        index=dates,
+    )
+
+    with pytest.raises(ValueError, match="daily_return.*finite"):
+        summarize_production_attribution(
+            daily=daily,
+            events=pd.DataFrame(),
+            initial_capital=100.0,
+        )
+
+
+def test_robustness_diagnostics_fail_closed_when_best_product_proxy_overflows():
+    from afuture.directional_attribution import summarize_production_attribution
+
+    events = pd.DataFrame(
+        [
+            _audit_event(date="2026-01-05", product="A", gross_pnl=1e308),
+            _audit_event(date="2026-01-05", product="B", gross_pnl=-1e308),
+            _audit_event(date="2026-01-05", product="C", gross_pnl=-1e308),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="gross_pnl.*finite"):
+        summarize_production_attribution(
+            daily=pd.DataFrame(),
+            events=events,
+            initial_capital=100.0,
+        )
+
+
 def test_robustness_diagnostics_resolve_time_ties_earliest_and_single_product_hhi():
     from afuture.directional_attribution import summarize_production_attribution
 
