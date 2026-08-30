@@ -77,6 +77,8 @@ provider 的已完成交易日品种价格
 
 `DirectionalPortfolioManager` 不维护第二套账户。`directional_ohlc_cache.json` 也只保存共享日期向量、开盘/收盘矩阵、品种 manifest、内容 SHA-256 和 envelope SHA-256，不保存目标或仓位。provider 的开盘/收盘索引必须在任何转换前都是无时区的自然日午夜、完全对齐、唯一且递增；数值必须能无损规范成 `float64`。新的 provider 结果必须保留缓存中的每个交易日，并且这些日期的规范值完全不变，才可作为向后追加的新权威；删日期或静默修订都会被拒绝。provider 暂时不可用时，只有 schema、品种、索引、正有限值、digest/checksum 和必需完整交易日都通过的缓存才能继续；已有风险但证据不足时进入风险收缩，空账户则拒绝新增仓位。
 
+`PortfolioRiskAnalyzer` 的 UNKNOWN correlation 不是零相关：存在已有 incumbent 时，时间桶不足、非有限或近零方差等未知相关性一律拒绝新增风险；没有 incumbent 的首个组合不需要相关性对照。它不以旧的序号对齐伪造相关性，也不放松同风险组限制。
+
 生产 Directional 必须显式选择 `execution_aligned` 或 `stress90`。普通模式继续使用 `ExecutionAlignedDirectionalPortfolioManager` 和既有 0.25 target scaling；Stress-90 使用独立 manager、1x raw candidate 和 freeze-only risk response capability，不允许引擎重复包装缩放。两者共享 adaptive margin envelope、reduction-first 执行、Broker truth 和最终 `RiskManager`。
 
 Stress-90 的单一候选核心位于 `directional_stress90_policy.py`：
@@ -189,3 +191,5 @@ Stress-90 另有不可变 bootstrap seed、exactly-once policy state、raw OI ev
 ## 11. 非目标
 
 当前不需要数据库、消息队列、Web 服务、微服务或第二套账户状态机。研究数据不会直接成为实盘数据源。`vnpy_ctp` 的原生扩展、目标机 ABI、实际登录和 callback 顺序不能由通用 CI/测试替身证明，必须在最终部署机完成 import、doctor、Shadow、重连和订单生命周期门。架构变化必须由已经复现的正确性、容量或维护问题驱动；下一批高价值证据来自新发生数据、多日 Shadow、测试柜台和小资金，而不是扩大同一历史上的参数搜索。
+
+Windows smoke 只证明受约束的核心纯 Python 安装和定向回归，不证明目标机 CTP ABI、原生扩展、真实柜台状态或订单生命周期。`#11/#21` 的权威分类是 historical closed-without-merge，相关分支留存作为历史证据；这一分类不等于合并批准、运行时激活或生产许可。任何 CI、研究、文档或本任务的完成都不授权真钱交易。

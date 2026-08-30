@@ -250,7 +250,40 @@ def test_auto_profile_copies_relative_daily_quality_parameters():
     assert pair.confirmation_retrace_z == 0.3
     assert pair.min_confirmed_entry_z == 1.75
     assert pair.max_entry_z_slope == 0.75
+    assert pair.min_stationarity_score == config.min_stationarity_score
     assert pair.daily_sample_window == "22:55-23:00"
+
+
+def test_mean_reversion_heuristic_keeps_legacy_numeric_entry_gate():
+    blocked = CalendarSpreadStrategy(
+        relative_pair(daily_sample_window="", confirm_entry=False, min_stationarity_score=0.8)
+    )
+    blocked.restore_state({"history": [1.0, 1.4, 1.5, 1.55]})
+
+    half_life, heuristic = blocked._mean_reversion_stats()
+
+    assert abs(heuristic - 5.0 / 7.0) < 1e-12
+    assert abs(half_life - 7.0 * log(2.0) / 5.0) < 1e-12
+    assert blocked._entry_action(
+        0.0,
+        -3.0,
+        3.0,
+        slope=0.0,
+        half_life=half_life,
+        stationarity=heuristic,
+    ) == (SignalAction.HOLD, "")
+
+    allowed = CalendarSpreadStrategy(
+        relative_pair(daily_sample_window="", confirm_entry=False, min_stationarity_score=0.7)
+    )
+    assert allowed._entry_action(
+        0.0,
+        -3.0,
+        3.0,
+        slope=0.0,
+        half_life=half_life,
+        stationarity=heuristic,
+    ) == (SignalAction.SHORT_SPREAD, "")
 
 
 def test_auto_history_round_trips_for_daily_restart_warmup():

@@ -148,11 +148,11 @@ CTP 凭证不进入 TOML：
 | `pairs.min_confirmed_entry_z` | `0.0` | 确认后仍需保留的最小偏离，必须位于 `(0, entry_z)`。 |
 | `pairs.entry_trend_window` | `6` | 入场趋势斜率窗口，至少 2 个样本。 |
 | `pairs.max_entry_z_slope` | `999.0` | 允许的入场 Z 值绝对斜率上限。 |
-| `pairs.min_stationarity_score` | `0.0` | 最小均值回归稳定度，范围 `[0, 1]`。 |
+| `pairs.min_stationarity_score` | `0.0` | 最小均值回复启发式分数，范围 `[0, 1]`；字段名为兼容保留，不表示平稳性检验。 |
 | `pairs.max_half_life` | `999.0` | 最大估计半衰期，样本数，必须大于 0。 |
 | `pairs.daily_sample_window` | 空 | 每个交易日允许取样的单一窗口；开始时刻必须早于结束时刻。 |
 
-同一合约不能被多个固定组合重复使用。确认入场、稳定度和半衰期字段也由 Auto 复制到动态组合。
+同一合约不能被多个固定组合重复使用。确认入场、均值回复启发式和半衰期字段也由 Auto 复制到动态组合。
 
 ## 6. Auto 自动选择跨期组合
 
@@ -187,7 +187,7 @@ CTP 凭证不进入 TOML：
 | `auto.min_volume` | `5000.0` | 两腿当前累计成交量下限。 |
 | `auto.min_open_interest` | `10000.0` | 两腿持仓量下限。 |
 | `auto.min_liquidity_score` | `0.5` | 流动性评分下限，范围 `[0, 1]`。 |
-| `auto.min_stationarity_score` | `0.02` | 均值回归稳定度下限，范围 `[0, 1]`。 |
+| `auto.min_stationarity_score` | `0.02` | 均值回复启发式分数下限，范围 `[0, 1]`；字段名为兼容保留，不表示平稳性检验。 |
 | `auto.max_half_life` | `120.0` | 最大半衰期，样本数。 |
 | `auto.min_net_edge` | `0.0` | 净边际必须严格高于此人民币金额。 |
 | `auto.slippage_ticks` | `1` | 候选净边际估算使用的单腿滑点，跳。 |

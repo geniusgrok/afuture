@@ -64,6 +64,8 @@ Stress-90 的 target trading day 同样只接受当前 CTP `getTradingDay()`。�
 
 生产连续合约历史在任何时区/日期归一化前，就必须使用无时区、自然日午夜、唯一递增且开盘/收盘完全一致的索引；每个正有限数值必须可无损表示为 `float64`。runtime 先校验 provider 返回的全部允许行：不得晚于权威 CTP 当前交易日；没有 tracker 时不得晚于本地计划日。允许存在尚未完成的当前交易日行，但只把 required completed day 及以前的规范值原子写入 `directional_ohlc_cache.json`，首次调用和重启都使用重新解码的同一 `float64` 表示。文件使用一个共享日期向量、行优先开盘/收盘矩阵、内容 SHA-256 和整个 envelope SHA-256；它只保存市场输入证据。新的 provider 结果只有在与已验证缓存的全部重叠规范值逐值不变时才可替换缓存。重叠历史被静默修订、缓存被篡改、schema/品种/形状不符，或缓存没有所需完整交易日时，都不接受该输入；provider 中断只能回退到仍满足同一所需交易日/新鲜度契约的已验证缓存。
 
+对活跃敞口的当日 OHLC，缺失、非有限、非正，或绝对日内变动超过 20% 都失败关闭，不能把异常值替换为零收益或用它新增风险；零敞口且与当前目标无关的异常市场单元不影响其他已验证活跃敞口的风险收缩。该例外不把异常输入解释为有效市场数据，也不允许它进入新开仓计算。
+
 Stress-90 live 的外部 OHLC provider 只由 `directional-ohlc-refresh` 这一无订单权限的准备进程调用。`run_once()`、`on_tick()`、rebalance 和 Broker callbacks 只读 validated cache，不同步访问网络。cache 不完整时空仓拒绝 openings，有仓进入 `REDUCE_ONLY`；不得以更旧 cache 继续增加风险。
 
 raw CTP 60m observer 位于 Tick 转换成功后、manager Tick coalescing 前。每个有效 raw Tick 进入有界聚合器，但 critical order/trade/account/position/error 仍保持 FIFO 优先。聚合按 CTP `trading_day` 和固定 session manifest 处理夜盘跨午夜、60m 边界、累计 volume 非负增量、reset、duplicate/out-of-order/late Tick、重启和 rollover。九品种中任一 required contract coverage 不完整时，对应 target input 为 missing/incomplete，而不是 `flow=0`。
@@ -111,7 +113,13 @@ raw CTP 60m observer 位于 Tick 转换成功后、manager Tick coalescing 前�
 
 当前 batch evaluator、bootstrap replay 和 live incremental transition 共用同一生产纯核心，验收必须逐日、逐产品比较 Base/OI/cost/survivor，而不能只比较最终年化收益。五个固定输入可用时还必须重得 candidate SHA `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`；输入缺失或 SHA 不符时报告 blocker，不得更换数据后声称精确复现。
 
+五个固定输入必须在任何解析前逐一验证精确 SHA-256；每个历史窗口的 `input_manifest`（basename、SHA-256 和 size）是该窗口结果的证据身份。组装窗口时 manifest 必须完整且一致，不能用同名、不同内容或不同大小的文件替代。
+
 `112.100053%` 不是未来收益承诺。96-template pool 在已观察历史上存在 selection bias；候选固定后新发生的数据才是真正 forward evidence。live 使用 CTP raw 60m 后，必须通过 Shadow comparator 解释它与历史 vendor 数据在 first/last、volume、dominant 和 flow 上的差异。
+
+当前 candidate 必须保持冻结：前瞻观察只记录此前未参与选择或调参的新数据。若观察到显著恶化，优先降低风险或停止风险暴露；不得在同一段已观察历史上重新调参、替换候选或追逐回报。任何新的假设或研究都必须留在隔离的 research-only 历史工作流和证据中，不能改变已冻结 candidate，也不能自动进入 Shadow、测试柜台或 live 路径。
+
+robustness diagnostics 是只读诊断：产品或月份移除仅是既有实现路径上的 pathwise proxy，不是重跑、反事实再配置或新的候选选择；它不影响 gate、候选、仓位、风险状态或未来订单。
 
 ## 8. 何时重跑昂贵验证
 

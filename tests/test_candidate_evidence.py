@@ -35,7 +35,7 @@ def test_auto_selector_records_candidate_statistics_and_reject_reason(tmp_path: 
         max_contracts_per_product=2,
         min_days_to_expiry=10,
         scan_interval_seconds=0,
-        lookback=3,
+        lookback=4,
         entry_z=0.8,
         exit_z=0.2,
         stop_z=4,
@@ -44,7 +44,7 @@ def test_auto_selector_records_candidate_statistics_and_reject_reason(tmp_path: 
         min_volume=100,
         min_open_interest=100,
         min_liquidity_score=0.1,
-        min_stationarity_score=0,
+        min_stationarity_score=0.8,
         max_half_life=1000,
         min_net_edge=0,
         slippage_ticks=0,
@@ -64,7 +64,7 @@ def test_auto_selector_records_candidate_statistics_and_reject_reason(tmp_path: 
     manager = AutoPairManager(cfg, evidence_recorder=evidence)
     manager.bootstrap(broker, date(2026, 8, 21), {})
     base = datetime(2026, 8, 21, 9, tzinfo=timezone.utc)
-    for minute, spread in enumerate([10, 11, 10, 25]):
+    for minute, spread in enumerate([1.0, 1.4, 1.5, 1.55, 1.8]):
         manager.observe(tick("m2609", base + timedelta(minutes=minute), 3000 + spread))
         manager.observe(tick("m2701", base + timedelta(minutes=minute), 3000))
     manager.select(broker, now=base + timedelta(minutes=4), protected_pair_ids=set())
@@ -88,3 +88,6 @@ def test_auto_selector_records_candidate_statistics_and_reject_reason(tmp_path: 
         "reject_reason",
     ):
         assert key in candidate
+    # The evidence wire key remains compatible, while the human rejection reason
+    # must not describe this heuristic as a stationarity test.
+    assert candidate["reject_reason"] == "mean-reversion heuristic below minimum"

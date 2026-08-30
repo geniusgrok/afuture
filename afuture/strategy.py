@@ -33,7 +33,9 @@ class CalendarSpreadStrategy:
         if pair.max_entry_z_slope <= 0:
             raise ValueError("max_entry_z_slope must be positive")
         if not 0 <= pair.min_stationarity_score <= 1:
-            raise ValueError("min_stationarity_score must be between zero and one")
+            raise ValueError(
+                "min_stationarity_score (mean-reversion heuristic) must be between zero and one"
+            )
         if pair.max_half_life <= 0:
             raise ValueError("max_half_life must be positive")
         if pair.daily_sample_window:

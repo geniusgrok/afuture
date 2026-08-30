@@ -1,5 +1,6 @@
 name: research-return-target
 
+# Research-only historical evidence: manual evaluation, not a forecast or promotional claim.
 # Expensive L3 milestone gate. The 2026-08-22 return-target evidence is frozen;
 # rerun manually only after a material change to the research methodology or universe.
 on:

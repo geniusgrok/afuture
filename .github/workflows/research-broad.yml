@@ -1,5 +1,6 @@
 name: research-broad
 
+# Research-only historical evidence: manual evaluation, not a forecast or promotional claim.
 # L3 economic-pair breadth evidence is a milestone gate, not an inner-loop test.
 # The rejected cross-sectional families are summarized in docs/research-final-evidence.md
 # rather than retained as dead research code. Rerun manually only when the surviving

@@ -100,6 +100,21 @@ def test_readme_does_not_lead_with_git_lineage_noise():
     assert not re.search(r"\b[0-9a-f]{40}\b", readme)
 
 
+def test_mean_reversion_heuristic_is_not_presented_as_a_stationarity_test():
+    glossary = (ROOT / "docs" / "glossary.md").read_text(encoding="utf-8")
+    configuration = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    strategies = (ROOT / "docs" / "strategies.md").read_text(encoding="utf-8")
+
+    assert "均值回复启发式" in glossary
+    assert "不是平稳性检验" in glossary
+    for term in ("ADF", "KPSS", "Phillips-Perron", "Engle-Granger", "Johansen"):
+        assert term in glossary
+    assert "不构成统计显著性证明" in glossary
+    assert "不保证未来均值回复" in glossary
+    assert "均值回复启发式" in configuration
+    assert "均值回复启发式" in strategies
+
+
 @pytest.mark.parametrize(
     "path",
     [

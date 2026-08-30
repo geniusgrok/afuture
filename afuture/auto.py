@@ -1,6 +1,6 @@
 """轻量级自动合约发现与跨期组合选择。
 
-从 CTP 合约目录生成同品种相邻月份，观察盘口后按活动度、统计质量和净边际排名。
+从 CTP 合约目录生成同品种相邻月份，观察盘口后按活动度、均值回复启发式和净边际排名。
 选标只负责“从哪里交易”，正式策略、风险和执行仍走唯一生产链路。
 """
 
@@ -151,7 +151,9 @@ class AutoConfig:
         if not 0 <= self.min_liquidity_score <= 1:
             raise ValueError("auto min_liquidity_score must be between 0 and 1")
         if not 0 <= self.min_stationarity_score <= 1:
-            raise ValueError("auto min_stationarity_score must be between 0 and 1")
+            raise ValueError(
+                "auto min_stationarity_score (mean-reversion heuristic) must be between 0 and 1"
+            )
         if self.max_half_life <= 0 or self.metadata_timeout_seconds <= 0:
             raise ValueError("auto half-life/metadata timeout must be positive")
 
@@ -511,7 +513,7 @@ class AutoPairManager:
                     far,
                     statistics,
                     None,
-                    "stationarity below minimum",
+                    "mean-reversion heuristic below minimum",
                 )
                 continue
             if statistics.half_life > self.config.max_half_life:
