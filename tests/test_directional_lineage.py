@@ -59,8 +59,11 @@ def test_policy_lineage_is_causal_on_last_row():
     baseline, baseline_meta, baseline_lineage = build_weight_lineage(policy, open_prices, close)
     changed_open = open_prices.copy()
     changed_close = close.copy()
-    changed_open.iloc[-1] *= [2.0, 0.5, 1.8, 0.6]
-    changed_close.iloc[-1] *= [3.0, 0.4, 2.5, 0.5]
+    changed_open.iloc[-1] *= [1.08, 0.93, 1.04, 0.97]
+    changed_close.iloc[-1] *= [0.96, 1.07, 0.97, 1.03]
+    changed_intraday = changed_close.iloc[-1] / changed_open.iloc[-1] - 1.0
+    assert bool((changed_intraday.abs() <= 0.20).all())
+    assert not changed_intraday.equals(close.iloc[-1] / open_prices.iloc[-1] - 1.0)
     changed, changed_meta, changed_lineage = build_weight_lineage(
         policy, changed_open, changed_close
     )
