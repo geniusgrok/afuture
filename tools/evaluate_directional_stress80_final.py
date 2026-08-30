@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +49,7 @@ from afuture.directional_stress90_policy import (
     build_stress90_candidate_path,
     candidate_weight_digest,
 )
+from afuture.provenance import ProvenanceError, verify_frozen_input_files
 
 BASELINE_NET_ALPHA_PER_TURNOVER_BPS = 12.2556
 MAX_GROSS = 2.0
@@ -56,6 +59,14 @@ DAILY_LOSS = 0.05
 HARD_DRAWDOWN = 0.30
 DRAWDOWN_RESERVE = HARD_DRAWDOWN - DAILY_LOSS
 MAX_LOTS = 35
+FIXED_INPUT_SHA256 = {
+    "broad_daily_universe.csv": "c1d46bc113a79bd2e000bf5d66ee53c59337eda750b2d3b1409e40f3f4833d0f",
+    "return_target_specific_contracts.csv": "f8b3f4232cb1bc9eaed65a4401dff6bed121faee064252727202874ad7d53c64",
+    "execution_aligned_weights.csv": "250a55c1c18ecd3754f489136515275eec3a48d505fd41026d68ab43924e08c1",
+    "prior_two_year_broad_60m.csv": "3351aa3ae8dec0cf0e9b9a64026181ac8ff2cc22858c442821fe3c94767036b1",
+    "two_year_broad_60m.csv": "5faf112bb69dd5ddf48ed34419e2046b1c6bdd651b595ca46a46804d8317a27b",
+}
+FIXED_INPUT_BASENAMES = tuple(sorted(FIXED_INPUT_SHA256))
 
 
 def continuous_close_panel(raw: pd.DataFrame, products: list[str]) -> pd.DataFrame:
@@ -234,22 +245,25 @@ def promotion_gate(results: dict[tuple[str, str], dict]) -> dict:
     return {"passed": not reasons, "reasons": reasons}
 
 
-def _load_inputs(runtime: Path):
-    paths = {
-        "specific": runtime / "return_target_specific_contracts.csv",
-        "continuous": runtime / "broad_daily_universe.csv",
-        "weights": runtime / "execution_aligned_weights.csv",
-        "prior": runtime / "prior_two_year_broad_60m.csv",
-        "recent": runtime / "two_year_broad_60m.csv",
-    }
-    missing = [str(path) for path in paths.values() if not path.exists()]
-    if missing:
-        raise SystemExit(f"Stress80 final inputs missing: {missing}")
-    specific = pd.read_csv(paths["specific"])
-    continuous = pd.read_csv(paths["continuous"])
-    base_weights = oi_gate.load_frozen_weights(paths["weights"])
-    bars = oi_gate.load_60m([paths["prior"], paths["recent"]])
-    return specific, continuous, base_weights, bars
+def _load_inputs(
+    runtime: Path,
+    *,
+    expected_sha256: Mapping[str, str] = FIXED_INPUT_SHA256,
+):
+    try:
+        inputs, input_manifest = verify_frozen_input_files(runtime, expected_sha256)
+    except ProvenanceError as exc:
+        raise SystemExit(f"Stress80 final input verification failed: {exc}") from exc
+    specific = pd.read_csv(BytesIO(inputs["return_target_specific_contracts.csv"]))
+    continuous = pd.read_csv(BytesIO(inputs["broad_daily_universe.csv"]))
+    base_weights = oi_gate.load_frozen_weights(BytesIO(inputs["execution_aligned_weights.csv"]))
+    bars = oi_gate.load_60m(
+        [
+            BytesIO(inputs["prior_two_year_broad_60m.csv"]),
+            BytesIO(inputs["two_year_broad_60m.csv"]),
+        ]
+    )
+    return specific, continuous, base_weights, bars, input_manifest
 
 
 def main() -> None:
@@ -260,7 +274,7 @@ def main() -> None:
     args = parser.parse_args()
 
     runtime = Path("runtime")
-    specific, continuous, base_weights, bars = _load_inputs(runtime)
+    specific, continuous, base_weights, bars, input_manifest = _load_inputs(runtime)
     candidate, audit = build_final_candidate_weights(
         base_weights=base_weights,
         bars_60m=bars,
@@ -277,6 +291,7 @@ def main() -> None:
         "parameter_search": False,
         "production_wiring": False,
         "candidate": audit,
+        "input_manifest": input_manifest,
         "result": result,
         "constraints": {
             "target_and_realized_gross_cap": MAX_GROSS,

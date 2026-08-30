@@ -51,6 +51,35 @@ EXPECTED_CONSTRAINTS = {
 }
 
 
+def _validated_input_manifest(raw: object) -> list[dict[str, str | int]]:
+    if not isinstance(raw, list) or len(raw) != len(stress80.FIXED_INPUT_SHA256):
+        raise ValueError("Stress90 matrix input manifest basenames are invalid")
+    entries: dict[str, dict[str, str | int]] = {}
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"basename", "sha256", "size_bytes"}:
+            raise ValueError("Stress90 matrix input manifest entry is invalid")
+        basename = item["basename"]
+        digest = item["sha256"]
+        size_bytes = item["size_bytes"]
+        if not isinstance(basename, str) or basename in entries:
+            raise ValueError("Stress90 matrix input manifest basenames are invalid")
+        expected = stress80.FIXED_INPUT_SHA256.get(basename)
+        if expected is None:
+            raise ValueError("Stress90 matrix input manifest basenames are invalid")
+        if digest != expected:
+            raise ValueError(f"Stress90 matrix input manifest SHA-256 mismatch: {basename}")
+        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
+            raise ValueError("Stress90 matrix input manifest size_bytes is invalid")
+        entries[basename] = {
+            "basename": basename,
+            "sha256": digest,
+            "size_bytes": size_bytes,
+        }
+    if set(entries) != set(stress80.FIXED_INPUT_SHA256):
+        raise ValueError("Stress90 matrix input manifest basenames are invalid")
+    return [entries[basename] for basename in sorted(entries)]
+
+
 def completed_concentrations_before(
     weights: pd.DataFrame,
     *,
@@ -109,6 +138,7 @@ def evaluate_window(
 def assemble_matrix_payload(payloads: Iterable[dict]) -> dict:
     """Validate independently produced window payloads and apply the frozen gate."""
     results: dict[tuple[str, str], dict] = {}
+    input_manifest: list[dict[str, str | int]] | None = None
     for payload in payloads:
         if payload.get("role") != "final fixed Stress90 Production evidence":
             raise ValueError("unexpected Stress90 matrix payload role")
@@ -121,6 +151,11 @@ def assemble_matrix_payload(payloads: Iterable[dict]) -> dict:
         digest = payload.get("candidate", {}).get("candidate_weight_sha256")
         if digest != EXPECTED_CANDIDATE_WEIGHT_SHA256:
             raise ValueError("Stress90 matrix candidate digest mismatch")
+        current_manifest = _validated_input_manifest(payload.get("input_manifest"))
+        if input_manifest is None:
+            input_manifest = current_manifest
+        elif current_manifest != input_manifest:
+            raise ValueError("Stress90 matrix input manifests differ between windows")
         result = payload["result"]
         key = (str(result["scenario"]), str(result["window"]))
         if key in results:
@@ -134,7 +169,10 @@ def assemble_matrix_payload(payloads: Iterable[dict]) -> dict:
     return {
         "role": "assembled final Stress90 Production matrix",
         "candidate_weight_sha256": EXPECTED_CANDIDATE_WEIGHT_SHA256,
-        "results": {f"{scenario}/{window}": item for (scenario, window), item in results.items()},
+        "input_manifest": input_manifest,
+        "results": {
+            f"{scenario}/{window}": item for (scenario, window), item in sorted(results.items())
+        },
         "gate": gate,
     }
 
@@ -147,7 +185,7 @@ def main() -> None:
     args = parser.parse_args()
 
     runtime = Path("runtime")
-    specific, continuous, base_weights, bars = stress80._load_inputs(runtime)
+    specific, continuous, base_weights, bars, input_manifest = stress80._load_inputs(runtime)
     candidate, audit = stress80.build_final_candidate_weights(
         base_weights=base_weights,
         bars_60m=bars,
@@ -160,6 +198,7 @@ def main() -> None:
         "parameter_search": False,
         "production_wiring": False,
         "candidate": audit,
+        "input_manifest": input_manifest,
         "result": evaluate_window(
             specific_raw=specific,
             candidate_weights=candidate,

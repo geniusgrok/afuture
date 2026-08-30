@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
 
@@ -72,6 +73,47 @@ def read_regular_file(path: str | Path, *, maximum: int = 512 * 1024 * 1024) -> 
 
 def file_sha256(path: str | Path, *, maximum: int = 512 * 1024 * 1024) -> str:
     return sha256(read_regular_file(path, maximum=maximum)).hexdigest()
+
+
+def verify_frozen_input_files(
+    directory: str | Path,
+    expected_sha256: Mapping[str, str],
+    *,
+    maximum: int = 512 * 1024 * 1024,
+) -> tuple[dict[str, bytes], list[dict[str, str | int]]]:
+    """Read exact frozen basenames safely and return their verified bytes and manifest."""
+
+    if not isinstance(expected_sha256, Mapping) or not expected_sha256:
+        raise ProvenanceError("frozen input digest manifest is invalid")
+    root = Path(directory)
+    verified: dict[str, bytes] = {}
+    manifest: list[dict[str, str | int]] = []
+    for basename in sorted(expected_sha256):
+        expected = expected_sha256[basename]
+        if (
+            not isinstance(basename, str)
+            or Path(basename).name != basename
+            or not basename
+            or not isinstance(expected, str)
+            or len(expected) != 64
+            or any(char not in "0123456789abcdef" for char in expected)
+        ):
+            raise ProvenanceError("frozen input digest manifest is invalid")
+        payload = read_regular_file(root / basename, maximum=maximum)
+        actual = sha256(payload).hexdigest()
+        if actual != expected:
+            raise ProvenanceError(
+                f"frozen input SHA-256 mismatch: {basename}; expected={expected}, actual={actual}"
+            )
+        verified[basename] = payload
+        manifest.append(
+            {
+                "basename": basename,
+                "sha256": actual,
+                "size_bytes": len(payload),
+            }
+        )
+    return verified, manifest
 
 
 def _git_binary() -> str:

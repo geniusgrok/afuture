@@ -251,7 +251,9 @@ def test_fixed_archive_replays_the_historical_candidate_digest():
     runtime = Path("runtime")
     for name, expected in _FIXED_INPUT_SHA256.items():
         assert hashlib.sha256((runtime / name).read_bytes()).hexdigest() == expected
-    _specific, continuous, base_weights, bars = _load_inputs(runtime)
+    _specific, continuous, base_weights, bars, input_manifest = _load_inputs(runtime)
+
+    assert [item["basename"] for item in input_manifest] == sorted(_FIXED_INPUT_SHA256)
 
     candidate, audit = build_final_candidate_weights(
         base_weights=base_weights,

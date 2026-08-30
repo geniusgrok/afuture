@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import BinaryIO
 
 import pandas as pd
 
@@ -40,7 +41,7 @@ EXPECTED_PRODUCTION_STRESS = 0.289559
 BASELINE_TOLERANCE = 0.005
 
 
-def load_frozen_weights(path: Path) -> pd.DataFrame:
+def load_frozen_weights(path: Path | BinaryIO) -> pd.DataFrame:
     rows = pd.read_csv(path)
     required = {"level_0", "level_1", "weight"}
     missing = required - set(rows.columns)
@@ -62,7 +63,7 @@ def load_frozen_weights(path: Path) -> pd.DataFrame:
     return weights.astype(float)
 
 
-def load_60m(paths: list[Path]) -> pd.DataFrame:
+def load_60m(paths: list[Path | BinaryIO]) -> pd.DataFrame:
     frames = [pd.read_csv(path) for path in paths]
     frame = pd.concat(frames, ignore_index=True)
     required = {"datetime", "product", "symbol", "open", "close", "volume", "hold"}
