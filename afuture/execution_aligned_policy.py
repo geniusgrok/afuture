@@ -308,15 +308,18 @@ EXECUTION_TEMPLATE_IDS = _EXECUTION_TEMPLATE_IDS
 _EXECUTION_TEMPLATES = tuple(_parse_template_id(item) for item in _EXECUTION_TEMPLATE_IDS)
 
 
-def _clean_prices(frame: pd.DataFrame, products: tuple[str, ...]) -> pd.DataFrame:
+def _ordered_prices(frame: pd.DataFrame, products: tuple[str, ...]) -> pd.DataFrame:
     result = frame.copy()
     result.columns = [str(item).upper() for item in result.columns]
     requested = sorted({str(item).upper() for item in products})
     missing = sorted(set(requested) - set(result.columns))
     if missing:
         raise ValueError(f"directional OHLC history missing products: {missing}")
-    result = result[requested].astype(float).sort_index()
-    return result.where(result > 0.0)
+    return result[requested].astype(float).sort_index()
+
+
+def _clean_prices(frame: pd.DataFrame, products: tuple[str, ...]) -> pd.DataFrame:
+    return _ordered_prices(frame, products).where(lambda prices: prices > 0.0)
 
 
 def _intraday_proxy_stream(
@@ -326,8 +329,55 @@ def _intraday_proxy_stream(
     *,
     cost_bps: float = BASE_COST_BPS,
 ) -> pd.Series:
-    intraday = close.div(open_prices) - 1.0
-    intraday = intraday.mask(intraday.abs() > MAX_ABS_DAILY_RETURN).fillna(0.0)
+    missing_open = pd.DataFrame(
+        np.logical_or.outer(
+            ~weights.index.isin(open_prices.index),
+            ~weights.columns.isin(open_prices.columns),
+        ),
+        index=weights.index,
+        columns=weights.columns,
+    )
+    missing_close = pd.DataFrame(
+        np.logical_or.outer(
+            ~weights.index.isin(close.index),
+            ~weights.columns.isin(close.columns),
+        ),
+        index=weights.index,
+        columns=weights.columns,
+    )
+    open_prices = open_prices.reindex(index=weights.index, columns=weights.columns)
+    close = close.reindex(index=weights.index, columns=weights.columns)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        intraday = close.div(open_prices) - 1.0
+    active = weights.abs() > 1e-15
+    checks = (
+        ("missing_open", missing_open),
+        ("missing_close", missing_close),
+        ("non_finite_open", ~np.isfinite(open_prices)),
+        ("non_finite_close", ~np.isfinite(close)),
+        ("non_positive_open", open_prices <= 0.0),
+        ("non_positive_close", close <= 0.0),
+        ("non_finite_return", ~np.isfinite(intraday)),
+        ("return_exceeds_limit", intraday.abs() > MAX_ABS_DAILY_RETURN),
+    )
+    invalid_market_data = checks[0][1].copy()
+    for kind, invalid in checks:
+        invalid_market_data |= invalid
+        invalid_active = active & invalid
+        if bool(invalid_active.any().any()):
+            row, column = np.argwhere(invalid_active.to_numpy())[0]
+            timestamp = weights.index[row]
+            product = weights.columns[column]
+            raise ValueError(
+                "intraday proxy market data is invalid: "
+                f"date={pd.Timestamp(timestamp).date()} product={product} kind={kind} "
+                f"weight={float(weights.iat[row, column])} "
+                f"open={float(open_prices.iat[row, column])} "
+                f"close={float(close.iat[row, column])} "
+                f"return={float(intraday.iat[row, column])}"
+            )
+    intraday = intraday.mask(~active & invalid_market_data, 0.0)
+    intraday = intraday.where(np.isfinite(intraday), 0.0)
     pnl = (weights * intraday).sum(axis=1)
     turnover = weights.diff().abs().sum(axis=1)
     if len(turnover):
@@ -362,8 +412,10 @@ class ExecutionAlignedAggressivePolicy:
         open_prices: pd.DataFrame,
         close: pd.DataFrame,
     ) -> pd.DataFrame:
-        close = _clean_prices(close, self.products)
-        open_prices = _clean_prices(open_prices, self.products).reindex(close.index)
+        proxy_close = _ordered_prices(close, self.products)
+        proxy_open = _ordered_prices(open_prices, self.products)
+        close = proxy_close.where(proxy_close > 0.0)
+        open_prices = proxy_open.where(proxy_open > 0.0).reindex(close.index)
         returns = close.pct_change(fill_method=None)
         returns = returns.mask(returns.abs() > MAX_ABS_DAILY_RETURN)
         intraday = close.div(open_prices) - 1.0
@@ -376,10 +428,10 @@ class ExecutionAlignedAggressivePolicy:
             weights = _template_weight_path(returns, template)
             paths[template_id] = weights
             base_streams[template_id] = _intraday_proxy_stream(
-                open_prices, close, weights, cost_bps=BASE_COST_BPS
+                proxy_open, proxy_close, weights, cost_bps=BASE_COST_BPS
             )
             stress_streams[template_id] = _intraday_proxy_stream(
-                open_prices, close, weights, cost_bps=STRESS_COST_BPS
+                proxy_open, proxy_close, weights, cost_bps=STRESS_COST_BPS
             )
 
         base_frame = pd.DataFrame(base_streams).sort_index().fillna(0.0)

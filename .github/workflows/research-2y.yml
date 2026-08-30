@@ -1,5 +1,6 @@
 name: research-2y
 
+# Research-only historical evidence: manual evaluation, not a forecast or promotional claim.
 # 两年真实数据抓取和完整研究属于高成本 L4 证据门，不作为每次 PR/小改动的内循环测试。
 # 已验证策略或研究逻辑发生实质变化时手动触发；普通工程回归由 ci.yml 负责。
 on:

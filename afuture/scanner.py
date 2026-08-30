@@ -413,7 +413,7 @@ class SpreadScanner:
 
     @staticmethod
     def _mean_reversion_stats(values: list[float]) -> tuple[float, float]:
-        """用简单 AR(1) 近似计算半衰期和平稳性代理分数。"""
+        """用简单 AR(1) 近似计算半衰期和均值回复启发式分数。"""
         if len(values) < 4:
             return 999.0, 0.0
         levels = values[:-1]

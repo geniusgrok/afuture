@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from math import sqrt
+from math import isfinite, sqrt
 
 from .models import RiskDecision
+
+
+@dataclass(frozen=True)
+class _CorrelationEvidence:
+    known: bool
+    correlation: float | None
+    reason: str = ""
+
+    @classmethod
+    def unknown(cls, reason: str) -> _CorrelationEvidence:
+        return cls(False, None, reason)
+
+    @classmethod
+    def measured(cls, correlation: float) -> _CorrelationEvidence:
+        return cls(True, correlation)
 
 
 class PortfolioRiskAnalyzer:
@@ -43,12 +59,18 @@ class PortfolioRiskAnalyzer:
     ) -> None:
         """追加一个价差观测；有时间戳时同时维护固定时间桶序列。"""
         numeric = float(value)
+        if not isfinite(numeric):
+            raise ValueError("portfolio risk value must be finite")
+
+        bucket: int | None = None
+        if timestamp is not None:
+            if timestamp.tzinfo is None:
+                raise ValueError("portfolio risk timestamp must be timezone-aware")
+            bucket = int(timestamp.astimezone(timezone.utc).timestamp()) // self.bucket_seconds
+
         self._series[pair_id].append(numeric)
-        if timestamp is None:
+        if bucket is None:
             return
-        if timestamp.tzinfo is None:
-            raise ValueError("portfolio risk timestamp must be timezone-aware")
-        bucket = int(timestamp.astimezone(timezone.utc).timestamp()) // self.bucket_seconds
         timed = self._timed_series[pair_id]
         # 同一时间桶内保留最后一个可见值；这等价于低频重采样的 last observation。
         timed[bucket] = numeric
@@ -56,56 +78,75 @@ class PortfolioRiskAnalyzer:
             for stale in sorted(timed)[: len(timed) - self.window]:
                 timed.pop(stale, None)
 
-    def correlation(self, left: str, right: str) -> float:
+    def correlation(self, left: str, right: str) -> float | None:
         """按价差一阶变化计算滚动相关系数。
 
-        如果双方都有带时间戳观测，则只使用共同时间桶；共同样本不足时返回 0，
+        任一侧存在带时间戳观测时，只使用共同时间桶；证据不足时返回 ``None``，
         绝不退回序号对齐制造伪相关。只有完全没有时间戳数据的旧调用才使用兼容路径。
         """
+        return self._correlation_evidence(left, right).correlation
+
+    def _correlation_evidence(self, left: str, right: str) -> _CorrelationEvidence:
         left_timed = self._timed_series.get(left, {})
         right_timed = self._timed_series.get(right, {})
         if left_timed or right_timed:
             common = sorted(set(left_timed) & set(right_timed))[-self.window :]
             if len(common) < self.min_samples:
-                return 0.0
+                return _CorrelationEvidence.unknown(
+                    "insufficient authoritative common timestamp buckets"
+                )
             left_values = [left_timed[key] for key in common]
             right_values = [right_timed[key] for key in common]
-            return self._correlation_from_values(left_values, right_values)
+            return self._correlation_evidence_from_values(left_values, right_values)
 
         left_values = list(self._series[left])
         right_values = list(self._series[right])
         sample_count = min(len(left_values), len(right_values))
         if sample_count < self.min_samples:
-            return 0.0
-        return self._correlation_from_values(
+            return _CorrelationEvidence.unknown("insufficient legacy samples")
+        return self._correlation_evidence_from_values(
             left_values[-sample_count:],
             right_values[-sample_count:],
         )
 
     @staticmethod
-    def _correlation_from_values(left_values: list[float], right_values: list[float]) -> float:
+    def _correlation_evidence_from_values(
+        left_values: list[float], right_values: list[float]
+    ) -> _CorrelationEvidence:
         sample_count = min(len(left_values), len(right_values))
         if sample_count < 3:
-            return 0.0
+            return _CorrelationEvidence.unknown("insufficient first-difference observations")
         left_values = left_values[-sample_count:]
         right_values = right_values[-sample_count:]
+        if not all(isfinite(value) for value in left_values + right_values):
+            return _CorrelationEvidence.unknown("non-finite correlation observation")
         left_changes = [left_values[i] - left_values[i - 1] for i in range(1, sample_count)]
         right_changes = [right_values[i] - right_values[i - 1] for i in range(1, sample_count)]
         if len(left_changes) < 2:
-            return 0.0
+            return _CorrelationEvidence.unknown("insufficient first-difference observations")
+        if not all(isfinite(value) for value in left_changes + right_changes):
+            return _CorrelationEvidence.unknown("non-finite first-difference observation")
 
         left_mean = sum(left_changes) / len(left_changes)
         right_mean = sum(right_changes) / len(right_changes)
         left_var = sum((value - left_mean) ** 2 for value in left_changes)
         right_var = sum((value - right_mean) ** 2 for value in right_changes)
-        if left_var <= 0 or right_var <= 0:
-            return 0.0
+        if not isfinite(left_var) or not isfinite(right_var):
+            return _CorrelationEvidence.unknown("non-finite change variance")
+        if left_var <= 1e-12 or right_var <= 1e-12:
+            return _CorrelationEvidence.unknown("zero or near-zero change variance")
 
         covariance = sum(
             (left_value - left_mean) * (right_value - right_mean)
             for left_value, right_value in zip(left_changes, right_changes, strict=True)
         )
-        return covariance / sqrt(left_var * right_var)
+        denominator = sqrt(left_var * right_var)
+        if not isfinite(covariance) or not isfinite(denominator) or denominator <= 0:
+            return _CorrelationEvidence.unknown("non-finite correlation calculation")
+        correlation = covariance / denominator
+        if not isfinite(correlation):
+            return _CorrelationEvidence.unknown("non-finite correlation result")
+        return _CorrelationEvidence.measured(correlation)
 
     def allow_open(
         self,
@@ -123,7 +164,14 @@ class PortfolioRiskAnalyzer:
         for other_pair_id in open_pairs:
             if other_pair_id == pair_id:
                 continue
-            if abs(self.correlation(pair_id, other_pair_id)) >= self.max_correlation:
+            evidence = self._correlation_evidence(pair_id, other_pair_id)
+            if not evidence.known:
+                return RiskDecision(
+                    False,
+                    f"unknown correlation evidence versus {other_pair_id}: {evidence.reason}",
+                )
+            correlation = evidence.correlation
+            if correlation is not None and abs(correlation) >= self.max_correlation:
                 return RiskDecision(
                     False,
                     f"pair correlation limit reached versus {other_pair_id}",

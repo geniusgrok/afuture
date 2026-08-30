@@ -27,6 +27,38 @@ jobs:
       - name: Type check
         run: python -m mypy afuture
 
+  windows-smoke:
+    name: windows-smoke
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" -c constraints/core-dev.txt
+      - run: python -m pip check
+      - run: python -m compileall -q afuture
+      - run: python -m afuture --help
+      - run: afuture validate --config config/afuture.example.toml
+      - name: Core boundary, manifest, diagnostics, and compatibility smoke
+        run: >-
+          python -m pytest -q
+          tests/test_cli_portability.py::test_core_cli_help_and_validation_do_not_import_posix_locking
+          tests/test_config.py::test_load_config_rejects_lossy_integer_values
+          tests/test_config.py::test_stationarity_compatibility_defaults_and_explicit_pair_value
+          tests/test_directional_stress90_final.py::test_fixed_input_loader_rejects_bad_input_before_any_csv_parser
+          tests/test_directional_stress90_final.py::test_fixed_input_loader_verifies_every_file_before_parsing_verified_bytes
+          tests/test_execution_aligned_policy.py::test_intraday_proxy_rejects_each_invalid_active_market_cell
+          tests/test_execution_aligned_policy.py::test_intraday_proxy_ignores_each_invalid_zero_exposure_market_cell
+          tests/test_execution_aligned_policy.py::test_intraday_proxy_accepts_return_at_exact_absolute_limit
+          tests/test_portfolio_time_alignment.py::test_insufficient_common_timestamp_buckets_reject_additional_risk
+          tests/test_directional_attribution.py::test_production_attribution_adds_flat_pathwise_robustness_diagnostics
+          tests/test_directional_stress90_final.py::test_final_matrix_assembly_rejects_manifest_with_wrong_frozen_digest
+          tests/test_workflow_contracts.py
+
   test:
     strategy:
       matrix:

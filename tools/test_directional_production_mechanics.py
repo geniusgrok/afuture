@@ -70,6 +70,21 @@ assert report["production_attribution"]["stress"]["alpha"]["gross_signal_pnl"] !
 assert report["production_attribution"]["stress"]["transaction_cost"]["total_cost"] > 0.0
 assert "entry" in report["production_attribution"]["stress"]["transaction_cost"]["by_action"]
 assert report["production_attribution"]["stress"]["capacity"]["peak_raw_target_gross_ratio"] <= 2.0
+for scenario in ("base", "stress"):
+    diagnostics = report["production_attribution"][scenario]["robustness_diagnostics"]
+    assert set(
+        (
+            "worst_calendar_quarter",
+            "worst_rolling_63_session_return",
+            "worst_rolling_63_start",
+            "worst_rolling_63_end",
+            "max_drawdown_duration_sessions",
+            "best_product",
+            "gross_pnl_without_best_product_proxy",
+            "best_calendar_month",
+        )
+    ).issubset(diagnostics)
+    assert "not a re-simulation" in diagnostics["proxy_methodology"]
 
 # Each published window is an independent account experiment. Circuit behavior itself
 # is covered by the acceptance unit tests; this smoke test only proves that an earlier

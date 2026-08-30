@@ -15,7 +15,6 @@ try:
 except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
-from .account_runtime_registry import PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH
 from .auto import AutoConfig
 from .config_validation import (
     require_bool,
@@ -29,6 +28,7 @@ from .config_validation import (
 from .directional import DirectionalConfig
 from .models import ContractInfo, ContractSpec, FeeSpec, PairConfig
 from .risk import RiskConfig
+from .runtime_paths import PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH
 
 
 @dataclass(frozen=True)

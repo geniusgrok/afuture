@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .alerts import AlertManager, AlertSink, FileAlertSink, WebhookAlertSink
 from .config import load_config
@@ -36,7 +37,9 @@ from .research import AcceptanceGate, ResearchConfig, WalkForwardRunner
 from .sample_store import MarketSampleStore
 from .scanner import SpreadScanner
 from .state import RuntimeState, StateStore
-from .stress90_session_authority import Stress90SessionOwnershipProof
+
+if TYPE_CHECKING:
+    from .stress90_session_authority import Stress90SessionOwnershipProof
 
 _LIVE_ACK = "I_UNDERSTAND_FUTURES_RISK"
 _RECOVERY_ACK = "I_VERIFIED_CTP_POSITIONS"

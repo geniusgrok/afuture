@@ -82,10 +82,13 @@ def test_opportunity_policy_is_causal_for_price_volume_and_open_interest():
     changed_close = close.copy()
     changed_volume = volume.copy()
     changed_oi = open_interest.copy()
-    changed_open.iloc[-1] *= [2.0, 0.5, 1.8, 0.6]
-    changed_close.iloc[-1] *= [3.0, 0.4, 2.5, 0.5]
+    changed_open.iloc[-1] *= [1.08, 0.93, 1.04, 0.97]
+    changed_close.iloc[-1] *= [0.96, 1.07, 0.97, 1.03]
     changed_volume.iloc[-1] *= [10.0, 0.1, 8.0, 0.2]
     changed_oi.iloc[-1] *= [0.1, 10.0, 0.2, 8.0]
+    changed_intraday = changed_close.iloc[-1] / changed_open.iloc[-1] - 1.0
+    assert bool((changed_intraday.abs() <= 0.20).all())
+    assert not changed_intraday.equals(close.iloc[-1] / open_prices.iloc[-1] - 1.0)
     changed = policy.weight_history(
         changed_open,
         changed_close,

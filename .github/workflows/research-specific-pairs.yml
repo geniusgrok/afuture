@@ -1,5 +1,6 @@
 name: research-specific-pairs
 
+# Research-only historical evidence: manual evaluation, not a forecast or promotional claim.
 # Targeted L4 roll-safe validation. The corrected evidence has completed, so this
 # workflow is a manual milestone gate rather than an inner-loop PR check.
 on:
