@@ -96,8 +96,11 @@ def test_alpha_efficiency_policy_target_is_causal_to_final_day_outcome():
 
     changed_open = open_prices.copy()
     changed_close = close.copy()
-    changed_open.iloc[-1] *= [0.5, 2.0, 0.6, 1.8]
-    changed_close.iloc[-1] *= [2.0, 0.5, 1.7, 0.7]
+    changed_open.iloc[-1] *= [1.08, 0.93, 1.04, 0.97]
+    changed_close.iloc[-1] *= [0.96, 1.07, 0.97, 1.03]
+    changed_intraday = changed_close.iloc[-1] / changed_open.iloc[-1] - 1.0
+    assert bool((changed_intraday.abs() <= 0.20).all())
+    assert not changed_intraday.equals(close.iloc[-1] / open_prices.iloc[-1] - 1.0)
     changed = policy.weight_history(changed_open, changed_close)
 
     pd.testing.assert_series_equal(baseline.iloc[-1], changed.iloc[-1])
