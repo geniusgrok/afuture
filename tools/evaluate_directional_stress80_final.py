@@ -1,4 +1,4 @@
-"""Final fixed-input Production evaluator for the validated Stress-80 candidate.
+"""Final fixed-input historical-research evaluator for the Stress-80 candidate.
 
 This module is intentionally self-contained relative to the clean promotion branch. It
 rebuilds the frozen candidate from immutable evidence and can evaluate one scenario/window
@@ -14,8 +14,10 @@ Fixed composition (no fitted parameter in this stage):
 5. strict freeze-new-risk only when completed account drawdown reaches
    30% hard-DD - 5% daily-loss reserve = 25%.
 
-Hard Production constraints and Broker/RiskManager authority are unchanged. This file is
-an offline evidence entrypoint and is not imported by live runtime wiring.
+Hard Production constraints and Broker/RiskManager authority are unchanged. ``Production``
+in retained payload role names is a compatibility label only: this file is an offline
+historical-research entrypoint and does not authorize live use, increased risk, or
+prospective evidence. It is not imported by live runtime wiring.
 """
 
 from __future__ import annotations
@@ -67,6 +69,16 @@ FIXED_INPUT_SHA256 = {
     "two_year_broad_60m.csv": "5faf112bb69dd5ddf48ed34419e2046b1c6bdd651b595ca46a46804d8317a27b",
 }
 FIXED_INPUT_BASENAMES = tuple(sorted(FIXED_INPUT_SHA256))
+
+
+def historical_research_metadata() -> dict[str, str | bool]:
+    """Return the fixed authorization boundary for archived evaluator evidence."""
+    return {
+        "evidence_scope": "historical_research_only",
+        "live_authorized": False,
+        "risk_increase_authorized": False,
+        "prospective_evidence": False,
+    }
 
 
 def continuous_close_panel(raw: pd.DataFrame, products: list[str]) -> pd.DataFrame:
@@ -288,6 +300,7 @@ def main() -> None:
     )
     payload = {
         "role": "final fixed Stress80 Production evidence",
+        **historical_research_metadata(),
         "parameter_search": False,
         "production_wiring": False,
         "candidate": audit,

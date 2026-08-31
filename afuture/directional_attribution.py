@@ -7,7 +7,7 @@ own signal selection, account state, risk authority, or order generation.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from math import isfinite
+from math import isclose, isfinite
 
 import pandas as pd
 
@@ -116,6 +116,8 @@ def _empty_robustness_diagnostics() -> dict:
     return {
         "worst_calendar_quarter": None,
         "worst_calendar_quarter_return": None,
+        "worst_calendar_quarter_observed_sessions": None,
+        "worst_calendar_quarter_is_sample_boundary": None,
         "worst_rolling_63_session_return": None,
         "worst_rolling_63_start": None,
         "worst_rolling_63_end": None,
@@ -131,7 +133,9 @@ def _empty_robustness_diagnostics() -> dict:
         "gross_pnl_without_best_product_proxy": 0.0,
         "best_calendar_month": None,
         "best_calendar_month_return": None,
-        "compounded_return_excluding_best_month_proxy": 0.0,
+        "best_calendar_month_observed_sessions": None,
+        "best_calendar_month_is_sample_boundary": None,
+        "compounded_return_excluding_best_month_proxy": None,
         "proxy_methodology": (
             "best-product removal is a fixed realized pathwise additive proxy, not a "
             "re-simulation or full counterfactual; it does not reflect equity, integer lots, "
@@ -141,8 +145,11 @@ def _empty_robustness_diagnostics() -> dict:
     }
 
 
-def _as_validated_diagnostic_daily(daily) -> pd.DataFrame:
+def _as_validated_diagnostic_daily(daily, initial_capital: float) -> pd.DataFrame:
     """Copy and chronologically order only the fields required by diagnostics."""
+    initial = float(initial_capital)
+    if not isfinite(initial) or initial <= 0.0:
+        raise ValueError("robustness diagnostics initial_capital must be positive and finite")
     if daily.empty:
         return pd.DataFrame(columns=("equity", "daily_return"))
     frame = daily.copy()
@@ -162,7 +169,28 @@ def _as_validated_diagnostic_daily(daily) -> pd.DataFrame:
             raise ValueError("robustness diagnostics daily equity must be positive")
         frame[column] = values.astype(float)
     frame.index = dates
-    return frame.sort_index()
+    frame = frame.sort_index()
+    prior_equity = initial
+    for day, row in frame.iterrows():
+        current_equity = float(row["equity"])
+        reported_return = float(row["daily_return"])
+        expected_return = current_equity / prior_equity - 1.0
+        if not isclose(
+            reported_return,
+            expected_return,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(
+                "robustness diagnostics equity-return mismatch: "
+                f"date={pd.Timestamp(day).date().isoformat()} "
+                f"reported_daily_return={reported_return} "
+                f"expected_daily_return={expected_return} "
+                f"prior_or_initial_equity={prior_equity} "
+                f"current_equity={current_equity}"
+            )
+        prior_equity = current_equity
+    return frame
 
 
 def _validated_product_gross_pnl(pnl_events) -> dict[str, float]:
@@ -233,7 +261,7 @@ def _robustness_diagnostics(
     *, daily, pnl_events, gross_signal_pnl: float, initial_capital: float
 ) -> dict:
     """Summarize offline path fragility without altering the realized simulation path."""
-    daily_frame = _as_validated_diagnostic_daily(daily)
+    daily_frame = _as_validated_diagnostic_daily(daily, initial_capital)
     result = _empty_robustness_diagnostics()
     gross_pnl_without_best = float(gross_signal_pnl)
     if not isfinite(gross_pnl_without_best):
@@ -264,12 +292,17 @@ def _robustness_diagnostics(
         return result
 
     returns = daily_frame["daily_return"]
-    quarter_returns = returns.groupby(returns.index.to_period("Q"), sort=True).apply(
-        _compounded_return
-    )
+    quarter_periods = returns.index.to_period("Q")
+    quarter_returns = returns.groupby(quarter_periods, sort=True).apply(_compounded_return)
     worst_quarter = quarter_returns.idxmin()
     result["worst_calendar_quarter"] = str(worst_quarter)
     result["worst_calendar_quarter_return"] = float(quarter_returns.loc[worst_quarter])
+    result["worst_calendar_quarter_observed_sessions"] = int(
+        (quarter_periods == worst_quarter).sum()
+    )
+    result["worst_calendar_quarter_is_sample_boundary"] = bool(
+        worst_quarter in {quarter_periods[0], quarter_periods[-1]}
+    )
 
     if len(returns) >= 63:
         window_return: float | None = None
@@ -291,14 +324,18 @@ def _robustness_diagnostics(
     result["drawdown_start"] = drawdown_start
     result["recovery_date"] = recovery_date
 
-    month_returns = returns.groupby(returns.index.to_period("M"), sort=True).apply(
-        _compounded_return
-    )
+    month_periods = returns.index.to_period("M")
+    month_returns = returns.groupby(month_periods, sort=True).apply(_compounded_return)
     best_month = month_returns.idxmax()
     result["best_calendar_month"] = str(best_month)
     result["best_calendar_month_return"] = float(month_returns.loc[best_month])
-    result["compounded_return_excluding_best_month_proxy"] = _compounded_return(
-        returns.loc[returns.index.to_period("M") != best_month]
+    result["best_calendar_month_observed_sessions"] = int((month_periods == best_month).sum())
+    result["best_calendar_month_is_sample_boundary"] = bool(
+        best_month in {month_periods[0], month_periods[-1]}
+    )
+    remaining_returns = returns.loc[month_periods != best_month]
+    result["compounded_return_excluding_best_month_proxy"] = (
+        _compounded_return(remaining_returns) if not remaining_returns.empty else None
     )
     return result
 

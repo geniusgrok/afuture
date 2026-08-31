@@ -1,4 +1,4 @@
-"""Final fixed-input Production evaluator for the validated Stress90 candidate.
+"""Final fixed-input historical-research evaluator for the Stress90 candidate.
 
 The candidate preserves the Stress80 signal, cost-eligibility, survivor allocation and
 hard-gate path.  It adds one causal state: standard target-weight HHI compared with its
@@ -6,7 +6,9 @@ strictly prior expanding median.  Weak-leadership days freeze only new entries a
 same-sign increases; reduction-first actions remain executable.  The fixed 25% account
 drawdown reserve uses the full completed causal account path.
 
-This is an offline Production evidence entrypoint, not live runtime wiring.
+``Production`` in retained payload role names is a compatibility label only. This is an
+offline historical-research evidence entrypoint, not live runtime wiring, prospective
+evidence, permission to increase risk, or permission to trade live.
 """
 
 from __future__ import annotations
@@ -49,6 +51,13 @@ EXPECTED_CONSTRAINTS = {
     "broker_ctp_truth_unchanged": True,
     "risk_manager_authority_unchanged": True,
 }
+
+
+def _validate_historical_research_metadata(payload: dict) -> None:
+    for field, expected in stress80.historical_research_metadata().items():
+        actual = payload.get(field)
+        if type(actual) is not type(expected) or actual != expected:
+            raise ValueError(f"Stress90 matrix research authorization {field} is invalid")
 
 
 def _validated_input_manifest(raw: object) -> list[dict[str, str | int]]:
@@ -140,6 +149,7 @@ def assemble_matrix_payload(payloads: Iterable[dict]) -> dict:
     results: dict[tuple[str, str], dict] = {}
     input_manifest: list[dict[str, str | int]] | None = None
     for payload in payloads:
+        _validate_historical_research_metadata(payload)
         if payload.get("role") != "final fixed Stress90 Production evidence":
             raise ValueError("unexpected Stress90 matrix payload role")
         if payload.get("parameter_search") is not False:
@@ -168,6 +178,7 @@ def assemble_matrix_payload(payloads: Iterable[dict]) -> dict:
     )
     return {
         "role": "assembled final Stress90 Production matrix",
+        **stress80.historical_research_metadata(),
         "candidate_weight_sha256": EXPECTED_CANDIDATE_WEIGHT_SHA256,
         "input_manifest": input_manifest,
         "results": {
@@ -195,6 +206,7 @@ def main() -> None:
         raise AssertionError("final Stress90 candidate weights changed")
     payload = {
         "role": "final fixed Stress90 Production evidence",
+        **stress80.historical_research_metadata(),
         "parameter_search": False,
         "production_wiring": False,
         "candidate": audit,

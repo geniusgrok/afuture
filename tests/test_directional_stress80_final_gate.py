@@ -4,6 +4,22 @@ def _api():
     return promotion_gate
 
 
+def test_historical_research_authorization_boundary_is_fixed_and_fresh():
+    from tools.evaluate_directional_stress80_final import historical_research_metadata
+
+    first = historical_research_metadata()
+    second = historical_research_metadata()
+
+    assert first == {
+        "evidence_scope": "historical_research_only",
+        "live_authorized": False,
+        "risk_increase_authorized": False,
+        "prospective_evidence": False,
+    }
+    first["live_authorized"] = True
+    assert second["live_authorized"] is False
+
+
 def _entry(annualized=0.90, dd=-0.20, halted=False, gross=1.5, rejects=0, net_bps=20.0):
     return {
         "stats": {

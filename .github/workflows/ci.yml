@@ -4,7 +4,11 @@ name: ci
 # evidence remains in the manual workflows below; this workflow protects every PR.
 on:
   push:
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read

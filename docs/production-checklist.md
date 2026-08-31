@@ -15,6 +15,7 @@
 - [x] 标准与压力情景的账户模拟均未触发保证金拒绝或硬停机。
 - [x] 样本外区间已经被观察，不再标记为纯净样本外。
 - [x] 历史 evidence 如实保留当时 `production_wiring=false`，没有倒写成当时已接入。
+- [x] 历史 evaluator 和组装矩阵显式固定 `historical_research_only`，并拒绝 live、扩大风险或 prospective 授权；`passed` 不等于 activation。
 - [x] 完整输入、分段结果和失败路线已保存在 [`stress90-final-evidence.md`](stress90-final-evidence.md)。
 - [ ] 在目标 workspace 用五个固定输入重新完成 Base、batch/incremental 逐日 parity，并得到 candidate SHA `8e38dbf...9f28`。
 - [ ] 新发生、此前未参与任何选择/调参的未来数据持续验证。

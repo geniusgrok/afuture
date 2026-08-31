@@ -73,6 +73,8 @@ def test_production_attribution_adds_flat_pathwise_robustness_diagnostics():
 
     assert diagnostics["worst_calendar_quarter"] == "2026Q1"
     assert diagnostics["worst_calendar_quarter_return"] == pytest.approx(0.008)
+    assert diagnostics["worst_calendar_quarter_observed_sessions"] == 27
+    assert diagnostics["worst_calendar_quarter_is_sample_boundary"] is True
     assert diagnostics["worst_rolling_63_session_return"] == pytest.approx(rolling.min())
     assert (
         diagnostics["worst_rolling_63_start"]
@@ -94,6 +96,8 @@ def test_production_attribution_adds_flat_pathwise_robustness_diagnostics():
     assert diagnostics["gross_pnl_without_best_product_proxy"] == pytest.approx(140.0)
     assert diagnostics["best_calendar_month"] == "2025-11"
     assert diagnostics["best_calendar_month_return"] == pytest.approx(0.1077)
+    assert diagnostics["best_calendar_month_observed_sessions"] == 20
+    assert diagnostics["best_calendar_month_is_sample_boundary"] is True
     assert diagnostics["compounded_return_excluding_best_month_proxy"] == pytest.approx(0.008)
     assert "pathwise additive" in diagnostics["proxy_methodology"]
     assert "not a re-simulation or full counterfactual" in diagnostics["proxy_methodology"]
@@ -117,6 +121,8 @@ def test_robustness_diagnostics_handle_short_empty_and_unrecovered_paths():
         daily=pd.DataFrame(), events=pd.DataFrame(), initial_capital=1_000_000.0
     )["robustness_diagnostics"]
     assert empty["worst_calendar_quarter"] is None
+    assert empty["worst_calendar_quarter_observed_sessions"] is None
+    assert empty["worst_calendar_quarter_is_sample_boundary"] is None
     assert empty["worst_rolling_63_session_return"] is None
     assert empty["worst_rolling_63_start"] is None
     assert empty["worst_rolling_63_end"] is None
@@ -125,7 +131,9 @@ def test_robustness_diagnostics_handle_short_empty_and_unrecovered_paths():
     assert empty["best_product"] is None
     assert empty["gross_pnl_without_best_product_proxy"] == 0.0
     assert empty["best_calendar_month"] is None
-    assert empty["compounded_return_excluding_best_month_proxy"] == 0.0
+    assert empty["best_calendar_month_observed_sessions"] is None
+    assert empty["best_calendar_month_is_sample_boundary"] is None
+    assert empty["compounded_return_excluding_best_month_proxy"] is None
 
     dates = pd.date_range("2026-01-05", periods=4, freq="B")
     daily = pd.DataFrame(
@@ -139,6 +147,107 @@ def test_robustness_diagnostics_handle_short_empty_and_unrecovered_paths():
     assert diagnostics["max_drawdown_duration_sessions"] == 3
     assert diagnostics["drawdown_start"] == "2026-01-06"
     assert diagnostics["recovery_date"] is None
+    assert diagnostics["compounded_return_excluding_best_month_proxy"] is None
+
+
+@pytest.mark.parametrize(
+    ("daily", "initial_capital", "mismatch_date", "expected_return"),
+    [
+        (
+            pd.DataFrame(
+                {"equity": [110.0], "daily_return": [0.0]},
+                index=[pd.Timestamp("2026-01-05")],
+            ),
+            100.0,
+            "2026-01-05",
+            0.1,
+        ),
+        (
+            pd.DataFrame(
+                {"equity": [100.0, 121.0], "daily_return": [0.0, 0.1]},
+                index=pd.to_datetime(["2026-01-05", "2026-01-06"]),
+            ),
+            100.0,
+            "2026-01-06",
+            0.21,
+        ),
+    ],
+)
+def test_robustness_diagnostics_rejects_equity_return_path_mismatch(
+    daily, initial_capital, mismatch_date, expected_return
+):
+    from afuture.directional_attribution import summarize_production_attribution
+
+    with pytest.raises(ValueError, match="equity-return mismatch") as error:
+        summarize_production_attribution(
+            daily=daily,
+            events=pd.DataFrame(),
+            initial_capital=initial_capital,
+        )
+
+    message = str(error.value)
+    assert f"date={mismatch_date}" in message
+    assert "reported_daily_return=" in message
+    assert "expected_daily_return=" in message
+    assert str(expected_return)[0:3] in message
+    assert "prior_or_initial_equity=100.0" in message
+    assert "current_equity=" in message
+
+
+def test_robustness_diagnostics_accepts_only_strict_floating_point_path_tolerance():
+    from afuture.directional_attribution import summarize_production_attribution
+
+    daily = pd.DataFrame(
+        {"equity": [110.0], "daily_return": [0.1 + 5e-13]},
+        index=[pd.Timestamp("2026-01-05")],
+    )
+
+    diagnostics = summarize_production_attribution(
+        daily=daily,
+        events=pd.DataFrame(),
+        initial_capital=100.0,
+    )["robustness_diagnostics"]
+
+    assert diagnostics["best_calendar_month"] == "2026-01"
+
+
+@pytest.mark.parametrize("initial_capital", [0.0, -1.0, float("nan"), float("inf")])
+def test_robustness_diagnostics_rejects_nonpositive_or_nonfinite_initial_capital(
+    initial_capital,
+):
+    from afuture.directional_attribution import summarize_production_attribution
+
+    with pytest.raises(ValueError, match="initial_capital.*positive.*finite"):
+        summarize_production_attribution(
+            daily=pd.DataFrame(),
+            events=pd.DataFrame(),
+            initial_capital=initial_capital,
+        )
+
+
+def test_robustness_diagnostics_marks_only_observed_sample_edge_periods():
+    from afuture.directional_attribution import summarize_production_attribution
+
+    dates = pd.to_datetime(["2026-01-05", "2026-04-06", "2026-07-06"])
+    returns = pd.Series([-0.1, -0.2, 0.3], index=dates)
+    daily = pd.DataFrame(
+        {"equity": 100.0 * (1.0 + returns).cumprod(), "daily_return": returns},
+        index=dates,
+    )
+
+    diagnostics = summarize_production_attribution(
+        daily=daily,
+        events=pd.DataFrame(),
+        initial_capital=100.0,
+    )["robustness_diagnostics"]
+
+    assert diagnostics["worst_calendar_quarter"] == "2026Q2"
+    assert diagnostics["worst_calendar_quarter_observed_sessions"] == 1
+    assert diagnostics["worst_calendar_quarter_is_sample_boundary"] is False
+    assert diagnostics["best_calendar_month"] == "2026-07"
+    assert diagnostics["best_calendar_month_observed_sessions"] == 1
+    assert diagnostics["best_calendar_month_is_sample_boundary"] is True
+    assert diagnostics["compounded_return_excluding_best_month_proxy"] == pytest.approx(-0.28)
 
 
 def test_robustness_diagnostics_select_only_positive_best_product_and_preserve_gross_proxy():
@@ -240,7 +349,7 @@ def test_robustness_diagnostics_fail_closed_when_compounded_return_overflows():
 
     dates = pd.date_range("2026-01-05", periods=2, freq="B")
     daily = pd.DataFrame(
-        {"equity": [100.0, 100.0], "daily_return": [1e308, 1e308]},
+        {"equity": [1.0, 1e308], "daily_return": [1e308, 1e308]},
         index=dates,
     )
 
@@ -248,7 +357,7 @@ def test_robustness_diagnostics_fail_closed_when_compounded_return_overflows():
         summarize_production_attribution(
             daily=daily,
             events=pd.DataFrame(),
-            initial_capital=100.0,
+            initial_capital=1e-308,
         )
 
 

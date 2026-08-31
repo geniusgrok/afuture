@@ -31,6 +31,8 @@
 
 - [`docs/superpowers/specs/2026-08-25-stress90-live-productionization-design.md`](superpowers/specs/2026-08-25-stress90-live-productionization-design.md) — Stress-90 productionization 的批准设计和安全边界。
 - [`docs/superpowers/plans/2026-08-25-stress90-live-productionization.md`](superpowers/plans/2026-08-25-stress90-live-productionization.md) — 分阶段 TDD、验证、review 和交付计划。
+- [`docs/superpowers/specs/2026-08-31-signal-evidence-gate-closure-design.md`](superpowers/specs/2026-08-31-signal-evidence-gate-closure-design.md) — 信号 UNKNOWN、诊断证据、研究授权与仓库门禁闭环设计。
+- [`docs/superpowers/plans/2026-08-31-signal-evidence-gate-closure.md`](superpowers/plans/2026-08-31-signal-evidence-gate-closure.md) — 本轮分阶段 TDD、验证、审查、合并与 ruleset 计划。
 
 ## 当前研究证据
 

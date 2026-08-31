@@ -1,3 +1,4 @@
+import hashlib
 import sys
 import types
 from pathlib import Path
@@ -7,11 +8,17 @@ import pandas as pd
 import pytest
 
 from afuture.execution_aligned_policy import (
+    _EXECUTION_TEMPLATE_IDS,
+    _EXECUTION_TEMPLATES,
     META_ANNUALIZED_WEIGHT,
     META_SHARPE_WEIGHT,
     ExecutionAlignedAggressivePolicy,
     _clean_prices,
     _intraday_proxy_stream,
+    _normalized_price,
+    _parse_template_id,
+    _signal_scores,
+    _template_weight_path,
 )
 
 
@@ -38,6 +45,128 @@ def _proxy_frames(*, open_a=100.0, close_a=110.0, weight_a=1.0):
     close = pd.DataFrame({"A": [close_a], "M": [110.0]}, index=index)
     weights = pd.DataFrame({"A": [weight_a], "M": [1.0 - weight_a]}, index=index)
     return open_prices, close, weights
+
+
+def _frame_digest(items: list[tuple[str, pd.DataFrame]]) -> str:
+    digest = hashlib.sha256()
+    for name, frame in items:
+        digest.update(name.encode())
+        digest.update(frame.to_csv(float_format="%.17g", na_rep="NaN").encode())
+    return digest.hexdigest()
+
+
+def test_normalized_signal_price_breaks_and_restarts_after_unknown_return():
+    index = pd.date_range("2026-01-01", periods=6, freq="B")
+    returns = pd.DataFrame(
+        {"A": [float("nan"), 0.10, float("nan"), 0.20, 0.0, 0.10]},
+        index=index,
+    )
+
+    price = _normalized_price(returns)
+
+    expected = pd.DataFrame(
+        {"A": [1.0, 1.10, float("nan"), 1.20, 1.20, 1.32]},
+        index=index,
+    )
+    pd.testing.assert_frame_equal(price, expected)
+
+
+@pytest.mark.parametrize("family", ["moving_average", "breakout"])
+def test_price_path_signal_does_not_treat_unknown_window_as_observed_zero(family):
+    index = pd.date_range("2026-01-01", periods=150, freq="B")
+    observed = pd.DataFrame(
+        {"A": [float("nan")] + [0.01 if i % 2 else -0.005 for i in range(1, 150)]},
+        index=index,
+    )
+    observed_zero = observed.copy()
+    observed_zero.iloc[70, 0] = 0.0
+    unknown = observed.copy()
+    unknown.iloc[70, 0] = float("nan")
+    template = _parse_template_id(f"{family}_s60_f0_k1_r1_g2")
+
+    zero_scores = _signal_scores(observed_zero, template)
+    unknown_scores = _signal_scores(unknown, template)
+
+    assert np.isfinite(zero_scores.iloc[100, 0])
+    assert np.isnan(unknown_scores.iloc[100, 0])
+    assert np.isfinite(unknown_scores.iloc[130, 0])
+
+
+@pytest.mark.parametrize("family", ["moving_average", "breakout"])
+def test_price_path_signal_masks_over_limit_close_return_instead_of_using_zero(family):
+    index = pd.date_range("2026-01-01", periods=150, freq="B")
+    returns = pd.DataFrame(
+        {"A": [float("nan")] + [0.01 if i % 2 else -0.005 for i in range(1, 150)]},
+        index=index,
+    )
+    returns.iloc[70, 0] = 0.21
+    returns = returns.mask(returns.abs() > 0.20)
+    template = _parse_template_id(f"{family}_s60_f0_k1_r1_g2")
+
+    scores = _signal_scores(returns, template)
+
+    assert np.isnan(scores.iloc[100, 0])
+
+
+def test_template_weight_path_clears_unknown_lagged_target_until_next_rebalance():
+    index = pd.date_range("2026-01-01", periods=9, freq="B")
+    returns = pd.DataFrame({"A": 0.01, "M": 0.0}, index=index)
+    returns.loc[index[5], "A"] = float("nan")
+    template = _parse_template_id("momentum_s1_f0_k1_r5_g2")
+
+    weights = _template_weight_path(returns, template)
+
+    assert weights.loc[index[5], "A"] == 2.0
+    assert weights.loc[index[6], "A"] == 0.0
+    assert weights.loc[index[7], "A"] == 0.0
+    assert weights.loc[index[7], "M"] == 0.0
+
+
+def test_template_weight_path_preserves_legal_zero_volatility_plateau_off_cycle():
+    index = pd.date_range("2026-01-01", periods=65, freq="B")
+    returns = pd.DataFrame(
+        {
+            "A": [float("nan")]
+            + [0.01 if position % 2 else -0.002 for position in range(1, 41)]
+            + [0.0] * 24,
+        },
+        index=index,
+    )
+    template = _parse_template_id("tsmom_s20_f0_k1_r10_g2")
+
+    scores = _signal_scores(returns, template)
+    weights = _template_weight_path(returns, template)
+
+    assert np.isfinite(scores.loc[index[59], "A"])
+    assert np.isnan(scores.loc[index[60], "A"])
+    assert abs(weights.loc[index[60], "A"]) == 2.0
+    assert weights.loc[index[61], "A"] == weights.loc[index[60], "A"]
+
+
+def test_complete_legal_history_preserves_all_frozen_signal_and_weight_digests():
+    open_prices, close = _history()
+    returns = close.pct_change(fill_method=None)
+    scores = [
+        (template_id, _signal_scores(returns, template))
+        for template_id, template in zip(_EXECUTION_TEMPLATE_IDS, _EXECUTION_TEMPLATES, strict=True)
+    ]
+    weights = [
+        (template_id, _template_weight_path(returns, template))
+        for template_id, template in zip(_EXECUTION_TEMPLATE_IDS, _EXECUTION_TEMPLATES, strict=True)
+    ]
+    final = ExecutionAlignedAggressivePolicy(products=tuple(close.columns)).weight_history(
+        open_prices, close
+    )
+
+    assert (
+        _frame_digest(scores) == "217869531fbc6c142b01be0b83fde12f545767d96c8d7be46866dd256639d18f"
+    )
+    assert (
+        _frame_digest(weights) == "b29a5914c9af875e771227e66035861e188b369b7d1ce9f65bb1a52c5028dcdf"
+    )
+    assert _frame_digest([("final", final)]) == (
+        "26abdb2ac151e8e4bc9831b67bdda1f32496e47e2d15e0e6ffdfb148e0a85378"
+    )
 
 
 @pytest.mark.parametrize(
