@@ -1,6 +1,6 @@
 # 当前离线压力研究证据（历史代号 Stress-90）
 
-> 阅读说明：`Stress-90` 的“90”表示本轮预先设定的压力情景年化收益目标不低于 90%，不是 90 个基点成本、90% 保证金或实盘风险等级。标准情景使用单边 5 个基点成本和固定 12% 保证金比例假设；压力情景使用单边 15 个基点和 15% 假设。本文保留文件名、输出字段和研究代号，便于与程序结果核对；术语定义见 [`glossary.md`](glossary.md)。该历史 checkpoint 的状态为 `production_wiring=false`，候选当时没有接入实盘；后续 productionization 不倒写这一事实。
+> 阅读说明：`Stress-90` 的“90”表示本轮预先设定的压力情景年化收益目标不低于 90%，不是 90 个基点成本、90% 保证金或实盘风险等级。标准情景使用单边 5 个基点成本和固定 12% 保证金比例假设；压力情景使用单边 15 个基点和 15% 假设。本文保留文件名、输出字段和研究代号，便于与程序结果核对；术语定义见 [`glossary.md`](glossary.md)。该历史 checkpoint 的状态为 `production_wiring=false`，候选当时没有接入实盘；后续 productionization 不倒写这一事实。历史 evaluator 保留的 `Production` role 名称只是兼容标签，输出固定声明 `evidence_scope="historical_research_only"`、`live_authorized=false`、`risk_increase_authorized=false`、`prospective_evidence=false`。
 
 ## 2026-08-27 productionization 验证记录
 
@@ -42,7 +42,7 @@ Broker 构造或状态推进前失败关闭。目标机 CTP ABI、multi-day Shad
 
 本轮将“基于历史集中度冻结新增风险”确定为当前离线研究候选。它超过预设的压力情景 90% 年化目标，使两个更早历史窗口转为正收益，并保持实盘运行链不变。
 
-这是一份固定输入下的研究结论，不是实盘收益承诺，也不代表离线策略已经获得真实资金权限。
+这是一份固定输入下的研究结论，不是实盘收益承诺，也不代表离线策略已经获得真实资金权限。文中的门禁 `passed` 只表示冻结历史研究契约通过，不授权实盘、扩大风险、前瞻验证或投产。
 
 ## 固定候选
 
@@ -108,7 +108,7 @@ python tools/evaluate_directional_stress90_final.py --scenario stress --window o
 python tools/evaluate_directional_stress90_final.py --scenario stress --window full_recent --output runtime/stress90/stress_full_recent.json
 ```
 
-每个输出都会校验候选摘要和固定风险约束。可用以下命令组装最终门：
+每个输出都会校验候选摘要、固定风险约束，并携带上述四个研究授权边界字段。组装器要求每个窗口的字段值和精确类型都一致，否则失败关闭。可用以下命令组装最终门：
 
 ```bash
 python - <<'PY'
@@ -124,7 +124,7 @@ print(json.dumps(matrix["gate"], ensure_ascii=False, indent=2))
 PY
 ```
 
-预期最终输出为 `passed: true` 且 `reasons` 为空。执行环境、代码版本、输入摘要或依赖版本变化时，应把结果视为新的证据，而不是强行解释为数值误差。
+预期历史研究输出为 `passed: true` 且 `reasons` 为空；这不改变四个否定授权字段。执行环境、代码版本、输入摘要或依赖版本变化时，应把结果视为新的证据，而不是强行解释为数值误差。
 
 ## 完整账户模拟矩阵
 

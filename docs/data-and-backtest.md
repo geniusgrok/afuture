@@ -115,11 +115,17 @@ raw CTP 60m observer 位于 Tick 转换成功后、manager Tick coalescing 前�
 
 五个固定输入必须在任何解析前逐一验证精确 SHA-256；每个历史窗口的 `input_manifest`（basename、SHA-256 和 size）是该窗口结果的证据身份。组装窗口时 manifest 必须完整且一致，不能用同名、不同内容或不同大小的文件替代。
 
+Stress-80/90 的单窗口输出和 Stress-90 组装矩阵还必须携带固定授权边界：
+`evidence_scope="historical_research_only"`、`live_authorized=false`、
+`risk_increase_authorized=false`、`prospective_evidence=false`。任一字段缺失、类型错误或
+值改变都必须失败关闭。矩阵的 `passed: true` 只表示冻结输入下的历史研究门通过，不是
+实盘、扩大风险、前瞻证据或投产授权。
+
 `112.100053%` 不是未来收益承诺。96-template pool 在已观察历史上存在 selection bias；候选固定后新发生的数据才是真正 forward evidence。live 使用 CTP raw 60m 后，必须通过 Shadow comparator 解释它与历史 vendor 数据在 first/last、volume、dominant 和 flow 上的差异。
 
 当前 candidate 必须保持冻结：前瞻观察只记录此前未参与选择或调参的新数据。若观察到显著恶化，优先降低风险或停止风险暴露；不得在同一段已观察历史上重新调参、替换候选或追逐回报。任何新的假设或研究都必须留在隔离的 research-only 历史工作流和证据中，不能改变已冻结 candidate，也不能自动进入 Shadow、测试柜台或 live 路径。
 
-robustness diagnostics 是只读诊断：产品或月份移除仅是既有实现路径上的 pathwise proxy，不是重跑、反事实再配置或新的候选选择；它不影响 gate、候选、仓位、风险状态或未来订单。
+robustness diagnostics 是只读诊断：产品或月份移除仅是既有实现路径上的 pathwise proxy，不是重跑、反事实再配置或新的候选选择；它不影响 gate、候选、仓位、风险状态或未来订单。诊断调用面只适用于没有外部入金、出金或其他现金流的账户路径，并严格校验每一日 `daily_return == current_equity / prior_or_initial_equity - 1`（浮点容差 `1e-12`）；不一致时失败关闭。最差季度和最佳月份同时报告样本内实际观察交易日数，且 boundary 标志只表示该周期是否触及样本首尾，不声称拥有完整自然月或自然季。移除最佳月份后没有剩余观测时返回 `null`，而不是伪造零收益。
 
 ## 8. 何时重跑昂贵验证
 

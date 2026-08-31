@@ -6,6 +6,15 @@ import pandas as pd
 import pytest
 
 
+def _research_boundary():
+    return {
+        "evidence_scope": "historical_research_only",
+        "live_authorized": False,
+        "risk_increase_authorized": False,
+        "prospective_evidence": False,
+    }
+
+
 def _result(scenario, window, annualized):
     return {
         "scenario": scenario,
@@ -31,6 +40,7 @@ def _payload(scenario, window, annualized):
     )
 
     return {
+        **_research_boundary(),
         "role": "final fixed Stress90 Production evidence",
         "parameter_search": False,
         "production_wiring": False,
@@ -48,6 +58,16 @@ def _payload(scenario, window, annualized):
         "constraints": EXPECTED_CONSTRAINTS,
         "result": _result(scenario, window, annualized),
     }
+
+
+def _required_payloads():
+    return [
+        _payload("base", "full_recent", 1.20),
+        _payload("stress", "train", 0.10),
+        _payload("stress", "validation", 1.0),
+        _payload("stress", "oos", 0.10),
+        _payload("stress", "full_recent", 0.90),
+    ]
 
 
 def test_concentration_seed_is_strictly_before_window_and_skips_inactive_targets():
@@ -70,18 +90,45 @@ def test_concentration_seed_is_strictly_before_window_and_skips_inactive_targets
 def test_final_matrix_assembly_applies_frozen_gate_to_independent_windows():
     from tools.evaluate_directional_stress90_final import assemble_matrix_payload
 
-    payloads = [
-        _payload("base", "full_recent", 1.20),
-        _payload("stress", "train", 0.10),
-        _payload("stress", "validation", 1.0),
-        _payload("stress", "oos", 0.10),
-        _payload("stress", "full_recent", 0.90),
-    ]
+    payloads = _required_payloads()
 
     matrix = assemble_matrix_payload(payloads)
 
     assert matrix["gate"] == {"passed": True, "reasons": []}
     assert len(matrix["results"]) == 5
+    assert {key: matrix[key] for key in _research_boundary()} == _research_boundary()
+
+
+@pytest.mark.parametrize("missing", tuple(_research_boundary()))
+def test_final_matrix_assembly_rejects_missing_research_authorization_field(missing):
+    from tools.evaluate_directional_stress90_final import assemble_matrix_payload
+
+    payloads = _required_payloads()
+    del payloads[0][missing]
+
+    with pytest.raises(ValueError, match=f"research authorization.*{missing}"):
+        assemble_matrix_payload(payloads)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("evidence_scope", "production"),
+        ("evidence_scope", False),
+        ("live_authorized", True),
+        ("live_authorized", 0),
+        ("risk_increase_authorized", True),
+        ("prospective_evidence", True),
+    ],
+)
+def test_final_matrix_assembly_rejects_wrong_research_authorization_value(field, value):
+    from tools.evaluate_directional_stress90_final import assemble_matrix_payload
+
+    payloads = _required_payloads()
+    payloads[0][field] = value
+
+    with pytest.raises(ValueError, match=f"research authorization.*{field}"):
+        assemble_matrix_payload(payloads)
 
 
 def test_final_matrix_assembly_rejects_duplicate_window():
