@@ -17,7 +17,11 @@
 - [x] 历史 evidence 如实保留当时 `production_wiring=false`，没有倒写成当时已接入。
 - [x] 历史 evaluator 和组装矩阵显式固定 `historical_research_only`，并拒绝 live、扩大风险或 prospective 授权；`passed` 不等于 activation。
 - [x] 完整输入、分段结果和失败路线已保存在 [`stress90-final-evidence.md`](stress90-final-evidence.md)。
-- [ ] 在目标 workspace 用五个固定输入重新完成 Base、batch/incremental 逐日 parity，并得到 candidate SHA `8e38dbf...9f28`。
+- [x] 五份固定历史输入已按冻结 size/SHA 恢复，且未用新下载市场数据替代；脱敏归档收据见 [`stress90-fixed-input-github-vault-receipt.md`](stress90-fixed-input-github-vault-receipt.md)。
+- [x] 在隔离空 workspace 用五个固定输入完成 current fixed-archive compatibility、Base 与 batch/incremental parity，并得到 candidate SHA `8e38dbf...9f28`。
+- [x] Stress-90 七窗口矩阵已复验，historical gate 通过且 `reasons=[]`。
+- [x] 五份原始字节和验证证据已归档到已核验为 private 的 GitHub vault；公开仓库不含原始 CSV。
+- [x] 已从新的空目录仅通过私库 Git objects 恢复并复核五个 SHA、candidate、七窗口 matrix 和 parity；执行环境未暴露普通命令行 clone credential，收据如实记录 API transport。
 - [ ] 新发生、此前未参与任何选择/调参的未来数据持续验证。
 - [ ] 未来显著恶化时优先降低或关闭风险，不在同一历史上无限调参。
 
@@ -261,7 +265,7 @@
 - [x] 失败路线保留在证据文档，没有通过事后调整参数挽救。
 - [x] 当前代码已通过独立设计把候选接成显式可选 runtime policy；历史 evidence 仍保留当时未接线的事实。
 - [x] 代码测试覆盖启动预热、重启、陈旧数据、交易时段、换月、exactly-once 和线上/离线共享 primitives。
-- [ ] 固定五份输入在部署 workspace 可用并完成完整 Stress-90/Stress-80 矩阵复现。
+- [ ] 固定五份输入在部署 workspace 可用并完成完整 Stress-90/Stress-80 矩阵复现（私有 vault 的隔离研究恢复已完成，但不等同于目标部署 workspace）。
 - [ ] 多日 CTP Shadow 解释历史 vendor 与 live 60m 数据源差异。
 - [ ] 不以离线年化通过为由跳过 Shadow、测试柜台、小资金或未来新数据。
 

@@ -73,7 +73,10 @@ FIXED_INPUT_BASENAMES = tuple(sorted(FIXED_INPUT_SHA256))
 
 def historical_research_metadata() -> dict[str, str | bool]:
     """Return the fixed authorization boundary for archived evaluator evidence."""
+    from tools.stress90_fixed_archive_compat import HISTORICAL_REPLAY_COMMIT
+
     return {
+        "historical_replay_commit": HISTORICAL_REPLAY_COMMIT,
         "evidence_scope": "historical_research_only",
         "live_authorized": False,
         "risk_increase_authorized": False,
@@ -285,16 +288,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
+    from tools.stress90_fixed_archive_compat import replay_fixed_archive
+
     runtime = Path("runtime")
-    specific, continuous, base_weights, bars, input_manifest = _load_inputs(runtime)
-    candidate, audit = build_final_candidate_weights(
-        base_weights=base_weights,
-        bars_60m=bars,
-        continuous_raw=continuous,
-    )
+    replay = replay_fixed_archive(runtime)
     result = evaluate_window(
-        specific_raw=specific,
-        candidate_weights=candidate,
+        specific_raw=replay.specific_raw,
+        candidate_weights=replay.candidate_weights,
         scenario=args.scenario,
         window=args.window,
     )
@@ -303,8 +303,8 @@ def main() -> None:
         **historical_research_metadata(),
         "parameter_search": False,
         "production_wiring": False,
-        "candidate": audit,
-        "input_manifest": input_manifest,
+        "candidate": dict(replay.audit),
+        "input_manifest": list(replay.input_manifest),
         "result": result,
         "constraints": {
             "target_and_realized_gross_cap": MAX_GROSS,

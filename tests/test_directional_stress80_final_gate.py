@@ -12,6 +12,7 @@ def test_historical_research_authorization_boundary_is_fixed_and_fresh():
 
     assert first == {
         "evidence_scope": "historical_research_only",
+        "historical_replay_commit": "9c51195042393304eb05d783d1895a165f99b0a7",
         "live_authorized": False,
         "risk_increase_authorized": False,
         "prospective_evidence": False,

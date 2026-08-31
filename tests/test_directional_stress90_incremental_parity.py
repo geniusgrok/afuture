@@ -243,25 +243,20 @@ def test_offline_final_evaluator_exposes_shared_policy_and_daily_decision_identi
     reason="immutable five-file Stress-90 archive is not present",
 )
 def test_fixed_archive_replays_the_historical_candidate_digest():
-    from tools.evaluate_directional_stress80_final import (
-        _load_inputs,
-        build_final_candidate_weights,
-    )
+    from tools.stress90_fixed_archive_compat import replay_fixed_archive
 
     runtime = Path("runtime")
     for name, expected in _FIXED_INPUT_SHA256.items():
         assert hashlib.sha256((runtime / name).read_bytes()).hexdigest() == expected
-    _specific, continuous, base_weights, bars, input_manifest = _load_inputs(runtime)
+    replay = replay_fixed_archive(runtime)
 
-    assert [item["basename"] for item in input_manifest] == sorted(_FIXED_INPUT_SHA256)
-
-    candidate, audit = build_final_candidate_weights(
-        base_weights=base_weights,
-        bars_60m=bars,
-        continuous_raw=continuous,
-    )
-
-    assert not candidate.empty
-    assert audit["candidate_weight_sha256"] == (
+    assert [item["basename"] for item in replay.input_manifest] == sorted(_FIXED_INPUT_SHA256)
+    assert not replay.candidate_weights.empty
+    assert replay.audit["candidate_weight_sha256"] == (
         "8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28"
     )
+    assert replay.audit["historical_replay_commit"] == ("9c51195042393304eb05d783d1895a165f99b0a7")
+    assert replay.audit["evidence_scope"] == "historical_research_only"
+    assert replay.audit["live_authorized"] is False
+    assert replay.audit["risk_increase_authorized"] is False
+    assert replay.audit["prospective_evidence"] is False

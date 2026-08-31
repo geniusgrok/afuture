@@ -8,6 +8,7 @@ import pytest
 
 def _research_boundary():
     return {
+        "historical_replay_commit": "9c51195042393304eb05d783d1895a165f99b0a7",
         "evidence_scope": "historical_research_only",
         "live_authorized": False,
         "risk_increase_authorized": False,
@@ -38,6 +39,7 @@ def _payload(scenario, window, annualized):
         EXPECTED_CANDIDATE_WEIGHT_SHA256,
         EXPECTED_CONSTRAINTS,
     )
+    from tools.stress90_fixed_archive_compat import FIXED_INPUT_SIZE_BYTES
 
     return {
         **_research_boundary(),
@@ -48,7 +50,11 @@ def _payload(scenario, window, annualized):
             "candidate_weight_sha256": EXPECTED_CANDIDATE_WEIGHT_SHA256,
         },
         "input_manifest": [
-            {"basename": basename, "sha256": digest, "size_bytes": 1}
+            {
+                "basename": basename,
+                "sha256": digest,
+                "size_bytes": FIXED_INPUT_SIZE_BYTES[basename],
+            }
             for basename, digest in sorted(
                 __import__(
                     "tools.evaluate_directional_stress80_final", fromlist=["x"]
@@ -195,14 +201,14 @@ def test_final_matrix_assembly_rejects_duplicate_and_extra_manifest_basenames():
         assemble_matrix_payload([extra])
 
 
-def test_final_matrix_assembly_rejects_different_window_manifests():
+def test_final_matrix_assembly_rejects_altered_window_manifest_size():
     from tools.evaluate_directional_stress90_final import assemble_matrix_payload
 
     first = _payload("base", "full_recent", 1.20)
     second = _payload("stress", "train", 0.10)
-    second["input_manifest"][0]["size_bytes"] = 2
+    second["input_manifest"][0]["size_bytes"] += 1
 
-    with pytest.raises(ValueError, match="input manifests differ"):
+    with pytest.raises(ValueError, match="size"):
         assemble_matrix_payload([first, second])
 
 
@@ -213,7 +219,7 @@ def test_final_matrix_assembly_rejects_invalid_manifest_size(invalid_size):
     payload = _payload("base", "full_recent", 1.20)
     payload["input_manifest"][0]["size_bytes"] = invalid_size
 
-    with pytest.raises(ValueError, match="size_bytes"):
+    with pytest.raises(ValueError, match="size"):
         assemble_matrix_payload([payload])
 
 
