@@ -195,25 +195,22 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
+    from tools.stress90_fixed_archive_compat import replay_fixed_archive
+
     runtime = Path("runtime")
-    specific, continuous, base_weights, bars, input_manifest = stress80._load_inputs(runtime)
-    candidate, audit = stress80.build_final_candidate_weights(
-        base_weights=base_weights,
-        bars_60m=bars,
-        continuous_raw=continuous,
-    )
-    if audit["candidate_weight_sha256"] != EXPECTED_CANDIDATE_WEIGHT_SHA256:
+    replay = replay_fixed_archive(runtime)
+    if replay.audit["candidate_weight_sha256"] != EXPECTED_CANDIDATE_WEIGHT_SHA256:
         raise AssertionError("final Stress90 candidate weights changed")
     payload = {
         "role": "final fixed Stress90 Production evidence",
         **stress80.historical_research_metadata(),
         "parameter_search": False,
         "production_wiring": False,
-        "candidate": audit,
-        "input_manifest": input_manifest,
+        "candidate": dict(replay.audit),
+        "input_manifest": list(replay.input_manifest),
         "result": evaluate_window(
-            specific_raw=specific,
-            candidate_weights=candidate,
+            specific_raw=replay.specific_raw,
+            candidate_weights=replay.candidate_weights,
             scenario=args.scenario,
             window=args.window,
         ),

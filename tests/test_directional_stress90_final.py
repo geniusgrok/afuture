@@ -8,6 +8,7 @@ import pytest
 
 def _research_boundary():
     return {
+        "historical_replay_commit": "9c51195042393304eb05d783d1895a165f99b0a7",
         "evidence_scope": "historical_research_only",
         "live_authorized": False,
         "risk_increase_authorized": False,
