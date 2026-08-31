@@ -118,7 +118,20 @@ def _rolling_log_return(returns: pd.DataFrame, window: int) -> pd.DataFrame:
 
 
 def _normalized_price(returns: pd.DataFrame) -> pd.DataFrame:
-    return (1.0 + returns.fillna(0.0)).cumprod()
+    values = returns.to_numpy(float)
+    result = np.full_like(values, np.nan, dtype=float)
+    if not len(values):
+        return pd.DataFrame(result, index=returns.index, columns=returns.columns)
+
+    first = values[0]
+    wealth = np.where(np.isfinite(first), 1.0 + first, 1.0)
+    result[0] = wealth
+    for position in range(1, len(values)):
+        row = values[position]
+        valid = np.isfinite(row)
+        wealth = np.where(valid, wealth * (1.0 + row), 1.0)
+        result[position, valid] = wealth[valid]
+    return pd.DataFrame(result, index=returns.index, columns=returns.columns)
 
 
 def _signal_scores(returns: pd.DataFrame, template: _Template) -> pd.DataFrame:
@@ -154,8 +167,10 @@ def _template_weight_path(returns: pd.DataFrame, template: _Template) -> pd.Data
     audit = np.zeros(returns.shape, dtype=float)
     step = max(template.rebalance, 1)
     for position in range(1, len(returns)):
+        lagged = scores[position - 1]
+        current = current.copy()
+        current[~np.isfinite(lagged)] = 0.0
         if position % step == 0:
-            lagged = scores[position - 1]
             valid = np.flatnonzero(np.isfinite(lagged) & (np.abs(lagged) > 1e-12))
             next_weights = np.zeros(returns.shape[1], dtype=float)
             if valid.size:
@@ -418,8 +433,6 @@ class ExecutionAlignedAggressivePolicy:
         open_prices = proxy_open.where(proxy_open > 0.0).reindex(close.index)
         returns = close.pct_change(fill_method=None)
         returns = returns.mask(returns.abs() > MAX_ABS_DAILY_RETURN)
-        intraday = close.div(open_prices) - 1.0
-        intraday = intraday.mask(intraday.abs() > MAX_ABS_DAILY_RETURN).fillna(0.0)
 
         base_streams: dict[str, pd.Series] = {}
         stress_streams: dict[str, pd.Series] = {}
