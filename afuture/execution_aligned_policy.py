@@ -161,15 +161,39 @@ def _signal_scores(returns: pd.DataFrame, template: _Template) -> pd.DataFrame:
     raise ValueError(f"unknown frozen directional family: {template.family}")
 
 
+def _signal_evidence_available(returns: pd.DataFrame, template: _Template) -> pd.DataFrame:
+    """Identify dates whose raw-return window proves the template's score inputs."""
+    if template.family in {"tsmom", "moving_average"}:
+        window = max(template.slow, 20)
+    elif template.family in {"momentum", "breakout"}:
+        window = template.slow
+    elif template.family == "reversal":
+        window = max(template.fast, 20)
+    elif template.family == "acceleration":
+        window = max(template.slow, template.fast, 20)
+    else:
+        raise ValueError(f"unknown frozen directional family: {template.family}")
+
+    observed = pd.DataFrame(
+        np.isfinite(returns.to_numpy(float)),
+        index=returns.index,
+        columns=returns.columns,
+    )
+    if len(observed):
+        observed.iloc[0] = True
+    return observed.rolling(window, min_periods=window).sum().eq(window)
+
+
 def _template_weight_path(returns: pd.DataFrame, template: _Template) -> pd.DataFrame:
     scores = _signal_scores(returns, template).to_numpy(float)
+    evidence_available = _signal_evidence_available(returns, template).to_numpy(bool)
     current = np.zeros(returns.shape[1], dtype=float)
     audit = np.zeros(returns.shape, dtype=float)
     step = max(template.rebalance, 1)
     for position in range(1, len(returns)):
         lagged = scores[position - 1]
         current = current.copy()
-        current[~np.isfinite(lagged)] = 0.0
+        current[~evidence_available[position - 1]] = 0.0
         if position % step == 0:
             valid = np.flatnonzero(np.isfinite(lagged) & (np.abs(lagged) > 1e-12))
             next_weights = np.zeros(returns.shape[1], dtype=float)

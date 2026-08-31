@@ -108,16 +108,10 @@ def test_price_path_signal_masks_over_limit_close_return_instead_of_using_zero(f
     assert np.isnan(scores.iloc[100, 0])
 
 
-def test_template_weight_path_clears_invalid_lagged_target_until_next_rebalance(monkeypatch):
-    import afuture.execution_aligned_policy as policy_module
-
+def test_template_weight_path_clears_unknown_lagged_target_until_next_rebalance():
     index = pd.date_range("2026-01-01", periods=9, freq="B")
-    returns = pd.DataFrame(0.0, index=index, columns=["A", "M"])
-    scores = pd.DataFrame(1.0, index=index, columns=["A", "M"])
-    scores.loc[index[4], "M"] = 0.0
-    scores.loc[index[5], "A"] = float("nan")
-
-    monkeypatch.setattr(policy_module, "_signal_scores", lambda _returns, _template: scores)
+    returns = pd.DataFrame({"A": 0.01, "M": 0.0}, index=index)
+    returns.loc[index[5], "A"] = float("nan")
     template = _parse_template_id("momentum_s1_f0_k1_r5_g2")
 
     weights = _template_weight_path(returns, template)
@@ -126,6 +120,27 @@ def test_template_weight_path_clears_invalid_lagged_target_until_next_rebalance(
     assert weights.loc[index[6], "A"] == 0.0
     assert weights.loc[index[7], "A"] == 0.0
     assert weights.loc[index[7], "M"] == 0.0
+
+
+def test_template_weight_path_preserves_legal_zero_volatility_plateau_off_cycle():
+    index = pd.date_range("2026-01-01", periods=65, freq="B")
+    returns = pd.DataFrame(
+        {
+            "A": [float("nan")]
+            + [0.01 if position % 2 else -0.002 for position in range(1, 41)]
+            + [0.0] * 24,
+        },
+        index=index,
+    )
+    template = _parse_template_id("tsmom_s20_f0_k1_r10_g2")
+
+    scores = _signal_scores(returns, template)
+    weights = _template_weight_path(returns, template)
+
+    assert np.isfinite(scores.loc[index[59], "A"])
+    assert np.isnan(scores.loc[index[60], "A"])
+    assert abs(weights.loc[index[60], "A"]) == 2.0
+    assert weights.loc[index[61], "A"] == weights.loc[index[60], "A"]
 
 
 def test_complete_legal_history_preserves_all_frozen_signal_and_weight_digests():

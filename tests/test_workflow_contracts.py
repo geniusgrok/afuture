@@ -5,6 +5,26 @@ WORKFLOWS = REPOSITORY_ROOT / ".github" / "workflows"
 DOCUMENTS = REPOSITORY_ROOT / "docs"
 
 
+def test_standard_ci_runs_only_for_main_pushes_and_main_targeted_pull_requests() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+
+    assert (
+        "on:\n"
+        "  push:\n"
+        "    branches:\n"
+        "      - main\n"
+        "  pull_request:\n"
+        "    branches:\n"
+        "      - main\n\n"
+        "permissions:"
+    ) in ci
+    assert ci.count("  quality:\n") == 1
+    assert ci.count("  windows-smoke:\n") == 1
+    assert ci.count("  test:\n") == 1
+    assert 'python-version: ["3.10", "3.13"]' in ci
+    assert "continue-on-error" not in ci
+
+
 def test_ci_keeps_a_minimum_python_windows_core_smoke_without_live_adapters() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
 
