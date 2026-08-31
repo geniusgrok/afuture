@@ -38,6 +38,10 @@ from afuture.directional_concentration_freeze import (
 )
 from afuture.directional_stress90_gate import evaluate_stress90_gate
 from afuture.directional_stress90_policy import EXPECTED_CANDIDATE_WEIGHT_SHA256
+from tools.stress90_fixed_archive_compat import (
+    FixedArchiveCompatibilityError,
+    validate_fixed_archive_manifest,
+)
 
 EXPECTED_CONSTRAINTS = {
     "target_and_realized_gross_cap": stress80.MAX_GROSS,
@@ -63,30 +67,10 @@ def _validate_historical_research_metadata(payload: dict) -> None:
 def _validated_input_manifest(raw: object) -> list[dict[str, str | int]]:
     if not isinstance(raw, list) or len(raw) != len(stress80.FIXED_INPUT_SHA256):
         raise ValueError("Stress90 matrix input manifest basenames are invalid")
-    entries: dict[str, dict[str, str | int]] = {}
-    for item in raw:
-        if not isinstance(item, dict) or set(item) != {"basename", "sha256", "size_bytes"}:
-            raise ValueError("Stress90 matrix input manifest entry is invalid")
-        basename = item["basename"]
-        digest = item["sha256"]
-        size_bytes = item["size_bytes"]
-        if not isinstance(basename, str) or basename in entries:
-            raise ValueError("Stress90 matrix input manifest basenames are invalid")
-        expected = stress80.FIXED_INPUT_SHA256.get(basename)
-        if expected is None:
-            raise ValueError("Stress90 matrix input manifest basenames are invalid")
-        if digest != expected:
-            raise ValueError(f"Stress90 matrix input manifest SHA-256 mismatch: {basename}")
-        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
-            raise ValueError("Stress90 matrix input manifest size_bytes is invalid")
-        entries[basename] = {
-            "basename": basename,
-            "sha256": digest,
-            "size_bytes": size_bytes,
-        }
-    if set(entries) != set(stress80.FIXED_INPUT_SHA256):
-        raise ValueError("Stress90 matrix input manifest basenames are invalid")
-    return [entries[basename] for basename in sorted(entries)]
+    try:
+        return list(validate_fixed_archive_manifest(raw))
+    except (FixedArchiveCompatibilityError, TypeError) as exc:
+        raise ValueError(f"Stress90 matrix input manifest is invalid: {exc}") from exc
 
 
 def completed_concentrations_before(
