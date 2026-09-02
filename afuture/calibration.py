@@ -11,7 +11,7 @@ class ParameterCalibrator:
 
     _EXTENDED_RESEARCH_KEYS = (
         "min_net_edge",
-        "min_stationarity_score",
+        "min_mean_reversion_score",
         "max_half_life",
         "min_persistence_score",
         "max_volatility_percentile",

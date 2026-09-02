@@ -32,9 +32,9 @@ class CalendarSpreadStrategy:
             raise ValueError("entry_trend_window must be at least 2")
         if pair.max_entry_z_slope <= 0:
             raise ValueError("max_entry_z_slope must be positive")
-        if not 0 <= pair.min_stationarity_score <= 1:
+        if not 0 <= pair.min_mean_reversion_score <= 1:
             raise ValueError(
-                "min_stationarity_score (mean-reversion heuristic) must be between zero and one"
+                "min_mean_reversion_score (mean-reversion heuristic) must be between zero and one"
             )
         if pair.max_half_life <= 0:
             raise ValueError("max_half_life must be positive")
@@ -303,7 +303,7 @@ class CalendarSpreadStrategy:
         half_life: float,
         stationarity: float,
     ) -> tuple[SignalAction, str]:
-        if stationarity < self.pair.min_stationarity_score or half_life > self.pair.max_half_life:
+        if stationarity < self.pair.min_mean_reversion_score or half_life > self.pair.max_half_life:
             self._armed_direction = 0
             self._armed_extreme = 0.0
             return SignalAction.HOLD, ""

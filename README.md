@@ -9,6 +9,12 @@
 
 策略只产生交易意图或目标仓位。只有 Broker（统一订单和成交接口）返回的真实或模拟成交事件可以改变持仓、现金和权益。
 
+## Current-only 运行契约
+
+afuture 是单用户、单经济账户的 **current-only** 交易系统。当前代码只接受当前 CLI、TOML、runtime state、registry/nonce ledger 和当前版本的研究输入契约；不承诺旧代码、API、命令名、配置字段、schema、registry、migration artifact 或 historical compatibility adapter 的向后兼容。未知、移除、schema-less、缺字段或多字段的持久化/配置输入一律失败关闭，不会猜测、补默认、过滤字段、静默回退或自动转换。
+
+发现旧 runtime、state 或 registry 时，操作者应先将完整目录（含 `.prev`、`.lineage`、`.lock`、审计和备份）归档为证据，然后在新的 current runtime 路径执行明确的 bootstrap/initialization，并重新以 Broker/CTP 账户、持仓、委托和成交做 reconciliation。系统不提供替代性迁移 helper。这不削弱当前安全：Broker/CTP 真相、exactly-once、CTP order journal、crash-fill recovery、leases/locks、CAS/sequence/checksum/lineage、身份与 nonce、kill switch、`HALTED`/`REDUCE_ONLY`、Shadow 禁止报单、reconciliation、backup/restore、Stress-90 fail-closed 和当前 schema `.prev` 事故证据均是现行运行契约。
+
 ## 当前能力
 
 | 能力 | 状态 | 边界 |
@@ -171,7 +177,6 @@ afuture stress90-oi-collect --help
 afuture stress90-prepare-decision --help
 afuture stress90-capacity-report --help
 afuture stress90-registry-init --help
-afuture stress90-registry-nonce-migrate --help
 afuture stress90-settlement-roll-forward --help
 afuture stress90-operator-roll-forward --help
 afuture stress90-activate --help
@@ -187,6 +192,11 @@ afuture quality-report --config config/afuture.directional-live.example.toml --o
 ```
 
 `stress90-settlement-roll-forward` 当前仍是显式失败关闭入口：目标柜台尚未提供可证明上一完整交易日全部资金流的权威最终见证，因此确认参数和 operator reason 都不能使它推进状态。详见运行手册的结算资金闭合门。
+
+`directional-policy-migrate` 是 current Stress-90 policy lifecycle transaction：只在已验证、
+`HALTED`、kill-switched、flat 且 reconciled 的 runtime 上切换到 current `execution_aligned`
+policy，并保留 retirement provenance。它不是 state、registry、nonce ledger 或 TOML 的 schema
+migration，不能转换、猜测或修补旧 artifact。
 
 `status` 只读本地状态和运行环境，不需要 CTP 凭证。`doctor` 连接 CTP 获取新的账户、持仓、活动委托、合约目录、报价和合约参数，但不会发送订单。Stress-90 的精确 bootstrap→status→doctor→Shadow→测试柜台→极小真钱顺序见 [`docs/stress90-live-runbook.md`](docs/stress90-live-runbook.md)。
 
@@ -274,5 +284,12 @@ Stress-90 的当前生产操作顺序只有一条：`deployment-verify` → `pre
 `prepare-session` 是一次性、只读柜台准备命令。它验证 deployment seal、本地状态和 artifact，取得权威 CTP trading day、fresh account、完整持仓、活动委托、catalog、metadata/quote/margin/commission，并复用 Doctor P0、continuity/rebase 与 capacity 逻辑输出 canonical JSON；其 Broker 能力层禁止报单和撤单，永不签发 permit、永不自动 roll-forward/rebase、永不把 runtime 切到 `RUNNING`。可选 `--refresh-ohlc` 仍在 engine 外复用现有 OHLC refresh，不把外部 provider 接入订单路径。
 
 Shadow/Live 的正常主循环按 `execution.heartbeat_interval_seconds`（默认 5 秒，允许 1–60 秒）原子更新 `paths.heartbeat`。外部 `afuture watchdog --once` 只读 heartbeat、deployment 和本地 checksummed state，不连接 CTP、不持有 order-capable lease，也不会 kill/restart、平仓、解除 HALTED 或修改 permit/state。
+
+Python `>=3.10` 是当前仓库、工具链、constraints、CI 和文档共同支持的 baseline，因而保留
+Python 3.10/3.13 matrix 与 `tomli` fallback；实际 production Python 版本仍须在目标机验证。Windows
+仍是 core/replay CLI 与配置校验的当前支持环境，CI 保留最小 Windows smoke；Stress-90 live 继续只在
+POSIX target 上 fail closed，Windows smoke 不代表 CTP ABI 或真实报单可用。registry 的多 binding
+表示仍承担 account switch/rebase、Shadow/live isolation、retired identity 和 crash recovery；本轮不将
+其错误地压缩为单条 binding。
 
 Live 使用 `runtime/process_run.json` 的 current/.prev receipt 建立异常重启围栏。任何没有 clean shutdown receipt、current 损坏或 current 缺失但 `.prev` 存在的窗口都在构造 order-capable Broker 前 fail closed：失效已签发 permit、保持/转换 `HALTED`、开启 kill switch，并以专用退出码 75 阻止 systemd 重启循环。`deploy/systemd/` 提供只含通用机器路径的 live/watchdog 模板；operator 必须在机器私有 EnvironmentFile 中提供本机运行参数，模板不内置 live confirmation、activation、roll-forward 或 rebase。

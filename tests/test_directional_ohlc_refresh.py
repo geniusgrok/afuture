@@ -688,7 +688,7 @@ def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
     )
 
     assert (
-        cli.main(
+        cli.run_command(
             [
                 "directional-ohlc-refresh",
                 "--config",

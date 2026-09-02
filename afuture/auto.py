@@ -64,7 +64,7 @@ class AutoConfig:
     min_volume: float = 5000.0
     min_open_interest: float = 10000.0
     min_liquidity_score: float = 0.5
-    min_stationarity_score: float = 0.02
+    min_mean_reversion_score: float = 0.02
     max_half_life: float = 120.0
     min_net_edge: float = 0.0
     slippage_ticks: int = 1
@@ -113,7 +113,7 @@ class AutoConfig:
             "min_volume",
             "min_open_interest",
             "min_liquidity_score",
-            "min_stationarity_score",
+            "min_mean_reversion_score",
             "max_half_life",
             "min_net_edge",
             "metadata_timeout_seconds",
@@ -150,9 +150,9 @@ class AutoConfig:
             raise ValueError("auto activity thresholds cannot be negative")
         if not 0 <= self.min_liquidity_score <= 1:
             raise ValueError("auto min_liquidity_score must be between 0 and 1")
-        if not 0 <= self.min_stationarity_score <= 1:
+        if not 0 <= self.min_mean_reversion_score <= 1:
             raise ValueError(
-                "auto min_stationarity_score (mean-reversion heuristic) must be between 0 and 1"
+                "auto min_mean_reversion_score (mean-reversion heuristic) must be between 0 and 1"
             )
         if self.max_half_life <= 0 or self.metadata_timeout_seconds <= 0:
             raise ValueError("auto half-life/metadata timeout must be positive")
@@ -237,7 +237,7 @@ class AutoPairSelector:
             min_confirmed_entry_z=self.config.min_confirmed_entry_z,
             entry_trend_window=self.config.entry_trend_window,
             max_entry_z_slope=self.config.max_entry_z_slope,
-            min_stationarity_score=self.config.min_stationarity_score,
+            min_mean_reversion_score=self.config.min_mean_reversion_score,
             max_half_life=self.config.max_half_life,
             daily_sample_window=self.config.daily_sample_window,
         )
@@ -506,7 +506,7 @@ class AutoPairManager:
                     "insufficient synchronized statistics",
                 )
                 continue
-            if statistics.stationarity_score < self.config.min_stationarity_score:
+            if statistics.stationarity_score < self.config.min_mean_reversion_score:
                 self._record_candidate(
                     pair,
                     near,

@@ -51,11 +51,16 @@ class AppConfig:
     require_live_metadata: bool = True
     metadata_timeout_seconds: float = 10.0
     state_path: str = "runtime/state.json"
+    heartbeat_path: Path = field(
+        default_factory=lambda: Path("runtime/state.json").with_name("heartbeat.json")
+    )
+    heartbeat_interval_seconds: float = 5.0
     log_path: str = "runtime/afuture.log"
     report_path: str = "runtime/report.json"
     journal_path: str = "runtime/audit.jsonl"
     alert_path: str = "runtime/alerts.jsonl"
     account_registry_path: str = "/var/lib/afuture/account-runtime-registry.json"
+    ctp_environment: str = "test"
     alert_webhook: str = ""
     auto: AutoConfig = field(default_factory=AutoConfig)
     directional: DirectionalConfig = field(default_factory=DirectionalConfig)
@@ -119,12 +124,14 @@ def load_config(
         )
     if mode == "replay" and auto.enabled and not contract_catalog:
         raise ValueError("replay auto mode requires contract product/expiry metadata")
+    ctp_raw = _section(
+        data,
+        "ctp",
+        {"td_address", "md_address", "environment"},
+    )
+    ctp_environment = require_string(ctp_raw.get("environment", "test"), "ctp.environment").lower()
     ctp = _load_ctp(
-        _section(
-            data,
-            "ctp",
-            {"td_address", "md_address", "environment"},
-        ),
+        ctp_raw,
         mode,
         require_credentials=require_ctp_credentials,
         require_account_identity=(directional.enabled and directional.policy == "stress90"),
@@ -147,6 +154,7 @@ def load_config(
             "market_impact_ticks",
             "require_live_metadata",
             "metadata_timeout_seconds",
+            "heartbeat_interval_seconds",
         },
     )
     slippage_ticks = require_integer(execution.get("slippage_ticks", 1), "execution.slippage_ticks")
@@ -176,12 +184,30 @@ def load_config(
         raise ValueError("execution safety values cannot be negative")
     if metadata_timeout_seconds <= 0:
         raise ValueError("execution metadata_timeout_seconds must be positive")
+    heartbeat_interval_seconds = require_finite_number(
+        execution.get("heartbeat_interval_seconds", 5),
+        "execution.heartbeat_interval_seconds",
+    )
+    if not 1.0 <= heartbeat_interval_seconds <= 60.0:
+        raise ValueError("execution.heartbeat_interval_seconds must be between 1 and 60")
 
     paths = _section(
         data,
         "paths",
-        {"state", "log", "report", "journal", "alert", "account_registry"},
+        {"state", "heartbeat", "log", "report", "journal", "alert", "account_registry"},
     )
+    state_path = require_string(paths.get("state", "runtime/state.json"), "paths.state")
+    raw_heartbeat_path = paths.get("heartbeat")
+    if raw_heartbeat_path is None:
+        heartbeat_path = Path(state_path).resolve(strict=False).with_name("heartbeat.json")
+    else:
+        configured_heartbeat_path = require_string(raw_heartbeat_path, "paths.heartbeat")
+        if not configured_heartbeat_path.strip():
+            raise ValueError("paths.heartbeat must be a non-empty string")
+        heartbeat_path = Path(configured_heartbeat_path)
+        if not heartbeat_path.is_absolute():
+            heartbeat_path = Path.cwd() / heartbeat_path
+        heartbeat_path = heartbeat_path.resolve(strict=False)
     account_registry_path = require_string(
         paths.get(
             "account_registry",
@@ -221,12 +247,15 @@ def load_config(
             "execution.require_live_metadata",
         ),
         metadata_timeout_seconds=metadata_timeout_seconds,
-        state_path=require_string(paths.get("state", "runtime/state.json"), "paths.state"),
+        state_path=state_path,
+        heartbeat_path=heartbeat_path,
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
         log_path=require_string(paths.get("log", "runtime/afuture.log"), "paths.log"),
         report_path=require_string(paths.get("report", "runtime/report.json"), "paths.report"),
         journal_path=require_string(paths.get("journal", "runtime/audit.jsonl"), "paths.journal"),
         alert_path=require_string(paths.get("alert", "runtime/alerts.jsonl"), "paths.alert"),
         account_registry_path=account_registry_path,
+        ctp_environment=ctp_environment,
         alert_webhook=require_string(alert.get("webhook", ""), "alert.webhook"),
         auto=auto,
         directional=directional,
@@ -320,7 +349,7 @@ def _pair_row(source: Mapping[str, object], index: int) -> dict[str, object]:
         "confirmation_retrace_z",
         "min_confirmed_entry_z",
         "max_entry_z_slope",
-        "min_stationarity_score",
+        "min_mean_reversion_score",
         "max_half_life",
     ):
         if field_name in raw:
@@ -490,6 +519,8 @@ def _load_directional(raw: Mapping[str, object], mode: str) -> DirectionalConfig
     for name in ("products", "exchanges"):
         if name in values:
             values[name] = require_string_sequence(values[name], f"directional.{name}")
+    if values.get("policy") == "stress90" and "rebalance_window" in values:
+        raise ValueError("directional.rebalance_window is not a current Stress-90 field")
     config = DirectionalConfig(**cast(Any, values))
     config.validate()
     if config.account_continuity_mode == "operator_managed" and (
@@ -503,8 +534,8 @@ def _load_directional(raw: Mapping[str, object], mode: str) -> DirectionalConfig
             "system.mode=live, directional.enabled=true, policy=stress90, "
             "and account_exclusive=true"
         )
-    if config.enabled and mode == "live" and not config.policy:
-        raise ValueError("directional.policy must be explicit in live mode")
+    if config.enabled and not config.policy:
+        raise ValueError("directional.policy must be explicit when directional.enabled=true")
     if config.enabled and config.policy == "stress90":
         from .execution_aligned_policy import FROZEN_PRODUCTS
 

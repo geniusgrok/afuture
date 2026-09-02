@@ -31,7 +31,12 @@ class _Broker:
         return "1" * 64
 
 
-def _config(enabled: bool, *, policy: str = "", account_registry_path: str = ""):
+def _config(
+    enabled: bool,
+    *,
+    policy: str = "execution_aligned",
+    account_registry_path: str = "",
+):
     return SimpleNamespace(
         risk=RiskConfig(margin_estimate_buffer=1.25 if policy == "stress90" else 1.20),
         auto_flatten_imbalance=True,

@@ -85,7 +85,7 @@ Add other findings only when a concrete code path, reproduction, or inconsistent
 Run:
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_legacy_contracts.py tests/test_hardening.py tests/test_ctp_compat.py
+.venv/bin/python -m pytest -q tests/test_core_contracts.py tests/test_hardening.py tests/test_ctp_compat.py
 .venv/bin/python -m compileall -q afuture
 ```
 
@@ -183,7 +183,7 @@ Reject non-finite or non-positive trade prices before opening or closing. Add a 
 - [x] **Step 4: Run affected accounting and execution tests**
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_position_invariants.py tests/test_legacy_contracts.py tests/test_integration.py tests/test_sim_event_causality.py
+.venv/bin/python -m pytest -q tests/test_position_invariants.py tests/test_core_contracts.py tests/test_integration.py tests/test_sim_event_causality.py
 .venv/bin/python -m compileall -q afuture/position.py
 ```
 

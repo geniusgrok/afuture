@@ -1,5 +1,10 @@
 # Codex continuation prompt — Stress-90 live productionization
 
+> **Historical, non-executable prompt.** This is a preserved 2026-08-26 work
+> snapshot. It is superseded by the current-only contract and must not be reused
+> to restore a legacy schema, migration, compatibility adapter, or prior branch
+> workflow.
+
 Copy the text below into a new Codex Work session.
 
 ---

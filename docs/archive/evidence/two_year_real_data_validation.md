@@ -105,7 +105,7 @@ exit_z                    = 0.75
 stop_z                    = 4.00
 entry_trend_window        = 6
 max_entry_z_slope         = 0.75
-min_stationarity_score    = 0.01
+min_mean_reversion_score  = 0.01
 max_half_life             = 60
 max_holding_samples       = 20 days
 ```

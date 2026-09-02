@@ -129,7 +129,7 @@ def build_runtime_engine(
 
         activity_path = Path(state_store.path).with_name("directional_activity.json")
         ohlc_cache_path = Path(state_store.path).with_name("directional_ohlc_cache.json")
-        policy_name = config.directional.policy or "execution_aligned"
+        policy_name = config.directional.policy
         manager_common = dict(
             aggressive_ticks=config.aggressive_ticks,
             metadata_timeout_seconds=config.metadata_timeout_seconds,

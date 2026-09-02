@@ -23,7 +23,7 @@ def _restore_manifest(runtime: Path, registry: Path) -> dict[str, object]:
 
 
 def test_backup_allowlist_preserves_authoritative_pending_witnesses() -> None:
-    import afuture.runtime_backup_impl as backup_module
+    import afuture.runtime_backup as backup_module
 
     assert backup_module._allowed_member(
         "runtime/directional_ohlc_cache.json.pending",
@@ -68,7 +68,7 @@ def test_backup_rejects_running_or_unprotected_runtime_before_other_authority_re
     kill_switch: bool,
     message: str,
 ) -> None:
-    import afuture.runtime_backup_impl as backup_module
+    import afuture.runtime_backup as backup_module
 
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -88,7 +88,7 @@ def test_backup_rejects_prepared_lifecycle_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import afuture.runtime_backup_impl as backup_module
+    import afuture.runtime_backup as backup_module
 
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -132,7 +132,7 @@ def test_restore_rejects_nonempty_runtime_and_preserves_backup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import afuture.runtime_backup_impl as backup_module
+    import afuture.runtime_backup as backup_module
 
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -160,7 +160,7 @@ def test_restore_refuses_runtime_rebase_or_registry_retarget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import afuture.runtime_backup_impl as backup_module
+    import afuture.runtime_backup as backup_module
 
     source_runtime = tmp_path / "source-runtime"
     source_registry = tmp_path / "source-registry.json"
@@ -184,7 +184,7 @@ def test_restore_success_remains_halted_invalidates_permit_and_never_constructs_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import afuture.broker.ctp as ctp_module
-    import afuture.runtime_backup_impl as backup_module
+    import afuture.runtime_backup as backup_module
 
     runtime = tmp_path / "runtime"
     registry = tmp_path / "account-runtime-registry.json"
@@ -284,7 +284,7 @@ def test_verify_backup_propagates_journal_or_cross_file_integrity_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import afuture.runtime_backup_impl as backup_module
+    import afuture.runtime_backup as backup_module
 
     manifest = _restore_manifest(tmp_path / "runtime", tmp_path / "account-runtime-registry.json")
     members = {"manifest.json": b"{}"}

@@ -25,9 +25,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from io import BytesIO
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import pandas as pd
@@ -69,19 +70,60 @@ FIXED_INPUT_SHA256 = {
     "two_year_broad_60m.csv": "5faf112bb69dd5ddf48ed34419e2046b1c6bdd651b595ca46a46804d8317a27b",
 }
 FIXED_INPUT_BASENAMES = tuple(sorted(FIXED_INPUT_SHA256))
+FIXED_INPUT_SIZE_BYTES = MappingProxyType(
+    {
+        "broad_daily_universe.csv": 3_278_200,
+        "execution_aligned_weights.csv": 109_977,
+        "prior_two_year_broad_60m.csv": 3_698_425,
+        "return_target_specific_contracts.csv": 40_842_073,
+        "two_year_broad_60m.csv": 4_080_136,
+    }
+)
+HISTORICAL_RESEARCH_COMMIT = "9c51195042393304eb05d783d1895a165f99b0a7"
 
 
 def historical_research_metadata() -> dict[str, str | bool]:
     """Return the fixed authorization boundary for archived evaluator evidence."""
-    from tools.stress90_fixed_archive_compat import HISTORICAL_REPLAY_COMMIT
-
     return {
-        "historical_replay_commit": HISTORICAL_REPLAY_COMMIT,
+        "historical_replay_commit": HISTORICAL_RESEARCH_COMMIT,
         "evidence_scope": "historical_research_only",
         "live_authorized": False,
         "risk_increase_authorized": False,
         "prospective_evidence": False,
     }
+
+
+def validate_fixed_input_manifest(
+    manifest: Iterable[Mapping[str, object]],
+) -> list[dict[str, str | int]]:
+    """Require the retained frozen research manifest to match its exact inputs."""
+    entries: dict[str, dict[str, str | int]] = {}
+    for raw in manifest:
+        if set(raw) != {"basename", "sha256", "size_bytes"}:
+            raise ValueError("fixed input manifest entry is invalid")
+        basename = raw["basename"]
+        digest = raw["sha256"]
+        size_bytes = raw["size_bytes"]
+        if not isinstance(basename, str) or basename in entries:
+            raise ValueError("fixed input manifest basenames are invalid")
+        expected_digest = FIXED_INPUT_SHA256.get(basename)
+        expected_size = FIXED_INPUT_SIZE_BYTES.get(basename)
+        if expected_digest is None or expected_size is None:
+            raise ValueError(f"unexpected fixed input file: {basename}")
+        if digest != expected_digest:
+            raise ValueError(f"fixed input SHA-256 mismatch: {basename}")
+        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int):
+            raise ValueError(f"fixed input size is invalid: {basename}")
+        if size_bytes != expected_size:
+            raise ValueError(f"fixed input size mismatch: {basename}")
+        entries[basename] = {
+            "basename": basename,
+            "sha256": expected_digest,
+            "size_bytes": expected_size,
+        }
+    if set(entries) != set(FIXED_INPUT_SHA256):
+        raise ValueError("fixed input manifest basenames are invalid")
+    return [entries[name] for name in sorted(entries)]
 
 
 def continuous_close_panel(raw: pd.DataFrame, products: list[str]) -> pd.DataFrame:
@@ -288,13 +330,16 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    from tools.stress90_fixed_archive_compat import replay_fixed_archive
-
     runtime = Path("runtime")
-    replay = replay_fixed_archive(runtime)
+    specific, continuous, base_weights, bars, input_manifest = _load_inputs(runtime)
+    candidate_weights, audit = build_final_candidate_weights(
+        base_weights=base_weights,
+        bars_60m=bars,
+        continuous_raw=continuous,
+    )
     result = evaluate_window(
-        specific_raw=replay.specific_raw,
-        candidate_weights=replay.candidate_weights,
+        specific_raw=specific,
+        candidate_weights=candidate_weights,
         scenario=args.scenario,
         window=args.window,
     )
@@ -303,8 +348,8 @@ def main() -> None:
         **historical_research_metadata(),
         "parameter_search": False,
         "production_wiring": False,
-        "candidate": dict(replay.audit),
-        "input_manifest": list(replay.input_manifest),
+        "candidate": {**historical_research_metadata(), **audit},
+        "input_manifest": validate_fixed_input_manifest(input_manifest),
         "result": result,
         "constraints": {
             "target_and_realized_gross_cap": MAX_GROSS,

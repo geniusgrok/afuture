@@ -48,7 +48,7 @@ def auto_config(**overrides) -> AutoConfig:
         min_volume=1000,
         min_open_interest=1000,
         min_liquidity_score=0.2,
-        min_stationarity_score=0.0,
+        min_mean_reversion_score=0.0,
         max_half_life=1000,
         min_net_edge=0.0,
         slippage_ticks=0,

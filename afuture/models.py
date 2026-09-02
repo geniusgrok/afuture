@@ -138,7 +138,7 @@ class PairConfig:
     min_confirmed_entry_z: float = 0.0
     entry_trend_window: int = 6
     max_entry_z_slope: float = 999.0
-    min_stationarity_score: float = 0.0
+    min_mean_reversion_score: float = 0.0
     max_half_life: float = 999.0
     daily_sample_window: str = ""
 

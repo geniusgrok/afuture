@@ -6465,7 +6465,7 @@ def _write_json(payload: dict, output: str | Path | None = None) -> None:
         path.write_text(text + "\n", encoding="utf-8")
 
 
-def main(argv: list[str] | None = None) -> int:
+def run_command(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_config(
         args.config,

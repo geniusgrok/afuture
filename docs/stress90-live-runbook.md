@@ -459,23 +459,17 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 - prior-day final funding/settlement witness 不可用或不完整；
 - 外部 provider 失败且 verified cache 不足。
 
-旧 registry schema 1/2 不得在普通启动或 lifecycle 中静默迁移；这些门会保持 `HALTED` 并失败
-关闭。保全 current、`.prev`、`.lineage`、`.lock` 和备份，确认没有其他 registry writer 后，
-由已批准的维护窗口显式执行：
+registry 只接受 current schema 3；schema 1/2、schema-less registry、旧 lineage layout、nonce
+migration artifact、legacy tombstone 或不完整 receipt 都保持 `HALTED` 并失败关闭。没有
+registry-to-nonce migration command，也没有 maintenance-window upgrade。操作者必须保全完整旧目录
+（current、`.prev`、`.lineage`、`.lock`、audit 和 backup）作为证据，在隔离的新 runtime 路径执行
+`stress90-registry-init` / current bootstrap，并按 Broker/CTP 账户、持仓、活动委托和成交重新
+reconciliation 后再 commissioning。
 
-```bash
-export AFUTURE_ACCOUNT_RUNTIME_NONCE_MIGRATION_ACK=MIGRATE_AFUTURE_MACHINE_ACCOUNT_NONCE_LEDGER
-afuture stress90-registry-nonce-migrate \
-  --config config/afuture.directional-stress90-live.example.toml \
-  --confirm-live --confirm-nonce-migration \
-  --operator-reason "approved schema-3 global nonce ledger migration"
-```
-
-迁移 marker 绑定精确 legacy current/history，partial receipt/node/ready/registry-CAS 崩溃只允许同一
-source exact retry；迁移不得改变任何 account-specific binding receipt。schema 3 的 nonce receipt
-永不删除或淘汰，正常 membership 查询最多读取 256 层且不扫描目录。达到 800,000 条必须告警并
-安排磁盘扩容；达到 1,000,000 硬上限后所有新 registry mutation 失败关闭。任何已锚定 receipt
-或 path node 缺失/损坏都是 durable incident，禁止重建、删 marker 或用新 nonce 绕过。
+current registry initialization 直接创建认证 nonce ledger。current nonce receipt 永不删除或淘汰，
+正常 membership 查询最多读取 256 层且不扫描目录。达到 800,000 条必须告警并安排磁盘扩容；达到
+1,000,000 硬上限后所有新 registry mutation 失败关闭。任何已锚定 receipt 或 path node 缺失/损坏
+都是 durable incident，禁止重建、删 marker 或用新 nonce 绕过。
 
 `account-runtime-registry.json.lineage` 与
 `stress90_lifecycle_transaction.json.lineage` 是首次落盘时以 `O_EXCL` 创建并完成文件、
@@ -485,16 +479,9 @@ source exact retry；迁移不得改变任何 account-specific binding receipt�
 或创建另一笔 lifecycle transaction。只有核验过的外部备份和单独批准的恢复流程可以处理该
 事故；普通生命周期命令会持续失败关闭。
 
-从 marker 引入前版本升级时，必须保留原 current、`.prev` 和 registry `.lock`。首次持锁
-读取会先验证完整 envelope/checksum 及可用的 current/`.prev` 链，再一次性创建 marker；
-该步骤不推断账户 authority，也不改变交易状态或经济参数。旧 current 缺失、链损坏，或只剩
-旧 registry `.lock` 时绝不升级并持续失败关闭。marker 文件或父目录 `fsync` 报错的本次调用
-一律失败；若 marker 已完整可读，重试仍会先重新验证 current，若 marker 为部分/异常内容则按
-事故处理，禁止手工补写或删除。
-
 完全 pristine、没有任何 durable evidence 的 registry 只取得稳定 kernel lock，不创建 visible
-`.lock`；因此进程在只读检查中被终止不会制造 false lineage。首次成功 initialization 或已验证
-legacy upgrade 才在仍持有 kernel lock 时物化 visible lock。此后每次接受既有 lineage marker
+`.lock`；因此进程在只读检查中被终止不会制造 false lineage。首次成功 current initialization 才在
+仍持有 kernel lock 时物化 visible lock。此后每次接受既有 lineage marker
 都重新对 marker 文件和父目录执行 `fsync`；任一步失败，本次读取不得返回可用状态。
 
 `stress90_oi_evidence.json` schema 3 以 `parent_checksum` 把 current 绑定到精确的 sequence N-1
@@ -505,9 +492,10 @@ legacy upgrade 才在仍持有 kernel lock 时物化 visible lock。此后每次
 
 schema 2 没有可验证的 predecessor checksum，不能原地升级、补写 parent、重置 sequence 或从
 `.prev` 推断。部署发现 schema 2 时必须保持 `HALTED`，保全 current、`.prev`、lock、runtime
-目录和外部备份；当前代码故意不提供自动恢复。只有单独审批的部署/恢复流程可以配置真正
-pristine 的新 evidence 路径，并从柜台 raw evidence 重新观察一个完整、权威的 counter trading
-day 后建立 schema 3 sequence 1。在该证据完成前，Stress-90 activation 持续阻断。
+目录和外部备份；当前代码故意不提供自动恢复或 schema upgrade。操作者归档旧 runtime 后，只能
+在新的 pristine current runtime 路径重新 bootstrap/commission，并从柜台 raw evidence 观察一个
+完整、权威的 counter trading day 后建立 schema 3 sequence 1。在该证据完成前，Stress-90
+activation 持续阻断。
 
 `ctp_trading_day_evidence.json` schema 3 明确区分 `unbound` commissioning 与 `bound`
 account lineage。unbound 不包含伪造 epoch、registry revision 或 receipt，只能在 policy
@@ -515,8 +503,8 @@ account identity/epoch 均未绑定且 machine registry 对该 account/runtime �
 使用。bound 必须逐字段匹配 policy 的精确 `live_account_epoch` 和 registry 的稳定账户 receipt；
 operation nonce 不是 account epoch。schema 1/2 或任何不完整的中间 schema 均不得从 account
 identity、nonce、日期、policy checksum 或 `.prev` 推断升级。部署发现旧 evidence 时必须保持
-`HALTED` 并保全 current/`.prev`；只有现存的精确 lifecycle transaction 加上其精确 registry
-binding 能确定性地产生 schema 3，否则这是部署阻断，必须重新走批准的 commissioning/recovery。
+`HALTED` 并保全 current/`.prev`；不提供由旧 evidence、registry binding 或 lifecycle transaction
+生成 current schema 的转换。归档旧证据后必须重新走 current commissioning/recovery。
 
 lifecycle 的 broker-fenced durable 顺序固定为 registry CAS/acknowledgement、精确 trading-day
 evidence CAS、generic/policy targets、coordinator committed。prepared command 重试先识别同一
@@ -525,7 +513,7 @@ transaction；registry 或 evidence 已完成时只接受同一 nonce、account�
 
 ### 13.1 已授权崩溃成交的 HALTED checkpoint
 
-Stress-90 的 legacy `recover-state` 故意拒绝 position recovery；不得用它绕过 lifecycle
+通用 `recover-state` 故意拒绝 Stress-90 position recovery；不得用它绕过 lifecycle
 crash-fill 门。只有已经确认是当前 CTP session、且由完整 order/trade query evidence 授权的
 崩溃成交，才可在 `HALTED`、kill switch 开启、无 active/unknown order/trade 时运行独立命令：
 

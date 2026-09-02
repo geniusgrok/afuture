@@ -32,6 +32,7 @@ initial_capital = 500000
 
 [directional]
 enabled = true
+policy = "execution_aligned"
 products = ["A", "M"]
 exchanges = ["DCE"]
 max_gross_leverage = 2.0
@@ -54,6 +55,7 @@ initial_capital = 500000
 
 [directional]
 enabled = true
+policy = "execution_aligned"
 products = ["A"]
 exchanges = ["DCE"]
 
@@ -93,9 +95,7 @@ stop_z = 4.0
         load_config(mixed)
 
 
-def test_live_directional_policy_must_be_explicit_but_replay_blank_is_legacy_compatible(
-    tmp_path: Path,
-):
+def test_directional_policy_must_be_explicit_in_every_enabled_mode(tmp_path: Path):
     replay = _write(
         tmp_path,
         """
@@ -109,7 +109,8 @@ products = ["A"]
 exchanges = ["DCE"]
 """,
     )
-    assert load_config(replay).directional.policy == ""
+    with pytest.raises(ValueError, match="directional.policy must be explicit"):
+        load_config(replay)
 
     live = _write(
         tmp_path,
@@ -131,6 +132,28 @@ exchanges = ["DCE"]
     )
     with pytest.raises(ValueError, match="directional.policy must be explicit"):
         load_config(live, require_ctp_credentials=False)
+
+
+def test_stress90_rejects_explicit_legacy_rebalance_window(tmp_path: Path) -> None:
+    from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+
+    config = _write(
+        tmp_path,
+        """
+[system]
+mode = "replay"
+initial_capital = 500000
+
+[directional]
+enabled = true
+policy = "stress90"
+products = [{products}]
+rebalance_window = "20:55-09:10"
+""".format(products=", ".join(f'"{product}"' for product in FROZEN_PRODUCTS)),
+    )
+
+    with pytest.raises(ValueError, match="rebalance_window.*Stress-90"):
+        load_config(config)
 
 
 def test_stress90_order_capable_config_requires_expected_ctp_account_identity(

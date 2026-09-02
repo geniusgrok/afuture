@@ -35,11 +35,11 @@ def _result(scenario, window, annualized):
 
 
 def _payload(scenario, window, annualized):
+    from tools.evaluate_directional_stress80_final import FIXED_INPUT_SIZE_BYTES
     from tools.evaluate_directional_stress90_final import (
         EXPECTED_CANDIDATE_WEIGHT_SHA256,
         EXPECTED_CONSTRAINTS,
     )
-    from tools.stress90_fixed_archive_compat import FIXED_INPUT_SIZE_BYTES
 
     return {
         **_research_boundary(),

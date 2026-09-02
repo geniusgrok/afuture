@@ -254,21 +254,6 @@ def adaptive_margin_sizing_share(
     return min(hard_share, max(0.0, min(conservative, adaptive)))
 
 
-def margin_sizing_share(
-    *,
-    max_margin_ratio: float,
-    min_available_ratio: float,
-    max_daily_loss_ratio: float,
-) -> float:
-    """Compatibility wrapper for the no-history conservative soft margin envelope."""
-    return adaptive_margin_sizing_share(
-        max_margin_ratio=max_margin_ratio,
-        min_available_ratio=min_available_ratio,
-        max_daily_loss_ratio=max_daily_loss_ratio,
-        completed_returns=(),
-    )
-
-
 def build_target_lots(
     account: AccountSnapshot,
     product_weights: Mapping[str, float],

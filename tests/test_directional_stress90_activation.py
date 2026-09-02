@@ -618,7 +618,7 @@ def test_cli_main_dispatches_explicit_directional_policy_migration(
         lambda loaded, args: observed.append((loaded, args)) or 17,
     )
 
-    result = cli.main(
+    result = cli.run_command(
         [
             "directional-policy-migrate",
             "--config",
@@ -660,7 +660,7 @@ def test_cli_main_dispatches_stress90_oi_collection_without_falling_into_live(
         ),
     )
 
-    result = cli.main(
+    result = cli.run_command(
         [
             "stress90-oi-collect",
             "--config",

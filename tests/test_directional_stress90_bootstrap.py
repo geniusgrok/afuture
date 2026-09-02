@@ -1735,7 +1735,7 @@ def test_cli_exposes_bootstrap_arguments_and_does_not_require_ctp_secrets(
 ):
     from types import SimpleNamespace
 
-    from afuture.cli import build_parser, main
+    from afuture.cli import build_parser, run_command
     from afuture.execution_aligned_policy import FROZEN_PRODUCTS
 
     parsed = build_parser().parse_args(
@@ -1798,7 +1798,7 @@ alert = "{alert}"
         fake_bootstrap_stress90,
     )
     assert (
-        main(
+        run_command(
             [
                 "stress90-bootstrap",
                 "--config",

@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 import pytest
 
 from afuture.directional import (
+    adaptive_margin_sizing_share,
     fit_target_lots_to_margin_budget,
-    margin_sizing_share,
 )
 from afuture.directional_acceptance import ProductionMechanicsConfig
 from afuture.directional_robustness import MarginAwareDirectionalProductionAcceptance
@@ -31,13 +31,14 @@ def test_margin_budget_fits_stress_target_without_relaxing_hard_cap():
     assert abs(fitted["A2609"]) <= abs(requested["A2609"])
 
 
-def test_margin_sizing_share_reserves_full_existing_daily_loss_budget():
+def test_adaptive_margin_sizing_share_without_history_reserves_full_existing_daily_loss_budget():
     # The 35% hard halt is unchanged. Keep the configured 5% daily-loss budget as
     # absolute equity headroom between normal target sizing and the hard margin gate.
-    assert margin_sizing_share(
+    assert adaptive_margin_sizing_share(
         max_margin_ratio=0.35,
         min_available_ratio=0.25,
         max_daily_loss_ratio=0.05,
+        completed_returns=(),
     ) == pytest.approx(0.30)
 
 

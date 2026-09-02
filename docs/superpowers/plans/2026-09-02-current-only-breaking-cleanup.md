@@ -79,36 +79,35 @@ direct calls over new abstractions.
 ### Task 3: Remove fixed-archive historical compatibility replay
 
 **Files:**
-- Delete: `tools/stress90_fixed_archive_compat.py`
-- Delete: `tests/test_stress90_fixed_archive_compat.py`
+- Delete: the historical fixed-archive compatibility adapter and its dedicated tests
 - Modify: `tools/evaluate_directional_stress80_final.py`
 - Modify: `tools/evaluate_directional_stress90_final.py`
 - Modify: affected Stress-90 final/incremental/policy tests and active docs/workflow wording
 
-- [ ] Add/retain tests proving the runtime imports no offline evaluator and the
+- [x] Add/retain tests proving the runtime imports no offline evaluator and the
   current policy-definition digest is exact.
-- [ ] Route retained evaluator mains through SHA-verified current input loading and
+- [x] Route retained evaluator mains through SHA-verified current input loading and
   the shared current candidate core; retain manifest/size validation.
-- [ ] Delete only the obsolete compatibility adapter and compatibility-only fixed
+- [x] Delete only the obsolete compatibility adapter and compatibility-only fixed
   replay tests; retain canonical bootstrap, batch/incremental parity, policy, and
   historical provenance receipt.
-- [ ] Run focused evaluator/bootstrap/policy/workflow suites and confirm candidate
+- [x] Run focused evaluator/bootstrap/policy/workflow suites and confirm candidate
   and policy digests are unchanged.
 
 ### Task 4: Collapse backup and sizing facades
 
 **Files:**
 - Replace: `afuture/runtime_backup.py` with the current implementation
-- Delete: `afuture/runtime_backup_impl.py`
+- Delete: the runtime-backup implementation facade module
 - Modify: `afuture/directional.py`
 - Modify: backup/restore and sizing tests
 
-- [ ] Move the implementation without changing archive schema, member ordering,
+- [x] Move the implementation without changing archive schema, member ordering,
   manifest digesting, semantic verification, restore publication, HALTED outcome,
   or quarantine behavior.
-- [ ] Remove `margin_sizing_share`; call `adaptive_margin_sizing_share` directly
+- [x] Remove `margin_sizing_share`; call `adaptive_margin_sizing_share` directly
   with empty completed returns in its regression test.
-- [ ] Prove no-history/calm/stressed sizing values and current backup/restore safety.
+- [x] Prove no-history/calm/stressed sizing values and current backup/restore safety.
 
 ### Task 5: One canonical CLI and current configuration schema
 
@@ -121,18 +120,18 @@ direct calls over new abstractions.
 - Modify: `afuture/models.py`, `afuture/auto.py`, and current config consumers/examples
 - Modify: CLI/config/heartbeat/workflow-contract tests
 
-- [ ] Add RED parser tests proving removed migration/old config names are absent and
+- [x] Add RED parser tests proving removed migration/old config names are absent and
   retained current operational commands remain.
-- [ ] Keep `afuture.command_router:main` as the sole public entry point, delete
+- [x] Keep `afuture.command_router:main` as the sole public entry point, delete
   `_delegate`/`legacy_main` semantics, and call a neutrally named internal dispatcher
   without changing preflight, deployment, fence, or heartbeat order.
-- [ ] Rename the compatibility stationarity field/key to
+- [x] Rename the compatibility stationarity field/key to
   `min_mean_reversion_score`, reject the old key, and require explicit directional
   policy whenever enabled while preserving equivalent current numeric behavior.
-- [ ] Put heartbeat path/interval in `AppConfig`; remove independent TOML parsing,
+- [x] Put heartbeat path/interval in `AppConfig`; remove independent TOML parsing,
   `_ACTIVE_SETTINGS`, activation functions, and extension-key bypasses. Preserve
   relative-path and Shadow runtime behavior through explicit settings.
-- [ ] Run focused CLI portability/safety/runtime-factory, config, heartbeat,
+- [x] Run focused CLI portability/safety/runtime-factory, config, heartbeat,
   workflow-contract, and documentation consistency suites.
 
 ### Task 6: Current-only policy and operational documentation
@@ -145,13 +144,13 @@ direct calls over new abstractions.
 - Modify: Stress-90 runbook, productionization, checklist, index, and related active docs
 - Modify: `.github/workflows/ci.yml`
 
-- [ ] State the permanent current-only policy, exact fail-closed behavior, operator
+- [x] State the permanent current-only policy, exact fail-closed behavior, operator
   archive/bootstrap/reconciliation procedure, and safety mechanisms that are not debt.
-- [ ] Remove obsolete migration/compatibility commands and wording; label retained
+- [x] Remove obsolete migration/compatibility commands and wording; label retained
   historical receipts as provenance only.
-- [ ] Keep Python 3.10, `tomli`, 3.10/3.13 CI, and Windows core/replay smoke because
+- [x] Keep Python 3.10, `tomli`, 3.10/3.13 CI, and Windows core/replay smoke because
   current repository contracts explicitly require them; rename misleading smoke/test wording.
-- [ ] Record the multi-binding registry representation as a deferred P2 decision
+- [x] Record the multi-binding registry representation as a deferred P2 decision
   because it currently enforces account-switch, retired-identity, and lifecycle safety.
 - [ ] Create and push Checkpoint B, verify the exact remote head, and update the PR.
 

@@ -26,7 +26,7 @@ from afuture.state import RuntimeState, StateStore
 
 
 def test_status_is_local_read_only_and_does_not_create_log(tmp_path: Path, capsys) -> None:
-    from afuture.cli import main
+    from afuture.cli import run_command
 
     config_path = tmp_path / "status.toml"
     config_path.write_text(
@@ -51,7 +51,7 @@ alert = "{alert}"
         encoding="utf-8",
     )
 
-    assert main(["status", "--config", str(config_path)]) == 0
+    assert run_command(["status", "--config", str(config_path)]) == 0
     assert '"passed": true' in capsys.readouterr().out
     assert not (tmp_path / "afuture.log").exists()
 
@@ -93,7 +93,7 @@ def test_status_does_not_require_live_ctp_credentials(
     capsys,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from afuture.cli import main
+    from afuture.cli import run_command
 
     for name in ("AFUTURE_CTP_USER", "AFUTURE_CTP_PASSWORD", "AFUTURE_CTP_BROKER"):
         monkeypatch.delenv(name, raising=False)
@@ -130,7 +130,7 @@ alert = "{alert}"
         encoding="utf-8",
     )
 
-    assert main(["status", "--config", str(config_path)]) == 0
+    assert run_command(["status", "--config", str(config_path)]) == 0
     assert '"passed": true' in capsys.readouterr().out
 
 

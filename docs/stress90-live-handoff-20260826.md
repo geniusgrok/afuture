@@ -1,9 +1,15 @@
 # Stress-90 live productionization handoff — 2026-08-26
 
-## Final continuation update — 2026-08-27
+> **Historical, non-executable handoff.** This dated continuation record is
+> preserved for audit only. Its statements about schema migration, compatibility
+> handling, branches, PR state, and execution order are superseded by the
+> current-only runtime and operational contracts; do not use it to operate or
+> modify the current system.
 
-本节是当前权威续作现场，并取代本文后续 2026-08-26 snapshot、红色 CI、open code blocker
-和 continuation order；旧内容保留为审计历史，不得再据此回退代码或重新执行已关闭任务。
+## Final continuation snapshot — 2026-08-27
+
+本节记录当时的最终续作现场；它不再是当前权威，也不得据此回退代码、恢复兼容/迁移路径或重新
+执行已关闭任务。
 
 - Repository: `ychenracing/afuture`
 - Base `main`: `da8de59304963c7b1d6737a63e8dadd6eaecd860`
