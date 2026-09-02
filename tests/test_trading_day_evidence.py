@@ -240,7 +240,7 @@ def test_prepared_lifecycle_blocks_evidence_authority(tmp_path: Path) -> None:
         )
 
 
-def test_old_schema_cannot_be_observed_or_inferred_without_exact_lifecycle(
+def test_old_schema_cannot_be_observed_or_bound_by_lifecycle(
     tmp_path: Path,
 ) -> None:
     from afuture.trading_day_evidence import TradingDayEvidenceError, TradingDayEvidenceStore
@@ -266,7 +266,8 @@ def test_old_schema_cannot_be_observed_or_inferred_without_exact_lifecycle(
 
     with pytest.raises(TradingDayEvidenceError, match="schema"):
         store.load_required()
-    with pytest.raises(TradingDayEvidenceError, match="old.*exact lifecycle"):
+    original = store.path.read_bytes()
+    with pytest.raises(TradingDayEvidenceError, match="old.*current"):
         store.save_observation(
             trading_day="20260825",
             account_identity_digest="a" * 64,
@@ -279,10 +280,11 @@ def test_old_schema_cannot_be_observed_or_inferred_without_exact_lifecycle(
     nonce = "f" * 64
     transaction = _transaction(account="a" * 64, epoch=epoch, nonce=nonce)
     registry.bind_new("a" * 64, runtime, epoch, nonce)
-    upgraded = store.bind_for_lifecycle(
-        transaction=transaction,
-        runtime_dir=runtime,
-        binding_evidence=registry.require_binding_evidence("a" * 64, runtime, epoch),
-    )
-    assert upgraded.phase == "bound"
-    assert upgraded.account_epoch == epoch
+    with pytest.raises(TradingDayEvidenceError, match="schema"):
+        store.bind_for_lifecycle(
+            transaction=transaction,
+            runtime_dir=runtime,
+            binding_evidence=registry.require_binding_evidence("a" * 64, runtime, epoch),
+        )
+
+    assert store.path.read_bytes() == original

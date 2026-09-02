@@ -530,6 +530,7 @@ def test_each_lifecycle_command_runs_full_order_journal_audit_under_lease(
                 reconciled=True,
                 bootstrap_seed_digest=seed.seed_digest,
                 account_identity_digest="a" * 64,
+                risk_overlay_digest="e" * 64,
                 operator_reason="commissioned",
                 strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
             )
@@ -712,6 +713,7 @@ def test_order_journal_rollover_is_zero_order_and_keeps_runtime_halted(
             reconciled=True,
             bootstrap_seed_digest=seed.seed_digest,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="e" * 64,
             operator_reason="commissioned",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )

@@ -37,6 +37,14 @@ def test_backup_allowlist_preserves_authoritative_pending_witnesses() -> None:
         "registry/nonce-ledger/pending.json",
         "directional_state.json",
     )
+    assert backup_module._allowed_member(
+        "registry/nonce-ledger/ready.json",
+        "directional_state.json",
+    )
+    assert not backup_module._allowed_member(
+        "registry/nonce-ledger/migration.json",
+        "directional_state.json",
+    )
     assert not backup_module._allowed_member(
         "runtime/afuture.log",
         "directional_state.json",

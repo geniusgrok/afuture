@@ -61,6 +61,7 @@ def _stores(runtime_dir: Path):
             reconciled=True,
             bootstrap_seed_digest=seed.seed_digest,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="e" * 64,
             operator_reason="lifecycle transaction fixture",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -1055,6 +1056,7 @@ def test_fresh_activation_initializes_authoritative_live_inception_day(
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="e" * 64,
         operator_reason="fresh authoritative activation",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -1233,6 +1235,7 @@ def test_same_day_migrated_execution_aligned_state_can_only_reactivate_with_new_
             reconciled=True,
             bootstrap_seed_digest=policy.state.bootstrap_seed_digest,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="e" * 64,
             operator_reason="explicit same-day Stress-90 reactivation",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         ),
@@ -1336,6 +1339,7 @@ def test_reactivation_rejects_divergent_generic_and_policy_return_windows(
         reconciled=True,
         bootstrap_seed_digest=policy.state.bootstrap_seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="e" * 64,
         operator_reason="reactivate",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -1448,161 +1452,8 @@ def test_lifecycle_marker_fsync_failure_never_accepts_a_transaction(
         store.load()
 
 
-def test_valid_legacy_prepared_lifecycle_upgrades_and_rolls_forward(
+def test_markerless_lifecycle_layout_fails_closed_without_rewriting(
     tmp_path: Path,
-) -> None:
-    from afuture.stress90_lifecycle_transaction import (
-        Stress90LifecycleTransactionStore,
-        apply_stress90_lifecycle_transaction,
-    )
-
-    generic_store, policy_store, generic, policy = _stores(tmp_path)
-    generic_target, policy_target = _targets(generic, policy)
-    store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
-    prepared = store.begin(
-        operation="account_rebase",
-        generic_source=generic,
-        policy_source=policy,
-        generic_target=generic_target,
-        policy_target=policy_target,
-        trading_day="20260825",
-        account_identity_digest="b" * 64,
-        account_snapshot=_account(),
-        operation_nonce=_OPERATION_NONCE,
-    )
-    store.lineage_path.unlink()
-
-    fresh_store = Stress90LifecycleTransactionStore(store.path)
-    assert fresh_store.load_required() == prepared
-    assert fresh_store.lineage_path.is_file()
-    committed = apply_stress90_lifecycle_transaction(
-        fresh_store,
-        generic_store=generic_store,
-        policy_store=policy_store,
-    )
-
-    assert committed.status == "committed"
-    assert generic_store.load() == generic_target
-    assert policy_store.load_required() == policy_target
-
-
-def test_valid_legacy_committed_lifecycle_upgrades_and_exact_retry_returns_committed(
-    tmp_path: Path,
-) -> None:
-    from afuture.stress90_lifecycle_transaction import (
-        Stress90LifecycleTransactionStore,
-        apply_stress90_lifecycle_transaction,
-    )
-
-    generic_store, policy_store, generic, policy = _stores(tmp_path)
-    generic_target, policy_target = _targets(generic, policy)
-    store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
-    begin_kwargs = {
-        "operation": "account_rebase",
-        "generic_source": generic,
-        "policy_source": policy,
-        "generic_target": generic_target,
-        "policy_target": policy_target,
-        "trading_day": "20260825",
-        "account_identity_digest": "b" * 64,
-        "account_snapshot": _account(),
-        "operation_nonce": _OPERATION_NONCE,
-    }
-    store.begin(**begin_kwargs)
-    committed = apply_stress90_lifecycle_transaction(
-        store,
-        generic_store=generic_store,
-        policy_store=policy_store,
-    )
-    store.lineage_path.unlink()
-
-    fresh_store = Stress90LifecycleTransactionStore(store.path)
-    assert fresh_store.load_required() == committed
-    assert fresh_store.lineage_path.is_file()
-    assert fresh_store.begin(**begin_kwargs) == committed
-
-
-def test_valid_legacy_duplicate_lifecycle_layout_upgrades_without_prev_promotion(
-    tmp_path: Path,
-) -> None:
-    from afuture.stress90_lifecycle_transaction import (
-        Stress90LifecycleTransactionStore,
-        apply_stress90_lifecycle_transaction,
-    )
-
-    generic_store, policy_store, generic, policy = _stores(tmp_path)
-    generic_target, policy_target = _targets(generic, policy)
-    store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
-    store.begin(
-        operation="account_rebase",
-        generic_source=generic,
-        policy_source=policy,
-        generic_target=generic_target,
-        policy_target=policy_target,
-        trading_day="20260825",
-        account_identity_digest="b" * 64,
-        account_snapshot=_account(),
-        operation_nonce=_OPERATION_NONCE,
-    )
-    committed = apply_stress90_lifecycle_transaction(
-        store,
-        generic_store=generic_store,
-        policy_store=policy_store,
-    )
-    store.previous_path.write_bytes(store.path.read_bytes())
-    store.lineage_path.unlink()
-
-    upgraded = Stress90LifecycleTransactionStore(store.path).load_required()
-
-    assert upgraded == committed
-    assert store.previous_path.read_bytes() == store.path.read_bytes()
-    assert store.lineage_path.is_file()
-
-
-def test_invalid_legacy_lifecycle_chain_never_upgrades_lineage(tmp_path: Path) -> None:
-    from afuture import stress90_lifecycle_transaction as lifecycle_module
-    from afuture.stress90_lifecycle_transaction import (
-        Stress90LifecycleTransactionError,
-        Stress90LifecycleTransactionStore,
-        apply_stress90_lifecycle_transaction,
-    )
-
-    generic_store, policy_store, generic, policy = _stores(tmp_path)
-    generic_target, policy_target = _targets(generic, policy)
-    store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
-    store.begin(
-        operation="account_rebase",
-        generic_source=generic,
-        policy_source=policy,
-        generic_target=generic_target,
-        policy_target=policy_target,
-        trading_day="20260825",
-        account_identity_digest="b" * 64,
-        account_snapshot=_account(),
-        operation_nonce=_OPERATION_NONCE,
-    )
-    apply_stress90_lifecycle_transaction(
-        store,
-        generic_store=generic_store,
-        policy_store=policy_store,
-    )
-    store.lineage_path.unlink()
-    previous = json.loads(store.previous_path.read_text(encoding="utf-8"))
-    previous["sequence"] = 3
-    unsigned = {key: value for key, value in previous.items() if key != "checksum"}
-    previous["checksum"] = lifecycle_module._digest(unsigned)
-    store.previous_path.write_text(json.dumps(previous), encoding="utf-8")
-
-    with pytest.raises(Stress90LifecycleTransactionError, match="sequence"):
-        Stress90LifecycleTransactionStore(store.path).load_required()
-    assert not store.lineage_path.exists()
-
-
-@pytest.mark.parametrize("failure_target", ["marker", "parent"])
-def test_legacy_lifecycle_upgrade_fsync_failure_does_not_return_a_transaction(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure_target: str,
 ) -> None:
     from afuture.stress90_lifecycle_transaction import (
         Stress90LifecycleTransactionError,
@@ -1612,7 +1463,7 @@ def test_legacy_lifecycle_upgrade_fsync_failure_does_not_return_a_transaction(
     _generic_store, _policy_store, generic, policy = _stores(tmp_path)
     generic_target, policy_target = _targets(generic, policy)
     store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
-    prepared = store.begin(
+    store.begin(
         operation="account_rebase",
         generic_source=generic,
         policy_source=policy,
@@ -1623,31 +1474,101 @@ def test_legacy_lifecycle_upgrade_fsync_failure_does_not_return_a_transaction(
         account_snapshot=_account(),
         operation_nonce=_OPERATION_NONCE,
     )
-    original = store.path.read_bytes()
     store.lineage_path.unlink()
-    real_fsync = os.fsync
+    original = store.path.read_bytes()
 
-    def fail_selected_fsync(descriptor: int) -> None:
-        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
-        if (failure_target == "parent") is is_directory:
-            raise OSError(f"injected legacy upgrade {failure_target} fsync failure")
-        real_fsync(descriptor)
-
-    monkeypatch.setattr(os, "fsync", fail_selected_fsync)
-    with pytest.raises(Stress90LifecycleTransactionError, match="lineage marker"):
+    with pytest.raises(Stress90LifecycleTransactionError, match="lineage marker is missing"):
         Stress90LifecycleTransactionStore(store.path).load_required()
 
     assert store.path.read_bytes() == original
-    assert store.lineage_path.exists()
-    retried_targets: list[str] = []
+    assert not store.lineage_path.exists()
 
-    def record_retry_fsync(descriptor: int) -> None:
-        retried_targets.append("parent" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "marker")
-        real_fsync(descriptor)
 
-    monkeypatch.setattr(os, "fsync", record_retry_fsync)
-    assert Stress90LifecycleTransactionStore(store.path).load_required() == prepared
-    assert {"marker", "parent"}.issubset(retried_targets)
+def test_lifecycle_requires_adjacent_previous_evidence_after_initial_record(
+    tmp_path: Path,
+) -> None:
+    from afuture import stress90_lifecycle_transaction as lifecycle_module
+    from afuture.stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        Stress90LifecycleTransactionStore,
+    )
+
+    _generic_store, _policy_store, generic, policy = _stores(tmp_path)
+    generic_target, policy_target = _targets(generic, policy)
+    store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
+    transaction = store.begin(
+        operation="account_rebase",
+        generic_source=generic,
+        policy_source=policy,
+        generic_target=generic_target,
+        policy_target=policy_target,
+        trading_day="20260825",
+        account_identity_digest="b" * 64,
+        account_snapshot=_account(),
+        operation_nonce=_OPERATION_NONCE,
+    )
+    initial_bytes = store.path.read_bytes()
+    store.mark_committed(transaction.transaction_id)
+    current_bytes = store.path.read_bytes()
+
+    store.previous_path.unlink()
+    with pytest.raises(
+        Stress90LifecycleTransactionError,
+        match="previous lifecycle transaction evidence is missing",
+    ):
+        store.load_required()
+    assert store.path.read_bytes() == current_bytes
+
+    nonadjacent = json.loads(initial_bytes)
+    nonadjacent["sequence"] = 3
+    unsigned = {key: value for key, value in nonadjacent.items() if key != "checksum"}
+    nonadjacent["checksum"] = lifecycle_module._digest(unsigned)
+    nonadjacent_bytes = json.dumps(nonadjacent, sort_keys=True).encode()
+    store.path.write_bytes(nonadjacent_bytes)
+    store.previous_path.write_bytes(initial_bytes)
+    with pytest.raises(
+        Stress90LifecycleTransactionError,
+        match="previous lifecycle transaction sequence is not adjacent",
+    ):
+        store.load_required()
+    assert store.path.read_bytes() == nonadjacent_bytes
+    assert store.previous_path.read_bytes() == initial_bytes
+
+
+def test_lifecycle_rejects_non_sha_target_marker_risk_overlay(tmp_path: Path) -> None:
+    from afuture.stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
+        Stress90LifecycleTransactionStore,
+        _validate_operation_invariants,
+    )
+
+    _generic_store, _policy_store, generic, policy = _stores(tmp_path)
+    generic_target, policy_target = _targets(generic, policy)
+    transaction = Stress90LifecycleTransactionStore(
+        tmp_path / "stress90_lifecycle_transaction.json"
+    ).begin(
+        operation="account_rebase",
+        generic_source=generic,
+        policy_source=policy,
+        generic_target=generic_target,
+        policy_target=policy_target,
+        trading_day="20260825",
+        account_identity_digest="b" * 64,
+        account_snapshot=_account(),
+        operation_nonce=_OPERATION_NONCE,
+    )
+    marker = dict(transaction.generic_target.strategy_states["directional_policy_identity"])
+    marker["risk_overlay_digest"] = "not-a-sha256-digest"
+    invalid_target = replace(
+        transaction.generic_target,
+        strategy_states={"directional_policy_identity": marker},
+    )
+
+    with pytest.raises(
+        Stress90LifecycleTransactionError,
+        match="cross-file policy identity mismatch",
+    ):
+        _validate_operation_invariants(replace(transaction, generic_target=invalid_target))
 
 
 @pytest.mark.parametrize("failure_target", ["marker", "parent"])

@@ -78,6 +78,7 @@ def _issue_synthetic_technical_permit(runtime_dir: Path):
         session_activity_trades_digest="1" * 64,
         session_activity_ownership_digest="2" * 64,
         active_order_count=0,
+        risk_overlay_digest="3" * 64,
     )
     store = Stress90ActivationPermitStore(runtime_dir / "stress90_activation_permit.json")
     store.issue(evidence)
@@ -98,6 +99,7 @@ def test_activation_requires_every_lifecycle_gate_and_strong_confirmation():
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="first test-counter activation",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -142,6 +144,7 @@ def test_runtime_policy_identity_rejects_old_or_mismatched_state():
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="validated migration",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -203,6 +206,7 @@ def test_stress90_to_execution_aligned_migration_is_explicit_flat_and_halted() -
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="commissioned",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -264,6 +268,7 @@ def test_migrated_execution_aligned_reactivation_requires_both_strong_confirmati
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="commissioned",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -285,6 +290,7 @@ def test_migrated_execution_aligned_reactivation_requires_both_strong_confirmati
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="same-day return to Stress-90",
         activation_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         rebase_confirmation=REBASE_CONFIRMATION,
@@ -717,6 +723,7 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
             reconciled=True,
             bootstrap_seed_digest=seed.seed_digest,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="c" * 64,
             operator_reason="commissioned",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -1017,6 +1024,7 @@ def test_account_rebase_cli_resets_only_soft_path_and_records_operator_reason(
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="commissioned",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -1532,6 +1540,7 @@ def test_shadow_rebase_reads_canonical_persistent_account_and_rejects_active_ord
             reconciled=True,
             bootstrap_seed_digest=seed.seed_digest,
             account_identity_digest="d" * 64,
+            risk_overlay_digest="c" * 64,
             operator_reason="commissioned Shadow",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )

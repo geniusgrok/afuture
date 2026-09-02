@@ -17,7 +17,6 @@ from .models import AccountSnapshot, ContractInfo, ContractPosition, RuntimeMode
 
 STRESS90_ACTIVATION_PERMIT_KIND = "afuture.directional.stress90.activation-permit"
 STRESS90_ACTIVATION_PERMIT_SCHEMA_VERSION = 6
-_LEGACY_STRESS90_ACTIVATION_PERMIT_SCHEMA_VERSION = 5
 STRESS90_ACTIVATION_PERMIT_ACK = "I_CONFIRM_STRESS90_TECHNICAL_ACTIVATION"
 STRESS90_ACTIVATION_PERMIT_SCOPE = "technical-runtime-activation-only"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -101,7 +100,7 @@ class Stress90ActivationEvidence:
     session_activity_trades_digest: str
     session_activity_ownership_digest: str
     active_order_count: int
-    risk_overlay_digest: str = ""
+    risk_overlay_digest: str
     account_continuity_mode: str = "strict"
     operator_continuity_receipt_digest: str = ""
 
@@ -223,8 +222,7 @@ def _evidence_payload(evidence: Stress90ActivationEvidence) -> dict[str, object]
         raise Stress90ActivationPermitIntegrityError(
             "active order count must be a non-negative integer"
         )
-    if evidence.risk_overlay_digest:
-        _valid_sha256(evidence.risk_overlay_digest, name="risk overlay digest")
+    _valid_sha256(evidence.risk_overlay_digest, name="risk overlay digest")
     if evidence.account_continuity_mode not in {"strict", "operator_managed"}:
         raise Stress90ActivationPermitIntegrityError(
             "activation evidence account continuity mode is invalid"
@@ -439,10 +437,6 @@ def collect_stress90_activation_evidence(
             "technical activation account settlement/cash-flow evidence is unverified"
         ) from exc
     generic = state_store.load_required_record()
-    if generic.legacy:
-        raise Stress90ActivationPermitIntegrityError(
-            "legacy generic runtime state cannot authorize Stress-90 activation"
-        )
     state = generic.state
     if state.runtime_mode != RuntimeMode.HALTED.value or not state.kill_switch:
         raise Stress90ActivationPermitIntegrityError(
@@ -753,14 +747,8 @@ def _permit_from_payload(raw: object) -> Stress90ActivationPermit:
         raise Stress90ActivationPermitIntegrityError("activation permit fields are invalid")
     evidence_raw = raw["evidence"]
     expected_evidence_fields = set(Stress90ActivationEvidence.__dataclass_fields__)
-    legacy_evidence_fields = expected_evidence_fields - {"risk_overlay_digest"}
-    if not isinstance(evidence_raw, dict) or set(evidence_raw) not in (
-        expected_evidence_fields,
-        legacy_evidence_fields,
-    ):
+    if not isinstance(evidence_raw, dict) or set(evidence_raw) != expected_evidence_fields:
         raise Stress90ActivationPermitIntegrityError("activation evidence fields are invalid")
-    if set(evidence_raw) == legacy_evidence_fields:
-        evidence_raw = {**evidence_raw, "risk_overlay_digest": ""}
     try:
         evidence = Stress90ActivationEvidence(**evidence_raw)
         permit = Stress90ActivationPermit(
@@ -938,10 +926,7 @@ class Stress90ActivationPermitStore:
             )
         if raw["kind"] != STRESS90_ACTIVATION_PERMIT_KIND:
             raise Stress90ActivationPermitIntegrityError("activation permit kind is invalid")
-        if raw["schema_version"] not in {
-            _LEGACY_STRESS90_ACTIVATION_PERMIT_SCHEMA_VERSION,
-            STRESS90_ACTIVATION_PERMIT_SCHEMA_VERSION,
-        }:
+        if raw["schema_version"] != STRESS90_ACTIVATION_PERMIT_SCHEMA_VERSION:
             raise Stress90ActivationPermitIntegrityError("activation permit schema is unsupported")
         sequence = _valid_positive_integer(raw["sequence"], name="activation permit sequence")
         parent_checksum = raw["parent_checksum"]

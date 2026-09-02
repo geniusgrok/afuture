@@ -60,7 +60,6 @@ class RuntimeStateRecord:
     state: RuntimeState
     sequence: int
     checksum: str
-    legacy: bool
 
 
 class StateStore:
@@ -128,24 +127,12 @@ class StateStore:
             raise StateIntegrityError("invalid state JSON") from exc
         if not isinstance(raw, dict):
             raise StateIntegrityError("state root must be a JSON object")
-        if "schema_version" not in raw:
-            # 兼容旧版裸 RuntimeState JSON。
-            state = self._state_from_payload(raw)
-            return RuntimeStateRecord(state, 0, sha256(payload).hexdigest(), True)
-
         required = {"schema_version", "sequence", "state", "checksum"}
-        missing = sorted(required.difference(raw))
-        if missing:
-            raise StateIntegrityError("state envelope missing fields: " + ", ".join(missing))
+        if set(raw) != required:
+            raise StateIntegrityError("state envelope fields are not current")
         schema_version = raw["schema_version"]
-        if (
-            isinstance(schema_version, bool)
-            or not isinstance(schema_version, int)
-            or schema_version <= 0
-        ):
-            raise StateIntegrityError("state schema version must be a positive integer")
-        if schema_version > SCHEMA_VERSION:
-            raise StateIntegrityError("state schema version is newer than this program")
+        if schema_version != SCHEMA_VERSION:
+            raise StateIntegrityError("state schema is not current")
         sequence = raw["sequence"]
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
             raise StateIntegrityError("state sequence must be a positive integer")
@@ -156,10 +143,13 @@ class StateStore:
         if expected != raw.get("checksum"):
             raise StateIntegrityError("state checksum mismatch")
         state = self._state_from_payload(state_payload)
-        return RuntimeStateRecord(state, sequence, raw["checksum"], False)
+        return RuntimeStateRecord(state, sequence, raw["checksum"])
 
     @staticmethod
     def _state_from_payload(payload: dict) -> RuntimeState:
+        current_fields = set(RuntimeState.__dataclass_fields__)
+        if set(payload) != current_fields:
+            raise StateIntegrityError("state payload fields are not current")
         bool_fields = {
             "kill_switch",
             "reconciled",
@@ -186,13 +176,13 @@ class StateStore:
         list_fields = {"positions", "recent_daily_returns", "recent_trade_ids"}
         object_fields = {"strategy_states", "auto_pairs"}
 
-        for name in bool_fields.intersection(payload):
+        for name in bool_fields:
             if not isinstance(payload[name], bool):
                 raise StateIntegrityError(f"state field {name} must be bool")
-        for name in string_fields.intersection(payload):
+        for name in string_fields:
             if not isinstance(payload[name], str):
                 raise StateIntegrityError(f"state field {name} must be string")
-        for name in number_fields.intersection(payload):
+        for name in number_fields:
             value = payload[name]
             if (
                 isinstance(value, bool)
@@ -200,21 +190,21 @@ class StateStore:
                 or not isfinite(value)
             ):
                 raise StateIntegrityError(f"state field {name} must be finite number")
-        settlement_id = payload.get("last_account_settlement_id", -1)
+        settlement_id = payload["last_account_settlement_id"]
         if (
             isinstance(settlement_id, bool)
             or not isinstance(settlement_id, int)
             or settlement_id < -1
         ):
             raise StateIntegrityError("state field last_account_settlement_id is invalid")
-        for name in list_fields.intersection(payload):
+        for name in list_fields:
             if not isinstance(payload[name], list):
                 raise StateIntegrityError(f"state field {name} must be a list")
-        for name in object_fields.intersection(payload):
+        for name in object_fields:
             if not isinstance(payload[name], dict):
                 raise StateIntegrityError(f"state field {name} must be an object")
 
-        positions = payload.get("positions", [])
+        positions = payload["positions"]
         if any(not isinstance(item, dict) for item in positions):
             raise StateIntegrityError("state field positions must contain only objects")
         for item in positions:
@@ -229,10 +219,10 @@ class StateStore:
                 "state field positions contains duplicate position identities"
             )
         for name in object_fields:
-            values = payload.get(name, {})
+            values = payload[name]
             if any(not isinstance(value, dict) for value in values.values()):
                 raise StateIntegrityError(f"state field {name} values must be objects")
-        recent_returns = payload.get("recent_daily_returns", [])
+        recent_returns = payload["recent_daily_returns"]
         if any(
             isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value)
             for value in recent_returns
@@ -240,7 +230,7 @@ class StateStore:
             raise StateIntegrityError(
                 "state field recent_daily_returns must contain finite numbers"
             )
-        recent_trade_ids = payload.get("recent_trade_ids", [])
+        recent_trade_ids = payload["recent_trade_ids"]
         if (
             len(recent_trade_ids) > MAX_RECENT_TRADE_IDS
             or any(not isinstance(value, str) or not value for value in recent_trade_ids)
@@ -249,12 +239,11 @@ class StateStore:
             raise StateIntegrityError(
                 "state field recent_trade_ids must contain unique non-empty strings within limit"
             )
-        runtime_mode = payload.get("runtime_mode", RuntimeMode.RUNNING.value)
+        runtime_mode = payload["runtime_mode"]
         if runtime_mode not in {item.value for item in RuntimeMode}:
             raise StateIntegrityError("state field runtime_mode is unsupported")
 
-        allowed = RuntimeState.__dataclass_fields__
-        return RuntimeState(**{key: value for key, value in payload.items() if key in allowed})
+        return RuntimeState(**payload)
 
     def save(
         self,

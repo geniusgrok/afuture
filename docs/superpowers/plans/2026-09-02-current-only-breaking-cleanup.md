@@ -46,14 +46,14 @@ direct calls over new abstractions.
 - Modify: `afuture/trading_day_evidence.py`
 - Modify: affected state, permit, execution, lifecycle, activation, and evidence tests
 
-- [ ] Add RED tests for schema-less/old state, old permit/intent schemas,
+- [x] Add RED tests for schema-less/old state, old permit/intent schemas,
   missing/unknown payload fields, no-overlay markers, markerless lifecycle layout,
   and schema-2 trading-day lifecycle binding.
-- [ ] Require exact current schema, envelope, payload, and lineage layout; remove
+- [x] Require exact current schema, envelope, payload, and lineage layout; remove
   `RuntimeStateRecord.legacy` and all generic-state legacy branches.
-- [ ] Require current risk-overlay identity everywhere a full Stress-90 marker is
+- [x] Require current risk-overlay identity everywhere a full Stress-90 marker is
   validated; keep current controlled policy switching and all `.prev` semantics.
-- [ ] Prove rejected artifacts are not rewritten and run focused state/lifecycle suites.
+- [x] Prove rejected artifacts are not rewritten and run focused state/lifecycle suites.
 
 ### Task 2: Current-only account registry and nonce ledger
 
@@ -64,14 +64,14 @@ direct calls over new abstractions.
 - Modify: backup allowlist in the canonical backup implementation
 - Modify: registry, nonce, CLI, and backup tests
 
-- [ ] Add RED tests that registry schemas 1/2 and a missing current lineage marker
+- [x] Add RED tests that registry schemas 1/2 and a missing current lineage marker
   fail closed without mutation.
-- [ ] Delete legacy binding decoding, synthesized revisions/digests/operation kind,
+- [x] Delete legacy binding decoding, synthesized revisions/digests/operation kind,
   old checksum construction, and marker auto-upgrade.
-- [ ] Delete nonce-ledger migration implementation, confirmation constant,
+- [x] Delete nonce-ledger migration implementation, confirmation constant,
   `migration.json`, legacy tombstones/receipts/fault injections, and the
   `stress90-registry-nonce-migrate` CLI route.
-- [ ] Preserve current initialization, empty authenticated ledger, locks, CAS,
+- [x] Preserve current initialization, empty authenticated ledger, locks, CAS,
   sequences, parent checksum, nonce anchor, retired identities, and pending/ready
   current commit recovery; run focused registry/nonce/backup suites.
 - [ ] Create and push Checkpoint A, verify the exact remote head, and update the PR.

@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +87,7 @@ def _evidence():
         session_activity_trades_digest="1" * 64,
         session_activity_ownership_digest="2" * 64,
         active_order_count=0,
+        risk_overlay_digest="3" * 64,
     )
 
 
@@ -188,6 +190,7 @@ def _write_activation_evidence(runtime_dir: Path):
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest=account_identity,
+        risk_overlay_digest="5" * 64,
         operator_reason="technical activation fixture",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -269,6 +272,39 @@ def test_permit_store_is_checksummed_sequenced_and_one_shot(tmp_path: Path) -> N
             _evidence(),
             expected_sequence=consumed.sequence,
         )
+
+
+@pytest.mark.parametrize("mutation", ["old_schema", "missing_overlay"])
+def test_permit_store_rejects_non_current_evidence_without_rewriting(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    from afuture import stress90_activation_permit as permit_module
+    from afuture.stress90_activation_permit import (
+        Stress90ActivationPermitIntegrityError,
+        Stress90ActivationPermitStore,
+    )
+
+    store = Stress90ActivationPermitStore(tmp_path / "stress90_activation_permit.json")
+    store.issue(_evidence())
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    if mutation == "old_schema":
+        raw["schema_version"] = 5
+    else:
+        evidence = raw["permit"]["evidence"]
+        evidence.pop("risk_overlay_digest")
+        raw["permit"]["evidence_digest"] = permit_module._digest(
+            {**evidence, "risk_overlay_digest": ""}
+        )
+    unsigned = {key: value for key, value in raw.items() if key != "checksum"}
+    raw["checksum"] = permit_module._digest(unsigned)
+    store.path.write_text(json.dumps(raw), encoding="utf-8")
+    original = store.path.read_bytes()
+
+    with pytest.raises(Stress90ActivationPermitIntegrityError, match="schema|evidence fields"):
+        store.load_required_record()
+
+    assert store.path.read_bytes() == original
 
 
 @pytest.mark.parametrize(

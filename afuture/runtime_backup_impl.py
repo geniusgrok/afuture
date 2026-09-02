@@ -165,7 +165,6 @@ def _allowed_member(name: str, state_filename: str | None) -> bool:
             and parts[1] == "nonce-ledger"
             and parts[2]
             in {
-                "migration.json",
                 "pending.json",
                 "ready.json",
             }
@@ -344,7 +343,7 @@ def _collect_registry(
     if ledger.exists() or ledger.is_symlink():
         if ledger.is_symlink() or not ledger.is_dir():
             raise RuntimeBackupError("nonce ledger root is unsafe")
-        for name in ("migration.json", "pending.json", "ready.json"):
+        for name in ("pending.json", "ready.json"):
             _add(
                 members,
                 metadata,

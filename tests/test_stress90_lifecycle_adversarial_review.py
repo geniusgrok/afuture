@@ -74,6 +74,7 @@ def _seeded_stress90_runtime(runtime_dir: Path, *, account_identity: str = "b" *
             reconciled=True,
             bootstrap_seed_digest=seed.seed_digest,
             account_identity_digest=account_identity,
+            risk_overlay_digest="e" * 64,
             operator_reason="commissioned",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -524,6 +525,7 @@ def test_activation_does_not_relabel_a_mismatched_stress90_definition() -> None:
             reconciled=True,
             bootstrap_seed_digest="a" * 64,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="e" * 64,
             operator_reason="must not rewrite corrupt identity",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -561,6 +563,7 @@ def test_activation_does_not_relabel_a_corrupt_execution_aligned_identity() -> N
             reconciled=True,
             bootstrap_seed_digest="a" * 64,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="e" * 64,
             operator_reason="must not rewrite corrupt identity",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -1150,6 +1153,7 @@ def test_reactivation_after_migration_cannot_reuse_a_stale_account_path(
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="e" * 64,
         operator_reason="reactivate after execution-aligned account-path gap",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -1212,6 +1216,7 @@ def test_reactivation_cannot_erase_an_unrecorded_completed_account_day(
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="e" * 64,
         operator_reason="must not erase the offline account rollover",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -1272,6 +1277,7 @@ def test_same_day_reactivation_cannot_reset_the_hard_daily_loss_baseline(
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="e" * 64,
         operator_reason="must not reset same-day daily-loss authority",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )

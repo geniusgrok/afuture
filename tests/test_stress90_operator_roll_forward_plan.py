@@ -81,10 +81,11 @@ def _plan_inputs(tmp_path: Path, *, deposit: float = 0.0, withdrawal: float = 0.
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest=_ACCOUNT,
+        risk_overlay_digest="e" * 64,
         operator_reason="operator continuity fixture",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
-    generic = RuntimeStateRecord(generic_state, 11, "4" * 64, False)
+    generic = RuntimeStateRecord(generic_state, 11, "4" * 64)
     binding = AccountRuntimeBinding(
         account_identity_digest=_ACCOUNT,
         canonical_runtime=str(runtime),

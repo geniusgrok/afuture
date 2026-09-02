@@ -198,6 +198,7 @@ def test_migrated_execution_aligned_runtime_copy_keeps_registry_gate(tmp_path):
         reconciled=True,
         bootstrap_seed_digest=policy.bootstrap_seed_digest,
         account_identity_digest="1" * 64,
+        risk_overlay_digest="2" * 64,
         operator_reason="fixture activation",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -249,6 +250,7 @@ def test_live_migrated_execution_aligned_runtime_requires_fixed_machine_registry
         reconciled=True,
         bootstrap_seed_digest=policy.bootstrap_seed_digest,
         account_identity_digest="1" * 64,
+        risk_overlay_digest="2" * 64,
         operator_reason="fixture activation",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -303,6 +305,7 @@ def test_migrated_execution_aligned_runtime_rejects_noncanonical_identity_marker
         reconciled=True,
         bootstrap_seed_digest=policy.bootstrap_seed_digest,
         account_identity_digest="1" * 64,
+        risk_overlay_digest="2" * 64,
         operator_reason="fixture activation",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )

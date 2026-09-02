@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -37,7 +38,12 @@ def write_envelope(
     sequence: object = 1,
     state: object | None = None,
 ) -> None:
-    state_payload = {} if state is None else state
+    state_payload = asdict(RuntimeState())
+    if state is not None:
+        if not isinstance(state, dict):
+            state_payload = state
+        else:
+            state_payload.update(state)
     raw = {
         "schema_version": schema_version,
         "sequence": sequence,
@@ -87,7 +93,7 @@ def test_save_refuses_to_replace_checksum_mismatch(tmp_path: Path) -> None:
     ("raw", "message"),
     [
         ([], "state root must be a JSON object"),
-        ({"schema_version": 2}, "state envelope missing fields"),
+        ({"schema_version": 2}, "state envelope fields are not current"),
     ],
 )
 def test_load_rejects_malformed_envelope(
@@ -105,12 +111,12 @@ def test_load_rejects_malformed_envelope(
 @pytest.mark.parametrize(
     ("schema_version", "sequence", "message"),
     [
-        (4, 1, "newer than this program"),
-        (0, 1, "schema version must be a positive integer"),
-        (2, 0, "sequence must be a positive integer"),
-        (2, -1, "sequence must be a positive integer"),
-        ("2", 1, "schema version must be a positive integer"),
-        (2, "1", "sequence must be a positive integer"),
+        (4, 1, "schema is not current"),
+        (0, 1, "schema is not current"),
+        (2, 0, "schema is not current"),
+        (2, -1, "schema is not current"),
+        ("2", 1, "schema is not current"),
+        (3, "1", "sequence must be a positive integer"),
     ],
 )
 def test_load_rejects_invalid_schema_or_sequence(
@@ -139,6 +145,59 @@ def test_load_rejects_non_object_state_payload(tmp_path: Path) -> None:
         match="state payload must be a JSON object",
     ):
         StateStore(path).load()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        asdict(RuntimeState()),
+        {
+            "schema_version": 3,
+            "sequence": 1,
+            "state": asdict(RuntimeState()),
+            "checksum": "x",
+            "extra": True,
+        },
+    ],
+)
+def test_state_rejects_non_current_envelope_without_rewriting(
+    tmp_path: Path,
+    raw: object,
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    original = path.read_bytes()
+
+    with pytest.raises(StateIntegrityError, match="envelope|schema"):
+        StateStore(path).save(RuntimeState())
+
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("mutate", ["missing", "unknown"])
+def test_state_requires_exact_current_payload_fields(
+    tmp_path: Path,
+    mutate: str,
+) -> None:
+    path = tmp_path / "state.json"
+    payload = asdict(RuntimeState())
+    if mutate == "missing":
+        payload.pop("kill_switch")
+    else:
+        payload["retired_field"] = True
+    raw = {
+        "schema_version": 3,
+        "sequence": 1,
+        "state": payload,
+    }
+    raw["checksum"] = StateStore._checksum(3, 1, payload)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    original = path.read_bytes()
+
+    with pytest.raises(StateIntegrityError, match="payload fields"):
+        StateStore(path).load()
+
+    assert path.read_bytes() == original
 
 
 @pytest.mark.parametrize(
@@ -346,7 +405,7 @@ def test_load_previous_returns_none_when_no_verified_backup_exists(tmp_path: Pat
     assert store.load_previous() is None
 
 
-def test_save_migrates_valid_legacy_state(tmp_path: Path) -> None:
+def test_save_rejects_schema_less_state_without_migrating(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     path.write_text(
         json.dumps({"kill_switch": True, "positions": []}),
@@ -354,13 +413,11 @@ def test_save_migrates_valid_legacy_state(tmp_path: Path) -> None:
     )
     store = StateStore(path)
 
-    state = store.load()
-    store.save(state)
+    original = path.read_bytes()
+    with pytest.raises(StateIntegrityError, match="envelope"):
+        store.save(RuntimeState())
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 3
-    assert raw["sequence"] == 1
-    assert raw["state"]["kill_switch"] is True
+    assert path.read_bytes() == original
 
 
 def test_failed_atomic_replace_preserves_target_and_removes_temp_file(

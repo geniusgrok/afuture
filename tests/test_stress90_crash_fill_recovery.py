@@ -925,6 +925,7 @@ def _write_cli_authority(runtime_dir: Path):
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest=account,
+        risk_overlay_digest="e" * 64,
         operator_reason="bound crash-fill recovery fixture",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )

@@ -472,6 +472,7 @@ def test_stress90_doctor_accepts_existing_matching_activation_identity(tmp_path:
     from afuture.directional_policy_activation import POLICY_IDENTITY_STATE_KEY
     from afuture.directional_stress90_policy import STRESS90_POLICY
     from afuture.directional_stress90_state import Stress90SeedStore
+    from afuture.stress90_risk_overlay import stress90_risk_overlay_digest
 
     config = _stress90_config(tmp_path)
     seed_path, _state_path = _write_stress90_seed_state(tmp_path)
@@ -487,6 +488,10 @@ def test_stress90_doctor_accepts_existing_matching_activation_identity(tmp_path:
                     "policy_definition_digest": STRESS90_POLICY.policy_definition_digest,
                     "products_manifest_digest": STRESS90_POLICY.products_manifest_digest,
                     "bootstrap_seed_digest": seed.seed_digest,
+                    "account_identity_digest": "a" * 64,
+                    "risk_overlay_digest": stress90_risk_overlay_digest(
+                        config.directional, config.risk
+                    ),
                     "operator_reason": "commissioned",
                 }
             },

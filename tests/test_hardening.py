@@ -280,7 +280,7 @@ def test_health_monitor_is_fail_closed():
     )
 
 
-def test_state_has_checksum_sequence_and_legacy_migration(tmp_path: Path):
+def test_state_has_checksum_sequence_and_rejects_schema_less_state(tmp_path: Path):
     path = tmp_path / "state.json"
     store = StateStore(path)
     store.save(RuntimeState(kill_switch=True, last_order_id="o1", last_trade_id="t1"))
@@ -295,7 +295,8 @@ def test_state_has_checksum_sequence_and_legacy_migration(tmp_path: Path):
         store.load()
     legacy = tmp_path / "legacy.json"
     legacy.write_text(json.dumps({"kill_switch": True, "positions": []}), encoding="utf-8")
-    assert StateStore(legacy).load().kill_switch
+    with pytest.raises(ValueError, match="envelope"):
+        StateStore(legacy).load()
 
 
 @pytest.mark.parametrize("evidence_suffix", [".prev", ".lock"])
