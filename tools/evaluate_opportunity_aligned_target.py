@@ -13,7 +13,7 @@ ROOT = TOOLS.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from afuture.execution_aligned_runtime import FROZEN_PRODUCTS
+from afuture.execution_aligned_policy import FROZEN_PRODUCTS
 from afuture.opportunity_aligned_policy import OpportunityAlignedAggressivePolicy
 
 MAX_GROSS_LEVERAGE = 2.0

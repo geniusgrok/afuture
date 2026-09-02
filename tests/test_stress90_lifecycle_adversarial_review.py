@@ -15,6 +15,14 @@ _ACCOUNT_EPOCH = "c" * 64
 _OPERATION_NONCE = "d" * 64
 
 
+@pytest.fixture(autouse=True)
+def _use_isolated_current_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "afuture.account_runtime_registry.PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH",
+        tmp_path / ".account-runtime-registry.json",
+    )
+
+
 def _seeded_stress90_runtime(runtime_dir: Path, *, account_identity: str = "b" * 64):
     from afuture.account_runtime_registry import (
         ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
@@ -74,6 +82,7 @@ def _seeded_stress90_runtime(runtime_dir: Path, *, account_identity: str = "b" *
             reconciled=True,
             bootstrap_seed_digest=seed.seed_digest,
             account_identity_digest=account_identity,
+            risk_overlay_digest="e" * 64,
             operator_reason="commissioned",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -208,6 +217,7 @@ def _run_pending_rebase(
     from afuture.directional import DirectionalConfig
     from afuture.directional_stress90_state import REBASE_CONFIRMATION
     from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+    from afuture.risk import RiskConfig
 
     observations = [] if fence_observations is None else fence_observations
 
@@ -322,6 +332,8 @@ def _run_pending_rebase(
     config = SimpleNamespace(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -329,6 +341,7 @@ def _run_pending_rebase(
             account_exclusive=True,
         ),
         state_path=str(runtime_dir / "state.json"),
+        account_registry_path=str(runtime_dir / ".account-runtime-registry.json"),
         journal_path=str(runtime_dir / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -378,6 +391,7 @@ def test_lifecycle_crash_fill_adoption_preserves_net_flat_fill_identities(
     from afuture.cli import _adopt_stress90_lifecycle_crash_fills
     from afuture.directional import DirectionalConfig
     from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+    from afuture.risk import RiskConfig
 
     adopted = (
         "20260825:DCE:CTP.T-open",
@@ -407,12 +421,14 @@ def test_lifecycle_crash_fill_adoption_preserves_net_flat_fill_identities(
     )
     result = _adopt_stress90_lifecycle_crash_fills(
         SimpleNamespace(
+            risk=RiskConfig(margin_estimate_buffer=1.25),
+            contracts={},
             directional=DirectionalConfig(
                 enabled=True,
                 policy="stress90",
                 products=FROZEN_PRODUCTS,
                 account_exclusive=True,
-            )
+            ),
         ),
         object(),
         runtime_dir=tmp_path,
@@ -524,6 +540,7 @@ def test_activation_does_not_relabel_a_mismatched_stress90_definition() -> None:
             reconciled=True,
             bootstrap_seed_digest="a" * 64,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="e" * 64,
             operator_reason="must not rewrite corrupt identity",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -561,6 +578,7 @@ def test_activation_does_not_relabel_a_corrupt_execution_aligned_identity() -> N
             reconciled=True,
             bootstrap_seed_digest="a" * 64,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="e" * 64,
             operator_reason="must not rewrite corrupt identity",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -1150,6 +1168,7 @@ def test_reactivation_after_migration_cannot_reuse_a_stale_account_path(
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="e" * 64,
         operator_reason="reactivate after execution-aligned account-path gap",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -1212,6 +1231,7 @@ def test_reactivation_cannot_erase_an_unrecorded_completed_account_day(
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="e" * 64,
         operator_reason="must not erase the offline account rollover",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -1272,6 +1292,7 @@ def test_same_day_reactivation_cannot_reset_the_hard_daily_loss_baseline(
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="e" * 64,
         operator_reason="must not reset same-day daily-loss authority",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )

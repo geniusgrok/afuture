@@ -64,16 +64,13 @@ _SETTLEMENT_EVIDENCE_FIELDS = {
 }
 _POLICY_IDENTITY_STATE_KEY = "directional_policy_identity"
 _CRASH_FILL_RECOVERY_STATE_KEY = "stress90_crash_fill_recovery"
-_LEGACY_STRESS90_MARKER_FIELDS = {
+_STRESS90_MARKER_FIELDS = {
     "policy_id",
     "policy_definition_digest",
     "products_manifest_digest",
     "bootstrap_seed_digest",
     "account_identity_digest",
     "operator_reason",
-}
-_STRESS90_MARKER_FIELDS = {
-    *_LEGACY_STRESS90_MARKER_FIELDS,
     "risk_overlay_digest",
 }
 _EXECUTION_ALIGNED_MARKER_FIELDS = {
@@ -1079,11 +1076,12 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
                 "settlement roll-forward account lineage/continuity invariant mismatch"
             )
         if (
-            set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
+            set(marker) != _STRESS90_MARKER_FIELDS
             or marker.get("policy_id") != STRESS90_POLICY.policy_id
             or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
             or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
             or marker.get("bootstrap_seed_digest") != policy.bootstrap_seed_digest
+            or _SHA.fullmatch(str(marker.get("risk_overlay_digest", ""))) is None
         ):
             raise Stress90LifecycleTransactionError(
                 "settlement roll-forward cross-file policy identity mismatch"
@@ -1186,11 +1184,12 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
                 "reactivation/account rebase source account epoch is missing"
             )
         if (
-            set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
+            set(marker) != _STRESS90_MARKER_FIELDS
             or marker.get("policy_id") != STRESS90_POLICY.policy_id
             or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
             or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
             or marker.get("bootstrap_seed_digest") != policy.bootstrap_seed_digest
+            or _SHA.fullmatch(str(marker.get("risk_overlay_digest", ""))) is None
         ):
             raise Stress90LifecycleTransactionError(
                 "lifecycle Stress-90 cross-file policy identity mismatch"
@@ -1424,12 +1423,13 @@ def _validate_begin_source_invariants(
 
     if operation == "risk_overlay_reactivation":
         if (
-            set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
+            set(marker) != _STRESS90_MARKER_FIELDS
             or marker.get("policy_id") != STRESS90_POLICY.policy_id
             or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
             or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
             or marker.get("bootstrap_seed_digest") != source_policy.bootstrap_seed_digest
             or marker.get("account_identity_digest") != account_identity_digest
+            or _SHA.fullmatch(str(marker.get("risk_overlay_digest", ""))) is None
             or source_policy.live_account_identity_digest != account_identity_digest
             or not source_policy.live_account_epoch
             or generic.trading_day != trading_day
@@ -1499,13 +1499,14 @@ def _validate_begin_source_invariants(
 
     source_account_identity = source_policy.live_account_identity_digest
     if (
-        set(marker) not in (_STRESS90_MARKER_FIELDS, _LEGACY_STRESS90_MARKER_FIELDS)
+        set(marker) != _STRESS90_MARKER_FIELDS
         or marker.get("policy_id") != STRESS90_POLICY.policy_id
         or marker.get("policy_definition_digest") != STRESS90_POLICY.policy_definition_digest
         or marker.get("products_manifest_digest") != STRESS90_POLICY.products_manifest_digest
         or marker.get("bootstrap_seed_digest") != source_policy.bootstrap_seed_digest
         or source_account_identity is None
         or marker.get("account_identity_digest") != source_account_identity
+        or _SHA.fullmatch(str(marker.get("risk_overlay_digest", ""))) is None
     ):
         raise Stress90LifecycleTransactionError(
             "lifecycle Stress-90 source cross-file identity mismatch"
@@ -1961,7 +1962,19 @@ class Stress90LifecycleTransactionStore:
             return None
         current_bytes = self._read_record_bytes(self.path, "current")
         current = self._decode_record_bytes(current_bytes, "current")
-        if previous_exists:
+        if current.sequence > 1:
+            if not previous_exists:
+                raise Stress90LifecycleTransactionError(
+                    "previous lifecycle transaction evidence is missing"
+                )
+            previous_bytes = self._read_record_bytes(self.previous_path, "previous")
+            previous = self._decode_record_bytes(previous_bytes, "previous")
+            if previous.sequence != current.sequence - 1:
+                raise Stress90LifecycleTransactionError(
+                    "previous lifecycle transaction sequence is not adjacent"
+                )
+            self._validate_adjacent_records(previous, current)
+        elif previous_exists:
             previous_bytes = self._read_record_bytes(self.previous_path, "previous")
             if previous_bytes != current_bytes:
                 previous = self._decode_record_bytes(previous_bytes, "previous")
@@ -1975,10 +1988,11 @@ class Stress90LifecycleTransactionStore:
             raise Stress90LifecycleTransactionError(
                 "initial lifecycle transaction must be prepared"
             )
-        if lineage_exists:
-            self._validate_and_refsync_lineage_marker()
-        else:
-            self._create_lineage_marker()
+        if not lineage_exists:
+            raise Stress90LifecycleTransactionError(
+                "lifecycle transaction lineage marker is missing"
+            )
+        self._validate_and_refsync_lineage_marker()
         return current
 
     @staticmethod

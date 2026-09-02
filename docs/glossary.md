@@ -51,7 +51,7 @@
 | 术语 | 含义 |
 | --- | --- |
 | bp / bps | 基点，1 bp = 0.01%。15 bp = 0.15%。 |
-| mean-reversion heuristic / 均值回复启发式（分数） | 对滚动信号窗口的简单 AR(1) 变化回归中负斜率派生的 `[0, 1]` 分数，并与估计半衰期一起作为开仓/候选门。它不是平稳性检验，也不是 ADF、KPSS、Phillips-Perron、Engle-Granger 或 Johansen 检验；不构成统计显著性证明，也不保证未来均值回复。配置兼容字段名 `min_stationarity_score` 保持不变。 |
+| mean-reversion heuristic / 均值回复启发式（分数） | 对滚动信号窗口的简单 AR(1) 变化回归中负斜率派生的 `[0, 1]` 分数，并与估计半衰期一起作为开仓/候选门。它不是平稳性检验，也不是 ADF、KPSS、Phillips-Perron、Engle-Granger 或 Johansen 检验；不构成统计显著性证明，也不保证未来均值回复。当前配置字段是 `min_mean_reversion_score`。 |
 | Base / 标准情景 | 当前固定研究中使用单边 5 bp 成本和 12% 保证金比例假设的账户模拟。 |
 | Stress / 压力情景 | 当前固定研究中使用单边 15 bp 成本和 15% 保证金比例假设的账户模拟。 |
 | `Stress-80` / `Stress-90` | 历史研究代号，数字表示该轮预先设定的压力情景年化收益目标，不表示成本、保证金或风险等级。 |

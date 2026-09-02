@@ -162,6 +162,7 @@ def _risk():
 def _manager(broker, *, products=("A",), weights=None):
     config = DirectionalConfig(
         enabled=True,
+        policy="execution_aligned",
         products=products,
         exchanges=("DCE",),
         max_gross_leverage=2.0,
@@ -182,6 +183,7 @@ def _manager(broker, *, products=("A",), weights=None):
 def _execution_manager(broker, *, products, weights):
     config = DirectionalConfig(
         enabled=True,
+        policy="execution_aligned",
         products=products,
         exchanges=("DCE",),
         max_gross_leverage=2.0,

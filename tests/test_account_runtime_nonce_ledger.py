@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -29,24 +29,6 @@ def _binding_inputs(tmp_path: Path) -> tuple[str, Path, str]:
     return "1" * 64, tmp_path / "runtime", "2" * 64
 
 
-def _downgrade_to_schema2_fixture(registry) -> None:
-    from afuture import account_runtime_registry as registry_module
-
-    record = registry.load_required()
-    unsigned = registry_module._record_payload(
-        sequence=1,
-        parent_checksum=None,
-        bindings=record.bindings,
-        schema_version=2,
-    )
-    registry.path.write_text(
-        json.dumps({**unsigned, "checksum": registry_module._digest(unsigned)}),
-        encoding="utf-8",
-    )
-    registry.previous_path.unlink(missing_ok=True)
-    shutil.rmtree(_ledger(registry).directory)
-
-
 def test_pristine_registry_anchors_ready_empty_authenticated_nonce_dictionary(
     tmp_path: Path,
 ) -> None:
@@ -58,6 +40,145 @@ def test_pristine_registry_anchors_ready_empty_authenticated_nonce_dictionary(
     assert record.nonce_root == EMPTY_NONCE_ROOT
     assert record.nonce_count == 0
     assert _ledger(registry).load_ready_root() == (EMPTY_NONCE_ROOT, 0)
+
+
+def test_legacy_nonce_migration_artifact_fails_closed_without_rewrite(tmp_path: Path) -> None:
+    """A current registry never treats a migration witness as current evidence."""
+    from afuture.account_runtime_registry import AccountRuntimeRegistryError
+
+    registry = _registry(tmp_path / "registry.json")
+    ledger = _ledger(registry)
+    legacy_artifact = ledger.directory / "migration.json"
+    legacy_artifact.write_text('{"legacy": true}', encoding="utf-8")
+    current = registry.path.read_bytes()
+
+    with pytest.raises(AccountRuntimeRegistryError, match="nonce ledger integrity"):
+        registry.load_required()
+
+    assert registry.path.read_bytes() == current
+    assert legacy_artifact.read_text(encoding="utf-8") == '{"legacy": true}'
+
+
+def test_pristine_initialize_rejects_migration_artifact_without_any_write(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+    ledger = _ledger(registry)
+    ledger.directory.mkdir()
+    (ledger.directory / "migration.json").write_text('{"legacy": true}', encoding="utf-8")
+
+    def evidence() -> dict[str, tuple[str, bytes]]:
+        return {
+            str(path.relative_to(tmp_path)): (
+                "symlink" if path.is_symlink() else "directory" if path.is_dir() else "file",
+                b"" if path.is_dir() or path.is_symlink() else path.read_bytes(),
+            )
+            for path in tmp_path.rglob("*")
+        }
+
+    before = evidence()
+
+    with pytest.raises(AccountRuntimeRegistryError, match="migration artifact"):
+        registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+
+    assert evidence() == before
+    assert not registry.lineage_path.exists()
+    assert not registry.lock_path.exists()
+
+
+def test_pristine_initialize_rechecks_migration_artifact_inside_exclusive_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+    ledger = _ledger(registry)
+    real_exclusive_lock = registry._exclusive_lock
+    evidence_after_injection: dict[str, tuple[str, bytes]] = {}
+
+    def evidence() -> dict[str, tuple[str, bytes]]:
+        return {
+            str(path.relative_to(tmp_path)): (
+                "symlink" if path.is_symlink() else "directory" if path.is_dir() else "file",
+                b"" if path.is_dir() or path.is_symlink() else path.read_bytes(),
+            )
+            for path in tmp_path.rglob("*")
+        }
+
+    @contextmanager
+    def inject_migration_artifact_inside_lock():
+        with real_exclusive_lock() as lock:
+            ledger.directory.mkdir()
+            (ledger.directory / "migration.json").write_text('{"legacy": true}', encoding="utf-8")
+            evidence_after_injection.update(evidence())
+            yield lock
+
+    monkeypatch.setattr(registry, "_exclusive_lock", inject_migration_artifact_inside_lock)
+
+    with pytest.raises(AccountRuntimeRegistryError, match="migration artifact"):
+        registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+
+    assert evidence() == evidence_after_injection
+    assert not registry.lineage_path.exists()
+    assert not registry.lock_path.exists()
+
+
+def test_legacy_migration_artifact_blocks_direct_nonce_ledger_apis_without_writes(
+    tmp_path: Path,
+) -> None:
+    """Direct ledger calls cannot bypass current-only artifact rejection."""
+    from afuture.account_runtime_nonce_ledger import (
+        EMPTY_NONCE_ROOT,
+        AccountRuntimeNonceLedgerError,
+        build_nonce_receipt,
+    )
+
+    registry = _registry(tmp_path / "registry.json")
+    ledger = _ledger(registry)
+    (ledger.directory / "migration.json").write_text('{"legacy": true}', encoding="utf-8")
+    receipt = build_nonce_receipt(
+        operation_nonce="1" * 64,
+        operation_kind="bind",
+        account_identity_digest="2" * 64,
+        canonical_runtime=str(tmp_path / "runtime"),
+        runtime_identity_digest="3" * 64,
+        account_epoch="4" * 64,
+        semantic_request_digest="5" * 64,
+    )
+
+    def evidence() -> dict[str, bytes]:
+        return {
+            str(path.relative_to(ledger.directory)): path.read_bytes()
+            for path in ledger.directory.rglob("*")
+            if path.is_file()
+        }
+
+    before = evidence()
+    for operation in (
+        lambda: ledger.lookup(EMPTY_NONCE_ROOT, receipt.operation_nonce),
+        lambda: ledger.require_receipt(EMPTY_NONCE_ROOT, receipt.operation_nonce),
+        lambda: ledger.membership_node_paths(EMPTY_NONCE_ROOT, receipt.operation_nonce),
+        lambda: ledger.load_transition(1),
+        lambda: ledger.create_transition({}),
+        lambda: ledger.insert(old_root=EMPTY_NONCE_ROOT, old_count=0, receipt=receipt),
+        ledger.largest_receipt_size,
+        ledger.largest_node_size,
+    ):
+        with pytest.raises(AccountRuntimeNonceLedgerError, match="migration artifact"):
+            operation()
+
+    assert evidence() == before
 
 
 @pytest.mark.parametrize(
@@ -264,146 +385,47 @@ def test_nonce_lookup_is_bounded_without_directory_scan_and_cap_is_fail_closed(
     )
 
 
-def test_schema2_registry_requires_explicit_strong_confirmed_nonce_migration(
-    tmp_path: Path,
-) -> None:
-    from afuture.account_runtime_registry import (
-        ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION,
-        AccountRuntimeRegistryError,
-    )
-
-    registry = _registry(tmp_path / "registry.json")
-    account, runtime, epoch = _binding_inputs(tmp_path)
-    registry.bind_new(account, runtime, epoch, "a" * 64)
-    _downgrade_to_schema2_fixture(registry)
-
-    with pytest.raises(AccountRuntimeRegistryError, match="migration"):
-        registry.acknowledge_binding_operation(account, runtime, epoch, "b" * 64)
-    with pytest.raises(AccountRuntimeRegistryError, match="confirmation"):
-        registry.migrate_nonce_ledger(strong_confirmation="wrong")
-    migrated = registry.migrate_nonce_ledger(
-        strong_confirmation=ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION
-    )
-    assert migrated.nonce_count == 1
-    with pytest.raises(AccountRuntimeRegistryError, match="already consumed|legacy"):
-        registry.acknowledge_binding_operation(account, runtime, epoch, "a" * 64)
-
-
-def test_nonce_migration_cli_is_distinct_and_strongly_confirmed() -> None:
+def test_removed_nonce_migration_cli_is_rejected_while_current_registry_init_remains() -> None:
     from afuture.cli import build_parser
 
-    args = build_parser().parse_args(
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "stress90-registry-nonce-migrate",
+                "--config",
+                "live.toml",
+                "--confirm-live",
+                "--confirm-nonce-migration",
+                "--operator-reason",
+                "obsolete historical migration",
+            ]
+        )
+    current = parser.parse_args(
         [
-            "stress90-registry-nonce-migrate",
+            "stress90-registry-init",
+            "--config",
+            "live.toml",
+            "--confirm-initialize",
+            "--operator-reason",
+            "new current registry",
+        ]
+    )
+    assert current.command == "stress90-registry-init"
+    rebase = parser.parse_args(
+        [
+            "stress90-account-rebase",
             "--config",
             "live.toml",
             "--confirm-live",
-            "--confirm-nonce-migration",
+            "--confirm-rebase",
             "--operator-reason",
-            "migrate exact authoritative registry nonce history",
+            "current account lifecycle rebase",
+            "--operation-id",
+            "a" * 64,
         ]
     )
-    assert args.command == "stress90-registry-nonce-migrate"
-    assert args.confirm_nonce_migration is True
-
-
-@pytest.mark.parametrize(
-    "crash_point",
-    [
-        "migration_marker_file",
-        "migration_marker_parent",
-        "legacy_receipt",
-        "legacy_node",
-        "ready_file",
-        "ready_parent",
-        "registry_cas",
-    ],
-)
-def test_explicit_nonce_migration_is_exactly_retryable_at_every_durable_prefix(
-    tmp_path: Path,
-    crash_point: str,
-) -> None:
-    from afuture.account_runtime_registry import (
-        ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION,
-        AccountRuntimeRegistryError,
-    )
-
-    registry = _registry(tmp_path / f"{crash_point}.json")
-    account, runtime, epoch = _binding_inputs(tmp_path / crash_point)
-    nonce = "a" * 64
-    registry.bind_new(account, runtime, epoch, nonce)
-    _downgrade_to_schema2_fixture(registry)
-    before = registry.require_binding_evidence(account, runtime, epoch)
-
-    registry._nonce_migration_fault = crash_point  # type: ignore[attr-defined]
-    with pytest.raises(AccountRuntimeRegistryError, match="injected|migration"):
-        registry.migrate_nonce_ledger(
-            strong_confirmation=ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION
-        )
-    del registry._nonce_migration_fault  # type: ignore[attr-defined]
-    migrated = registry.migrate_nonce_ledger(
-        strong_confirmation=ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION
-    )
-    after = registry.require_binding_evidence(account, runtime, epoch)
-    assert migrated.nonce_count == 1
-    assert after.binding_payload_digest == before.binding_payload_digest
-    assert after.binding_revision == before.binding_revision
-    assert after.binding_receipt_digest == before.binding_receipt_digest
-
-
-@pytest.mark.parametrize("tamper", ["current", "current_and_previous", "missing_receipt"])
-def test_migration_anchor_rejects_resigned_or_missing_legacy_history(
-    tmp_path: Path,
-    tamper: str,
-) -> None:
-    from afuture.account_runtime_registry import (
-        ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION,
-        AccountRuntimeRegistryError,
-    )
-
-    registry = _registry(tmp_path / f"{tamper}.json")
-    account, runtime, epoch = _binding_inputs(tmp_path / tamper)
-    registry.bind_new(account, runtime, epoch, "a" * 64)
-    _downgrade_to_schema2_fixture(registry)
-    registry._nonce_migration_fault = "legacy_receipt"  # type: ignore[attr-defined]
-    with pytest.raises(AccountRuntimeRegistryError):
-        registry.migrate_nonce_ledger(
-            strong_confirmation=ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION
-        )
-    del registry._nonce_migration_fault  # type: ignore[attr-defined]
-
-    if tamper == "missing_receipt":
-        _ledger(registry).receipt_path("a" * 64).unlink()
-        migrated = registry.migrate_nonce_ledger(
-            strong_confirmation=ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION
-        )
-        assert migrated.nonce_count == 1
-        _ledger(registry).receipt_path("a" * 64).unlink()
-        with pytest.raises(
-            AccountRuntimeRegistryError,
-            match="migration|manifest|receipt|anchor|ledger",
-        ):
-            registry.load_required()
-        return
-    else:
-        _resign_registry(
-            registry.path,
-            lambda raw: raw["bindings"][0].update(
-                {"operation_history": ["b" * 64], "last_operation_id": "b" * 64}
-            ),
-        )  # type: ignore[index]
-        if tamper == "current_and_previous" and registry.previous_path.exists():
-            _resign_registry(
-                registry.previous_path,
-                lambda raw: raw["bindings"][0].update(
-                    {"operation_history": ["b" * 64], "last_operation_id": "b" * 64}
-                ),
-            )  # type: ignore[index]
-
-    with pytest.raises(AccountRuntimeRegistryError, match="migration|manifest|receipt|anchor"):
-        registry.migrate_nonce_ledger(
-            strong_confirmation=ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION
-        )
+    assert rebase.command == "stress90-account-rebase"
 
 
 def test_crash_after_receipt_before_registry_cas_rolls_forward_only_exact_request(

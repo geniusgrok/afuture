@@ -35,11 +35,7 @@ def classify_rebalance_action(
     target_lots: Mapping[str, int],
     symbol_products: Mapping[str, str],
 ) -> str:
-    """Classify one normal-rebalance symbol delta using product-level intent.
-
-    Entry and exit are deliberately separate here even though the legacy turnover report
-    keeps their combined ``entry_exit`` bucket for backward-compatible evidence.
-    """
+    """Classify one normal-rebalance symbol delta using product-level intent."""
     product = str(symbol_products.get(symbol, "")).upper()
     if not product:
         raise ValueError(f"missing product classification: {symbol}")

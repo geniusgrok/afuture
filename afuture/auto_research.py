@@ -97,9 +97,9 @@ class AutoPortfolioRunner:
         if base["min_net_edge"] > 0:
             add(min_net_edge=base["min_net_edge"] * 0.8)
             add(min_net_edge=base["min_net_edge"] * 1.2)
-        if base["min_stationarity_score"] > 0:
-            add(min_stationarity_score=max(0.0, base["min_stationarity_score"] * 0.8))
-            add(min_stationarity_score=min(1.0, base["min_stationarity_score"] * 1.2))
+        if base["min_mean_reversion_score"] > 0:
+            add(min_mean_reversion_score=max(0.0, base["min_mean_reversion_score"] * 0.8))
+            add(min_mean_reversion_score=min(1.0, base["min_mean_reversion_score"] * 1.2))
         add(max_half_life=max(0.1, base["max_half_life"] * 0.8))
         add(max_half_life=base["max_half_life"] * 1.2)
         return rows
@@ -158,7 +158,7 @@ class AutoPortfolioRunner:
                     "entry_z",
                     "exit_z",
                     "min_net_edge",
-                    "min_stationarity_score",
+                    "min_mean_reversion_score",
                     "max_half_life",
                 )
                 if key in selected
@@ -325,7 +325,7 @@ class AutoPortfolioRunner:
             "entry_z": auto.entry_z,
             "exit_z": auto.exit_z,
             "min_net_edge": auto.min_net_edge,
-            "min_stationarity_score": auto.min_stationarity_score,
+            "min_mean_reversion_score": auto.min_mean_reversion_score,
             "max_half_life": auto.max_half_life,
         }
 

@@ -1,9 +1,14 @@
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError, replace
 from statistics import median
 
 import pytest
 
 EXPECTED_CANDIDATE_SHA = "8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28"
+EXPECTED_POLICY_DEFINITION_DIGEST = (
+    "97435aae770aea87e8313b17ea5af730a4c540f14b95a561c8da5f90e2db5cf6"
+)
 
 
 def test_stress90_definition_has_distinct_definition_and_historical_digests():
@@ -13,6 +18,7 @@ def test_stress90_definition_has_distinct_definition_and_historical_digests():
     assert STRESS90_POLICY.definition_version == 1
     assert STRESS90_POLICY.oi_products == ("A", "C", "EG", "I", "M", "P", "PP", "TA", "Y")
     assert STRESS90_POLICY.historical_candidate_weight_sha256 == EXPECTED_CANDIDATE_SHA
+    assert STRESS90_POLICY.policy_definition_digest == EXPECTED_POLICY_DEFINITION_DIGEST
     assert STRESS90_POLICY.policy_definition_digest != EXPECTED_CANDIDATE_SHA
     assert len(STRESS90_POLICY.policy_definition_digest) == 64
     assert len(STRESS90_POLICY.policy_manifest_digest) == 64
@@ -40,6 +46,25 @@ def test_stress90_definition_has_distinct_definition_and_historical_digests():
         "max_contract_lots": 35,
         "margin_estimate_buffer": 1.25,
     }
+
+
+def test_current_runtime_imports_do_not_load_offline_tools_evaluators():
+    script = """
+import sys
+import afuture.cli
+import afuture.directional_runtime
+import afuture.runtime_factory
+assert not any(name == "tools" or name.startswith("tools.") for name in sys.modules)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_stress90_definition_is_immutable():

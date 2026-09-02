@@ -4,7 +4,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from afuture.risk import RiskConfig
+
 _OPERATION_ID = "f" * 64
+
+
+@pytest.fixture(autouse=True)
+def _use_isolated_current_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "afuture.account_runtime_registry.PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH",
+        tmp_path / ".account-runtime-registry.json",
+    )
 
 
 def _empty_complete_session_evidence(*, account: str = "a" * 64, day: str = "20260825"):
@@ -456,6 +466,8 @@ def test_each_lifecycle_command_runs_full_order_journal_audit_under_lease(
             account_id="account-a",
             currency_id="CNY",
         ),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="execution_aligned" if migrating else "stress90",
@@ -463,6 +475,7 @@ def test_each_lifecycle_command_runs_full_order_journal_audit_under_lease(
             account_exclusive=True,
         ),
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -530,6 +543,7 @@ def test_each_lifecycle_command_runs_full_order_journal_audit_under_lease(
                 reconciled=True,
                 bootstrap_seed_digest=seed.seed_digest,
                 account_identity_digest="a" * 64,
+                risk_overlay_digest="e" * 64,
                 operator_reason="commissioned",
                 strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
             )
@@ -628,6 +642,8 @@ def test_order_journal_rollover_rejects_pending_lifecycle_before_broker_start(
     config = SimpleNamespace(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -635,6 +651,7 @@ def test_order_journal_rollover_rejects_pending_lifecycle_before_broker_start(
             account_exclusive=True,
         ),
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -712,6 +729,7 @@ def test_order_journal_rollover_is_zero_order_and_keeps_runtime_halted(
             reconciled=True,
             bootstrap_seed_digest=seed.seed_digest,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="e" * 64,
             operator_reason="commissioned",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -855,6 +873,8 @@ def test_order_journal_rollover_is_zero_order_and_keeps_runtime_halted(
     config = SimpleNamespace(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -862,6 +882,7 @@ def test_order_journal_rollover_is_zero_order_and_keeps_runtime_halted(
             account_exclusive=True,
         ),
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(

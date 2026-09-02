@@ -8,10 +8,8 @@ from afuture.directional import DirectionalConfig
 from afuture.directional_engine import DirectionalTradingEngine
 from afuture.directional_risk import DirectionalRiskResponseMode, DirectionalRiskScaledPolicy
 from afuture.engine import TradingEngine
-from afuture.execution_aligned_runtime import (
-    FROZEN_PRODUCTS,
-    ExecutionAlignedDirectionalPortfolioManager,
-)
+from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+from afuture.execution_aligned_runtime import ExecutionAlignedDirectionalPortfolioManager
 from afuture.risk import RiskConfig
 from afuture.state import StateStore
 
@@ -31,7 +29,12 @@ class _Broker:
         return "1" * 64
 
 
-def _config(enabled: bool, *, policy: str = "", account_registry_path: str = ""):
+def _config(
+    enabled: bool,
+    *,
+    policy: str = "execution_aligned",
+    account_registry_path: str = "",
+):
     return SimpleNamespace(
         risk=RiskConfig(margin_estimate_buffer=1.25 if policy == "stress90" else 1.20),
         auto_flatten_imbalance=True,
@@ -50,6 +53,7 @@ def _config(enabled: bool, *, policy: str = "", account_registry_path: str = "")
         pairs=[],
         contracts={},
         account_registry_path=account_registry_path,
+        mode="replay",
     )
 
 
@@ -198,6 +202,7 @@ def test_migrated_execution_aligned_runtime_copy_keeps_registry_gate(tmp_path):
         reconciled=True,
         bootstrap_seed_digest=policy.bootstrap_seed_digest,
         account_identity_digest="1" * 64,
+        risk_overlay_digest="2" * 64,
         operator_reason="fixture activation",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -249,6 +254,7 @@ def test_live_migrated_execution_aligned_runtime_requires_fixed_machine_registry
         reconciled=True,
         bootstrap_seed_digest=policy.bootstrap_seed_digest,
         account_identity_digest="1" * 64,
+        risk_overlay_digest="2" * 64,
         operator_reason="fixture activation",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -303,6 +309,7 @@ def test_migrated_execution_aligned_runtime_rejects_noncanonical_identity_marker
         reconciled=True,
         bootstrap_seed_digest=policy.bootstrap_seed_digest,
         account_identity_digest="1" * 64,
+        risk_overlay_digest="2" * 64,
         operator_reason="fixture activation",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )

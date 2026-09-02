@@ -1310,6 +1310,10 @@ def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
     runtime = tmp_path / "runtime"
     from afuture.runtime_lease import AccountExclusiveRuntimeLease
 
+    monkeypatch.setattr(
+        "afuture.account_runtime_registry.PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH",
+        runtime / ".account-runtime-registry.json",
+    )
     lease_acquired = False
     original_acquire = AccountExclusiveRuntimeLease.acquire
 
@@ -1456,6 +1460,7 @@ def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
             products=FROZEN_PRODUCTS,
         ),
         state_path=str(runtime / "state.json"),
+        account_registry_path=str(runtime / ".account-runtime-registry.json"),
         journal_path=str(runtime / "audit.jsonl"),
         metadata_timeout_seconds=0.1,
     )
@@ -1735,7 +1740,7 @@ def test_cli_exposes_bootstrap_arguments_and_does_not_require_ctp_secrets(
 ):
     from types import SimpleNamespace
 
-    from afuture.cli import build_parser, main
+    from afuture.cli import build_parser, run_command
     from afuture.execution_aligned_policy import FROZEN_PRODUCTS
 
     parsed = build_parser().parse_args(
@@ -1798,7 +1803,7 @@ alert = "{alert}"
         fake_bootstrap_stress90,
     )
     assert (
-        main(
+        run_command(
             [
                 "stress90-bootstrap",
                 "--config",

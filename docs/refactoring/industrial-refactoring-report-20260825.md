@@ -1,5 +1,10 @@
 # Industrial Refactoring Validation Report — 2026-08-25
 
+> **Historical, non-executable snapshot.** This report preserves the verified
+> 2026-08-25 engineering record. Current runtime/configuration/schema behavior is
+> defined by the current-only authority documents; it must not be used to restore
+> former legacy acceptance, compatibility defaults, or migration paths.
+
 ## Executive Summary
 
 本次治理严格继承远端 `main` 的 `482455dc57bc6a134f45232e290b4a49c3f7073d`（PR #25）以及其祖先 Stress-80 checkpoint `b4207abb50aca1e39d5ebba3affc04765857251a`（PR #24），没有回退策略、参数、风险阈值或研究证据。

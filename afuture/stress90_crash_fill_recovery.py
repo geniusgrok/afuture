@@ -667,8 +667,6 @@ def build_stress90_crash_fill_recovery_checkpoint(
     nonce = _sha(operation_nonce, "recovery operation nonce")
     request = _sha(request_digest, "recovery request digest")
     reason = _reason(operator_reason)
-    if generic_source.legacy:
-        raise Stress90CrashFillRecoveryError("legacy generic state cannot be recovered")
     if generic_target.runtime_mode != RuntimeMode.HALTED.value or not generic_target.kill_switch:
         raise Stress90CrashFillRecoveryError("recovery target must preserve HALTED kill switch")
     if generic_target.positions == generic_source.state.positions and tuple(

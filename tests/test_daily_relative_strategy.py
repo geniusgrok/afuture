@@ -62,7 +62,7 @@ def relative_pair(**overrides) -> PairConfig:
         min_confirmed_entry_z=1.75,
         entry_trend_window=3,
         max_entry_z_slope=0.75,
-        min_stationarity_score=0.0,
+        min_mean_reversion_score=0.0,
         max_half_life=999.0,
         daily_sample_window="14:55-15:00",
     )
@@ -236,7 +236,7 @@ def test_auto_profile_copies_relative_daily_quality_parameters():
         min_confirmed_entry_z=1.75,
         entry_trend_window=6,
         max_entry_z_slope=0.75,
-        min_stationarity_score=0.01,
+        min_mean_reversion_score=0.01,
         max_half_life=60.0,
         daily_sample_window="22:55-23:00",
     )
@@ -250,13 +250,13 @@ def test_auto_profile_copies_relative_daily_quality_parameters():
     assert pair.confirmation_retrace_z == 0.3
     assert pair.min_confirmed_entry_z == 1.75
     assert pair.max_entry_z_slope == 0.75
-    assert pair.min_stationarity_score == config.min_stationarity_score
+    assert pair.min_mean_reversion_score == config.min_mean_reversion_score
     assert pair.daily_sample_window == "22:55-23:00"
 
 
 def test_mean_reversion_heuristic_keeps_legacy_numeric_entry_gate():
     blocked = CalendarSpreadStrategy(
-        relative_pair(daily_sample_window="", confirm_entry=False, min_stationarity_score=0.8)
+        relative_pair(daily_sample_window="", confirm_entry=False, min_mean_reversion_score=0.8)
     )
     blocked.restore_state({"history": [1.0, 1.4, 1.5, 1.55]})
 
@@ -274,7 +274,7 @@ def test_mean_reversion_heuristic_keeps_legacy_numeric_entry_gate():
     ) == (SignalAction.HOLD, "")
 
     allowed = CalendarSpreadStrategy(
-        relative_pair(daily_sample_window="", confirm_entry=False, min_stationarity_score=0.7)
+        relative_pair(daily_sample_window="", confirm_entry=False, min_mean_reversion_score=0.7)
     )
     assert allowed._entry_action(
         0.0,

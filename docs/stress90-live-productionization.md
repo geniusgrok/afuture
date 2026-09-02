@@ -34,9 +34,9 @@ Stress-90 已成为一个显式、可选且与普通 `execution_aligned` 隔离�
 
 生产 `system.mode = "live"` 时必须显式配置 `directional.policy`：
 
-| policy | manager | 策略风险响应 | 兼容边界 |
+| policy | manager | 策略风险响应 | current 边界 |
 | --- | --- | --- | --- |
-| `execution_aligned` | `ExecutionAlignedDirectionalPortfolioManager` | 保留既有 `0.25` target-weight scaling | 经济行为不变；旧回放测试可继续使用兼容默认 |
+| `execution_aligned` | `ExecutionAlignedDirectionalPortfolioManager` | 保留 `0.25` target-weight scaling | 当前配置/运行时都必须显式选择该 policy |
 | `stress90` | `Stress90DirectionalPortfolioManager` | 使用 `1x` raw candidate，再在整数 lots 层分别应用两个 freeze | 不接受旧 policy state 的静默迁移 |
 
 manager 通过明确的 `policy_risk_response_mode` capability 告诉引擎如何响应风险。Stress-90 不靠类名或 `isinstance` 特判，因此不会再被 `DirectionalRiskScaledPolicy` 重复缩放。两种模式仍共享 adaptive soft margin envelope 和最终权威 `RiskManager`。
@@ -103,9 +103,11 @@ account epoch 与 account-specific registry receipt、无 active/unknown order/t
 精确 roll-forward、recovery prepared、generic state CAS、recovery committed；
 两处崩溃均只允许同一 nonce、相同语义 evidence 和相同 state target 的 exact retry。machine-wide
 registry sequence/checksum 只作审计快照；授权绑定账户自己的 payload digest、revision、last
-operation 和 receipt digest。全 machine nonce 永久性由 registry schema-3 Patricia-Merkle root、
-不可变 content-addressed node/receipt 和显式 schema-1/2 migration 保证；普通 live 门不自动迁移，
-80% 容量告警、1,000,000 receipt 硬上限均失败关闭且 receipt 永不淘汰。命令不报单、不撤单，
+operation 和 receipt digest。全 machine nonce 永久性由 current registry schema-3
+Patricia-Merkle root 与不可变 content-addressed node/receipt 保证；current initialization 直接创建
+认证 nonce ledger。旧 registry/migration artifact 不是可升级输入，必须失败关闭、归档并以 current
+bootstrap/initialization 重建。80% 容量告警、1,000,000 receipt 硬上限均失败关闭且 receipt 永不淘汰。
+命令不报单、不撤单，
 成功后仍为 `HALTED` 且 kill switch 开启。
 首次后续 lifecycle 将 recovery marker 与自身 operation nonce 一起转换成 consumed marker，并在
 generic CAS 后、lifecycle coordinator commit 前向 recovery store 追加 durable consumption receipt；

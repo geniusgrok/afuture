@@ -64,7 +64,7 @@ def auto_config() -> AutoConfig:
         min_volume=100,
         min_open_interest=100,
         min_liquidity_score=0.1,
-        min_stationarity_score=0.0,
+        min_mean_reversion_score=0.0,
         max_half_life=1000,
         slippage_ticks=0,
         session_windows=("09:00-15:00",),

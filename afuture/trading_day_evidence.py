@@ -422,7 +422,7 @@ class TradingDayEvidenceStore:
                 raw = self._read_raw()
                 if raw.get("kind") == _KIND and raw.get("schema_version") != _SCHEMA:
                     raise TradingDayEvidenceError(
-                        "old CTP trading-day evidence requires an exact lifecycle transaction"
+                        "old CTP trading-day evidence is not current"
                     ) from exc
                 raise
         account = getattr(policy_state, "live_account_identity_digest", None)
@@ -598,14 +598,8 @@ class TradingDayEvidenceStore:
                 "current CTP trading-day evidence is missing while .prev evidence exists"
             )
         current: TradingDayEvidence | None = None
-        legacy: Mapping[str, object] | None = None
         if self.path.exists():
-            try:
-                current = self.load_required()
-            except TradingDayEvidenceError as exc:
-                legacy = self._validated_legacy_for_lifecycle()
-                if legacy is None:
-                    raise exc
+            current = self.load_required()
         previous_identity = source_identity if source_identity else target_identity
         if current is not None:
             if day < current.trading_day:
@@ -646,20 +640,8 @@ class TradingDayEvidenceStore:
                 raise TradingDayEvidenceError(
                     "CTP trading-day evidence does not match lifecycle source account/epoch"
                 )
-        if legacy is not None:
-            if day < _day(legacy["trading_day"]):
-                raise TradingDayEvidenceError("CTP trading day evidence moved backward")
-            legacy_identity = _sha_identity(
-                legacy["account_identity_digest"], "legacy account identity"
-            )
-            expected_identity = target_identity if operation == "activation" else source_identity
-            if legacy_identity != expected_identity:
-                raise TradingDayEvidenceError(
-                    "legacy CTP evidence does not match exact lifecycle source"
-                )
         return self._save(
             current=current,
-            sequence=(None if legacy is None else _positive_int(legacy["sequence"], "sequence")),
             phase="bound",
             trading_day=day,
             account_identity_digest=target_identity,
@@ -758,36 +740,6 @@ class TradingDayEvidenceStore:
             rebind_transaction_id=operation,
             previous_account_identity_digest=source_evidence.account_identity_digest,
         )
-
-    def _validated_legacy_for_lifecycle(self) -> Mapping[str, object] | None:
-        raw = self._read_raw()
-        fields = {
-            "kind",
-            "schema_version",
-            "sequence",
-            "trading_day",
-            "account_identity_digest",
-            "account_epoch",
-            "rebind_transaction_id",
-            "previous_account_identity_digest",
-            "checksum",
-        }
-        if set(raw) != fields or raw.get("kind") != _KIND or raw.get("schema_version") != 2:
-            return None
-        unsigned = {key: value for key, value in raw.items() if key != "checksum"}
-        if raw.get("checksum") != _checksum(unsigned):
-            raise TradingDayEvidenceError("legacy CTP trading-day evidence checksum mismatch")
-        _positive_int(raw["sequence"], "legacy sequence")
-        _day(raw["trading_day"])
-        _sha_identity(raw["account_identity_digest"], "legacy account identity")
-        _sha_identity(raw["account_epoch"], "legacy account epoch")
-        _sha_identity(raw["rebind_transaction_id"], "legacy transaction", allow_empty=True)
-        _sha_identity(
-            raw["previous_account_identity_digest"],
-            "legacy previous account identity",
-            allow_empty=True,
-        )
-        return raw
 
     def _save(
         self,

@@ -161,6 +161,10 @@ RUNNING 或 REDUCE_ONLY
 
 ## 9. 状态与恢复
 
+afuture 的 durable runtime 是 current-only：`StateStore` 只接受当前 schema 3 的精确 envelope 和完整 payload；registry 只接受当前 schema 3、lineage marker 与认证 nonce anchor；Stress-90 permit、execution intent、lifecycle transaction 和 trading-day evidence 也各自只接受其 current schema/layout。schema-less、旧 schema、缺字段、未知字段、旧 marker 或 migration artifact 都失败关闭，不做默认填充、字段过滤、自动升级或静默 fallback。
+
+遇到旧 runtime/state/registry，操作者必须先归档整个 evidence 目录，再在新的 current runtime 路径显式 bootstrap/initialize，并按 Broker/CTP 账户、持仓、活动委托和成交重新 reconciliation。这不是删除恢复能力：current-schema `.prev` 继续保留为 incident/predecessor evidence，current backup/restore、atomic durable write、kernel/file locks、CAS、sequence、checksum、parent chain、account/deployment/runtime identity、nonce 和 crash recovery 都继续生效。
+
 启动时，系统把柜台账户、完整持仓和活动委托与本地预期状态对比。今昨仓、多空方向、合约身份和关键风险标记全部一致后，才能标记为已对账。
 
 Directional 流动性 sidecar 同时持久化 `completed` 与 `in_progress`，因此日内重启继续已有观察；损坏或旧版裸 completed 文件不自动迁移，必须重新观察完整柜台交易日。OHLC sidecar 是另一份独立市场证据，provider 刷新和回退都要重新验证，不得复制成账户状态或绕过 required-day 门。
@@ -193,3 +197,10 @@ Stress-90 另有不可变 bootstrap seed、exactly-once policy state、raw OI ev
 当前不需要数据库、消息队列、Web 服务、微服务或第二套账户状态机。研究数据不会直接成为实盘数据源。`vnpy_ctp` 的原生扩展、目标机 ABI、实际登录和 callback 顺序不能由通用 CI/测试替身证明，必须在最终部署机完成 import、doctor、Shadow、重连和订单生命周期门。架构变化必须由已经复现的正确性、容量或维护问题驱动；下一批高价值证据来自新发生数据、多日 Shadow、测试柜台和小资金，而不是扩大同一历史上的参数搜索。
 
 Windows smoke 只证明受约束的核心纯 Python 安装和定向回归，不证明目标机 CTP ABI、原生扩展、真实柜台状态或订单生命周期。`#11/#21` 的权威分类是 historical closed-without-merge，相关分支留存作为历史证据；这一分类不等于合并批准、运行时激活或生产许可。任何 CI、研究、文档或本任务的完成都不授权真钱交易。
+
+Python `>=3.10`、`tomli` fallback、3.10/3.13 CI 和 Windows core/replay/config-validation smoke 都是
+当前项目支持契约；仅凭“单用户”不能删除。实际 production Python 版本仍须由最终目标机验证，因而
+不在本轮提高 baseline。Windows 只支持 core/replay，不宣称 Stress-90 live 或 CTP ABI portability；
+live 在 POSIX target 上按当前门失败关闭。registry 的多 binding layout 也不是未来多账户 facade：
+它当前保护 account switch/rebase、Shadow/live isolation、retired identity evidence 与 crash recovery。
+0/1-active-binding 的重设计留作单独 follow-up，不能在本轮切穿 lifecycle safety。

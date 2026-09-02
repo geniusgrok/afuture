@@ -18,7 +18,7 @@
 - [x] 历史 evaluator 和组装矩阵显式固定 `historical_research_only`，并拒绝 live、扩大风险或 prospective 授权；`passed` 不等于 activation。
 - [x] 完整输入、分段结果和失败路线已保存在 [`stress90-final-evidence.md`](stress90-final-evidence.md)。
 - [x] 五份固定历史输入已按冻结 size/SHA 恢复，且未用新下载市场数据替代；脱敏归档收据见 [`stress90-fixed-input-github-vault-receipt.md`](stress90-fixed-input-github-vault-receipt.md)。
-- [x] 在隔离空 workspace 用五个固定输入完成 current fixed-archive compatibility、Base 与 batch/incremental parity，并得到 candidate SHA `8e38dbf...9f28`。
+- [x] 在隔离空 workspace 用五个固定输入完成 current SHA 校验加载、Base 与 batch/incremental parity，并得到 candidate SHA `8e38dbf...9f28`。
 - [x] Stress-90 七窗口矩阵已复验，historical gate 通过且 `reasons=[]`。
 - [x] 五份原始字节和验证证据已归档到已核验为 private 的 GitHub vault；公开仓库不含原始 CSV。
 - [x] 已从新的空目录仅通过私库 Git objects 恢复并复核五个 SHA、candidate、七窗口 matrix 和 parity；执行环境未暴露普通命令行 clone credential，收据如实记录 API transport。
@@ -209,7 +209,7 @@
 - [ ] Stress-90 prepared decision 后、第一张订单后和部分成交后三类崩溃均复用同一 decision，并以 Broker 持仓继续收敛。
 - [ ] policy switch 只在 `HALTED`、Broker/local 空仓、无活动委托、reconcile 和强确认后完成，且完成后仍保持 kill switch。
 - [ ] 充值、出金或更换账户只通过带唯一 `--operation-id` 的 `stress90-account-rebase`；同账户有 verified nonzero cash flow，rebase 有 operator reason/audit 且完成后仍 `HALTED`。
-- [ ] activation/rebase/migrate 在 account lease 内完整审计 current/archive/sealed CTP order journal；任一损坏或 pending cleanup 都是 P0。
+- [ ] activation、rebase 和 current `directional-policy-migrate` lifecycle transaction 在 account lease 内完整审计 current/archive/sealed CTP order journal；任一损坏或 pending cleanup 都是 P0。该 policy transition 不是 schema/file migration。
 - [ ] journal 达到 identity 容量时只通过 `stress90-order-journal-rollover` 封存；命令要求 HALTED、空仓、无活动委托、reconcile、强确认，且跨 epoch identity 不可重用。
 
 ## K. 账户规模与整数手数

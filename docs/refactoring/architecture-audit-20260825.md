@@ -1,5 +1,11 @@
 # Architecture and Correctness Audit — 2026-08-25
 
+> **Historical, non-executable snapshot.** This dated audit records facts and
+> decisions from 2026-08-25. It is superseded for operations by the current-only
+> contracts in `README.md`, `docs/architecture.md`, `docs/configuration.md`, and
+> `docs/stress90-live-runbook.md`; do not restore its compatibility or migration
+> instructions.
+
 ## Scope and baseline
 
 This audit covers remote `main` at `482455dc57bc6a134f45232e290b4a49c3f7073d` and inherits the Stress-80 checkpoint `b4207abb50aca1e39d5ebba3affc04765857251a`. The working branch was clean before the documentation-only design and plan commits. The inherited full test suite passes locally: **323 tests in 32.62 seconds** on the project virtual environment.
@@ -174,7 +180,7 @@ This is sufficient to remove demonstrated knowledge duplication and boundary amb
 python -m pytest -q
 323 passed in 32.62s
 
-python -m pytest -q tests/test_legacy_contracts.py tests/test_hardening.py
+python -m pytest -q tests/test_core_contracts.py tests/test_hardening.py
 21 passed
 
 python -m compileall -q afuture

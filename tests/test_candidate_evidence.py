@@ -44,7 +44,7 @@ def test_auto_selector_records_candidate_statistics_and_reject_reason(tmp_path: 
         min_volume=100,
         min_open_interest=100,
         min_liquidity_score=0.1,
-        min_stationarity_score=0.8,
+        min_mean_reversion_score=0.8,
         max_half_life=1000,
         min_net_edge=0,
         slippage_ticks=0,

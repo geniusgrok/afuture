@@ -27,9 +27,8 @@ min_days_to_expiry = 20
 min_volume = 1000
 min_open_interest = 5000
 max_contract_volume = 1
-# Stress-90 applies the immutable per-product first-entry manifest; this compatibility
-# window is retained for legacy manager validation and is not an entry-chasing license.
-rebalance_window = "20:55-09:10"
+# Stress-90 applies the immutable per-product first-entry manifest.  It does not
+# accept execution-aligned rebalance_window configuration.
 signal_max_age_hours = 96
 
 [risk]

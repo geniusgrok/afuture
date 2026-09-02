@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -210,6 +211,60 @@ def test_execution_intent_persists_typed_roll_and_freeze_authorized_target(tmp_p
         lot_notionals={"A2701": 20_000.0},
     )
     assert restarted == intent
+
+
+@pytest.mark.parametrize("mutation", ["old_schema", "missing_overlay"])
+def test_execution_intent_rejects_non_current_evidence_without_rewriting(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    from afuture import directional_stress90_execution as execution_module
+    from afuture.directional_stress90_execution import (
+        Stress90ExecutionIntentIntegrityError,
+        Stress90ExecutionIntentStore,
+        prepare_stress90_execution_intent,
+    )
+
+    store = Stress90ExecutionIntentStore(tmp_path / "stress90_execution_intent.json")
+    prepare_stress90_execution_intent(
+        store,
+        target_trading_day="20260825",
+        daily_decision_digest="1" * 64,
+        account_identity_digest=_ACCOUNT_IDENTITY,
+        account_epoch=_ACCOUNT_EPOCH,
+        risk_overlay_digest="c" * 64,
+        current_lots={},
+        margin_fitted_lots={},
+        symbol_products={},
+    )
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    if mutation == "old_schema":
+        raw["schema_version"] = 6
+    else:
+        intent = raw["intent"]
+        intent.pop("risk_overlay_digest")
+        intent["source_digest"] = execution_module._digest(
+            {
+                "account_epoch": intent["account_epoch"],
+                "account_identity_digest": intent["account_identity_digest"],
+                "current_lots": intent["initial_current_lots"],
+                "decision_digest": intent["daily_decision_digest"],
+                "freeze_authorized_lots": intent["freeze_authorized_lots"],
+                "margin_fitted_lots": intent["initial_margin_fitted_lots"],
+                "target_trading_day": intent["target_trading_day"],
+                "transitions": intent["transitions"],
+            }
+        )
+    raw["checksum"] = execution_module._digest(
+        {key: value for key, value in raw.items() if key != "checksum"}
+    )
+    store.path.write_text(json.dumps(raw), encoding="utf-8")
+    original = store.path.read_bytes()
+
+    with pytest.raises(Stress90ExecutionIntentIntegrityError, match="schema|fields"):
+        store.load_required_record()
+
+    assert store.path.read_bytes() == original
 
 
 def test_execution_intent_refuses_to_fabricate_roll_replacement_notional(tmp_path: Path):

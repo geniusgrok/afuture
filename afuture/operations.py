@@ -1729,6 +1729,7 @@ def _add_stress90_doctor_status(
     if marker_present and state is not None:
         try:
             from .directional_policy_activation import require_directional_policy_identity
+            from .stress90_risk_overlay import stress90_risk_overlay_digest
 
             seed = Stress90SeedStore(runtime_dir / "stress90_bootstrap_seed.json").load_required()
             require_directional_policy_identity(
@@ -1737,6 +1738,7 @@ def _add_stress90_doctor_status(
                 policy_definition_digest=STRESS90_POLICY.policy_definition_digest,
                 products_manifest_digest=STRESS90_POLICY.products_manifest_digest,
                 bootstrap_seed_digest=seed.seed_digest,
+                risk_overlay_digest=stress90_risk_overlay_digest(config.directional, config.risk),
             )
         except (OSError, RuntimeError, Stress90StateIntegrityError) as exc:
             activation_ready = False

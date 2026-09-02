@@ -220,7 +220,11 @@ def test_directional_manager_installs_expected_universe_before_subscribing_and_c
     broker = Broker()
     observer = Observer()
     manager = DirectionalPortfolioManager(
-        DirectionalConfig(enabled=True, products=tuple(item.product for item in catalog)),
+        DirectionalConfig(
+            enabled=True,
+            policy="execution_aligned",
+            products=tuple(item.product for item in catalog),
+        ),
         broker,
         RiskManager(RiskConfig()),
         raw_tick_observer=observer,

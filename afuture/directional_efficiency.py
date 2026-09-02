@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-TURNOVER_BUCKETS = ("roll", "resize", "reversal", "entry_exit")
+TURNOVER_BUCKETS = ("roll", "resize", "reversal", "entry", "exit")
 
 
 def attribute_rebalance_deltas(
@@ -48,8 +48,12 @@ def attribute_rebalance_deltas(
             bucket = "roll"
         elif original is not None and target is not None and original[0] == target[0]:
             bucket = "reversal" if (original[1] > 0) != (target[1] > 0) else "resize"
+        elif original is None and target is not None:
+            bucket = "entry"
+        elif original is not None and target is None:
+            bucket = "exit"
         else:
-            bucket = "entry_exit"
+            raise ValueError(f"executed symbol is absent from original and target intent: {symbol}")
         result[bucket] += abs(delta) * notional
     return result
 

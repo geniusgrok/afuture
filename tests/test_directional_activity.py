@@ -398,6 +398,7 @@ def test_previous_completed_activity_controls_contract_selection_not_current_tic
     )
     config = DirectionalConfig(
         enabled=True,
+        policy="execution_aligned",
         products=("A",),
         exchanges=("DCE",),
         min_days_to_expiry=20,
@@ -448,6 +449,7 @@ def _snapshot(*, old_volume: float, old_oi: float, new_volume: float, new_oi: fl
 def _config():
     return DirectionalConfig(
         enabled=True,
+        policy="execution_aligned",
         products=("A",),
         exchanges=("DCE",),
         min_days_to_expiry=20,

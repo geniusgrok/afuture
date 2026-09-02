@@ -1,16 +1,7 @@
 import hashlib
-from pathlib import Path
 
 import pandas as pd
 import pytest
-
-_FIXED_INPUT_SHA256 = {
-    "broad_daily_universe.csv": "c1d46bc113a79bd2e000bf5d66ee53c59337eda750b2d3b1409e40f3f4833d0f",
-    "return_target_specific_contracts.csv": "f8b3f4232cb1bc9eaed65a4401dff6bed121faee064252727202874ad7d53c64",
-    "execution_aligned_weights.csv": "250a55c1c18ecd3754f489136515275eec3a48d505fd41026d68ab43924e08c1",
-    "prior_two_year_broad_60m.csv": "3351aa3ae8dec0cf0e9b9a64026181ac8ff2cc22858c442821fe3c94767036b1",
-    "two_year_broad_60m.csv": "5faf112bb69dd5ddf48ed34419e2046b1c6bdd651b595ca46a46804d8317a27b",
-}
 
 
 def _synthetic_inputs():
@@ -137,7 +128,7 @@ def test_batch_wrapper_rejects_non_discrete_oi_flow_instead_of_coercing_it_to_ze
         )
 
 
-def test_batch_wrapper_matches_compatibility_dataframe_adapters():
+def test_batch_wrapper_matches_current_dataframe_adapters():
     from afuture.directional_60m_oi_reversal_confirmation import (
         apply_oi_confirmation_to_direction_changes,
     )
@@ -236,27 +227,3 @@ def test_offline_final_evaluator_exposes_shared_policy_and_daily_decision_identi
     pd.testing.assert_frame_equal(candidate, shared.survivor_weights, atol=1e-14, rtol=0.0)
     assert audit["policy_definition_digest"] == STRESS90_POLICY.policy_definition_digest
     assert audit["last_daily_decision_digest"] == shared.decisions[-1].daily_decision_digest
-
-
-@pytest.mark.skipif(
-    not all((Path("runtime") / name).is_file() for name in _FIXED_INPUT_SHA256),
-    reason="immutable five-file Stress-90 archive is not present",
-)
-def test_fixed_archive_replays_the_historical_candidate_digest():
-    from tools.stress90_fixed_archive_compat import replay_fixed_archive
-
-    runtime = Path("runtime")
-    for name, expected in _FIXED_INPUT_SHA256.items():
-        assert hashlib.sha256((runtime / name).read_bytes()).hexdigest() == expected
-    replay = replay_fixed_archive(runtime)
-
-    assert [item["basename"] for item in replay.input_manifest] == sorted(_FIXED_INPUT_SHA256)
-    assert not replay.candidate_weights.empty
-    assert replay.audit["candidate_weight_sha256"] == (
-        "8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28"
-    )
-    assert replay.audit["historical_replay_commit"] == ("9c51195042393304eb05d783d1895a165f99b0a7")
-    assert replay.audit["evidence_scope"] == "historical_research_only"
-    assert replay.audit["live_authorized"] is False
-    assert replay.audit["risk_increase_authorized"] is False
-    assert replay.audit["prospective_evidence"] is False

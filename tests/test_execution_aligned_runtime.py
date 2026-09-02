@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 import afuture.directional_ohlc_cache as ohlc_cache_module
+import afuture.execution_aligned_runtime as execution_aligned_runtime
 from afuture.directional import DirectionalConfig
 from afuture.directional_activity import (
     ContractActivity,
@@ -24,8 +25,8 @@ from afuture.directional_ohlc_cache import (
     DirectionalOHLCCacheIntegrityError,
     DirectionalOHLCCacheStore,
 )
+from afuture.execution_aligned_policy import FROZEN_PRODUCTS
 from afuture.execution_aligned_runtime import (
-    FROZEN_PRODUCTS,
     ExecutionAlignedDirectionalPortfolioManager,
     ExecutionAlignedSignalHistory,
     SinaContinuousOHLCProvider,
@@ -45,6 +46,10 @@ from afuture.risk import RiskConfig, RiskManager
 from afuture.state import StateStore
 
 NOW = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)
+
+
+def test_runtime_module_does_not_reexport_policy_product_manifest():
+    assert not hasattr(execution_aligned_runtime, "FROZEN_PRODUCTS")
 
 
 class _Provider:
@@ -158,6 +163,7 @@ def _manager(
     return ExecutionAlignedDirectionalPortfolioManager(
         DirectionalConfig(
             enabled=True,
+            policy="execution_aligned",
             products=products,
             exchanges=("DCE",),
             signal_max_age_hours=120.0,
@@ -305,7 +311,12 @@ def _activity_lifecycle_engine(
 ) -> tuple[_LatencyBroker, DirectionalTradingEngine]:
     broker = _LatencyBroker()
     manager = ExecutionAlignedDirectionalPortfolioManager(
-        DirectionalConfig(enabled=True, products=("A",), exchanges=("DCE",)),
+        DirectionalConfig(
+            enabled=True,
+            policy="execution_aligned",
+            products=("A",),
+            exchanges=("DCE",),
+        ),
         broker,
         RiskManager(RiskConfig()),
         signal_provider=_Provider(),
@@ -435,7 +446,12 @@ def test_tick_flood_with_slow_activity_fsync_keeps_critical_fill_within_batch_bu
         checkpoint_delay_seconds,
     )
     manager = ExecutionAlignedDirectionalPortfolioManager(
-        DirectionalConfig(enabled=True, products=("A",), exchanges=("DCE",)),
+        DirectionalConfig(
+            enabled=True,
+            policy="execution_aligned",
+            products=("A",),
+            exchanges=("DCE",),
+        ),
         broker,
         RiskManager(RiskConfig()),
         signal_provider=_Provider(),
@@ -1076,6 +1092,7 @@ def test_default_execution_aligned_runtime_requires_the_frozen_50_product_univer
         ExecutionAlignedDirectionalPortfolioManager(
             DirectionalConfig(
                 enabled=True,
+                policy="execution_aligned",
                 products=("A", "M"),
                 exchanges=("DCE",),
             ),
@@ -1090,6 +1107,7 @@ def test_execution_aligned_flatten_closes_both_sides_when_same_contract_is_hedge
     manager = ExecutionAlignedDirectionalPortfolioManager(
         DirectionalConfig(
             enabled=True,
+            policy="execution_aligned",
             products=("A",),
             exchanges=("DCE",),
             signal_max_age_hours=120.0,

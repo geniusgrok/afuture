@@ -76,7 +76,9 @@ class DirectionalConfig:
             raise ValueError("directional.live_risk_scale must be finite and in (0, 1]")
         if not self.enabled:
             return
-        if self.policy not in {"", "execution_aligned", "stress90"}:
+        if not self.policy:
+            raise ValueError("directional.policy must be explicit when directional is enabled")
+        if self.policy not in {"execution_aligned", "stress90"}:
             raise ValueError("directional.policy must be execution_aligned or stress90")
         if not self.products:
             raise ValueError("directional products cannot be empty")
@@ -252,21 +254,6 @@ def adaptive_margin_sizing_share(
     excess_shock = max(0.0, shock - volatility_trigger)
     adaptive = conservative * (1.0 - excess_shock)
     return min(hard_share, max(0.0, min(conservative, adaptive)))
-
-
-def margin_sizing_share(
-    *,
-    max_margin_ratio: float,
-    min_available_ratio: float,
-    max_daily_loss_ratio: float,
-) -> float:
-    """Compatibility wrapper for the no-history conservative soft margin envelope."""
-    return adaptive_margin_sizing_share(
-        max_margin_ratio=max_margin_ratio,
-        min_available_ratio=min_available_ratio,
-        max_daily_loss_ratio=max_daily_loss_ratio,
-        completed_returns=(),
-    )
 
 
 def build_target_lots(

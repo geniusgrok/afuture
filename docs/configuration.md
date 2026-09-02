@@ -2,6 +2,8 @@
 
 本文是 TOML 配置的当前权威说明。示例文件用于起步，本文解释字段含义、默认值、单位和关键约束；运行前仍应执行 `afuture validate --config <配置文件>`。
 
+配置是 current-only contract：本页和示例中没有列出的 section/field、已经移除的字段和 alias 都会失败关闭。加载器不会为旧 TOML 猜测字段、补齐缺失 current-required field、静默映射别名或保留未知 extension key。业务/安全默认值仍只适用于当前 schema，而不是旧配置兼容层。旧配置应作为历史证据归档；操作者从当前示例重新创建配置并在 bootstrap/reconciliation 前验证。
+
 比例均使用小数，例如 `0.35` 表示 35%。时间窗口使用中国期货本地时间 `HH:MM-HH:MM`，可以跨午夜。没有显式注明“必填”的字段使用代码默认值。
 
 ## 1. 运行模式与柜台
@@ -37,6 +39,11 @@ CTP 凭证不进入 TOML：
 `stress90-activate`、`stress90-account-rebase`、`directional-policy-migrate` 和
 `stress90-order-journal-rollover` 还要求 operator 生成的唯一 64 位十六进制
 `--operation-id`。只有同一 prepared 事务的精确崩溃重试才能复用该值；新的资金流、账户切换、policy 迁移或 journal epoch 必须使用新值。
+
+其中 `directional-policy-migrate` 是 current policy 的受控 lifecycle transaction，不是 TOML、
+state、registry 或 nonce ledger 的格式迁移。它只允许从当前、已验证、`HALTED`、kill-switched、
+flat 且 reconciled 的 runtime 进入 current `execution_aligned` policy；旧 artifact 不能通过该命令
+转换或修补。
 
 ## 2. 账户和交易风险
 
@@ -148,7 +155,7 @@ CTP 凭证不进入 TOML：
 | `pairs.min_confirmed_entry_z` | `0.0` | 确认后仍需保留的最小偏离，必须位于 `(0, entry_z)`。 |
 | `pairs.entry_trend_window` | `6` | 入场趋势斜率窗口，至少 2 个样本。 |
 | `pairs.max_entry_z_slope` | `999.0` | 允许的入场 Z 值绝对斜率上限。 |
-| `pairs.min_stationarity_score` | `0.0` | 最小均值回复启发式分数，范围 `[0, 1]`；字段名为兼容保留，不表示平稳性检验。 |
+| `pairs.min_mean_reversion_score` | `0.0` | 最小均值回复启发式分数，范围 `[0, 1]`；它不表示平稳性检验。 |
 | `pairs.max_half_life` | `999.0` | 最大估计半衰期，样本数，必须大于 0。 |
 | `pairs.daily_sample_window` | 空 | 每个交易日允许取样的单一窗口；开始时刻必须早于结束时刻。 |
 
@@ -187,7 +194,7 @@ CTP 凭证不进入 TOML：
 | `auto.min_volume` | `5000.0` | 两腿当前累计成交量下限。 |
 | `auto.min_open_interest` | `10000.0` | 两腿持仓量下限。 |
 | `auto.min_liquidity_score` | `0.5` | 流动性评分下限，范围 `[0, 1]`。 |
-| `auto.min_stationarity_score` | `0.02` | 均值回复启发式分数下限，范围 `[0, 1]`；字段名为兼容保留，不表示平稳性检验。 |
+| `auto.min_mean_reversion_score` | `0.02` | 均值回复启发式分数下限，范围 `[0, 1]`；它不表示平稳性检验。 |
 | `auto.max_half_life` | `120.0` | 最大半衰期，样本数。 |
 | `auto.min_net_edge` | `0.0` | 净边际必须严格高于此人民币金额。 |
 | `auto.slippage_ticks` | `1` | 候选净边际估算使用的单腿滑点，跳。 |
@@ -199,7 +206,7 @@ CTP 凭证不进入 TOML：
 | 字段 | 默认值 | 含义与约束 |
 | --- | --- | --- |
 | `directional.enabled` | `false` | 启用方向组合；启用后不能同时配置固定组合或 Auto。 |
-| `directional.policy` | 回放兼容为 `execution_aligned` | 只允许 `execution_aligned` 或 `stress90`。`system.mode=live` 时必须显式填写，不能由默认值决定生产经济行为。 |
+| `directional.policy` | 无 | 启用 Directional 时必须显式填写 `execution_aligned` 或 `stress90`。 |
 | `directional.products` | 空 | 允许品种，启用时不能为空。 |
 | `directional.exchanges` | `DCE, CZCE, SHFE, INE` | 允许交易所。 |
 | `directional.max_gross_leverage` | `2.0` | 目标总名义敞口上限，范围 `(0, 2]`。 |
@@ -207,7 +214,7 @@ CTP 凭证不进入 TOML：
 | `directional.min_volume` | `1000.0` | 上一完整交易日成交量下限。 |
 | `directional.min_open_interest` | `5000.0` | 上一完整交易日持仓量下限。 |
 | `directional.max_contract_volume` | `35` | 方向组合目标的单合约手数上限。最终还取该值与 `risk.max_contract_volume` 的更严格者。 |
-| `directional.rebalance_window` | `21:00-21:10` | 允许产生方向调仓的中国期货本地时间窗口，可跨午夜。 |
+| `directional.rebalance_window` | `21:00-21:10` | 仅 execution-aligned 使用的方向调仓中国期货本地时间窗口，可跨午夜。Stress-90 显式填写该字段会被拒绝。 |
 | `directional.signal_max_age_hours` | `36.0` | 信号时间戳的第二层最长年龄，小时；交易日对齐仍是主要新鲜度判断。 |
 | `directional.account_exclusive` | `true` | 必须保持 `true`；同一账户不能混入手工或其他程序持仓。 |
 | `directional.account_continuity_mode` | `strict` | `strict` 保持官方结算/session 证据门；`operator_managed` 仅允许 `system.mode=live`、Stress-90、directional enabled 且账户独占，用操作者信任凭证推进跨日，但不伪造 Broker 验证字段。 |
@@ -221,7 +228,7 @@ CTP 凭证不进入 TOML：
 - `account_exclusive = true`；运行期间禁止手工交易、其他策略、充值和出金；
 - `account_continuity_mode` 默认 `strict`；`operator_managed` 只适用于个人专用、单账户、账户独占运行。其 receipt 明确标记为 `operator_trust`，不能替代官方结算见证或官方 session ledger；
 - `operator_managed` 期间一旦发生人工交易、外部委托、入金或出金，必须保持停机并先执行现有 `stress90-account-rebase`；跨日成功后仍需新的 Doctor 技术 permit；
-- `rebalance_window` 只保留旧 manager 的外层兼容校验，实际新风险 entry 使用不可变的产品/交易所 first-session manifest；错过首个窗口当日不追单。
+- Stress-90 使用不可变的产品/交易所 first-session manifest；错过首个窗口当日不追单，也不接受 `rebalance_window` 配置。
 
 更严格 commissioning 值可以减少风险，但会偏离固定历史矩阵。`status`/`doctor` 会显示该差异；不得把更严格配置下的 live/Shadow 结果表述为历史 Stress-90 的精确复现。
 
@@ -243,7 +250,8 @@ The checked-in Stress-90 live example is intentionally a personal commissioning 
 
 ## 生产心跳配置
 
-生产运维扩展由 canonical CLI router 从同一 TOML 读取；`afuture validate` 同样接受这些字段：
+`load_config()` 是唯一 TOML reader；canonical CLI、heartbeat、watchdog 与 runtime 都消费同一
+`AppConfig`，`afuture validate` 同样接受这些字段：
 
 | 字段 | 默认值 | 约束与含义 |
 | --- | ---: | --- |

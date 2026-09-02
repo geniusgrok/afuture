@@ -35,7 +35,7 @@ confirmation_retrace_z = 0.30
 min_confirmed_entry_z = 1.75
 entry_trend_window = 6
 max_entry_z_slope = 0.75
-min_stationarity_score = 0.01
+min_mean_reversion_score = 0.01
 max_half_life = 60
 
 # 研究和生产都只在中国期货交易日 22:55-23:00 内取两腿完全相同时间戳的样本；

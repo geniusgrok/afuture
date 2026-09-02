@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,8 @@ from afuture.cli import (
     validate_recovery_positions,
     wait_for_fresh_snapshot,
 )
+from afuture.config import AppConfig
+from afuture.directional import DirectionalConfig
 from afuture.models import (
     AccountSnapshot,
     BrokerEvent,
@@ -22,11 +25,51 @@ from afuture.models import (
     PairConfig,
     Tick,
 )
+from afuture.risk import RiskConfig
 from afuture.state import RuntimeState, StateStore
 
 
+@pytest.fixture(autouse=True)
+def _use_isolated_current_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "afuture.account_runtime_registry.PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH",
+        tmp_path / ".account-runtime-registry.json",
+    )
+
+
+def _current_config(tmp_path: Path, **changes: object) -> AppConfig:
+    config = AppConfig(
+        mode="live",
+        initial_capital=500_000,
+        contracts={},
+        pairs=[],
+        risk=RiskConfig(),
+        ctp=SimpleNamespace(environment="test"),
+        state_path=str(tmp_path / "state.json"),
+        heartbeat_path=tmp_path / "heartbeat.json",
+        log_path=str(tmp_path / "afuture.log"),
+        report_path=str(tmp_path / "report.json"),
+        journal_path=str(tmp_path / "audit.jsonl"),
+        alert_path=str(tmp_path / "alerts.jsonl"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
+    )
+    return replace(config, **changes)
+
+
+def test_shadow_operational_config_rejects_non_current_config(tmp_path: Path) -> None:
+    from afuture.cli import _shadow_operational_config
+
+    paths = {
+        "state": tmp_path / "shadow" / "state.json",
+        "journal": tmp_path / "shadow" / "audit.jsonl",
+    }
+
+    with pytest.raises(TypeError):
+        _shadow_operational_config(SimpleNamespace(), paths)
+
+
 def test_status_is_local_read_only_and_does_not_create_log(tmp_path: Path, capsys) -> None:
-    from afuture.cli import main
+    from afuture.cli import run_command
 
     config_path = tmp_path / "status.toml"
     config_path.write_text(
@@ -51,7 +94,7 @@ alert = "{alert}"
         encoding="utf-8",
     )
 
-    assert main(["status", "--config", str(config_path)]) == 0
+    assert run_command(["status", "--config", str(config_path)]) == 0
     assert '"passed": true' in capsys.readouterr().out
     assert not (tmp_path / "afuture.log").exists()
 
@@ -88,12 +131,43 @@ def test_live_stress90_lifecycle_runtime_dir_cannot_fork_account_lineage(
         _stress90_lifecycle_paths(config, "", shadow_account=True)
 
 
+def test_stress90_registry_path_requires_current_app_config(tmp_path: Path) -> None:
+    from afuture.cli import _stress90_account_registry_path
+
+    old_shape = SimpleNamespace(state_path=str(tmp_path / "state.json"))
+
+    with pytest.raises(AttributeError, match="account_registry_path"):
+        _stress90_account_registry_path(old_shape)
+
+
+def test_stress90_lifecycle_manager_requires_current_risk_and_contracts(
+    tmp_path: Path,
+) -> None:
+    from afuture.cli import _build_stress90_lifecycle_manager
+    from afuture.directional import DirectionalConfig
+    from afuture.risk import RiskConfig
+
+    old_shape = SimpleNamespace(
+        directional=DirectionalConfig(
+            enabled=True,
+            policy="stress90",
+            products=("A",),
+        )
+    )
+    with pytest.raises(AttributeError, match="risk"):
+        _build_stress90_lifecycle_manager(old_shape, object(), runtime_dir=tmp_path)
+
+    old_shape.risk = RiskConfig()
+    with pytest.raises(AttributeError, match="contracts"):
+        _build_stress90_lifecycle_manager(old_shape, object(), runtime_dir=tmp_path)
+
+
 def test_status_does_not_require_live_ctp_credentials(
     tmp_path: Path,
     capsys,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from afuture.cli import main
+    from afuture.cli import run_command
 
     for name in ("AFUTURE_CTP_USER", "AFUTURE_CTP_PASSWORD", "AFUTURE_CTP_BROKER"):
         monkeypatch.delenv(name, raising=False)
@@ -130,7 +204,7 @@ alert = "{alert}"
         encoding="utf-8",
     )
 
-    assert main(["status", "--config", str(config_path)]) == 0
+    assert run_command(["status", "--config", str(config_path)]) == 0
     assert '"passed": true' in capsys.readouterr().out
 
 
@@ -232,6 +306,7 @@ def test_doctor_preflight_never_calls_send_order(
         risk=RiskConfig(max_margin_ratio=0.35, min_available_ratio=0.25),
         metadata_timeout_seconds=1.0,
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         log_path=str(tmp_path / "afuture.log"),
         report_path=str(tmp_path / "report.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
@@ -394,6 +469,7 @@ def test_stress90_doctor_explicitly_issues_zero_order_technical_permit_under_lea
         risk=RiskConfig(),
         metadata_timeout_seconds=1.0,
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         log_path=str(tmp_path / "afuture.log"),
         report_path=str(tmp_path / "report.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
@@ -559,8 +635,8 @@ def test_stress90_shadow_doctor_uses_canonical_account_without_live_day_checkpoi
         "AFUTURE_STRESS90_ACTIVATION_PERMIT_ACK",
         STRESS90_ACTIVATION_PERMIT_ACK,
     )
-    config = SimpleNamespace(
-        mode="live",
+    config = _current_config(
+        tmp_path,
         ctp=SimpleNamespace(environment="production"),
         initial_capital=500_000,
         slippage_ticks=2,
@@ -577,11 +653,6 @@ def test_stress90_shadow_doctor_uses_canonical_account_without_live_day_checkpoi
         ),
         risk=RiskConfig(),
         metadata_timeout_seconds=1.0,
-        state_path=str(tmp_path / "state.json"),
-        log_path=str(tmp_path / "afuture.log"),
-        report_path=str(tmp_path / "report.json"),
-        journal_path=str(tmp_path / "audit.jsonl"),
-        alert_path=str(tmp_path / "alerts.jsonl"),
     )
     args = SimpleNamespace(
         confirm_live=True,
@@ -643,6 +714,7 @@ def test_stress90_doctor_releases_account_lease_when_broker_start_fails(
         risk=RiskConfig(),
         metadata_timeout_seconds=1.0,
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         log_path=str(tmp_path / "afuture.log"),
         report_path=str(tmp_path / "report.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
@@ -888,6 +960,7 @@ def test_stress90_doctor_uses_activity_selected_contracts_not_sampling_limit(
         risk=RiskConfig(max_margin_ratio=0.35, min_available_ratio=0.25),
         metadata_timeout_seconds=1.0,
         state_path=str(state_path),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         log_path=str(tmp_path / "afuture.log"),
         report_path=str(tmp_path / "report.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
@@ -905,25 +978,33 @@ def test_stress90_doctor_uses_activity_selected_contracts_not_sampling_limit(
 
 
 def test_stress90_shadow_uses_dedicated_persistent_runtime_directory(tmp_path: Path):
-    stress = SimpleNamespace(
-        state_path=str(tmp_path / "state.json"),
-        directional=SimpleNamespace(policy="stress90"),
+    stress = _current_config(
+        tmp_path,
+        directional=DirectionalConfig(
+            enabled=True,
+            policy="stress90",
+            products=("M",),
+        ),
     )
-    legacy = SimpleNamespace(
-        state_path=str(tmp_path / "state.json"),
-        directional=SimpleNamespace(policy="execution_aligned"),
+    execution_aligned = _current_config(
+        tmp_path,
+        directional=DirectionalConfig(
+            enabled=True,
+            policy="execution_aligned",
+            products=("M",),
+        ),
     )
 
     stress_paths = _shadow_runtime_paths(stress)
-    legacy_paths = _shadow_runtime_paths(legacy)
+    execution_aligned_paths = _shadow_runtime_paths(execution_aligned)
 
     assert stress_paths["state"] == tmp_path / "shadow" / "state.json"
     assert stress_paths["broker_state"] == tmp_path / "shadow" / "shadow_broker_state.json"
     assert stress_paths["journal"] == tmp_path / "shadow" / "audit.jsonl"
     assert stress_paths["persistent"] is True
-    assert legacy_paths["state"] == tmp_path / "shadow_state.json"
-    assert legacy_paths["broker_state"] is None
-    assert legacy_paths["persistent"] is False
+    assert execution_aligned_paths["state"] == tmp_path / "shadow_state.json"
+    assert execution_aligned_paths["broker_state"] is None
+    assert execution_aligned_paths["persistent"] is False
 
 
 def test_run_shadow_passes_durable_broker_state_on_every_stress90_restart(
@@ -982,24 +1063,20 @@ def test_run_shadow_passes_durable_broker_state_on_every_stress90_restart(
     monkeypatch.setattr("afuture.broker.ctp.CtpBroker", FakeLiveBroker)
     monkeypatch.setattr("afuture.broker.shadow.ShadowBroker", FakeShadowBroker)
     monkeypatch.setattr("afuture.cli._build_cli_engine", lambda *args, **kwargs: FakeEngine())
-    config = SimpleNamespace(
-        mode="live",
-        ctp=SimpleNamespace(environment="test"),
+    config = _current_config(
+        tmp_path,
         initial_capital=500_000,
         slippage_ticks=1,
         latency_ticks=1,
         market_impact_ticks=1,
         metadata_timeout_seconds=0.0,
         contracts={},
-        auto=SimpleNamespace(enabled=False),
-        directional=SimpleNamespace(
+        directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
+            products=("M",),
             account_exclusive=False,
         ),
-        state_path=str(tmp_path / "state.json"),
-        alert_path=str(tmp_path / "alerts.jsonl"),
-        alert_webhook="",
     )
     args = SimpleNamespace(
         confirm_live=False,
@@ -1198,16 +1275,14 @@ def test_recover_state_seeds_fresh_ctp_before_inclusive_snapshot_replay_and_adop
     broker.snapshot_ready = lambda _marker: True
     monkeypatch.setattr("afuture.broker.ctp.CtpBroker", lambda _credentials: broker)
     monkeypatch.setenv("AFUTURE_RECOVERY_ACK", "I_VERIFIED_CTP_POSITIONS")
-    config = SimpleNamespace(
-        mode="live",
+    config = _current_config(
+        tmp_path,
         ctp=broker.credentials,
         state_path=str(store.path),
         pairs=[pair],
         require_live_metadata=False,
         contracts={},
         metadata_timeout_seconds=1.0,
-        journal_path=str(tmp_path / "audit.jsonl"),
-        report_path=str(tmp_path / "report.json"),
     )
     args = SimpleNamespace(
         confirm_live=False,
@@ -1256,8 +1331,8 @@ def test_recover_state_refuses_ambiguous_legacy_identity_before_ctp_start(
 
     monkeypatch.setattr("afuture.broker.ctp.CtpBroker", lambda _credentials: NeverStartedBroker())
     monkeypatch.setenv("AFUTURE_RECOVERY_ACK", "I_VERIFIED_CTP_POSITIONS")
-    config = SimpleNamespace(
-        mode="live",
+    config = _current_config(
+        tmp_path,
         ctp=SimpleNamespace(environment="test"),
         state_path=str(store.path),
     )
@@ -1301,8 +1376,8 @@ def test_recover_state_rejects_pending_lifecycle_before_reading_mutable_state(
         reject_pending,
     )
     monkeypatch.setenv("AFUTURE_RECOVERY_ACK", "I_VERIFIED_CTP_POSITIONS")
-    config = SimpleNamespace(
-        mode="live",
+    config = _current_config(
+        tmp_path,
         ctp=SimpleNamespace(environment="test"),
         state_path=str(tmp_path / "state.json"),
     )
@@ -1328,11 +1403,15 @@ def test_recover_state_is_not_an_account_path_authority_for_stress90(
 
     monkeypatch.setattr("afuture.broker.ctp.CtpBroker", NeverConstructedBroker)
     monkeypatch.setenv("AFUTURE_RECOVERY_ACK", "I_VERIFIED_CTP_POSITIONS")
-    config = SimpleNamespace(
-        mode="live",
+    config = _current_config(
+        tmp_path,
         ctp=SimpleNamespace(environment="test"),
         state_path=str(tmp_path / "state.json"),
-        directional=SimpleNamespace(enabled=True, policy="stress90"),
+        directional=DirectionalConfig(
+            enabled=True,
+            policy="stress90",
+            products=("M",),
+        ),
     )
     args = SimpleNamespace(
         confirm_live=False,
@@ -1357,7 +1436,7 @@ def test_ctp_trading_day_checkpoint_never_persists_an_account_day_mismatch(
         def get_account_identity_digest(self):
             return "a" * 64
 
-    config = SimpleNamespace(state_path=str(tmp_path / "state.json"))
+    config = _current_config(tmp_path)
 
     with pytest.raises(RuntimeError, match="account/CTP trading day mismatch"):
         _checkpoint_ctp_trading_day(config, Broker(), "20260825")

@@ -14,6 +14,14 @@ from afuture.state import RuntimeState
 _OPERATION_ID = "f" * 64
 
 
+@pytest.fixture(autouse=True)
+def _use_isolated_current_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "afuture.account_runtime_registry.PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH",
+        tmp_path / ".account-runtime-registry.json",
+    )
+
+
 def _empty_session_evidence(account_identity_digest: str, trading_day: str):
     from afuture.broker.ctp_session_query import build_ctp_session_activity_evidence
 
@@ -78,6 +86,7 @@ def _issue_synthetic_technical_permit(runtime_dir: Path):
         session_activity_trades_digest="1" * 64,
         session_activity_ownership_digest="2" * 64,
         active_order_count=0,
+        risk_overlay_digest="3" * 64,
     )
     store = Stress90ActivationPermitStore(runtime_dir / "stress90_activation_permit.json")
     store.issue(evidence)
@@ -98,6 +107,7 @@ def test_activation_requires_every_lifecycle_gate_and_strong_confirmation():
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="first test-counter activation",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -142,6 +152,7 @@ def test_runtime_policy_identity_rejects_old_or_mismatched_state():
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="validated migration",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -203,6 +214,7 @@ def test_stress90_to_execution_aligned_migration_is_explicit_flat_and_halted() -
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="commissioned",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -264,6 +276,7 @@ def test_migrated_execution_aligned_reactivation_requires_both_strong_confirmati
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="commissioned",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -285,6 +298,7 @@ def test_migrated_execution_aligned_reactivation_requires_both_strong_confirmati
         reconciled=True,
         bootstrap_seed_digest="a" * 64,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="same-day return to Stress-90",
         activation_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         rebase_confirmation=REBASE_CONFIRMATION,
@@ -440,6 +454,7 @@ def test_activation_cli_commissions_fresh_flat_state_but_leaves_it_halted(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
         risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -447,6 +462,7 @@ def test_activation_cli_commissions_fresh_flat_state_but_leaves_it_halted(
             account_exclusive=True,
         ),
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -612,7 +628,7 @@ def test_cli_main_dispatches_explicit_directional_policy_migration(
         lambda loaded, args: observed.append((loaded, args)) or 17,
     )
 
-    result = cli.main(
+    result = cli.run_command(
         [
             "directional-policy-migrate",
             "--config",
@@ -654,7 +670,7 @@ def test_cli_main_dispatches_stress90_oi_collection_without_falling_into_live(
         ),
     )
 
-    result = cli.main(
+    result = cli.run_command(
         [
             "stress90-oi-collect",
             "--config",
@@ -717,6 +733,7 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
             reconciled=True,
             bootstrap_seed_digest=seed.seed_digest,
             account_identity_digest="b" * 64,
+            risk_overlay_digest="c" * 64,
             operator_reason="commissioned",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -830,6 +847,7 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
             currency_id="CNY",
         ),
         risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="execution_aligned",
@@ -837,6 +855,7 @@ def test_policy_migration_cli_retires_stress90_identity_but_remains_halted(
             account_exclusive=True,
         ),
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -1017,6 +1036,7 @@ def test_account_rebase_cli_resets_only_soft_path_and_records_operator_reason(
         reconciled=True,
         bootstrap_seed_digest=seed.seed_digest,
         account_identity_digest="b" * 64,
+        risk_overlay_digest="c" * 64,
         operator_reason="commissioned",
         strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
     )
@@ -1142,6 +1162,8 @@ def test_account_rebase_cli_resets_only_soft_path_and_records_operator_reason(
     config = SimpleNamespace(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -1149,6 +1171,7 @@ def test_account_rebase_cli_resets_only_soft_path_and_records_operator_reason(
             account_exclusive=True,
         ),
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -1241,6 +1264,8 @@ def test_settlement_roll_forward_requires_strong_confirmation_before_broker(
     config = SimpleNamespace(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -1248,6 +1273,7 @@ def test_settlement_roll_forward_requires_strong_confirmation_before_broker(
             account_exclusive=True,
         ),
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -1286,6 +1312,8 @@ def test_settlement_roll_forward_reports_external_funding_witness_blocker_before
     config = SimpleNamespace(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -1293,6 +1321,7 @@ def test_settlement_roll_forward_reports_external_funding_witness_blocker_before
             account_exclusive=True,
         ),
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -1449,8 +1478,10 @@ def test_shadow_activation_reads_canonical_persistent_account_and_rejects_positi
         slippage_ticks=2,
         latency_ticks=3,
         market_impact_ticks=4,
+        risk=RiskConfig(margin_estimate_buffer=1.25),
         contracts={},
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -1532,6 +1563,7 @@ def test_shadow_rebase_reads_canonical_persistent_account_and_rejects_active_ord
             reconciled=True,
             bootstrap_seed_digest=seed.seed_digest,
             account_identity_digest="d" * 64,
+            risk_overlay_digest="c" * 64,
             operator_reason="commissioned Shadow",
             strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
         )
@@ -1655,8 +1687,10 @@ def test_shadow_rebase_reads_canonical_persistent_account_and_rejects_active_ord
         slippage_ticks=2,
         latency_ticks=3,
         market_impact_ticks=4,
+        risk=RiskConfig(margin_estimate_buffer=1.25),
         contracts={},
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -1699,6 +1733,8 @@ def test_activation_missing_current_with_previous_evidence_fails_before_broker(
     config = SimpleNamespace(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -1706,6 +1742,7 @@ def test_activation_missing_current_with_previous_evidence_fails_before_broker(
             account_exclusive=True,
         ),
         state_path=str(store.path),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(

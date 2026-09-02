@@ -9,11 +9,6 @@ from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    import tomli as tomllib
-
 from .config import load_config
 
 _NEW_COMMANDS = frozenset(
@@ -98,16 +93,8 @@ def _is_stress90(config) -> bool:
     )
 
 
-def _raw_environment(config_path: str | Path) -> str:
-    try:
-        raw = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
-        section = raw.get("ctp", {})
-        if not isinstance(section, dict):
-            return ""
-        value = section.get("environment", "")
-        return str(value).lower() if isinstance(value, str) else ""
-    except (OSError, ValueError):
-        return ""
+def _configured_environment(config) -> str:
+    return str(getattr(config, "ctp_environment", "")).lower()
 
 
 def _runtime_for(config, *, shadow: bool, explicit: str = "") -> Path:
@@ -255,13 +242,11 @@ def _run_new(command: str, argv: list[str]) -> int:
             _canonical_print(restore_result)
             return 0
         if command == "prepare-session":
-            from .heartbeat_config import activate_heartbeat_settings
             from .session_preflight import ProductionPreflightBackend, SessionPreflightRunner
 
             try:
                 config = load_config(args.config, require_ctp_credentials=True)
                 _require_stress90_config(config, command)
-                activate_heartbeat_settings(args.config, state_path=config.state_path)
                 backend = ProductionPreflightBackend(
                     config=config,
                     config_path=args.config,
@@ -291,12 +276,12 @@ def _run_new(command: str, argv: list[str]) -> int:
                 )
                 return 3
         if command == "watchdog":
-            from .heartbeat_config import load_heartbeat_settings
+            from .heartbeat_config import heartbeat_settings
             from .watchdog import run_watchdog_once
 
             config = load_config(args.config, require_ctp_credentials=False)
             _require_stress90_config(config, command)
-            settings = load_heartbeat_settings(args.config, state_path=config.state_path)
+            settings = heartbeat_settings(config)
             result = run_watchdog_once(
                 config=config,
                 config_path=args.config,
@@ -327,29 +312,6 @@ def _extract_option(argv: list[str], option: str) -> str:
     return argv[index + 1] if index + 1 < len(argv) else ""
 
 
-def _heartbeat_extension_preflight(command: str, argv: list[str]) -> int | None:
-    config_path = _extract_option(argv, "--config")
-    if not config_path:
-        return None
-    try:
-        from .heartbeat_config import load_heartbeat_settings
-
-        config = load_config(config_path, require_ctp_credentials=False)
-        load_heartbeat_settings(config_path, state_path=config.state_path)
-    except Exception as exc:
-        _canonical_print(
-            {
-                "passed": False,
-                "command": command,
-                "error": str(exc),
-                "orders_sent": 0,
-                "cancels_sent": 0,
-            }
-        )
-        return 2
-    return None
-
-
 def _deployment_preflight(command: str, argv: list[str]) -> int | None:
     config_path = _extract_option(argv, "--config")
     if not config_path:
@@ -361,7 +323,7 @@ def _deployment_preflight(command: str, argv: list[str]) -> int | None:
         return None
     if not _is_stress90(config):
         return None
-    production = _raw_environment(config_path) == "production"
+    production = _configured_environment(config) == "production"
     if command == "status":
         from .deployment_identity import verify_deployment
         from .operations import build_local_status
@@ -448,17 +410,16 @@ def _configured_live_account_digest(config) -> str:
 def _runtime_heartbeat_context(
     *,
     config,
-    config_path: str,
     runtime: Path,
     role: str,
     deployment_digest: str,
     process_uuid: str | None,
 ):
-    from .heartbeat_config import activate_heartbeat_settings
+    from .heartbeat_config import heartbeat_settings
     from .runtime_heartbeat import RuntimeHeartbeatContext, runtime_identity_digest
     from .stress90_risk_overlay import stress90_risk_overlay_digest
 
-    settings = activate_heartbeat_settings(config_path, state_path=config.state_path)
+    settings = heartbeat_settings(config)
     live_account = _configured_live_account_digest(config)
     account_digest = (
         sha256(f"afuture.shadow-account.v1\0{live_account}".encode()).hexdigest()
@@ -604,7 +565,6 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
     set_current_process_uuid(process_uuid)
     context = _runtime_heartbeat_context(
         config=config,
-        config_path=config_path,
         runtime=runtime,
         role="live",
         deployment_digest=deployment.checksum,
@@ -618,7 +578,9 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
             "broker_constructed",
             state_checksum=start_state.checksum,
         )
-        code = _delegate(argv)
+        from .cli import run_command
+
+        code = run_command(argv)
         final_state = state_store.load_required_record()
         process_store.mark_phase(
             process_uuid,
@@ -679,7 +641,6 @@ def _configure_shadow_heartbeat(argv: list[str]) -> None:
     configure_runtime_heartbeat(
         _runtime_heartbeat_context(
             config=config,
-            config_path=config_path,
             runtime=runtime,
             role="shadow",
             deployment_digest=deployment.checksum,
@@ -703,13 +664,14 @@ def _print_combined_help() -> int:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args == ["--help"] or args == ["-h"]:
-        return _print_combined_help() if args else _delegate(args)
+        if args:
+            return _print_combined_help()
+        from .cli import run_command
+
+        return run_command(args)
     command = args[0]
     if command in _NEW_COMMANDS:
         return _run_new(command, args[1:])
-    heartbeat_preflight = _heartbeat_extension_preflight(command, args[1:])
-    if heartbeat_preflight is not None:
-        return heartbeat_preflight
     preflight = _deployment_preflight(command, args[1:])
     if preflight is not None:
         return preflight
@@ -719,8 +681,10 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 config = load_config(config_path, require_ctp_credentials=True)
             except Exception:
-                return _delegate(args)
-            if _is_stress90(config) and _raw_environment(config_path) == "production":
+                from .cli import run_command
+
+                return run_command(args)
+            if _is_stress90(config) and _configured_environment(config) == "production":
                 return _run_live_with_process_fence(args)
     if command == "shadow":
         try:
@@ -736,10 +700,6 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
             return 2
-    return _delegate(args)
+    from .cli import run_command
 
-
-def _delegate(argv: list[str]) -> int:
-    from .cli import main as legacy_main
-
-    return legacy_main(argv)
+    return run_command(args)

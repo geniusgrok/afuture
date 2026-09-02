@@ -9,7 +9,7 @@ def test_restore_publication_quarantines_runtime_when_registry_publish_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import afuture.runtime_backup_impl as backup_module
+    import afuture.runtime_backup as backup_module
 
     runtime = tmp_path / "runtime"
     runtime_stage = tmp_path / ".runtime.restore-stage"

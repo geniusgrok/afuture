@@ -1,8 +1,10 @@
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
+from afuture.models import ContractPosition
 from afuture.state import RuntimeState, StateIntegrityError, StateStore
 
 
@@ -37,7 +39,12 @@ def write_envelope(
     sequence: object = 1,
     state: object | None = None,
 ) -> None:
-    state_payload = {} if state is None else state
+    state_payload = asdict(RuntimeState())
+    if state is not None:
+        if not isinstance(state, dict):
+            state_payload = state
+        else:
+            state_payload.update(state)
     raw = {
         "schema_version": schema_version,
         "sequence": sequence,
@@ -52,6 +59,12 @@ def write_envelope(
     else:
         raw["checksum"] = "invalid"
     path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def position_payload(**updates: object) -> dict[str, object]:
+    payload = asdict(ContractPosition(symbol="cu2609", exchange="SHFE"))
+    payload.update(updates)
+    return payload
 
 
 def test_save_refuses_to_replace_invalid_json(tmp_path: Path) -> None:
@@ -87,7 +100,7 @@ def test_save_refuses_to_replace_checksum_mismatch(tmp_path: Path) -> None:
     ("raw", "message"),
     [
         ([], "state root must be a JSON object"),
-        ({"schema_version": 2}, "state envelope missing fields"),
+        ({"schema_version": 2}, "state envelope fields are not current"),
     ],
 )
 def test_load_rejects_malformed_envelope(
@@ -105,12 +118,12 @@ def test_load_rejects_malformed_envelope(
 @pytest.mark.parametrize(
     ("schema_version", "sequence", "message"),
     [
-        (4, 1, "newer than this program"),
-        (0, 1, "schema version must be a positive integer"),
-        (2, 0, "sequence must be a positive integer"),
-        (2, -1, "sequence must be a positive integer"),
-        ("2", 1, "schema version must be a positive integer"),
-        (2, "1", "sequence must be a positive integer"),
+        (4, 1, "schema is not current"),
+        (0, 1, "schema is not current"),
+        (2, 0, "schema is not current"),
+        (2, -1, "schema is not current"),
+        ("2", 1, "schema is not current"),
+        (3, "1", "sequence must be a positive integer"),
     ],
 )
 def test_load_rejects_invalid_schema_or_sequence(
@@ -142,6 +155,99 @@ def test_load_rejects_non_object_state_payload(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
+    "raw",
+    [
+        asdict(RuntimeState()),
+        {
+            "schema_version": 3,
+            "sequence": 1,
+            "state": asdict(RuntimeState()),
+            "checksum": "x",
+            "extra": True,
+        },
+    ],
+)
+def test_state_rejects_non_current_envelope_without_rewriting(
+    tmp_path: Path,
+    raw: object,
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    original = path.read_bytes()
+
+    with pytest.raises(StateIntegrityError, match="envelope|schema"):
+        StateStore(path).save(RuntimeState())
+
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("mutate", ["missing", "unknown"])
+def test_state_requires_exact_current_payload_fields(
+    tmp_path: Path,
+    mutate: str,
+) -> None:
+    path = tmp_path / "state.json"
+    payload = asdict(RuntimeState())
+    if mutate == "missing":
+        payload.pop("kill_switch")
+    else:
+        payload["retired_field"] = True
+    raw = {
+        "schema_version": 3,
+        "sequence": 1,
+        "state": payload,
+    }
+    raw["checksum"] = StateStore._checksum(3, 1, payload)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    original = path.read_bytes()
+
+    with pytest.raises(StateIntegrityError, match="payload fields"):
+        StateStore(path).load()
+
+    assert path.read_bytes() == original
+
+
+def test_state_rejects_duplicate_json_keys_without_rewriting(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    payload = asdict(RuntimeState())
+    raw = {
+        "schema_version": 3,
+        "sequence": 1,
+        "state": payload,
+        "checksum": StateStore._checksum(3, 1, payload),
+    }
+    encoded = json.dumps(raw).replace(
+        '"kill_switch": false',
+        '"kill_switch": true, "kill_switch": false',
+        1,
+    )
+    path.write_text(encoded, encoding="utf-8")
+    original = path.read_bytes()
+
+    with pytest.raises(StateIntegrityError, match="duplicate state JSON field"):
+        StateStore(path).save(RuntimeState())
+
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("mutate", ["missing", "unknown"])
+def test_state_requires_exact_current_position_fields(tmp_path: Path, mutate: str) -> None:
+    path = tmp_path / "state.json"
+    position = asdict(ContractPosition(symbol="cu2609", exchange="SHFE"))
+    if mutate == "missing":
+        position.pop("long_today")
+    else:
+        position["retired_field"] = 0
+    write_envelope(path, state={"positions": [position]})
+    original = path.read_bytes()
+
+    with pytest.raises(StateIntegrityError, match="position fields are not current"):
+        StateStore(path).load()
+
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
     ("state", "message"),
     [
         ({"kill_switch": "false"}, "kill_switch must be bool"),
@@ -167,28 +273,13 @@ def test_load_rejects_invalid_runtime_state_field_types(
 @pytest.mark.parametrize(
     "positions",
     [
-        [{"symbol": "cu2609"}],
-        [{"symbol": "", "exchange": "SHFE"}],
-        [{"symbol": "cu2609", "exchange": ""}],
-        [{"symbol": "cu2609", "exchange": "SHFE", "long_today": -1}],
-        [{"symbol": "cu2609", "exchange": "SHFE", "short_today": "1"}],
-        [
-            {
-                "symbol": "cu2609",
-                "exchange": "SHFE",
-                "long_today": 1,
-                "long_price": 0.0,
-            }
-        ],
-        [
-            {
-                "symbol": "cu2609",
-                "exchange": "SHFE",
-                "short_today": 1,
-                "short_price": float("nan"),
-            }
-        ],
-        [{"symbol": "cu2609", "exchange": "SHFE", "long_price": -1.0}],
+        [position_payload(symbol="")],
+        [position_payload(exchange="")],
+        [position_payload(long_today=-1)],
+        [position_payload(short_today="1")],
+        [position_payload(long_today=1, long_price=0.0)],
+        [position_payload(short_today=1, short_price=float("nan"))],
+        [position_payload(long_price=-1.0)],
     ],
 )
 def test_load_rejects_invalid_position_payload(
@@ -204,12 +295,7 @@ def test_load_rejects_invalid_position_payload(
 
 def test_load_rejects_duplicate_position_identities(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
-    position = {
-        "symbol": "m2609",
-        "exchange": "DCE",
-        "long_today": 1,
-        "long_price": 3000,
-    }
+    position = position_payload(symbol="m2609", exchange="DCE", long_today=1, long_price=3000)
     write_envelope(path, state={"positions": [position, dict(position)]})
 
     with pytest.raises(StateIntegrityError, match="duplicate position identities"):
@@ -219,18 +305,8 @@ def test_load_rejects_duplicate_position_identities(tmp_path: Path) -> None:
 def test_state_accepts_same_position_symbol_on_distinct_exchanges(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     positions = [
-        {
-            "symbol": "same",
-            "exchange": "DCE",
-            "long_today": 1,
-            "long_price": 100.0,
-        },
-        {
-            "symbol": "same",
-            "exchange": "SHFE",
-            "short_today": 2,
-            "short_price": 200.0,
-        },
+        position_payload(symbol="same", exchange="DCE", long_today=1, long_price=100.0),
+        position_payload(symbol="same", exchange="SHFE", short_today=2, short_price=200.0),
     ]
     write_envelope(path, state={"positions": positions})
 
@@ -346,7 +422,7 @@ def test_load_previous_returns_none_when_no_verified_backup_exists(tmp_path: Pat
     assert store.load_previous() is None
 
 
-def test_save_migrates_valid_legacy_state(tmp_path: Path) -> None:
+def test_save_rejects_schema_less_state_without_migrating(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     path.write_text(
         json.dumps({"kill_switch": True, "positions": []}),
@@ -354,13 +430,11 @@ def test_save_migrates_valid_legacy_state(tmp_path: Path) -> None:
     )
     store = StateStore(path)
 
-    state = store.load()
-    store.save(state)
+    original = path.read_bytes()
+    with pytest.raises(StateIntegrityError, match="envelope"):
+        store.save(RuntimeState())
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 3
-    assert raw["sequence"] == 1
-    assert raw["state"]["kill_switch"] is True
+    assert path.read_bytes() == original
 
 
 def test_failed_atomic_replace_preserves_target_and_removes_temp_file(

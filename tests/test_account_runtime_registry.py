@@ -92,9 +92,9 @@ def _block_inside_pristine_registry_load(
 
     registry = AccountRuntimeRegistry(registry_path)
 
-    def blocked_load(*, required: bool, legacy_lock_evidence: bool):
+    def blocked_load(*, required: bool, visible_lock_evidence: bool):
         assert required is False
-        assert legacy_lock_evidence is False
+        assert visible_lock_evidence is False
         entered.set()
         release.wait(timeout=30)
         return None
@@ -403,9 +403,12 @@ def test_operation_nonce_is_globally_unique_for_every_registry_mutation(
         )
 
 
-def test_legacy_registry_requires_explicit_nonce_migration_before_rewrite(
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_old_registry_schema_fails_closed_without_rewrite(
     tmp_path: Path,
+    schema_version: int,
 ) -> None:
+    """A signed old registry must never become a current registry implicitly."""
     from afuture import account_runtime_registry as registry_module
 
     registry = _initialized_registry(tmp_path / "registry.json")
@@ -414,47 +417,81 @@ def test_legacy_registry_requires_explicit_nonce_migration_before_rewrite(
     source_epoch = "2" * 64
     registry.bind_new(account, runtime, source_epoch, "3" * 64)
 
-    record = registry.load_required()
-    unsigned = registry_module._record_payload(
-        sequence=1,
-        parent_checksum=None,
-        bindings=record.bindings,
-        schema_version=1,
-    )
-    legacy = {**unsigned, "checksum": registry_module._digest(unsigned)}
+    legacy = json.loads(registry.path.read_text(encoding="utf-8"))
+    legacy["schema_version"] = schema_version
     registry.path.write_text(json.dumps(legacy), encoding="utf-8")
     registry.previous_path.unlink(missing_ok=True)
     shutil.rmtree(registry.path.with_name(registry.path.name + ".nonce-ledger"))
+    before = registry.path.read_bytes()
 
-    loaded = registry.load_required()
-    assert loaded.bindings[0].operation_kinds == ("legacy",)
-    with pytest.raises(registry_module.AccountRuntimeRegistryError, match="migration"):
-        registry.advance_epoch(
+    for operation in (
+        registry.load_required,
+        lambda: registry.initialize(
+            strong_confirmation=registry_module.ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+        ),
+        lambda: registry.advance_epoch(
             account,
             runtime,
             source_epoch,
             "4" * 64,
             "5" * 64,
-        )
-    registry.migrate_nonce_ledger(
-        strong_confirmation=(registry_module.ACCOUNT_RUNTIME_NONCE_LEDGER_MIGRATION_CONFIRMATION)
-    )
-    registry.advance_epoch(
-        account,
-        runtime,
-        source_epoch,
-        "4" * 64,
-        "5" * 64,
+        ),
+    ):
+        with pytest.raises(registry_module.AccountRuntimeRegistryError, match="identity|schema"):
+            operation()
+
+    assert registry.path.read_bytes() == before
+    assert not registry.path.with_name(registry.path.name + ".nonce-ledger").exists()
+
+
+def test_old_registry_schema_rejection_does_not_create_visible_lock(tmp_path: Path) -> None:
+    """Schema rejection is read-only even when a visible lock is absent."""
+    from afuture import account_runtime_registry as registry_module
+
+    registry = _initialized_registry(tmp_path / "registry.json")
+    registry.lock_path.unlink()
+    legacy = json.loads(registry.path.read_text(encoding="utf-8"))
+    legacy["schema_version"] = 2
+    registry.path.write_text(json.dumps(legacy), encoding="utf-8")
+    current = registry.path.read_bytes()
+
+    with pytest.raises(registry_module.AccountRuntimeRegistryError, match="identity|schema"):
+        registry.load_required()
+
+    assert registry.path.read_bytes() == current
+    assert not registry.lock_path.exists()
+
+
+def test_existing_current_registry_requires_lineage_marker_without_recreation(
+    tmp_path: Path,
+) -> None:
+    """Deleting a current lineage marker is evidence loss, never an upgrade opportunity."""
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistryError,
     )
 
-    rewritten = json.loads(registry.path.read_text(encoding="utf-8"))
-    assert rewritten["schema_version"] == 3
-    assert rewritten["bindings"][0]["operation_kinds"] == ["legacy", "advance"]
-    assert len(rewritten["bindings"][0]["last_operation_receipt_digest"]) == 64
-    assert registry.load_required().bindings[0].operation_kinds == (
-        "legacy",
-        "advance",
-    )
+    registry = _initialized_registry(tmp_path / "registry.json")
+    current = registry.path.read_bytes()
+    registry.lineage_path.unlink()
+
+    for operation in (
+        registry.load_required,
+        lambda: registry.initialize(
+            strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION
+        ),
+        lambda: registry.bind_new(
+            "1" * 64,
+            tmp_path / "runtime",
+            "2" * 64,
+            "3" * 64,
+        ),
+    ):
+        with pytest.raises(AccountRuntimeRegistryError, match="lineage.*missing"):
+            operation()
+
+    assert registry.path.read_bytes() == current
+    assert not registry.lineage_path.exists()
 
 
 def test_registry_decoder_rejects_historical_cross_account_duplicate_nonces(
@@ -834,7 +871,7 @@ def test_visible_lock_eexist_race_is_flocked_until_registry_lock_exit(
 
     monkeypatch.setattr(registry, "_exists", create_lock_during_initial_check)
     with registry._exclusive_lock() as lock:
-        assert lock.legacy_lock_evidence is False
+        assert lock.visible_lock_evidence is False
         assert lock.visible_descriptor is not None
         contender = os.open(registry.lock_path, os.O_RDWR)
         try:
@@ -873,11 +910,11 @@ def test_pristine_initialize_rejects_legacy_lock_created_after_absence_check(
     real_load = registry._load_unlocked
     injected = False
 
-    def load_then_create_legacy_lock(*, required: bool, legacy_lock_evidence: bool):
+    def load_then_create_legacy_lock(*, required: bool, visible_lock_evidence: bool):
         nonlocal injected
         record = real_load(
             required=required,
-            legacy_lock_evidence=legacy_lock_evidence,
+            visible_lock_evidence=visible_lock_evidence,
         )
         if record is None and not injected:
             injected = True
@@ -1251,46 +1288,7 @@ def test_killed_pristine_registry_read_never_leaves_visible_lineage_lock(
     assert initialized.sequence == 1
 
 
-def test_valid_legacy_registry_records_upgrade_lineage_once(tmp_path: Path) -> None:
-    from afuture.account_runtime_registry import AccountRuntimeRegistry
-
-    sequence_one = _initialized_registry(tmp_path / "sequence-one.json")
-    sequence_one.lineage_path.unlink()
-    upgraded_one = AccountRuntimeRegistry(sequence_one.path).load_required()
-    assert upgraded_one.sequence == 1
-    assert sequence_one.lineage_path.is_file()
-
-    chained = _initialized_registry(tmp_path / "chained.json")
-    chained.bind_new("a" * 64, tmp_path / "runtime", "b" * 64, "c" * 64)
-    chained.advance_epoch(
-        "a" * 64,
-        tmp_path / "runtime",
-        "b" * 64,
-        "d" * 64,
-        "e" * 64,
-    )
-    chained.lineage_path.unlink()
-    upgraded_chain = AccountRuntimeRegistry(chained.path).load_required()
-    assert upgraded_chain.sequence == 3
-    assert chained.lineage_path.is_file()
-
-    duplicate = _initialized_registry(tmp_path / "duplicate.json")
-    duplicate.bind_new("1" * 64, tmp_path / "duplicate-runtime", "2" * 64, "3" * 64)
-    duplicate.advance_epoch(
-        "1" * 64,
-        tmp_path / "duplicate-runtime",
-        "2" * 64,
-        "4" * 64,
-        "5" * 64,
-    )
-    duplicate.previous_path.write_bytes(duplicate.path.read_bytes())
-    duplicate.lineage_path.unlink()
-    upgraded_duplicate = AccountRuntimeRegistry(duplicate.path).load_required()
-    assert upgraded_duplicate.sequence == 3
-    assert duplicate.lineage_path.is_file()
-
-
-def test_invalid_legacy_registry_chain_never_upgrades_lineage(tmp_path: Path) -> None:
+def test_invalid_current_registry_chain_does_not_recreate_missing_lineage(tmp_path: Path) -> None:
     from afuture import account_runtime_registry as registry_module
     from afuture.account_runtime_registry import (
         AccountRuntimeRegistry,
@@ -1311,45 +1309,6 @@ def test_invalid_legacy_registry_chain_never_upgrades_lineage(tmp_path: Path) ->
     with pytest.raises(AccountRuntimeRegistryError, match="parent chain"):
         AccountRuntimeRegistry(registry.path).load_required()
     assert not registry.lineage_path.exists()
-
-
-@pytest.mark.parametrize("failure_target", ["marker", "parent"])
-def test_legacy_registry_upgrade_fsync_failure_does_not_return_a_record(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure_target: str,
-) -> None:
-    from afuture.account_runtime_registry import (
-        AccountRuntimeRegistry,
-        AccountRuntimeRegistryError,
-    )
-
-    registry = _initialized_registry(tmp_path / "registry.json")
-    original = registry.path.read_bytes()
-    registry.lineage_path.unlink()
-    real_fsync = os.fsync
-
-    def fail_selected_fsync(descriptor: int) -> None:
-        is_directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
-        if (failure_target == "parent") is is_directory:
-            raise OSError(f"injected legacy upgrade {failure_target} fsync failure")
-        real_fsync(descriptor)
-
-    monkeypatch.setattr(os, "fsync", fail_selected_fsync)
-    with pytest.raises(AccountRuntimeRegistryError, match="lineage marker"):
-        AccountRuntimeRegistry(registry.path).load_required()
-
-    assert registry.path.read_bytes() == original
-    assert registry.lineage_path.exists()
-    retried_targets: list[str] = []
-
-    def record_retry_fsync(descriptor: int) -> None:
-        retried_targets.append("parent" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "marker")
-        real_fsync(descriptor)
-
-    monkeypatch.setattr(os, "fsync", record_retry_fsync)
-    assert AccountRuntimeRegistry(registry.path).load_required().sequence == 1
-    assert {"marker", "parent"}.issubset(retried_targets)
 
 
 @pytest.mark.parametrize("failure_target", ["marker", "parent"])

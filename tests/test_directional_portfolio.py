@@ -36,12 +36,18 @@ def _tick(symbol: str, oi: float, *, price: float = 100.0, volume: float = 10000
 
 
 def test_directional_config_caps_gross_and_is_account_exclusive():
-    config = DirectionalConfig(enabled=True, products=("A", "M"), max_gross_leverage=2.0)
+    config = DirectionalConfig(
+        enabled=True,
+        policy="execution_aligned",
+        products=("A", "M"),
+        max_gross_leverage=2.0,
+    )
     config.validate()
     assert config.account_exclusive is True
     with pytest.raises(ValueError, match="gross leverage"):
         DirectionalConfig(
             enabled=True,
+            policy="execution_aligned",
             products=("A",),
             max_gross_leverage=2.01,
         ).validate()
@@ -50,7 +56,12 @@ def test_directional_config_caps_gross_and_is_account_exclusive():
 def test_contract_selector_uses_point_in_time_oi_and_delivery_blackout():
     today = datetime(2026, 8, 24).date()
     selector = DirectionalContractSelector(
-        DirectionalConfig(enabled=True, products=("A",), min_days_to_expiry=20)
+        DirectionalConfig(
+            enabled=True,
+            policy="execution_aligned",
+            products=("A",),
+            min_days_to_expiry=20,
+        )
     )
     catalog = [
         ContractInfo("A2609", "DCE", "A", "2026-09-15"),
@@ -66,7 +77,12 @@ def test_contract_selector_uses_point_in_time_oi_and_delivery_blackout():
     assert selected["A"].symbol == "A2609"
 
     selector = DirectionalContractSelector(
-        DirectionalConfig(enabled=True, products=("A",), min_days_to_expiry=25)
+        DirectionalConfig(
+            enabled=True,
+            policy="execution_aligned",
+            products=("A",),
+            min_days_to_expiry=25,
+        )
     )
     selected = selector.select(catalog, ticks, today)
     assert selected["A"].symbol == "A2611"

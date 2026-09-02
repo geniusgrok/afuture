@@ -144,6 +144,11 @@ class DirectionalTradingEngine(TradingEngine):
                         if callable(getattr(self.broker, "get_account_identity_digest", None))
                         else ""
                     ),
+                    risk_overlay_digest=(
+                        getattr(self.directional_manager, "risk_overlay_digest", None)
+                        if policy_id == "directional.stress90"
+                        else None
+                    ),
                 )
             self.directional_manager.bootstrap(self._reference_now())
             self._directional_initialized = True
