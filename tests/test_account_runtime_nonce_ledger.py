@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,81 @@ def test_legacy_nonce_migration_artifact_fails_closed_without_rewrite(tmp_path: 
 
     assert registry.path.read_bytes() == current
     assert legacy_artifact.read_text(encoding="utf-8") == '{"legacy": true}'
+
+
+def test_pristine_initialize_rejects_migration_artifact_without_any_write(
+    tmp_path: Path,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+    ledger = _ledger(registry)
+    ledger.directory.mkdir()
+    (ledger.directory / "migration.json").write_text('{"legacy": true}', encoding="utf-8")
+
+    def evidence() -> dict[str, tuple[str, bytes]]:
+        return {
+            str(path.relative_to(tmp_path)): (
+                "symlink" if path.is_symlink() else "directory" if path.is_dir() else "file",
+                b"" if path.is_dir() or path.is_symlink() else path.read_bytes(),
+            )
+            for path in tmp_path.rglob("*")
+        }
+
+    before = evidence()
+
+    with pytest.raises(AccountRuntimeRegistryError, match="migration artifact"):
+        registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+
+    assert evidence() == before
+    assert not registry.lineage_path.exists()
+    assert not registry.lock_path.exists()
+
+
+def test_pristine_initialize_rechecks_migration_artifact_inside_exclusive_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from afuture.account_runtime_registry import (
+        ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
+        AccountRuntimeRegistry,
+        AccountRuntimeRegistryError,
+    )
+
+    registry = AccountRuntimeRegistry(tmp_path / "registry.json")
+    ledger = _ledger(registry)
+    real_exclusive_lock = registry._exclusive_lock
+    evidence_after_injection: dict[str, tuple[str, bytes]] = {}
+
+    def evidence() -> dict[str, tuple[str, bytes]]:
+        return {
+            str(path.relative_to(tmp_path)): (
+                "symlink" if path.is_symlink() else "directory" if path.is_dir() else "file",
+                b"" if path.is_dir() or path.is_symlink() else path.read_bytes(),
+            )
+            for path in tmp_path.rglob("*")
+        }
+
+    @contextmanager
+    def inject_migration_artifact_inside_lock():
+        with real_exclusive_lock() as lock:
+            ledger.directory.mkdir()
+            (ledger.directory / "migration.json").write_text('{"legacy": true}', encoding="utf-8")
+            evidence_after_injection.update(evidence())
+            yield lock
+
+    monkeypatch.setattr(registry, "_exclusive_lock", inject_migration_artifact_inside_lock)
+
+    with pytest.raises(AccountRuntimeRegistryError, match="migration artifact"):
+        registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
+
+    assert evidence() == evidence_after_injection
+    assert not registry.lineage_path.exists()
+    assert not registry.lock_path.exists()
 
 
 def test_legacy_migration_artifact_blocks_direct_nonce_ledger_apis_without_writes(

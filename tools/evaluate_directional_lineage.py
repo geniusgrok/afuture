@@ -23,8 +23,7 @@ from afuture.directional_lineage import (
     build_exact_lineage_attribution,
     build_weight_lineage,
 )
-from afuture.execution_aligned_policy import ExecutionAlignedAggressivePolicy
-from afuture.execution_aligned_runtime import FROZEN_PRODUCTS
+from afuture.execution_aligned_policy import FROZEN_PRODUCTS, ExecutionAlignedAggressivePolicy
 
 
 def _load_continuous(path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:

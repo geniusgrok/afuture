@@ -10,7 +10,12 @@ NIGHT_SESSION = datetime(2026, 8, 24, 13, 1, tzinfo=timezone.utc)  # 21:01 Asia/
 
 def _manager(current_trading_day: str):
     return ExecutionAlignedDirectionalPortfolioManager(
-        DirectionalConfig(enabled=True, products=("A",), exchanges=("DCE",)),
+        DirectionalConfig(
+            enabled=True,
+            policy="execution_aligned",
+            products=("A",),
+            exchanges=("DCE",),
+        ),
         broker=object(),
         risk_manager=RiskManager(RiskConfig()),
         signal_provider=object(),

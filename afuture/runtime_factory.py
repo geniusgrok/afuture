@@ -27,11 +27,8 @@ def _require_stress90_account_runtime_binding(config, broker, runtime_dir: Path)
         raise RuntimeError("Stress-90 Broker account identity capability is missing")
     if get_account_identity() != account:
         raise RuntimeError("Stress-90 Broker/policy account identity mismatch")
-    registry_path = Path(str(getattr(config, "account_registry_path", "")))
-    if (
-        getattr(config, "mode", None) == "live"
-        and registry_path != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH
-    ):
+    registry_path = Path(str(config.account_registry_path))
+    if config.mode == "live" and registry_path != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH:
         raise RuntimeError("Stress-90 lineage runtime requires the fixed machine account registry")
     return AccountRuntimeRegistry(registry_path).require_binding_evidence(
         account,

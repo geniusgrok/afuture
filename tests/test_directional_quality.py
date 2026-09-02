@@ -179,7 +179,12 @@ def test_directional_order_expectation_uses_broker_fill_truth_without_position_s
     broker = Broker()
     recorder = ExecutionQualityRecorder(tmp_path / "directional.jsonl")
     manager = DirectionalPortfolioManager(
-        DirectionalConfig(enabled=True, products=("A",), exchanges=("DCE",)),
+        DirectionalConfig(
+            enabled=True,
+            policy="execution_aligned",
+            products=("A",),
+            exchanges=("DCE",),
+        ),
         broker,
         RiskManager(RiskConfig()),
         signal_provider=object(),

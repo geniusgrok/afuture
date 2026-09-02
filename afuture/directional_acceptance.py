@@ -861,7 +861,8 @@ class DirectionalProductionAcceptance:
             turnover_roll = 0.0
             turnover_resize = 0.0
             turnover_reversal = 0.0
-            turnover_entry_exit = 0.0
+            turnover_entry = 0.0
+            turnover_exit = 0.0
             turnover_daily_circuit = 0.0
             turnover_hard_halt = 0.0
             turnover_gross_guard = 0.0
@@ -901,7 +902,8 @@ class DirectionalProductionAcceptance:
                         "turnover_roll": 0.0,
                         "turnover_resize": 0.0,
                         "turnover_reversal": 0.0,
-                        "turnover_entry_exit": 0.0,
+                        "turnover_entry": 0.0,
+                        "turnover_exit": 0.0,
                         "turnover_daily_circuit": 0.0,
                         "turnover_hard_halt": 0.0,
                         "turnover_gross_guard": 0.0,
@@ -968,7 +970,8 @@ class DirectionalProductionAcceptance:
                         "turnover_roll": 0.0,
                         "turnover_resize": 0.0,
                         "turnover_reversal": 0.0,
-                        "turnover_entry_exit": 0.0,
+                        "turnover_entry": 0.0,
+                        "turnover_exit": 0.0,
                         "turnover_daily_circuit": 0.0,
                         "turnover_hard_halt": 0.0,
                         "turnover_gross_guard": 0.0,
@@ -1166,7 +1169,8 @@ class DirectionalProductionAcceptance:
                     turnover_roll += attributed["roll"]
                     turnover_resize += attributed["resize"]
                     turnover_reversal += attributed["reversal"]
-                    turnover_entry_exit += attributed["entry_exit"]
+                    turnover_entry += attributed["entry"]
+                    turnover_exit += attributed["exit"]
 
                 intraday_pnl = 0.0
                 for symbol, volume in lots.items():
@@ -1313,7 +1317,8 @@ class DirectionalProductionAcceptance:
                     "turnover_roll": turnover_roll,
                     "turnover_resize": turnover_resize,
                     "turnover_reversal": turnover_reversal,
-                    "turnover_entry_exit": turnover_entry_exit,
+                    "turnover_entry": turnover_entry,
+                    "turnover_exit": turnover_exit,
                     "turnover_daily_circuit": turnover_daily_circuit,
                     "turnover_hard_halt": turnover_hard_halt,
                     "turnover_gross_guard": turnover_gross_guard,
@@ -1348,7 +1353,8 @@ class DirectionalProductionAcceptance:
                     "turnover_roll",
                     "turnover_resize",
                     "turnover_reversal",
-                    "turnover_entry_exit",
+                    "turnover_entry",
+                    "turnover_exit",
                     "turnover_daily_circuit",
                     "turnover_hard_halt",
                     "turnover_gross_guard",

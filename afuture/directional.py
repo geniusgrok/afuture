@@ -76,7 +76,9 @@ class DirectionalConfig:
             raise ValueError("directional.live_risk_scale must be finite and in (0, 1]")
         if not self.enabled:
             return
-        if self.policy not in {"", "execution_aligned", "stress90"}:
+        if not self.policy:
+            raise ValueError("directional.policy must be explicit when directional is enabled")
+        if self.policy not in {"execution_aligned", "stress90"}:
             raise ValueError("directional.policy must be execution_aligned or stress90")
         if not self.products:
             raise ValueError("directional products cannot be empty")

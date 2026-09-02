@@ -15,6 +15,14 @@ _ACCOUNT_EPOCH = "c" * 64
 _OPERATION_NONCE = "d" * 64
 
 
+@pytest.fixture(autouse=True)
+def _use_isolated_current_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "afuture.account_runtime_registry.PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH",
+        tmp_path / ".account-runtime-registry.json",
+    )
+
+
 def _seeded_stress90_runtime(runtime_dir: Path, *, account_identity: str = "b" * 64):
     from afuture.account_runtime_registry import (
         ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION,
@@ -209,6 +217,7 @@ def _run_pending_rebase(
     from afuture.directional import DirectionalConfig
     from afuture.directional_stress90_state import REBASE_CONFIRMATION
     from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+    from afuture.risk import RiskConfig
 
     observations = [] if fence_observations is None else fence_observations
 
@@ -323,6 +332,8 @@ def _run_pending_rebase(
     config = SimpleNamespace(
         mode="live",
         ctp=SimpleNamespace(environment="test"),
+        risk=RiskConfig(margin_estimate_buffer=1.25),
+        contracts={},
         directional=DirectionalConfig(
             enabled=True,
             policy="stress90",
@@ -330,6 +341,7 @@ def _run_pending_rebase(
             account_exclusive=True,
         ),
         state_path=str(runtime_dir / "state.json"),
+        account_registry_path=str(runtime_dir / ".account-runtime-registry.json"),
         journal_path=str(runtime_dir / "audit.jsonl"),
     )
     args = SimpleNamespace(
@@ -379,6 +391,7 @@ def test_lifecycle_crash_fill_adoption_preserves_net_flat_fill_identities(
     from afuture.cli import _adopt_stress90_lifecycle_crash_fills
     from afuture.directional import DirectionalConfig
     from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+    from afuture.risk import RiskConfig
 
     adopted = (
         "20260825:DCE:CTP.T-open",
@@ -408,12 +421,14 @@ def test_lifecycle_crash_fill_adoption_preserves_net_flat_fill_identities(
     )
     result = _adopt_stress90_lifecycle_crash_fills(
         SimpleNamespace(
+            risk=RiskConfig(margin_estimate_buffer=1.25),
+            contracts={},
             directional=DirectionalConfig(
                 enabled=True,
                 policy="stress90",
                 products=FROZEN_PRODUCTS,
                 account_exclusive=True,
-            )
+            ),
         ),
         object(),
         runtime_dir=tmp_path,

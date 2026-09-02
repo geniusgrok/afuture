@@ -13,7 +13,7 @@ from afuture.directional_efficiency import (
 
 
 def test_rebalance_turnover_attribution_classifies_and_sums_executed_deltas():
-    original = {"A2609": 5, "M2609": -4, "CU2609": 2}
+    original = {"A2609": 5, "M2609": -4, "CU2609": 2, "ZN2609": 1}
     target = {"A2701": 5, "M2609": -3, "CU2609": -2, "RB2610": 1}
     executed = {
         "A2609": -5,
@@ -21,6 +21,7 @@ def test_rebalance_turnover_attribution_classifies_and_sums_executed_deltas():
         "M2609": 1,
         "CU2609": -4,
         "RB2610": 1,
+        "ZN2609": -1,
     }
     lot_notionals = {symbol: 100.0 for symbol in executed}
     products = {
@@ -29,6 +30,7 @@ def test_rebalance_turnover_attribution_classifies_and_sums_executed_deltas():
         "M2609": "M",
         "CU2609": "CU",
         "RB2610": "RB",
+        "ZN2609": "ZN",
     }
     buckets = attribute_rebalance_deltas(
         original_lots=original,
@@ -41,9 +43,10 @@ def test_rebalance_turnover_attribution_classifies_and_sums_executed_deltas():
         "roll": 1000.0,
         "resize": 100.0,
         "reversal": 400.0,
-        "entry_exit": 100.0,
+        "entry": 100.0,
+        "exit": 100.0,
     }
-    assert sum(buckets.values()) == 1600.0
+    assert sum(buckets.values()) == 1700.0
 
 
 def test_production_daily_turnover_buckets_sum_to_total_without_changing_equity():
@@ -103,7 +106,8 @@ def test_production_daily_turnover_buckets_sum_to_total_without_changing_equity(
         "turnover_roll",
         "turnover_resize",
         "turnover_reversal",
-        "turnover_entry_exit",
+        "turnover_entry",
+        "turnover_exit",
         "turnover_daily_circuit",
         "turnover_hard_halt",
         "turnover_gross_guard",

@@ -1746,7 +1746,10 @@ def test_real_prepared_migration_retries_after_registry_acknowledgement_crash(
         ),
     )
     registry_before = registry.load_required()
-    config = SimpleNamespace(state_path=str(tmp_path / "state.json"))
+    config = SimpleNamespace(
+        state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
+    )
 
     class Broker:
         @contextmanager

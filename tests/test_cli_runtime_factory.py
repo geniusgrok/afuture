@@ -8,10 +8,8 @@ from afuture.directional import DirectionalConfig
 from afuture.directional_engine import DirectionalTradingEngine
 from afuture.directional_risk import DirectionalRiskResponseMode, DirectionalRiskScaledPolicy
 from afuture.engine import TradingEngine
-from afuture.execution_aligned_runtime import (
-    FROZEN_PRODUCTS,
-    ExecutionAlignedDirectionalPortfolioManager,
-)
+from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+from afuture.execution_aligned_runtime import ExecutionAlignedDirectionalPortfolioManager
 from afuture.risk import RiskConfig
 from afuture.state import StateStore
 
@@ -55,6 +53,7 @@ def _config(
         pairs=[],
         contracts={},
         account_registry_path=account_registry_path,
+        mode="replay",
     )
 
 

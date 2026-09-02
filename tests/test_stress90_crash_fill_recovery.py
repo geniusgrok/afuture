@@ -1148,6 +1148,10 @@ def _cli_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from afuture.stress90_session_authority import Stress90SessionOwnershipProof
 
     account, epoch, policy, generic, registry, trading_evidence = _write_cli_authority(tmp_path)
+    monkeypatch.setattr(
+        "afuture.account_runtime_registry.PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH",
+        tmp_path / ".account-runtime-registry.json",
+    )
     _RecoveryBroker.reset()
     broker = _RecoveryBroker(object())
 
@@ -1197,6 +1201,7 @@ def _cli_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                 account_exclusive=True,
             ),
             "state_path": str(tmp_path / "state.json"),
+            "account_registry_path": str(tmp_path / ".account-runtime-registry.json"),
             "journal_path": str(tmp_path / "audit.jsonl"),
         },
     )()

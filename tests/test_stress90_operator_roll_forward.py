@@ -146,6 +146,10 @@ def test_operator_roll_forward_missing_operator_ack_fails_before_broker_construc
             raise AssertionError("Broker must not be constructed before confirmation validation")
 
     monkeypatch.setattr("afuture.broker.ctp.CtpBroker", ForbiddenBroker)
+    monkeypatch.setattr(
+        "afuture.account_runtime_registry.PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH",
+        tmp_path / ".account-runtime-registry.json",
+    )
     monkeypatch.delenv("AFUTURE_OPERATOR_CONTINUITY_ACK", raising=False)
     config = SimpleNamespace(
         mode="live",
@@ -158,6 +162,7 @@ def test_operator_roll_forward_missing_operator_ack_fails_before_broker_construc
             account_continuity_mode="operator_managed",
         ),
         state_path=str(tmp_path / "state.json"),
+        account_registry_path=str(tmp_path / ".account-runtime-registry.json"),
         journal_path=str(tmp_path / "audit.jsonl"),
     )
     args = SimpleNamespace(

@@ -645,10 +645,7 @@ def _recover_state(config, args, logger) -> int:
 
     if config.mode != "live" or config.ctp is None:
         raise ValueError("recover-state requires system.mode=live")
-    if (
-        getattr(getattr(config, "directional", None), "enabled", False)
-        and getattr(config.directional, "policy", "") == "stress90"
-    ):
+    if config.directional.enabled and config.directional.policy == "stress90":
         raise RuntimeError(
             "legacy recover-state is not authorized for Stress-90; use the durable order "
             "journal/execution-intent restart path, or an explicit HALTED lifecycle rebase"
@@ -697,9 +694,7 @@ def _recover_state(config, args, logger) -> int:
         _validate_live_metadata(config, broker, recovery_pairs)
         active_orders = broker.get_active_orders()
         if active_orders:
-            stress90_recovery = bool(
-                getattr(getattr(config, "directional", None), "policy", "") == "stress90"
-            )
+            stress90_recovery = config.directional.policy == "stress90"
             if stress90_recovery:
                 raise RuntimeError(
                     "Stress-90 state recovery is blocked by active orders; no automatic "
@@ -725,7 +720,7 @@ def _recover_state(config, args, logger) -> int:
 
         account = broker.get_account()
         positions = broker.get_positions()
-        if getattr(getattr(config, "directional", None), "policy", "") == "stress90":
+        if config.directional.policy == "stress90":
             _require_lifecycle_session_trade_ownership(
                 broker,
                 runtime_dir=Path(config.state_path).parent,
@@ -810,10 +805,7 @@ def _checkpoint_ctp_trading_day(
             )
             if day
         )
-    if (
-        getattr(getattr(config, "directional", None), "enabled", False)
-        and getattr(config.directional, "policy", "") == "stress90"
-    ):
+    if config.directional.enabled and config.directional.policy == "stress90":
         from .directional_stress90_state import (
             Stress90PolicyStateStore,
             Stress90StateIntegrityError,
@@ -839,10 +831,7 @@ def _checkpoint_ctp_trading_day(
     if any(trading_day < prior for prior in prior_days):
         raise RuntimeError("CTP trading-day checkpoint authoritative day moved backward")
 
-    stress90_enabled = bool(
-        getattr(getattr(config, "directional", None), "enabled", False)
-        and getattr(config.directional, "policy", "") == "stress90"
-    )
+    stress90_enabled = config.directional.enabled and config.directional.policy == "stress90"
     if not stress90_enabled:
         return
     from .account_runtime_registry import AccountRuntimeRegistry
@@ -922,13 +911,7 @@ def _shadow_operational_config(config, paths: dict[str, object]):
         "report_path": str(state_path.with_name("report.json")),
         "alert_path": str(state_path.with_name("alerts.jsonl")),
     }
-    try:
-        return replace(config, **values)
-    except TypeError:
-        # Direct-construction tests use SimpleNamespace; production uses frozen AppConfig.
-        from types import SimpleNamespace
-
-        return SimpleNamespace(**{**vars(config), **values})
+    return replace(config, **values)
 
 
 def _auto_manager(config, *, evidence=None, shadow: bool = False):
@@ -1670,20 +1653,12 @@ def _validate_stress90_lifecycle_config(config) -> None:
     registry_path = _stress90_account_registry_path(config)
     if not registry_path.is_absolute():
         raise ValueError("Stress-90 lifecycle commands require an absolute account_registry_path")
-    if (
-        getattr(config, "account_registry_path", None) is not None
-        and registry_path != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH
-    ):
+    if registry_path != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH:
         raise ValueError("Stress-90 lifecycle commands require the fixed machine registry path")
 
 
 def _stress90_account_registry_path(config) -> Path:
-    configured = getattr(config, "account_registry_path", None)
-    if configured is not None:
-        return Path(str(configured))
-    # Direct-construction compatibility for old replay/test objects. load_config()
-    # always supplies the fixed machine-level path for real live commands.
-    return Path(config.state_path).resolve(strict=False).parent / (".account-runtime-registry.json")
+    return Path(config.account_registry_path)
 
 
 @contextmanager
@@ -2372,27 +2347,18 @@ def _require_lifecycle_mechanical_snapshot_current(
 def _build_stress90_lifecycle_manager(config, broker, *, runtime_dir: Path):
     """Construct the production Stress-90 manager for read-only lifecycle primitives."""
 
-    from .directional_stress90_policy import STRESS90_POLICY
     from .directional_stress90_runtime import Stress90DirectionalPortfolioManager
-    from .risk import RiskConfig, RiskManager
+    from .risk import RiskManager
 
-    fallback_risk = RiskConfig(
-        max_margin_ratio=STRESS90_POLICY.max_margin_ratio,
-        max_daily_loss_ratio=STRESS90_POLICY.daily_loss_ratio,
-        max_total_drawdown_ratio=STRESS90_POLICY.hard_drawdown_ratio,
-        max_contract_volume=STRESS90_POLICY.max_contract_lots,
-        min_available_ratio=STRESS90_POLICY.min_available_ratio,
-        margin_estimate_buffer=STRESS90_POLICY.margin_estimate_buffer,
-    )
     return Stress90DirectionalPortfolioManager(
         config.directional,
         broker,
-        RiskManager(getattr(config, "risk", fallback_risk)),
+        RiskManager(config.risk),
         policy_state_path=runtime_dir / "stress90_policy_state.json",
         seed_path=runtime_dir / "stress90_bootstrap_seed.json",
         oi_evidence_path=runtime_dir / "stress90_oi_evidence.json",
         execution_intent_path=runtime_dir / "stress90_execution_intent.json",
-        static_specs=getattr(config, "contracts", {}),
+        static_specs=config.contracts,
     )
 
 
@@ -5971,11 +5937,7 @@ def _run_directional_policy_migrate(config, args) -> int:
 
     if config.mode != "live" or config.ctp is None:
         raise ValueError("directional policy migration requires system.mode=live")
-    configured_registry = getattr(config, "account_registry_path", None)
-    if (
-        configured_registry is not None
-        and Path(str(configured_registry)) != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH
-    ):
+    if Path(config.account_registry_path) != PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH:
         raise ValueError("directional policy migration requires the fixed machine registry path")
     products = tuple(sorted({str(item).upper() for item in config.directional.products}))
     if (

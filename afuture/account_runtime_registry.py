@@ -1223,11 +1223,21 @@ class AccountRuntimeRegistry:
     def initialize(self, *, strong_confirmation: str) -> AccountRuntimeRegistryRecord:
         """Provision the machine anchor once; ordinary lifecycle writes cannot recreate it."""
 
+        from .account_runtime_nonce_ledger import AccountRuntimeNonceLedgerError
+
         if strong_confirmation != ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION:
             raise AccountRuntimeRegistryError(
                 "account runtime registry initialization confirmation is invalid"
             )
+        try:
+            self._nonce_ledger()._reject_legacy_migration_artifact()
+        except AccountRuntimeNonceLedgerError as exc:
+            raise AccountRuntimeRegistryError(str(exc)) from exc
         with self._exclusive_lock() as lock:
+            try:
+                self._nonce_ledger()._reject_legacy_migration_artifact()
+            except AccountRuntimeNonceLedgerError as exc:
+                raise AccountRuntimeRegistryError(str(exc)) from exc
             current = self._load_unlocked(
                 required=False,
                 visible_lock_evidence=lock.visible_lock_evidence,

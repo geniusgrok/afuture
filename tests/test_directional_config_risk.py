@@ -274,6 +274,13 @@ def test_directional_policy_rejects_unknown_identity():
         DirectionalConfig(enabled=True, products=("A",), policy="optimized90").validate()
 
 
+def test_enabled_directional_config_requires_current_policy_identity():
+    from afuture.directional import DirectionalConfig
+
+    with pytest.raises(ValueError, match="directional.policy must be explicit"):
+        DirectionalConfig(enabled=True, products=("A",), policy="").validate()
+
+
 def _tick(*, bid=99.0, ask=101.0, bid_volume=100, ask_volume=100) -> Tick:
     return Tick(
         symbol="A2609",

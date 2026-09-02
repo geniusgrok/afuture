@@ -30,7 +30,8 @@ from .directional_runtime import (
     DirectionalActionResult,
     DirectionalPortfolioManager,
 )
-from .execution_aligned_policy import FROZEN_PRODUCTS, ExecutionAlignedAggressivePolicy
+from .execution_aligned_policy import FROZEN_PRODUCTS as _FROZEN_PRODUCTS
+from .execution_aligned_policy import ExecutionAlignedAggressivePolicy
 from .models import ContractInfo
 
 
@@ -122,7 +123,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
     ):
         if policy is None:
             configured = tuple(sorted({str(item).upper() for item in config.products}))
-            if configured != FROZEN_PRODUCTS:
+            if configured != _FROZEN_PRODUCTS:
                 raise ValueError(
                     "execution-aligned production requires the frozen 50-product universe"
                 )

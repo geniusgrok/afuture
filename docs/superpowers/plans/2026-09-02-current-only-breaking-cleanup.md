@@ -159,12 +159,12 @@ direct calls over new abstractions.
 **Files:**
 - External: one PR from `codex/current-only-breaking-cleanup` to `main`
 
-- [ ] Compare policy/product digests and protected economic module hashes against
+- [x] Compare policy/product digests and protected economic module hashes against
   the recorded baseline; run exact sizing, reduction-first, order economics, CTP,
   fill-accounting, bootstrap, and Shadow/live wiring tests.
-- [ ] Run pip check, Ruff lint, Ruff format check, mypy, compileall, all current
+- [x] Run pip check, Ruff lint, Ruff format check, mypy, compileall, all current
   configuration validations, production mechanics, and one full pytest suite.
-- [ ] Dispatch one independent base-to-head code review; fix all Critical/Important
+- [x] Dispatch one independent base-to-head code review; fix all Critical/Important
   findings and perform one scoped re-review when needed.
 - [ ] Create and push Checkpoint C, verify local/remote head and tree, update the PR
   body with exact files/results/UNKNOWNs, and wait for all required checks.

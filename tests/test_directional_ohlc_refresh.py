@@ -515,6 +515,7 @@ def test_cache_refresh_cli_reacquires_lease_when_authoritative_account_changes(
     )
     config = SimpleNamespace(
         state_path=str(runtime / "state.json"),
+        account_registry_path=str(runtime / ".account-runtime-registry.json"),
         directional=SimpleNamespace(policy="stress90", products=("A", "M")),
     )
     args = SimpleNamespace(
@@ -589,6 +590,7 @@ def test_cache_refresh_cli_rejects_evidence_symlink_swap_before_provider(
     )
     config = SimpleNamespace(
         state_path=str(runtime / "state.json"),
+        account_registry_path=str(runtime / ".account-runtime-registry.json"),
         directional=SimpleNamespace(policy="stress90", products=("A", "M")),
     )
     args = SimpleNamespace(
@@ -623,6 +625,7 @@ def test_cache_refresh_cli_is_explicit_and_never_requires_ctp_credentials(
 
     config = SimpleNamespace(
         state_path=str(tmp_path / "runtime" / "directional_state.json"),
+        account_registry_path=str(tmp_path / "runtime" / ".account-runtime-registry.json"),
         directional=SimpleNamespace(policy="stress90", products=("A", "M")),
     )
     credential_flags = []
@@ -763,6 +766,7 @@ def test_cache_refresh_cli_rejects_policy_epoch_mismatch_before_provider_constru
     )
     config = SimpleNamespace(
         state_path=str(runtime / "state.json"),
+        account_registry_path=str(runtime / ".account-runtime-registry.json"),
         directional=SimpleNamespace(policy="stress90", products=("A", "M")),
     )
     args = SimpleNamespace(

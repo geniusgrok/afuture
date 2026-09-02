@@ -55,6 +55,15 @@ class StateIntegrityError(ValueError):
     """Persisted runtime state cannot be trusted or safely advanced."""
 
 
+def _reject_duplicate_state_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise StateIntegrityError(f"duplicate state JSON field: {key}")
+        result[key] = value
+    return result
+
+
 @dataclass(frozen=True)
 class RuntimeStateRecord:
     state: RuntimeState
@@ -122,7 +131,7 @@ class StateStore:
         except UnicodeDecodeError as exc:
             raise StateIntegrityError("invalid state UTF-8") from exc
         try:
-            raw = json.loads(text)
+            raw = json.loads(text, object_pairs_hook=_reject_duplicate_state_fields)
         except json.JSONDecodeError as exc:
             raise StateIntegrityError("invalid state JSON") from exc
         if not isinstance(raw, dict):
@@ -207,7 +216,10 @@ class StateStore:
         positions = payload["positions"]
         if any(not isinstance(item, dict) for item in positions):
             raise StateIntegrityError("state field positions must contain only objects")
+        position_fields = set(ContractPosition.__dataclass_fields__)
         for item in positions:
+            if set(item) != position_fields:
+                raise StateIntegrityError("persisted position fields are not current")
             try:
                 position = ContractPosition(**item)
                 position.validate()

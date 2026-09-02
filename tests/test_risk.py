@@ -30,6 +30,7 @@ def test_directional_config_rejects_string_boolean() -> None:
     with pytest.raises(ValueError, match="account_exclusive.*boolean"):
         DirectionalConfig(
             enabled=True,
+            policy="execution_aligned",
             products=("A",),
             account_exclusive="false",  # type: ignore[arg-type]
         ).validate()

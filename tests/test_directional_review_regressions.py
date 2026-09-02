@@ -60,6 +60,7 @@ def test_stale_completed_activity_cannot_hide_newer_completed_signal_day():
     manager = ExecutionAlignedDirectionalPortfolioManager(
         DirectionalConfig(
             enabled=True,
+            policy="execution_aligned",
             products=("A",),
             exchanges=("DCE",),
             signal_max_age_hours=120.0,

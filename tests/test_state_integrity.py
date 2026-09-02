@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from afuture.models import ContractPosition
 from afuture.state import RuntimeState, StateIntegrityError, StateStore
 
 
@@ -58,6 +59,12 @@ def write_envelope(
     else:
         raw["checksum"] = "invalid"
     path.write_text(json.dumps(raw), encoding="utf-8")
+
+
+def position_payload(**updates: object) -> dict[str, object]:
+    payload = asdict(ContractPosition(symbol="cu2609", exchange="SHFE"))
+    payload.update(updates)
+    return payload
 
 
 def test_save_refuses_to_replace_invalid_json(tmp_path: Path) -> None:
@@ -200,6 +207,46 @@ def test_state_requires_exact_current_payload_fields(
     assert path.read_bytes() == original
 
 
+def test_state_rejects_duplicate_json_keys_without_rewriting(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    payload = asdict(RuntimeState())
+    raw = {
+        "schema_version": 3,
+        "sequence": 1,
+        "state": payload,
+        "checksum": StateStore._checksum(3, 1, payload),
+    }
+    encoded = json.dumps(raw).replace(
+        '"kill_switch": false',
+        '"kill_switch": true, "kill_switch": false',
+        1,
+    )
+    path.write_text(encoded, encoding="utf-8")
+    original = path.read_bytes()
+
+    with pytest.raises(StateIntegrityError, match="duplicate state JSON field"):
+        StateStore(path).save(RuntimeState())
+
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("mutate", ["missing", "unknown"])
+def test_state_requires_exact_current_position_fields(tmp_path: Path, mutate: str) -> None:
+    path = tmp_path / "state.json"
+    position = asdict(ContractPosition(symbol="cu2609", exchange="SHFE"))
+    if mutate == "missing":
+        position.pop("long_today")
+    else:
+        position["retired_field"] = 0
+    write_envelope(path, state={"positions": [position]})
+    original = path.read_bytes()
+
+    with pytest.raises(StateIntegrityError, match="position fields are not current"):
+        StateStore(path).load()
+
+    assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize(
     ("state", "message"),
     [
@@ -226,28 +273,13 @@ def test_load_rejects_invalid_runtime_state_field_types(
 @pytest.mark.parametrize(
     "positions",
     [
-        [{"symbol": "cu2609"}],
-        [{"symbol": "", "exchange": "SHFE"}],
-        [{"symbol": "cu2609", "exchange": ""}],
-        [{"symbol": "cu2609", "exchange": "SHFE", "long_today": -1}],
-        [{"symbol": "cu2609", "exchange": "SHFE", "short_today": "1"}],
-        [
-            {
-                "symbol": "cu2609",
-                "exchange": "SHFE",
-                "long_today": 1,
-                "long_price": 0.0,
-            }
-        ],
-        [
-            {
-                "symbol": "cu2609",
-                "exchange": "SHFE",
-                "short_today": 1,
-                "short_price": float("nan"),
-            }
-        ],
-        [{"symbol": "cu2609", "exchange": "SHFE", "long_price": -1.0}],
+        [position_payload(symbol="")],
+        [position_payload(exchange="")],
+        [position_payload(long_today=-1)],
+        [position_payload(short_today="1")],
+        [position_payload(long_today=1, long_price=0.0)],
+        [position_payload(short_today=1, short_price=float("nan"))],
+        [position_payload(long_price=-1.0)],
     ],
 )
 def test_load_rejects_invalid_position_payload(
@@ -263,12 +295,7 @@ def test_load_rejects_invalid_position_payload(
 
 def test_load_rejects_duplicate_position_identities(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
-    position = {
-        "symbol": "m2609",
-        "exchange": "DCE",
-        "long_today": 1,
-        "long_price": 3000,
-    }
+    position = position_payload(symbol="m2609", exchange="DCE", long_today=1, long_price=3000)
     write_envelope(path, state={"positions": [position, dict(position)]})
 
     with pytest.raises(StateIntegrityError, match="duplicate position identities"):
@@ -278,18 +305,8 @@ def test_load_rejects_duplicate_position_identities(tmp_path: Path) -> None:
 def test_state_accepts_same_position_symbol_on_distinct_exchanges(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     positions = [
-        {
-            "symbol": "same",
-            "exchange": "DCE",
-            "long_today": 1,
-            "long_price": 100.0,
-        },
-        {
-            "symbol": "same",
-            "exchange": "SHFE",
-            "short_today": 2,
-            "short_price": 200.0,
-        },
+        position_payload(symbol="same", exchange="DCE", long_today=1, long_price=100.0),
+        position_payload(symbol="same", exchange="SHFE", short_today=2, short_price=200.0),
     ]
     write_envelope(path, state={"positions": positions})
 

@@ -1310,6 +1310,10 @@ def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
     runtime = tmp_path / "runtime"
     from afuture.runtime_lease import AccountExclusiveRuntimeLease
 
+    monkeypatch.setattr(
+        "afuture.account_runtime_registry.PRODUCTION_ACCOUNT_RUNTIME_REGISTRY_PATH",
+        runtime / ".account-runtime-registry.json",
+    )
     lease_acquired = False
     original_acquire = AccountExclusiveRuntimeLease.acquire
 
@@ -1456,6 +1460,7 @@ def test_halted_raw_evidence_sidecar_uses_ctp_market_chain_with_zero_orders(
             products=FROZEN_PRODUCTS,
         ),
         state_path=str(runtime / "state.json"),
+        account_registry_path=str(runtime / ".account-runtime-registry.json"),
         journal_path=str(runtime / "audit.jsonl"),
         metadata_timeout_seconds=0.1,
     )
