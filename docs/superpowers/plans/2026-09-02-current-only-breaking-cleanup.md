@@ -152,7 +152,7 @@ direct calls over new abstractions.
   current repository contracts explicitly require them; rename misleading smoke/test wording.
 - [x] Record the multi-binding registry representation as a deferred P2 decision
   because it currently enforces account-switch, retired-identity, and lifecycle safety.
-- [ ] Create and push Checkpoint B, verify the exact remote head, and update the PR.
+- [x] Create and push Checkpoint B, verify the exact remote head, and update the PR.
 
 ### Task 7: Final verification and PR closure
 
