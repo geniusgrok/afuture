@@ -459,10 +459,10 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 - prior-day final funding/settlement witness 不可用或不完整；
 - 外部 provider 失败且 verified cache 不足。
 
-registry 初始化要求目标路径为空，并创建 schema 3 registry、lineage marker 和认证 nonce ledger。
-registry、lineage 或 receipt 完整性检查失败时保持 `HALTED`；保全整个 runtime 目录，在隔离路径
-重新执行 `stress90-registry-init` 和 bootstrap，并按 Broker/CTP 账户、持仓、活动委托和成交完成
-reconciliation 后再 commissioning。
+registry 初始化只用于没有任何 durable evidence 的空目标路径，并创建 schema 3 registry、lineage
+marker 和认证 nonce ledger。已有 registry、lineage、nonce node 或 receipt 完整性检查失败时保持
+`HALTED`；保全机器级 registry 目录、完整 nonce ledger、runtime 目录和外部备份，只能使用核验过的
+备份与单独批准的恢复流程。禁止删除 marker、重建 registry、换路径或用新 nonce 绕过既有 lineage。
 
 nonce receipt 永不删除或淘汰，
 正常 membership 查询最多读取 256 层且不扫描目录。达到 800,000 条必须告警并安排磁盘扩容；达到

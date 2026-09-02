@@ -12,7 +12,7 @@
 2. 50 品种 directional 在明确允许历史选择偏差、gross≤2x 的 specific-contract / next-open float-notional 口径达到 **107.4623% 年化 / 27.4097% 最大回撤**；
 3. 当前 production-mechanics Base 在相同两年区间达到 **109.0636% 年化 / 15.8529% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
 4. 当前 production-mechanics Stress 在 15bp + 15% margin proxy 下达到 **28.9559% 年化 / 28.1152% 最大回撤 / actual gross peak 1.668769x / 474 active days / no permanent halt**；
-5. Stress 已从旧版 `0.9249% + margin HALT` 修复为完整运行，但仍没有达到 80%；
+5. Stress 已从早期的 `0.9249% + margin HALT` 修复为完整运行，但仍没有达到 80%；
 6. 两年历史和所谓 OOS 都已经被研究流程观察，不是 pristine holdout，所有高收益数字都不是未来收益保证。
 
 最新正式证据：

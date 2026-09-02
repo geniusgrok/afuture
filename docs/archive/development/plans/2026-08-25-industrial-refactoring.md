@@ -19,7 +19,7 @@
 - Do not change alpha, portfolio construction, position sizing, leverage, gross target, risk thresholds, drawdown policy, execution assumptions, commission, slippage, stress scenarios, or train/validation/OOS definitions except for an evidenced correctness fix.
 - Every bug fix starts with a failing regression test and records whether valid economic behavior changes.
 - Small changes receive touched tests and static checks; module milestones receive subsystem tests; the complete suite and evidence matrices run only on the final candidate.
-- Existing CLI commands, configuration keys, event models, report fields, and evaluator entry points remain compatible.
+- At that checkpoint, existing CLI commands, configuration keys, event models, report fields, and evaluator entry points were kept unchanged.
 - Unknown broker protocol values and corrupt state/data fail closed; invalid inputs may now raise explicit errors.
 - Do not introduce repository/service/factory/interface layers without a demonstrated reduction in coupling.
 
