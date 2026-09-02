@@ -74,7 +74,7 @@ direct calls over new abstractions.
 - [x] Preserve current initialization, empty authenticated ledger, locks, CAS,
   sequences, parent checksum, nonce anchor, retired identities, and pending/ready
   current commit recovery; run focused registry/nonce/backup suites.
-- [ ] Create and push Checkpoint A, verify the exact remote head, and update the PR.
+- [x] Create and push Checkpoint A, verify the exact remote head, and update the PR.
 
 ### Task 3: Remove fixed-archive historical compatibility replay
 
