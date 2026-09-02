@@ -166,7 +166,7 @@ direct calls over new abstractions.
   configuration validations, production mechanics, and one full pytest suite.
 - [x] Dispatch one independent base-to-head code review; fix all Critical/Important
   findings and perform one scoped re-review when needed.
-- [ ] Create and push Checkpoint C, verify local/remote head and tree, update the PR
+- [x] Create and push Checkpoint C, verify local/remote head and tree, update the PR
   body with exact files/results/UNKNOWNs, and wait for all required checks.
-- [ ] Mark the PR ready only when checks pass and no Critical/Important review remains.
+- [x] Mark the PR ready only when checks pass and no Critical/Important review remains.
   Do not merge.
