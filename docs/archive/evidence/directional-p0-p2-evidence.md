@@ -12,7 +12,7 @@ The originally proposed 5-10 year minute/OI/curve warehouse was explicitly remov
 
 ## P0-1 — integer risk-capital projection
 
-Candidate: replace proportional margin fitting with a deterministic same-sign integer allocator that greedily maximizes reduction in squared target-notional tracking error per unit margin. It cannot exceed requested lots, cannot flip sign, uses the unchanged soft-margin budget, and falls back to the legacy projection whenever current-position turnover would increase.
+Candidate: replace proportional margin fitting with a deterministic same-sign integer allocator that greedily maximizes reduction in squared target-notional tracking error per unit margin. It cannot exceed requested lots, cannot flip sign, uses the unchanged soft-margin budget, and falls back to the proportional projection whenever current-position turnover would increase.
 
 Targeted live/acceptance parity and risk tests passed, but fixed Stress Production rejected the candidate. Workflow `32650103516`, artifact `9495961918`, SHA-256 `395116fcd0b8b03fb6a89e82eb45fc31ff3fe83f820ca2a2958c6b261312d61e`:
 
@@ -111,7 +111,7 @@ P2 universe workflow `32650103485`, artifact `9495950216`, SHA-256 `1893a504ad7f
 
 ## P2-2 — depth-aware opening execution
 
-Production execution optimization is intentionally narrow. Reduction orders keep the existing aggressive FAK price. Opening FAK orders use the best opposite quote only when displayed opposite L1 depth covers the full requested volume; otherwise they retain the legacy aggressive price. Daily price limits are still enforced. The change does not alter volume, order count, order type, gross, margin sizing, risk authority or reduction-first ordering.
+Production execution optimization is intentionally narrow. Reduction orders keep the configured aggressive FAK price. Opening FAK orders use the best opposite quote only when displayed opposite L1 depth covers the full requested volume; otherwise they use the configured aggressive price. Daily price limits are still enforced. The change does not alter volume, order count, order type, gross, margin sizing, risk authority or reduction-first ordering.
 
 Fixed 15bp historical Stress receives no artificial return credit for this live execution improvement. Its value is expected live slippage reduction; partial/rejected/tracking quality remains observable through the existing quality ledger.
 

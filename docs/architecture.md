@@ -126,7 +126,7 @@ Stress-90 target day 的状态顺序是：校验完整输入，原子保存 exac
 - 提交订单请求不改变持仓；只有 Broker 成交事件可以改变持仓；
 - 撤单、拒单和未成交不改变持仓、现金或盈亏；
 - 部分成交只按实际成交量记账，重试不能产生重复成交；
-- CTP 和引擎分别按 `(trading_day, exchange, trade_id)` 去重；引擎、`doctor` 和 `recover-state` 在 adapter 启动前注入已持久的复合 identity，阻止重启 replay 先修改持仓 mirror。旧 `(trading_day, trade_id)` 无法证明交易所，命中时必须停机对账，不能静默吞掉同 ID 的跨交易所新成交；
+- CTP 和引擎分别按 `(trading_day, exchange, trade_id)` 去重；引擎、`doctor` 和 `recover-state` 在 adapter 启动前注入已持久的复合 identity，阻止重启 replay 先修改持仓 mirror。缺少 exchange 的 identity 无法证明交易所，命中时必须停机对账，不能静默吞掉同 ID 的跨交易所新成交；
 - 反转必须先平旧方向再开新方向；
 - 上期所和能源中心的平今、平昨独立校验，不能跨今昨仓借量；
 - 手续费、滑点、名义价值、保证金和敞口必须使用明确的合约乘数和单位；
@@ -139,7 +139,7 @@ CTP callback 不再共享一个可被 Tick 洪峰填满的混合队列。关键 
 
 交易日只能向前推进；延迟的旧日 account event 保持原今/昨仓 bucket 并失败关闭。
 
-原生 CTP 的当前交易日来自交易 API `getTradingDay()`。已启动 adapter 缺少 gateway、td_api、getter 或合法 `YYYYMMDD` 时失败关闭，不使用本机自然日期或旧交易日猜测。只有不实现该接口的兼容测试 Broker 才可使用已验证的 `AccountSnapshot.trading_day`。
+原生 CTP 的当前交易日来自交易 API `getTradingDay()`。已启动 adapter 缺少 gateway、td_api、getter 或合法 `YYYYMMDD` 时失败关闭，不使用本机自然日期或缓存日期猜测。没有该接口的测试 Broker 使用已验证的 `AccountSnapshot.trading_day`。
 
 ## 8. 风险状态
 
@@ -161,15 +161,15 @@ RUNNING 或 REDUCE_ONLY
 
 ## 9. 状态与恢复
 
-afuture 的 durable runtime 是 current-only：`StateStore` 只接受当前 schema 3 的精确 envelope 和完整 payload；registry 只接受当前 schema 3、lineage marker 与认证 nonce anchor；Stress-90 permit、execution intent、lifecycle transaction 和 trading-day evidence 也各自只接受其 current schema/layout。schema-less、旧 schema、缺字段、未知字段、旧 marker 或 migration artifact 都失败关闭，不做默认填充、字段过滤、自动升级或静默 fallback。
+`StateStore` 使用 schema 3 的精确 envelope 和完整 payload；registry 使用 schema 3、lineage marker 与认证 nonce anchor。Stress-90 permit、execution intent、lifecycle transaction 和 trading-day evidence 分别校验自己的精确字段、schema、identity、sequence 和 checksum。任何校验失败都保留原始证据并阻止运行继续。
 
-遇到旧 runtime/state/registry，操作者必须先归档整个 evidence 目录，再在新的 current runtime 路径显式 bootstrap/initialize，并按 Broker/CTP 账户、持仓、活动委托和成交重新 reconciliation。这不是删除恢复能力：current-schema `.prev` 继续保留为 incident/predecessor evidence，current backup/restore、atomic durable write、kernel/file locks、CAS、sequence、checksum、parent chain、account/deployment/runtime identity、nonce 和 crash recovery 都继续生效。
+状态推进使用 atomic durable write、kernel/file locks、CAS、sequence、checksum、parent chain、account/deployment/runtime identity 和 nonce。通用 `StateStore` 的 `.prev` 是人工 incident evidence，绝不自动提升；要求 predecessor chain 的专用 store 还会按各自 schema 自动校验 `.prev` 与 `parent_checksum`。
 
 启动时，系统把柜台账户、完整持仓和活动委托与本地预期状态对比。今昨仓、多空方向、合约身份和关键风险标记全部一致后，才能标记为已对账。
 
-Directional 流动性 sidecar 同时持久化 `completed` 与 `in_progress`，因此日内重启继续已有观察；损坏或旧版裸 completed 文件不自动迁移，必须重新观察完整柜台交易日。OHLC sidecar 是另一份独立市场证据，provider 刷新和回退都要重新验证，不得复制成账户状态或绕过 required-day 门。
+Directional 流动性 sidecar 同时持久化 `completed` 与 `in_progress`，因此日内重启继续已有观察；证据校验失败时必须重新观察完整柜台交易日。OHLC sidecar 是另一份独立市场证据，provider 刷新和回退都要重新验证，不得复制成账户状态或绕过 required-day 门。
 
-Stress-90 另有不可变 bootstrap seed、exactly-once policy state、raw OI evidence、execution intent 和 CTP order journal envelope。policy state 保留最后三层 weights、全部 prior HHI、prepared decision 和 live account wealth/HWM sufficient statistics；seed 不包含历史回测账户收益或任何凭证。order journal 在 official send 前原子持久化授权和最坏 fill 容量预留，terminal entries 进入 immutable archive；容量或账户切换通过显式 HALTED epoch 事务封存，跨 epoch 仍继承全局 order identity 防重。通用 state 还保存 policy activation identity。schema、sequence、checksum、policy digest、产品 manifest 或 seed identity 不一致均 `HALTED`，旧 `execution_aligned` state 不会被静默解释成 Stress-90 state。
+Stress-90 另有不可变 bootstrap seed、exactly-once policy state、raw OI evidence、execution intent 和 CTP order journal envelope。policy state 保留最后三层 weights、全部 prior HHI、prepared decision 和 live account wealth/HWM sufficient statistics；seed 不包含历史回测账户收益或任何凭证。order journal 在 official send 前原子持久化授权和最坏 fill 容量预留，terminal entries 进入 immutable archive；容量或账户切换通过显式 HALTED epoch 事务封存，跨 epoch 仍继承全局 order identity 防重。通用 state 还保存 policy activation identity。schema、sequence、checksum、policy digest、产品 manifest 或 seed identity 不一致均进入 `HALTED`。
 
 状态文件的 JSON、版本、正序号、校验和、持仓数量、均价或成交去重历史不可信时：
 

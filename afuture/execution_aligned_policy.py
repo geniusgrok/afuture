@@ -30,7 +30,6 @@ META_SHARPE_WEIGHT = 1.0
 META_SCORE_SOURCE = "continuous_intraday_base_rank_stress_survival"
 
 # Frozen alphabetic 50-product universe shared by the base policy and Stress-90.
-# Keep the compatibility re-export in ``execution_aligned_runtime`` for existing callers.
 FROZEN_PRODUCTS = (
     "A",
     "AG",

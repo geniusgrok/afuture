@@ -2,7 +2,7 @@
 
 Risk reductions deliberately remain on the existing aggressive-price path. Opening FAK
 orders may avoid one extra price tick only when the currently displayed opposite-side
-L1 depth covers the complete requested volume; otherwise the legacy aggressive price is
+L1 depth covers the complete requested volume; otherwise the configured aggressive price is
 retained. This helper never changes volume, order type, risk authority, or order count.
 """
 

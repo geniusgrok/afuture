@@ -193,7 +193,7 @@ def test_log_ratio_position_waits_for_executable_liquidation_reversion():
     )
     # Mid prices look fully reverted, but selling near/buying far still realizes a
     # strongly adverse relative value. A normal EXIT here would recreate the exact
-    # bid/ask optimism removed from the legacy spread path.
+    # The spread path excludes bid/ask optimism.
     assert signal.action is SignalAction.HOLD
 
 
@@ -254,7 +254,7 @@ def test_auto_profile_copies_relative_daily_quality_parameters():
     assert pair.daily_sample_window == "22:55-23:00"
 
 
-def test_mean_reversion_heuristic_keeps_legacy_numeric_entry_gate():
+def test_mean_reversion_heuristic_keeps_current_numeric_entry_gate():
     blocked = CalendarSpreadStrategy(
         relative_pair(daily_sample_window="", confirm_entry=False, min_mean_reversion_score=0.8)
     )

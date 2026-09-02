@@ -8,7 +8,7 @@ from afuture.quality import ExecutionQualityRecorder
 NOW = datetime(2026, 8, 25, 1, 1, tzinfo=timezone.utc)
 
 
-def test_directional_quality_recorder_keeps_pair_summary_compatible_and_adds_directional(tmp_path):
+def test_directional_quality_recorder_reports_pair_and_directional_summaries(tmp_path):
     recorder = ExecutionQualityRecorder(tmp_path / "quality.jsonl")
     recorder.record_directional_rebalance(
         cycle_id="d-1",

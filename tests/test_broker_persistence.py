@@ -940,7 +940,7 @@ def test_nonpersistent_sim_rollover_preserves_filled_history_and_summary() -> No
     assert position.long_yesterday == 1
 
 
-def test_nonpersistent_legacy_rollover_can_fill_from_other_symbol_old_quote() -> None:
+def test_nonpersistent_rollover_can_fill_from_other_symbol_stale_quote() -> None:
     specs = {
         "A2612": _spec(),
         "M2701": ContractSpec("M2701", "DCE", 10, 1, 0.1, 0.1),
@@ -969,7 +969,7 @@ def test_nonpersistent_legacy_rollover_can_fill_from_other_symbol_old_quote() ->
     assert broker.get_positions()[0].symbol == "M2701"
 
 
-def test_nonpersistent_legacy_sim_accepts_backward_tick_day() -> None:
+def test_nonpersistent_sim_accepts_backward_tick_day() -> None:
     broker = SimBroker(500_000, {"A2612": _spec()})
     broker.publish_tick(_tick(trading_day="20260826"))
 

@@ -12,7 +12,7 @@
 ## Task 2 - P0-1 realistic L1 execution Stress
 RED:
 - add simulator tests proving 75% displayed-depth haircut can create partial FAK fills/unfilled quantity;
-- add tests proving size/depth impact is deterministic, adverse, price-limit bounded and disabled in legacy mode;
+- add tests proving size/depth impact is deterministic, adverse, price-limit bounded and disabled in default mode;
 - add report tests for requested/filled/unfilled/fill-ratio/spread/impact/slippage/latency.
 GREEN:
 - minimally extend `SimBroker` conservative options; preserve defaults byte-for-byte;

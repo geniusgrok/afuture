@@ -87,7 +87,7 @@ rebalance 顺序改为：
 - `directional_fill`：cycle id、order id、product/symbol、offset/side、expected price、fill price、volume、multiplier、slippage bps、commission；
 - `directional_cycle`：本轮目标 notional、实际成交 notional、realized turnover、commission、median/p95 slippage、target tracking error、completion latency、partial/rejected count。
 
-`quality-report` 在保留原 pair 字段兼容性的同时增加 `directional` 子汇总。Directional manager 在提交订单时注册 expected execution metadata，TradingEngine 的 trade/order callback 按 `reference.startswith("directional:")` 回填，不创建第二成交状态真相。
+`quality-report` 保留 pair 字段并增加 `directional` 子汇总。Directional manager 在提交订单时注册 expected execution metadata，TradingEngine 的 trade/order callback 按 `reference.startswith("directional:")` 回填，不创建第二成交状态真相。
 
 ## 5. Production-mechanics acceptance
 

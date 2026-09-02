@@ -170,7 +170,7 @@ Stress-90 doctor 会忽略 `metadata-limit` 对必需计划合约的截断，收
 - 合约目录、quotes、live margin/commission；
 - raw/margin-fitted/drawdown-frozen/HHI-frozen/final lots；
 - reductions/openings、gross、tracking error 和集中度；
-- 开仓、平昨、平今、1 tick、spread/depth 的 15bp 兼容性；
+- 开仓、平昨、平今、1 tick、spread/depth 的 15bp 成本门；
 - 首次 activation 的空仓、无活动委托和 reconcile；
 - 外部现场门仍为未验证。
 
@@ -459,14 +459,12 @@ unset AFUTURE_STRESS90_ORDER_EPOCH_ACK STRESS90_OPERATION_ID
 - prior-day final funding/settlement witness 不可用或不完整；
 - 外部 provider 失败且 verified cache 不足。
 
-registry 只接受 current schema 3；schema 1/2、schema-less registry、旧 lineage layout、nonce
-migration artifact、legacy tombstone 或不完整 receipt 都保持 `HALTED` 并失败关闭。没有
-registry-to-nonce migration command，也没有 maintenance-window upgrade。操作者必须保全完整旧目录
-（current、`.prev`、`.lineage`、`.lock`、audit 和 backup）作为证据，在隔离的新 runtime 路径执行
-`stress90-registry-init` / current bootstrap，并按 Broker/CTP 账户、持仓、活动委托和成交重新
-reconciliation 后再 commissioning。
+registry 初始化只用于没有任何 durable evidence 的空目标路径，并创建 schema 3 registry、lineage
+marker 和认证 nonce ledger。已有 registry、lineage、nonce node 或 receipt 完整性检查失败时保持
+`HALTED`；保全机器级 registry 目录、完整 nonce ledger、runtime 目录和外部备份，只能使用核验过的
+备份与单独批准的恢复流程。禁止删除 marker、重建 registry、换路径或用新 nonce 绕过既有 lineage。
 
-current registry initialization 直接创建认证 nonce ledger。current nonce receipt 永不删除或淘汰，
+nonce receipt 永不删除或淘汰，
 正常 membership 查询最多读取 256 层且不扫描目录。达到 800,000 条必须告警并安排磁盘扩容；达到
 1,000,000 硬上限后所有新 registry mutation 失败关闭。任何已锚定 receipt 或 path node 缺失/损坏
 都是 durable incident，禁止重建、删 marker 或用新 nonce 绕过。
@@ -490,21 +488,18 @@ current registry initialization 直接创建认证 nonce ledger。current nonce 
 损坏、symlink、marker-only、lock-only 或 current 丢失都属于 OI durable-state incident，`.prev`
 只能用于诊断，绝不提升为 current。
 
-schema 2 没有可验证的 predecessor checksum，不能原地升级、补写 parent、重置 sequence 或从
-`.prev` 推断。部署发现 schema 2 时必须保持 `HALTED`，保全 current、`.prev`、lock、runtime
-目录和外部备份；当前代码故意不提供自动恢复或 schema upgrade。操作者归档旧 runtime 后，只能
-在新的 pristine current runtime 路径重新 bootstrap/commission，并从柜台 raw evidence 观察一个
-完整、权威的 counter trading day 后建立 schema 3 sequence 1。在该证据完成前，Stress-90
-activation 持续阻断。
+OI evidence 必须满足 schema 3、精确 predecessor checksum 和 lineage 约束。校验失败时保持
+`HALTED`，保全 current、`.prev`、lock、runtime 目录和外部备份；在新的 pristine runtime 路径
+重新 bootstrap/commission，并从柜台 raw evidence 观察一个完整、权威的 counter trading day。
+在该证据完成前，Stress-90 activation 持续阻断。
 
 `ctp_trading_day_evidence.json` schema 3 明确区分 `unbound` commissioning 与 `bound`
 account lineage。unbound 不包含伪造 epoch、registry revision 或 receipt，只能在 policy
 account identity/epoch 均未绑定且 machine registry 对该 account/runtime 没有 active binding 时
 使用。bound 必须逐字段匹配 policy 的精确 `live_account_epoch` 和 registry 的稳定账户 receipt；
-operation nonce 不是 account epoch。schema 1/2 或任何不完整的中间 schema 均不得从 account
-identity、nonce、日期、policy checksum 或 `.prev` 推断升级。部署发现旧 evidence 时必须保持
-`HALTED` 并保全 current/`.prev`；不提供由旧 evidence、registry binding 或 lifecycle transaction
-生成 current schema 的转换。归档旧证据后必须重新走 current commissioning/recovery。
+operation nonce 不是 account epoch。任何字段、identity、nonce、日期、policy checksum 或
+predecessor evidence 不完整时都保持 `HALTED` 并保全 current/`.prev`；随后重新走完整的
+commissioning/recovery。
 
 lifecycle 的 broker-fenced durable 顺序固定为 registry CAS/acknowledgement、精确 trading-day
 evidence CAS、generic/policy targets、coordinator committed。prepared command 重试先识别同一
@@ -607,7 +602,7 @@ afuture stress90-capacity-report \
   --output /secure/path/stress90-capacity.json
 ```
 
-The command sends and cancels zero orders. Exit code `2` means hard safety evidence failed. Review raw/scaled weights and gross, raw/scaled/margin/freeze/final lots, real fee/margin/tick/spread cost, 15bp compatibility, margin/cash ratios, clipped products, concentration and tracking error. Portfolio representation warnings are diagnostic only and never expand risk or product scope.
+The command sends and cancels zero orders. Exit code `2` means hard safety evidence failed. Review raw/scaled weights and gross, raw/scaled/margin/freeze/final lots, real fee/margin/tick/spread cost, the 15bp gate, margin/cash ratios, clipped products, concentration and tracking error. Portfolio representation warnings are diagnostic only and never expand risk or product scope.
 
 ## 部署来源、可验证备份与恢复
 

@@ -93,11 +93,11 @@ def step_stress90_candidate(
 
 对 9 个支持品种，`completed_oi_flow=None` 表示 missing/incomplete，并使整个 target input 不完整；`0` 是已证明价格方向为零或持仓量未增加。两者不能通过 `fillna(0)` 合并。不支持的 41 个品种不读取 OI flow。
 
-Batch wrapper 逐日调用同一 `step_stress90_candidate`，不再拥有另一套公式。原研究函数保留兼容入口，但内部委托共享核心。逐日、逐产品比较是 parity 权威，最终收益指标不能替代权重 parity。
+Batch wrapper 逐日调用同一 `step_stress90_candidate`，不再拥有另一套公式。研究函数内部委托共享核心。逐日、逐产品比较是 parity 权威，最终收益指标不能替代权重 parity。
 
 ## 6. Policy state 与 exactly-once
 
-Stress-90 使用独立 sidecar state，不把旧 execution-aligned runtime state 静默解释成 Stress-90 state。状态 envelope 包含 schema version、递增 sequence、checksum、原子替换和 `.prev` 证据；当前文件损坏时不自动回退。
+Stress-90 使用独立 sidecar state，policy identity 必须精确匹配。状态 envelope 包含 schema version、递增 sequence、checksum、原子替换和 `.prev` 证据；当前文件损坏时不自动回退。
 
 状态包括：
 
@@ -204,7 +204,7 @@ Stress-90 manager 是独立 adapter。有效输入后的顺序为：
 
 ## 12. 配置和 policy 切换
 
-`DirectionalConfig.policy` 支持 `execution_aligned` 与 `stress90`。live TOML 必须显式填写；直接构造的旧测试对象和 replay 兼容路径可以把空值解释为 `execution_aligned`，但不能把旧 production state 迁移为 Stress-90。
+`DirectionalConfig.policy` 支持 `execution_aligned` 与 `stress90`。live TOML 必须显式填写；非 live 的直接构造和 replay 使用 `execution_aligned` 默认值。Stress-90 要求独立 policy state identity。
 
 Stress-90 activation 要求独立 bootstrap。policy identity、definition digest、seed digest 或产品 manifest 不一致时失败关闭。
 
@@ -232,7 +232,7 @@ Stress-90 activation 要求独立 bootstrap。policy identity、definition diges
 
 Status 增加 policy identity、bootstrap、target/input day、OHLC/OI digest、分层 decision digest、HHI、reserve、pending decision、target/current lots、gross、tracking error、gap 和 blocker。
 
-Doctor 保持 `orders_sent=0`，验证 policy state、seed、日期连续性、50 品种 OHLC、9 品种 OI coverage、activity/catalog、live margin/commission、具体合约、整数目标和真实成本兼容性。任一 P0 失败时 `stress90_ready=false`。
+Doctor 保持 `orders_sent=0`，验证 policy state、seed、日期连续性、50 品种 OHLC、9 品种 OI coverage、activity/catalog、live margin/commission、具体合约、整数目标和真实成本门。任一 P0 失败时 `stress90_ready=false`。
 
 质量审计逐日保存 Base、OI、cost、survivor、HHI、两个 freeze、整数 target、最终 frozen target、reduction/opening plan 和 daily decision digest。成交质量保存 expected open、planned price、fill、slippage、commission、单边实际成本、p95、partial/reject、latency、tracking error 和实际/模型 turnover。
 

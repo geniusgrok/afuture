@@ -36,7 +36,7 @@ strategy/candidate/risk contracts.
 - Produces: `_normalized_price(returns: pd.DataFrame) -> pd.DataFrame` with segmented
   UNKNOWN semantics and `_template_weight_path(...)` with stale-target clearing.
 
-- [ ] **Step 1: Record the legal-history compatibility oracle**
+- [ ] **Step 1: Record the legal-history stability oracle**
 
   Compute and hand-record stable digests for all frozen template scores, template weight
   paths, and final policy weights on the existing deterministic `_history()` fixture.
@@ -50,7 +50,7 @@ strategy/candidate/risk contracts.
 - [ ] **Step 3: Run the new tests and verify RED**
 
   Run the named new tests from `tests/test_execution_aligned_policy.py`. Confirm failures
-  specifically show gap-crossing, stale-target retention, or compatibility mismatch.
+  specifically show gap-crossing, stale-target retention, or stability mismatch.
 
 - [ ] **Step 4: Implement segmented normalized prices**
 
@@ -94,7 +94,7 @@ strategy/candidate/risk contracts.
 - [ ] **Step 2: Add failing empty-month and boundary tests**
 
   Require `None` after removing the sole month, correct multi-month proxy, observed-session
-  counts, first/last boundary flags, middle-period false flags, backward-compatible fields,
+  counts, first/last boundary flags, middle-period false flags, stable evidence fields,
   and input immutability.
 
 - [ ] **Step 3: Verify diagnostic RED failures**

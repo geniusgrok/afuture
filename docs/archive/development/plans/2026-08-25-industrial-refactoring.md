@@ -19,7 +19,7 @@
 - Do not change alpha, portfolio construction, position sizing, leverage, gross target, risk thresholds, drawdown policy, execution assumptions, commission, slippage, stress scenarios, or train/validation/OOS definitions except for an evidenced correctness fix.
 - Every bug fix starts with a failing regression test and records whether valid economic behavior changes.
 - Small changes receive touched tests and static checks; module milestones receive subsystem tests; the complete suite and evidence matrices run only on the final candidate.
-- Existing CLI commands, configuration keys, event models, report fields, and evaluator entry points remain compatible.
+- At that checkpoint, existing CLI commands, configuration keys, event models, report fields, and evaluator entry points were kept unchanged.
 - Unknown broker protocol values and corrupt state/data fail closed; invalid inputs may now raise explicit errors.
 - Do not introduce repository/service/factory/interface layers without a demonstrated reduction in coupling.
 
@@ -36,7 +36,7 @@
 | `pyproject.toml` | Development dependencies and bounded Ruff/MyPy policy |
 | `.github/workflows/ci.yml` | Fast deterministic lint, format, type, compile, test, CLI, and replay gates |
 | `README.md` and `docs/*.md` | Current authority, evidence/history classification, commands, invariants, and runbooks |
-| `docs/refactoring/industrial-refactoring-report-20260825.md` | Final audit findings, fixes, validation evidence, compatibility, and remaining limitations |
+| `docs/refactoring/industrial-refactoring-report-20260825.md` | Final audit findings, fixes, validation evidence, behavior impact, and remaining limitations |
 
 ---
 
@@ -207,7 +207,7 @@ git commit -m "fix: enforce position close bucket invariants"
 
 **Interfaces:**
 - Produces: `StateIntegrityError(ValueError)` and unchanged `StateStore.load/save` signatures.
-- Preserves: valid versioned envelopes and legacy unversioned `RuntimeState` JSON.
+- At that checkpoint, preserves valid versioned envelopes and unversioned `RuntimeState` JSON.
 
 - [x] **Step 1: Add failing corruption and sequence tests**
 
@@ -227,12 +227,12 @@ def test_save_increments_only_a_verified_sequence(tmp_path: Path):
     assert json.loads(store.path.read_text(encoding="utf-8"))["sequence"] == 2
 ```
 
-Also cover checksum mismatch, newer schema, non-positive/non-integer sequence, missing envelope fields, valid legacy migration, and original-file preservation.
+Also cover checksum mismatch, newer schema, non-positive/non-integer sequence, missing envelope fields, the then-supported unversioned conversion, and original-file preservation.
 
 - [x] **Step 2: Verify failures**
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_state_integrity.py tests/test_hardening.py::test_state_has_checksum_sequence_and_legacy_migration
+.venv/bin/python -m pytest -q tests/test_state_integrity.py tests/test_hardening.py
 ```
 
 Expected: corruption-on-save test fails because current code silently overwrites.
@@ -249,10 +249,10 @@ class StateIntegrityError(ValueError):
 class _DecodedState:
     state: RuntimeState
     sequence: int
-    legacy: bool
+    unversioned: bool
 ```
 
-Add `_read_verified() -> _DecodedState` that wraps JSON/type/key errors with `StateIntegrityError`, rejects newer schemas and invalid sequences, verifies the checksum before constructing `RuntimeState`, and returns `sequence=0, legacy=True` for a valid legacy document. `load()` returns its state. `save()` calls it when the target exists and derives `sequence + 1`; it never catches integrity errors.
+At that checkpoint, `_read_verified() -> _DecodedState` wrapped JSON/type/key errors with `StateIntegrityError`, rejected newer schemas and invalid sequences, verified checksums before constructing `RuntimeState`, and returned `sequence=0, unversioned=True` for an accepted unversioned document. `load()` returned its state. `save()` called it when the target existed and derived `sequence + 1`; it never caught integrity errors.
 
 - [x] **Step 4: Preserve atomic replacement and clean temporary files**
 
@@ -441,7 +441,7 @@ Publish the accumulated position, state, CTP, and data-integrity commits to the 
 
 **Interfaces:**
 - Produces reproducible commands `ruff check .`, `ruff format --check .`, and `mypy afuture`.
-- Preserves runtime public APIs and Python 3.10 compatibility.
+- Preserves runtime public APIs and Python 3.10 support.
 
 - [x] **Step 1: Add pinned tool ranges and policy**
 
@@ -452,7 +452,7 @@ Add to `project.optional-dependencies.dev`:
 "ruff>=0.12,<1",
 ```
 
-Configure Ruff for Python 3.10, 100-character lines, and high-signal rules `E4`, `E7`, `E9`, `F`, `I`, `B`, `UP`; explicitly ignore only rules with a recorded compatibility reason. Configure MyPy with `python_version = "3.10"`, `check_untyped_defs = true`, `warn_unused_ignores = true`, and pragmatic third-party import handling.
+Configure Ruff for Python 3.10, 100-character lines, and high-signal rules `E4`, `E7`, `E9`, `F`, `I`, `B`, `UP`; explicitly ignore only rules with a recorded reason. Configure MyPy with `python_version = "3.10"`, `check_untyped_defs = true`, `warn_unused_ignores = true`, and pragmatic third-party import handling.
 
 - [x] **Step 2: Capture static failures once**
 
@@ -644,7 +644,7 @@ Risk / Trading Fixes
 Code Quality
 Testing
 Documentation
-Behavioral Compatibility
+Behavioral Impact
 Backtest / Stress Comparison
 Known Limitations
 ```

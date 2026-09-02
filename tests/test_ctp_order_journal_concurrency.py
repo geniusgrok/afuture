@@ -885,14 +885,14 @@ def test_crash_between_previous_evidence_and_current_replace_keeps_last_commit_l
     assert recovered.all_entries == (first,)
 
 
-def test_legacy_schema_three_envelope_is_rejected_without_silent_migration(
+def test_noncurrent_schema_three_envelope_is_rejected(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "orders.json"
     journal = CtpOrderSubmissionJournal(path)
     journal.prepare(_entry(1))
     current = json.loads(path.read_text(encoding="utf-8"))["current"]
-    legacy_unsigned = {
+    noncurrent_unsigned = {
         "kind": "afuture.ctp.order-submission-journal",
         "schema_version": 3,
         "sequence": current["sequence"],
@@ -900,11 +900,11 @@ def test_legacy_schema_three_envelope_is_rejected_without_silent_migration(
         "entries": current["entries"],
         "archived_entries": [],
     }
-    legacy = {
-        **legacy_unsigned,
+    noncurrent = {
+        **noncurrent_unsigned,
         "checksum": hashlib.sha256(
             json.dumps(
-                legacy_unsigned,
+                noncurrent_unsigned,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -912,7 +912,7 @@ def test_legacy_schema_three_envelope_is_rejected_without_silent_migration(
             ).encode("utf-8")
         ).hexdigest(),
     }
-    path.write_text(json.dumps(legacy, sort_keys=True), encoding="utf-8")
+    path.write_text(json.dumps(noncurrent, sort_keys=True), encoding="utf-8")
 
     with pytest.raises(CtpOrderJournalIntegrityError, match="schema"):
         journal.load_required()

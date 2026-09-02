@@ -36,7 +36,7 @@ Status: execution record. Implement against `origin/main` merge `34fd0210b914b84
 
 ## Task 5: Final candidate and integration
 
-1. Review the complete diff for economic behavior, public CLI compatibility, temporary files, debug code, and stale documentation.
+1. Review the complete diff for economic behavior, public CLI impact, temporary files, debug code, and stale documentation.
 2. Run the complete engineering validation once: unit/integration tests, lint, format, mypy, compile/import, CLI/config smoke, and documentation consistency.
 3. Request a final code review, address substantive findings with targeted reruns, and use verification-before-completion.
 4. Commit meaningful checkpoints, push the branch, merge to `main`, and verify the remote main SHA and CI.

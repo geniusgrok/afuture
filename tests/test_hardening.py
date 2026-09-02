@@ -293,10 +293,10 @@ def test_state_has_checksum_sequence_and_rejects_schema_less_state(tmp_path: Pat
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="checksum"):
         store.load()
-    legacy = tmp_path / "legacy.json"
-    legacy.write_text(json.dumps({"kill_switch": True, "positions": []}), encoding="utf-8")
+    schema_less = tmp_path / "schema-less.json"
+    schema_less.write_text(json.dumps({"kill_switch": True, "positions": []}), encoding="utf-8")
     with pytest.raises(ValueError, match="envelope"):
-        StateStore(legacy).load()
+        StateStore(schema_less).load()
 
 
 @pytest.mark.parametrize("evidence_suffix", [".prev", ".lock"])

@@ -78,7 +78,7 @@ The 75/25 core-satellite split is frozen for this candidate. It is not a search 
 
 ## Live data surface
 
-`SinaContinuousOHLCProvider` becomes a completed-daily OHLCV/OI provider while remaining backward compatible with existing open/close consumers. The returned signal history carries:
+`SinaContinuousOHLCProvider` becomes a completed-daily OHLCV/OI provider while preserving the open/close columns used by existing consumers. The returned signal history carries:
 
 - `open`
 - `close`

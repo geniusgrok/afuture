@@ -849,7 +849,7 @@ def test_ctp_rejects_stale_or_backward_account_evidence_day():
     assert broker.poll_events()[0].event_type == "broker_error"
 
 
-def test_ctp_legacy_credentials_never_claim_verified_stress_identity():
+def test_ctp_incomplete_credentials_never_claim_verified_stress_identity():
     broker = CtpBroker(credentials())
     broker._trading_day = "20260821"
 

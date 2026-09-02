@@ -6,9 +6,9 @@ strictly prior expanding median.  Weak-leadership days freeze only new entries a
 same-sign increases; reduction-first actions remain executable.  The fixed 25% account
 drawdown reserve uses the full completed causal account path.
 
-``Production`` in retained payload role names is a compatibility label only. This is an
-offline historical-research evidence entrypoint, not live runtime wiring, prospective
-evidence, permission to increase risk, or permission to trade live.
+Retained payload role names do not imply live runtime wiring. This is an offline
+historical-research evidence entrypoint, not prospective evidence, permission to increase
+risk, or permission to trade live.
 """
 
 from __future__ import annotations

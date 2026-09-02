@@ -54,7 +54,8 @@ def test_ci_keeps_a_minimum_python_windows_core_smoke_without_live_adapters() ->
     )
     assert "tests/test_config.py::test_load_config_rejects_lossy_integer_values" in windows_job
     assert (
-        "tests/test_config.py::test_mean_reversion_score_uses_only_the_current_name" in windows_job
+        "tests/test_config.py::test_mean_reversion_score_uses_only_the_documented_name"
+        in windows_job
     )
     assert (
         "tests/test_directional_stress90_final.py::test_fixed_input_loader_rejects_bad_input_before_any_csv_parser"

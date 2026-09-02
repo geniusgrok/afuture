@@ -86,8 +86,8 @@ def test_load_config_rejects_string_boolean_values(tmp_path: Path) -> None:
         )
 
 
-def test_mean_reversion_score_uses_only_the_current_name(tmp_path: Path) -> None:
-    """The removed stationarity alias must fail closed; current values stay exact."""
+def test_mean_reversion_score_uses_only_the_documented_name(tmp_path: Path) -> None:
+    """Only the documented field name is accepted, with exact configured values."""
     path = _write_config(
         tmp_path,
         """

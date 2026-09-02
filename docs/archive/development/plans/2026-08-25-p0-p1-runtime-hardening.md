@@ -69,7 +69,7 @@
 - [ ] Verify failures reproduce queue starvation, calendar fallback, or identity collision rather than test setup errors.
 - [ ] Replace the mixed unbounded queue with a critical FIFO and coalesced tick buffer; expose counters without adding infrastructure.
 - [ ] Reject missing/invalid live trading day and remove live natural-date fallback.
-- [ ] Use `(trading_day, exchange, trade_id)` for fill idempotency and `(symbol, exchange)` for position maps/state validation, preserving legacy stored trade IDs during migration.
+- [ ] Use `(trading_day, exchange, trade_id)` for fill idempotency and `(symbol, exchange)` for position maps/state validation, preserving stored trade IDs during the transition.
 - [ ] Run CTP, engine, position, state, reconciliation, and integration tests.
 - [ ] Commit the broker correctness checkpoint.
 

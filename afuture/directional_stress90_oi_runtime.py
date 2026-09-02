@@ -204,7 +204,7 @@ class Stress90OiEvidenceRecord:
 
 @dataclass
 class _OiStoreExclusiveLock:
-    legacy_lock_evidence: bool
+    preexisting_lock_evidence: bool
     visible_descriptor: int | None = None
 
 
@@ -980,11 +980,11 @@ class Stress90OiEvidenceStore:
     def _exclusive_lock(self) -> Iterator[_OiStoreExclusiveLock]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         kernel_descriptor = self._acquire_kernel_lock(self.path)
-        lock = _OiStoreExclusiveLock(legacy_lock_evidence=False)
+        lock = _OiStoreExclusiveLock(preexisting_lock_evidence=False)
         body_failed = False
         try:
-            lock.legacy_lock_evidence = self._exists(self.lock_path)
-            durable_evidence_exists = lock.legacy_lock_evidence or any(
+            lock.preexisting_lock_evidence = self._exists(self.lock_path)
+            durable_evidence_exists = lock.preexisting_lock_evidence or any(
                 self._exists(path) for path in (self.path, self.previous_path, self.lineage_path)
             )
             if durable_evidence_exists:
@@ -1063,7 +1063,7 @@ class Stress90OiEvidenceStore:
                         ) from exc
 
     def _claim_initial_visible_lock_unlocked(self, lock: _OiStoreExclusiveLock) -> None:
-        if lock.visible_descriptor is not None or lock.legacy_lock_evidence:
+        if lock.visible_descriptor is not None or lock.preexisting_lock_evidence:
             raise OiEvidenceIntegrityError("OI evidence lock is surviving lineage evidence")
         descriptor: int | None = None
         body_failed = False
@@ -1079,7 +1079,7 @@ class Stress90OiEvidenceStore:
             try:
                 descriptor = os.open(self.lock_path, flags, 0o600)
             except FileExistsError as exc:
-                lock.legacy_lock_evidence = True
+                lock.preexisting_lock_evidence = True
                 raise OiEvidenceIntegrityError(
                     "OI evidence initialization lock is concurrent lineage evidence"
                 ) from exc
@@ -1227,7 +1227,7 @@ class Stress90OiEvidenceStore:
         self,
         *,
         required: bool,
-        legacy_lock_evidence: bool,
+        preexisting_lock_evidence: bool,
     ) -> Stress90OiEvidenceRecord | None:
         current_exists = self._exists(self.path)
         previous_exists = self._exists(self.previous_path)
@@ -1241,7 +1241,7 @@ class Stress90OiEvidenceStore:
                 raise OiEvidenceIntegrityError(
                     "OI evidence lineage exists while current evidence is missing"
                 )
-            if legacy_lock_evidence:
+            if preexisting_lock_evidence:
                 raise OiEvidenceIntegrityError(
                     "OI evidence lock is surviving lineage evidence while current is missing"
                 )
@@ -1275,14 +1275,14 @@ class Stress90OiEvidenceStore:
         with self._exclusive_lock() as lock:
             return self._load_unlocked(
                 required=False,
-                legacy_lock_evidence=lock.legacy_lock_evidence,
+                preexisting_lock_evidence=lock.preexisting_lock_evidence,
             )
 
     def load_required_record(self) -> Stress90OiEvidenceRecord:
         with self._exclusive_lock() as lock:
             record = self._load_unlocked(
                 required=True,
-                legacy_lock_evidence=lock.legacy_lock_evidence,
+                preexisting_lock_evidence=lock.preexisting_lock_evidence,
             )
             assert record is not None
             return record
@@ -1305,11 +1305,6 @@ class Stress90OiEvidenceStore:
             raw = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
         except json.JSONDecodeError as exc:
             raise OiEvidenceIntegrityError("invalid OI evidence JSON") from exc
-        if isinstance(raw, Mapping) and raw.get("schema_version") == 2:
-            raise OiEvidenceIntegrityError(
-                "OI evidence schema 2 has no predecessor chain; a newly observed complete "
-                "authoritative counter trading day is required"
-            )
         fields = {
             "kind",
             "schema_version",
@@ -1358,7 +1353,7 @@ class Stress90OiEvidenceStore:
         with self._exclusive_lock() as lock:
             current = self._load_unlocked(
                 required=False,
-                legacy_lock_evidence=lock.legacy_lock_evidence,
+                preexisting_lock_evidence=lock.preexisting_lock_evidence,
             )
             current_sequence = 0 if current is None else current.sequence
             if expected_sequence is not None and expected_sequence != current_sequence:

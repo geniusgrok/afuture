@@ -24,7 +24,7 @@
 | `doctor` 报持仓对账失败 | 今昨仓、多空、合约或交易所不一致，或有手工/其他程序交易 | 以柜台完整持仓为准查明差异。未解释差异前保持 `HALTED`，不要只比较净仓。 |
 | 合约参数或目录检查失败 | 乘数、最小变动价位、保证金、手续费缺失或与静态配置冲突 | 从柜台和结算资料核对；不要猜测保证金或沿用过期静态参数开仓。 |
 | 方向组合没有流动性快照 | 新部署、没有跨过完整交易日、状态文件缺失或快照身份不一致 | 连续运行 Shadow 至少一个完整柜台交易日；核对品种、合约、交易所和到期日覆盖。 |
-| `directional_activity.json` schema/checksum 失败 | 文件来自旧版裸 completed 格式、被手工修改、截断或含无效 identity/数值 | 保存诊断副本；不要补写 checksum。移走不兼容文件后连续 Shadow 一个完整柜台交易日，重建 `completed` + `in_progress` envelope。 |
+| `directional_activity.json` schema/checksum 失败 | 文件被手工修改、截断，或 envelope、identity、数值不完整 | 保存诊断副本；不要补写 checksum。移走无效文件后连续 Shadow 一个完整柜台交易日，重建 `completed` + `in_progress` envelope。 |
 | Directional OHLC cache integrity 失败 | `directional_ohlc_cache.json` 被截断/篡改，schema、品种、日期、shape、正有限值、content digest 或 envelope checksum 不符 | 停止相关 runtime，保留 `status` 输出并把损坏文件明确移动到只读诊断位置；不要重签名或从研究文件拼接。确认 provider 已修复后，在原路径确实不存在 cache 的状态下启动一次，让首次可信结果 bootstrap 新文件，再运行 `status`/`doctor`。只修复 provider 不会覆盖仍留在原路径的损坏 cache。 |
 | provider 历史修订被拒绝 | 新数据与已验证缓存的重叠开盘/收盘值不同 | 同时保留 cache、provider 原始响应、digest 和日期范围，向数据源确认修订原因。运行时只可继续使用仍覆盖 required day 的旧缓存，不能自动接受修订。 |
 | 方向信号被判为过期 | 价格历史/已验证缓存未覆盖快照交易日、数据提供方停更、时间戳在未来 | 核对 `status` 的 cache latest date/digest 和 `doctor` required date；恢复数据后重新预检。不能用向前填充或修改系统时间绕过。 |

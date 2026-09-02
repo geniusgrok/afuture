@@ -525,7 +525,7 @@ class Stress90Decision:
 
 @dataclass(frozen=True)
 class Stress90CandidatePath:
-    """Batch compatibility view produced solely by incremental transitions."""
+    """Batch view produced solely by incremental transitions."""
 
     base_weights: pd.DataFrame
     oi_confirmed_weights: pd.DataFrame

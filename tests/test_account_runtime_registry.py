@@ -136,7 +136,7 @@ def _bind_account_through_alias_with_save_barrier(
         results.put("bound")
 
 
-def _create_and_hold_legacy_visible_lock(
+def _create_and_hold_preexisting_visible_lock(
     lock_path: str,
     start,
     acquired,
@@ -404,11 +404,11 @@ def test_operation_nonce_is_globally_unique_for_every_registry_mutation(
 
 
 @pytest.mark.parametrize("schema_version", [1, 2])
-def test_old_registry_schema_fails_closed_without_rewrite(
+def test_noncurrent_registry_schema_fails_closed_without_rewrite(
     tmp_path: Path,
     schema_version: int,
 ) -> None:
-    """A signed old registry must never become a current registry implicitly."""
+    """A signed noncurrent registry is rejected without changing its bytes."""
     from afuture import account_runtime_registry as registry_module
 
     registry = _initialized_registry(tmp_path / "registry.json")
@@ -417,9 +417,9 @@ def test_old_registry_schema_fails_closed_without_rewrite(
     source_epoch = "2" * 64
     registry.bind_new(account, runtime, source_epoch, "3" * 64)
 
-    legacy = json.loads(registry.path.read_text(encoding="utf-8"))
-    legacy["schema_version"] = schema_version
-    registry.path.write_text(json.dumps(legacy), encoding="utf-8")
+    noncurrent = json.loads(registry.path.read_text(encoding="utf-8"))
+    noncurrent["schema_version"] = schema_version
+    registry.path.write_text(json.dumps(noncurrent), encoding="utf-8")
     registry.previous_path.unlink(missing_ok=True)
     shutil.rmtree(registry.path.with_name(registry.path.name + ".nonce-ledger"))
     before = registry.path.read_bytes()
@@ -444,15 +444,17 @@ def test_old_registry_schema_fails_closed_without_rewrite(
     assert not registry.path.with_name(registry.path.name + ".nonce-ledger").exists()
 
 
-def test_old_registry_schema_rejection_does_not_create_visible_lock(tmp_path: Path) -> None:
+def test_noncurrent_registry_schema_rejection_does_not_create_visible_lock(
+    tmp_path: Path,
+) -> None:
     """Schema rejection is read-only even when a visible lock is absent."""
     from afuture import account_runtime_registry as registry_module
 
     registry = _initialized_registry(tmp_path / "registry.json")
     registry.lock_path.unlink()
-    legacy = json.loads(registry.path.read_text(encoding="utf-8"))
-    legacy["schema_version"] = 2
-    registry.path.write_text(json.dumps(legacy), encoding="utf-8")
+    noncurrent = json.loads(registry.path.read_text(encoding="utf-8"))
+    noncurrent["schema_version"] = 2
+    registry.path.write_text(json.dumps(noncurrent), encoding="utf-8")
     current = registry.path.read_bytes()
 
     with pytest.raises(registry_module.AccountRuntimeRegistryError, match="identity|schema"):
@@ -887,7 +889,7 @@ def test_visible_lock_eexist_race_is_flocked_until_registry_lock_exit(
         os.close(contender)
 
 
-def test_pristine_initialize_rejects_legacy_lock_created_after_absence_check(
+def test_pristine_initialize_rejects_preexisting_lock_created_after_absence_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -903,14 +905,14 @@ def test_pristine_initialize_rejects_legacy_lock_created_after_absence_check(
     release = context.Event()
     registry = AccountRuntimeRegistry(tmp_path / "registry.json")
     creator = context.Process(
-        target=_create_and_hold_legacy_visible_lock,
+        target=_create_and_hold_preexisting_visible_lock,
         args=(str(registry.lock_path), start, acquired, release),
     )
     creator.start()
     real_load = registry._load_unlocked
     injected = False
 
-    def load_then_create_legacy_lock(*, required: bool, visible_lock_evidence: bool):
+    def load_then_create_preexisting_lock(*, required: bool, visible_lock_evidence: bool):
         nonlocal injected
         record = real_load(
             required=required,
@@ -922,7 +924,7 @@ def test_pristine_initialize_rejects_legacy_lock_created_after_absence_check(
             assert acquired.wait(timeout=10)
         return record
 
-    monkeypatch.setattr(registry, "_load_unlocked", load_then_create_legacy_lock)
+    monkeypatch.setattr(registry, "_load_unlocked", load_then_create_preexisting_lock)
     delayed_release = Timer(1, release.set)
     delayed_release.start()
     try:
@@ -1218,7 +1220,7 @@ def test_registry_unchanged_binding_acknowledgement_fails_closed(
     )
 
 
-def test_surviving_legacy_lock_prevents_missing_registry_reinitialization(
+def test_surviving_preexisting_lock_prevents_missing_registry_reinitialization(
     tmp_path: Path,
 ) -> None:
     from afuture.account_runtime_registry import (

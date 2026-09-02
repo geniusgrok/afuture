@@ -443,7 +443,7 @@ def test_recovery_store_commit_fault_boundaries_converge_exactly_once(
     committed = store.mark_committed(prepared.checkpoint.transaction_id)
     assert committed.checkpoint.status == "committed"
     assert store.load_required_record() == committed
-    assert len(committed.operation_history) == 1
+    assert committed.checkpoint.operation_nonce == prepared.checkpoint.operation_nonce
 
 
 def test_recovery_store_initial_create_never_overwrites_interleaved_current(
@@ -524,7 +524,7 @@ def test_recovery_nonce_history_is_permanent_and_exact_retry_only(tmp_path: Path
         store.mark_committed(prepared.checkpoint.transaction_id)
 
     assert store.load_required_record().nonce_count == 7
-    assert len(store.load_required_record().operation_history) == 1
+    assert store.load_required_record().checkpoint.operation_nonce == f"{6:064x}"
     with pytest.raises(Stress90CrashFillRecoveryError, match="already consumed"):
         store.begin(_checkpoint(tmp_path))
 
@@ -829,7 +829,7 @@ def test_lifecycle_commit_consumes_recovery_after_generic_cas_before_coordinator
             expected_checksum=recovered.checksum,
         )
         precommit_check()
-        assert recovery_store.load_required_record().consumption_history
+        assert recovery_store.load_required_record().consumption is not None
         return transaction
 
     monkeypatch.setattr(
@@ -854,10 +854,9 @@ def test_lifecycle_commit_consumes_recovery_after_generic_cas_before_coordinator
 
     assert result is transaction
     assert precommit_calls == 2
-    assert (
-        recovery_store.load_required_record().consumption_history[-1].consumer_operation_nonce
-        == consumer
-    )
+    consumption = recovery_store.load_required_record().consumption
+    assert consumption is not None
+    assert consumption.consumer_operation_nonce == consumer
 
 
 def test_recovery_target_preserves_halted_kill_switch_and_never_needs_cancellation() -> None:

@@ -30,7 +30,7 @@ No unresolved P0 item existed at the start of this follow-up. The work changes n
 - Superseded research evidence lives under `docs/archive/evidence/`; historical implementation plans/specifications live under `docs/archive/development/`. `docs/documentation-index.md` remains the single authority map.
 - README now separates the inherited engineering baseline (PR #26 / `34fd0210`) from the frozen research checkpoint (PR #25 / `482455d`).
 
-## Behavioral compatibility
+## Behavioral impact
 
 All production trading economics are unchanged for valid state, catalog, activity, and broker inputs. The only selection change rejects internally inconsistent activity identity that previously could be joined to an unrelated catalog row by symbol alone; this is a fail-closed correctness fix, not a strategy change. The new exit-code behavior in `status` and `doctor` is intentional operational fail-closed behavior. `.prev` and rotation add local filesystem writes only where state/audit/alert writes already occurred; they do not feed strategy, risk, execution, accounting, or research calculations.
 

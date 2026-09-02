@@ -12,7 +12,7 @@
 2. 50 品种 directional 在明确允许历史选择偏差、gross≤2x 的 specific-contract / next-open float-notional 口径达到 **107.4623% 年化 / 27.4097% 最大回撤**；
 3. 当前 production-mechanics Base 在相同两年区间达到 **109.0636% 年化 / 15.8529% 最大回撤 / actual gross peak 1.998253x / no permanent halt**；
 4. 当前 production-mechanics Stress 在 15bp + 15% margin proxy 下达到 **28.9559% 年化 / 28.1152% 最大回撤 / actual gross peak 1.668769x / 474 active days / no permanent halt**；
-5. Stress 已从旧版 `0.9249% + margin HALT` 修复为完整运行，但仍没有达到 80%；
+5. Stress 已从早期的 `0.9249% + margin HALT` 修复为完整运行，但仍没有达到 80%；
 6. 两年历史和所谓 OOS 都已经被研究流程观察，不是 pristine holdout，所有高收益数字都不是未来收益保证。
 
 最新正式证据：
@@ -181,4 +181,4 @@ Stress turnover attribution（notional）：entry/exit `189,920,240`、resize `5
 
 在不建设 5–10 年分钟/OI/curve 大仓库的约束下，P0–P2 其余方向已逐项评估：integer risk-capital projection、template consensus capacity、regime scalar、daily price×OI×volume、5 组预声明 relative-value、8-root bounded universe expansion 均未通过独立稳健门，因此全部不进入生产。P0 integer projection 虽把 Stress turnover 从 256,918,290 降至 240,725,360，但固定 Production Stress 年化降至 17.9238%，直接拒绝。bounded universe 中只有 SI 的 full_recent continuous proxy 有正增量，但 prior2/OOS 反向且 DD >50%，不晋级。
 
-最终只保留 P2 execution engineering：正常 opening FAK 在对手一档深度覆盖整笔手数时使用 best opposite quote，否则回退 legacy aggressive tick；reduction FAK 完全不变。固定 15bp historical Stress 不为该 live execution 优化虚增收益，PR #15 的 109.0636% Base / 28.9559% Stress 继续作为经济基线。完整证据见 [`directional-p0-p2-evidence.md`](directional-p0-p2-evidence.md)。
+最终只保留 P2 execution engineering：正常 opening FAK 在对手一档深度覆盖整笔手数时使用 best opposite quote，否则使用 configured aggressive tick；reduction FAK 完全不变。固定 15bp historical Stress 不为该 live execution 优化虚增收益，PR #15 的 109.0636% Base / 28.9559% Stress 继续作为经济基线。完整证据见 [`directional-p0-p2-evidence.md`](directional-p0-p2-evidence.md)。

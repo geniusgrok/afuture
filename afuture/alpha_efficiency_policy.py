@@ -1,8 +1,8 @@
 """Research-only rejected completed product Alpha-efficiency selector.
 
-This wrapper is retained to reproduce Candidate B's cheap Float and fixed Production
-screens. It is intentionally not reachable from ``runtime_factory`` after Candidate B
-failed the predeclared Production economics gates.
+It reproduces Candidate B's cheap Float and fixed Production screens for offline evidence.
+Candidate B failed the predeclared Production economics gates, so this module is not
+reachable from ``runtime_factory``.
 """
 
 from __future__ import annotations

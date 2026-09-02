@@ -99,7 +99,7 @@
 - [ ] Run targeted quality tests and verify RED.
 - [ ] Add directional JSONL methods and compact aggregation to the existing recorder.
 - [ ] Wire cycle metadata from manager order submission through engine order/trade callbacks; use `directional:` references only, leaving pair quality unchanged.
-- [ ] Update `quality-report` to serialize the nested directional summary while retaining old top-level compatibility fields.
+- [ ] Update `quality-report` to serialize the nested directional summary while retaining the existing top-level pair fields.
 - [ ] Re-run targeted quality tests and verify GREEN.
 - [ ] Commit `feat: close directional execution quality evidence`.
 
@@ -146,7 +146,7 @@
 **Interfaces:**
 - `ExecutionAlignedAggressivePolicy` is the only production directional policy.
 - `directional.py` contains only configuration/selection/lot/rebalance primitives.
-- `directional_runtime.py` contains only generic execution lifecycle; no close-only production provider/default legacy policy.
+- `directional_runtime.py` contains only generic execution lifecycle; no close-only production provider or implicit policy.
 
 - [ ] Dependency-scan old `FrozenAggressivePolicy`, `_FROZEN_TEMPLATE_IDS`, `SinaContinuousSignalProvider`, superseded return-target research scripts and remove only symbols/files with no required final-evidence callers.
 - [ ] Move any final policy primitives required by `execution_aligned_policy.py` into that module so it is self-contained.

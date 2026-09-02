@@ -42,24 +42,24 @@ def test_pristine_registry_anchors_ready_empty_authenticated_nonce_dictionary(
     assert _ledger(registry).load_ready_root() == (EMPTY_NONCE_ROOT, 0)
 
 
-def test_legacy_nonce_migration_artifact_fails_closed_without_rewrite(tmp_path: Path) -> None:
-    """A current registry never treats a migration witness as current evidence."""
+def test_reserved_nonce_artifact_fails_closed_without_rewrite(tmp_path: Path) -> None:
+    """A reserved ledger artifact blocks reads without modifying evidence."""
     from afuture.account_runtime_registry import AccountRuntimeRegistryError
 
     registry = _registry(tmp_path / "registry.json")
     ledger = _ledger(registry)
-    legacy_artifact = ledger.directory / "migration.json"
-    legacy_artifact.write_text('{"legacy": true}', encoding="utf-8")
+    migration_artifact = ledger.directory / "migration.json"
+    migration_artifact.write_text('{"unsupported": true}', encoding="utf-8")
     current = registry.path.read_bytes()
 
     with pytest.raises(AccountRuntimeRegistryError, match="nonce ledger integrity"):
         registry.load_required()
 
     assert registry.path.read_bytes() == current
-    assert legacy_artifact.read_text(encoding="utf-8") == '{"legacy": true}'
+    assert migration_artifact.read_text(encoding="utf-8") == '{"unsupported": true}'
 
 
-def test_pristine_initialize_rejects_migration_artifact_without_any_write(
+def test_pristine_initialize_rejects_reserved_artifact_without_any_write(
     tmp_path: Path,
 ) -> None:
     from afuture.account_runtime_registry import (
@@ -71,7 +71,7 @@ def test_pristine_initialize_rejects_migration_artifact_without_any_write(
     registry = AccountRuntimeRegistry(tmp_path / "registry.json")
     ledger = _ledger(registry)
     ledger.directory.mkdir()
-    (ledger.directory / "migration.json").write_text('{"legacy": true}', encoding="utf-8")
+    (ledger.directory / "migration.json").write_text('{"unsupported": true}', encoding="utf-8")
 
     def evidence() -> dict[str, tuple[str, bytes]]:
         return {
@@ -84,7 +84,7 @@ def test_pristine_initialize_rejects_migration_artifact_without_any_write(
 
     before = evidence()
 
-    with pytest.raises(AccountRuntimeRegistryError, match="migration artifact"):
+    with pytest.raises(AccountRuntimeRegistryError, match="reserved artifact"):
         registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
 
     assert evidence() == before
@@ -92,7 +92,7 @@ def test_pristine_initialize_rejects_migration_artifact_without_any_write(
     assert not registry.lock_path.exists()
 
 
-def test_pristine_initialize_rechecks_migration_artifact_inside_exclusive_lock(
+def test_pristine_initialize_rechecks_reserved_artifact_inside_exclusive_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -120,13 +120,15 @@ def test_pristine_initialize_rechecks_migration_artifact_inside_exclusive_lock(
     def inject_migration_artifact_inside_lock():
         with real_exclusive_lock() as lock:
             ledger.directory.mkdir()
-            (ledger.directory / "migration.json").write_text('{"legacy": true}', encoding="utf-8")
+            (ledger.directory / "migration.json").write_text(
+                '{"unsupported": true}', encoding="utf-8"
+            )
             evidence_after_injection.update(evidence())
             yield lock
 
     monkeypatch.setattr(registry, "_exclusive_lock", inject_migration_artifact_inside_lock)
 
-    with pytest.raises(AccountRuntimeRegistryError, match="migration artifact"):
+    with pytest.raises(AccountRuntimeRegistryError, match="reserved artifact"):
         registry.initialize(strong_confirmation=ACCOUNT_RUNTIME_REGISTRY_INITIALIZE_CONFIRMATION)
 
     assert evidence() == evidence_after_injection
@@ -134,10 +136,10 @@ def test_pristine_initialize_rechecks_migration_artifact_inside_exclusive_lock(
     assert not registry.lock_path.exists()
 
 
-def test_legacy_migration_artifact_blocks_direct_nonce_ledger_apis_without_writes(
+def test_reserved_artifact_blocks_direct_nonce_ledger_apis_without_writes(
     tmp_path: Path,
 ) -> None:
-    """Direct ledger calls cannot bypass current-only artifact rejection."""
+    """Every direct ledger API rejects reserved files without modifying evidence."""
     from afuture.account_runtime_nonce_ledger import (
         EMPTY_NONCE_ROOT,
         AccountRuntimeNonceLedgerError,
@@ -146,7 +148,7 @@ def test_legacy_migration_artifact_blocks_direct_nonce_ledger_apis_without_write
 
     registry = _registry(tmp_path / "registry.json")
     ledger = _ledger(registry)
-    (ledger.directory / "migration.json").write_text('{"legacy": true}', encoding="utf-8")
+    (ledger.directory / "migration.json").write_text('{"unsupported": true}', encoding="utf-8")
     receipt = build_nonce_receipt(
         operation_nonce="1" * 64,
         operation_kind="bind",
@@ -175,7 +177,7 @@ def test_legacy_migration_artifact_blocks_direct_nonce_ledger_apis_without_write
         ledger.largest_receipt_size,
         ledger.largest_node_size,
     ):
-        with pytest.raises(AccountRuntimeNonceLedgerError, match="migration artifact"):
+        with pytest.raises(AccountRuntimeNonceLedgerError, match="reserved artifact"):
             operation()
 
     assert evidence() == before

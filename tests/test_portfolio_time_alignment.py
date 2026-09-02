@@ -44,25 +44,25 @@ def test_insufficient_common_timestamp_buckets_reject_additional_risk():
     assert "correlation evidence" in decision.reason
 
 
-def test_one_timestamped_side_never_falls_back_to_legacy_ordinal_alignment():
+def test_one_timestamped_side_never_falls_back_to_ordinal_alignment():
     analyzer = PortfolioRiskAnalyzer(window=10, min_samples=4, bucket_seconds=60)
     base = datetime(2026, 8, 21, 1, 0, tzinfo=timezone.utc)
     for index, value in enumerate([1, 2, 4, 3, 6, 5]):
         analyzer.update("timed", value, base + timedelta(minutes=index))
-        analyzer.update("legacy", value * 2)
+        analyzer.update("untimestamped", value * 2)
 
-    assert analyzer.correlation("timed", "legacy") is None
+    assert analyzer.correlation("timed", "untimestamped") is None
     decision = analyzer.allow_open(
         "timed",
         risk_group="metals",
-        open_pairs={"legacy": "energy"},
+        open_pairs={"untimestamped": "energy"},
     )
     assert not decision.allowed
-    assert "legacy" in decision.reason
+    assert "untimestamped" in decision.reason
     assert "unknown correlation evidence" in decision.reason
 
 
-def test_insufficient_legacy_samples_are_unknown_and_reject_additional_risk():
+def test_insufficient_untimestamped_samples_are_unknown_and_reject_additional_risk():
     analyzer = PortfolioRiskAnalyzer(window=10, min_samples=4)
     for value in [1, 2, 4]:
         analyzer.update("incumbent", value)

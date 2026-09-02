@@ -458,17 +458,22 @@ def test_duplicate_trade_callback_is_ignored_after_restart(tmp_path: Path):
     assert not restarted.halted
 
 
-def test_unproven_legacy_trade_identity_halts_for_reconciliation(tmp_path: Path):
+def test_unqualified_trade_identity_halts_for_reconciliation(tmp_path: Path):
     specs = setup_specs()
     broker = SimBroker(500000, specs)
     broker._trading_day = "20260821"
     store = StateStore(tmp_path / "s.json")
-    store.save(RuntimeState(trading_day="20260821", recent_trade_ids=["20260821:LEGACY-T1"]))
+    store.save(
+        RuntimeState(
+            trading_day="20260821",
+            recent_trade_ids=["20260821:UNQUALIFIED-T1"],
+        )
+    )
     engine = TradingEngine(broker, [], specs, RiskManager(RiskConfig()), store)
     engine.start()
     broker.owns_order = lambda _order_id: False
     replay = Trade(
-        "LEGACY-T1",
+        "UNQUALIFIED-T1",
         "KNOWN-O1",
         "m2609",
         "DCE",
@@ -483,12 +488,12 @@ def test_unproven_legacy_trade_identity_halts_for_reconciliation(tmp_path: Path)
 
     assert not handled
     assert engine.halted
-    assert "ambiguous legacy trade identity" in engine.state.kill_reason
+    assert "ambiguous unqualified trade identity" in engine.state.kill_reason
     assert store.positions_from_state(store.load()) == []
-    assert store.load().recent_trade_ids == ["20260821:LEGACY-T1"]
+    assert store.load().recent_trade_ids == ["20260821:UNQUALIFIED-T1"]
 
 
-def test_ambiguous_legacy_trade_identity_halts_on_owned_cross_exchange_fill(
+def test_ambiguous_unqualified_trade_identity_halts_on_owned_cross_exchange_fill(
     tmp_path: Path,
 ):
     specs = setup_specs()
@@ -527,7 +532,7 @@ def test_ambiguous_legacy_trade_identity_halts_on_owned_cross_exchange_fill(
 
     assert not handled
     assert engine.halted
-    assert "ambiguous legacy trade identity" in engine.state.kill_reason
+    assert "ambiguous unqualified trade identity" in engine.state.kill_reason
     positions = store.positions_from_state(store.load())
     assert [(position.symbol, position.exchange) for position in positions] == [("same", "DCE")]
 

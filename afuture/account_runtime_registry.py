@@ -1230,12 +1230,12 @@ class AccountRuntimeRegistry:
                 "account runtime registry initialization confirmation is invalid"
             )
         try:
-            self._nonce_ledger()._reject_legacy_migration_artifact()
+            self._nonce_ledger()._reject_reserved_artifact()
         except AccountRuntimeNonceLedgerError as exc:
             raise AccountRuntimeRegistryError(str(exc)) from exc
         with self._exclusive_lock() as lock:
             try:
-                self._nonce_ledger()._reject_legacy_migration_artifact()
+                self._nonce_ledger()._reject_reserved_artifact()
             except AccountRuntimeNonceLedgerError as exc:
                 raise AccountRuntimeRegistryError(str(exc)) from exc
             current = self._load_unlocked(

@@ -90,12 +90,6 @@ class Stress90CrashFillRecoveryCheckpoint:
 
 
 @dataclass(frozen=True)
-class Stress90CrashFillRecoveryOperation:
-    operation_nonce: str
-    request_digest: str
-
-
-@dataclass(frozen=True)
 class Stress90CrashFillRecoveryConsumption:
     transaction_id: str
     consumer_operation_nonce: str
@@ -115,23 +109,6 @@ class Stress90CrashFillRecoveryRecord:
     sequence: int
     parent_checksum: str | None
     checksum: str
-
-    @property
-    def operation_history(self) -> tuple[Stress90CrashFillRecoveryOperation, ...]:
-        """Compatibility view; permanent history lives in the authenticated root."""
-
-        return (
-            Stress90CrashFillRecoveryOperation(
-                self.checkpoint.operation_nonce,
-                self.checkpoint.request_digest,
-            ),
-        )
-
-    @property
-    def consumption_history(self) -> tuple[Stress90CrashFillRecoveryConsumption, ...]:
-        """Compatibility view of the only current checkpoint consumption."""
-
-        return () if self.consumption is None else (self.consumption,)
 
 
 @dataclass
@@ -1062,13 +1039,6 @@ def _decode_checkpoint(raw: object) -> Stress90CrashFillRecoveryCheckpoint:
     if checkpoint.transaction_id != _digest(identity):
         raise Stress90CrashFillRecoveryError("recovery transaction identity mismatch")
     return checkpoint
-
-
-def _operation_payload(operation: Stress90CrashFillRecoveryOperation) -> dict[str, str]:
-    return {
-        "operation_nonce": _sha(operation.operation_nonce, "recovery operation nonce"),
-        "request_digest": _sha(operation.request_digest, "recovery request digest"),
-    }
 
 
 def _consumption_receipt_digest(
@@ -2002,16 +1972,10 @@ def require_committed_stress90_crash_fill_recovery(
         "receipt_digest",
     }:
         raise Stress90CrashFillRecoveryError("generic crash-fill recovery marker is invalid")
-    consumption = next(
-        (
-            item
-            for item in record.consumption_history
-            if item.transaction_id == checkpoint.transaction_id
-        ),
-        None,
-    )
+    consumption = record.consumption
     if (
         consumption is None
+        or consumption.transaction_id != checkpoint.transaction_id
         or marker != _consumed_marker(checkpoint, consumption.consumer_operation_nonce)
         or state_record.state.runtime_mode != RuntimeMode.HALTED.value
         or not state_record.state.kill_switch

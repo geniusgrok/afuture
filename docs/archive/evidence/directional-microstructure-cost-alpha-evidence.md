@@ -155,7 +155,7 @@ Economic behavior remains PR #16-equivalent:
 
 Retained changes are behavior-neutral infrastructure only:
 
-1. realistic, opt-in L1 execution stress and auditable fill-friction summary in `SimBroker`, with legacy/default semantics unchanged;
+1. realistic, opt-in L1 execution stress and auditable fill-friction summary in `SimBroker`, with default semantics unchanged;
 2. exact template -> product -> target -> realized position -> product turnover/cost audit through `directional_lineage.py` and `tools/evaluate_directional_lineage.py`.
 
 Targeted TDD on the retained/then-rejected implementation path reached **61 passed** plus compileall in draft-PR run `32655510078`. The final stable tree is accepted only by the standard Python 3.10/3.13 CI plus the fixed-input Production L4 reproduction; rejected research workflows and temporary evidence files are not part of the final tree.
