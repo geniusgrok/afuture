@@ -42,7 +42,7 @@ class ParameterCalibrator:
         默认保留原有相对距离邻域语义。显式启用 ``grid_adjacency`` 时，只有在一个
         参数轴上相邻的点才属于同一局部区域。对于 Auto Portfolio 的 Quality、
         Regime/Carry、Risk 阶段，只要扩展研究维度实际发生变化，也自动使用网格邻接
-        并要求至少两个周围参数点，避免这些维度被旧的四参数邻域规则静默忽略。
+        并要求至少两个周围参数点，避免这些维度被较窄的四参数邻域规则静默忽略。
         """
         if not results:
             return None

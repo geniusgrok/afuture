@@ -86,13 +86,13 @@ Commit `feat: add causal directional opportunity selector`.
 
 - [ ] **Step 1: Write RED provider/history tests**
 
-Test that a Sina-like frame with `date/open/close/volume/hold` returns aligned volume/OI panels, and that legacy open/close-only history still normalizes safely.
+Test that a Sina-like frame with `date/open/close/volume/hold` returns aligned volume/OI panels, and that open/close-only history still normalizes safely.
 
 - [ ] **Step 2: Run only affected runtime tests**
 
 Expected RED from missing new fields/normalization behavior.
 
-- [ ] **Step 3: Implement minimal backward-compatible history extension**
+- [ ] **Step 3: Implement the minimal history extension**
 
 Require open/close as before. Treat absent volume/hold as unavailable opportunity evidence, not zeros or synthetic data.
 
@@ -125,7 +125,7 @@ target_weights(open_prices, close, *, volume=None, open_interest=None)
 
 - [ ] **Step 1: Write RED integration tests**
 
-Assert missing volume/OI yields exact legacy raw weights; complete activity data yields the selector overlay; future-row changes cannot alter earlier weights; gross remains <=2x.
+Assert missing volume/OI yields the exact core raw weights; complete activity data yields the selector overlay; future-row changes cannot alter earlier weights; gross remains <=2x.
 
 - [ ] **Step 2: Run targeted policy tests and confirm RED**
 

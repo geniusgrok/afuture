@@ -14,8 +14,8 @@ Fixed composition (no fitted parameter in this stage):
 5. strict freeze-new-risk only when completed account drawdown reaches
    30% hard-DD - 5% daily-loss reserve = 25%.
 
-Hard Production constraints and Broker/RiskManager authority are unchanged. ``Production``
-in retained payload role names is a compatibility label only: this file is an offline
+Hard Production constraints and Broker/RiskManager authority are unchanged. Retained
+payload role names do not imply live runtime wiring: this file is an offline
 historical-research entrypoint and does not authorize live use, increased risk, or
 prospective evidence. It is not imported by live runtime wiring.
 """

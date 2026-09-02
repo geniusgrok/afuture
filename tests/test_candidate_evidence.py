@@ -88,6 +88,5 @@ def test_auto_selector_records_candidate_statistics_and_reject_reason(tmp_path: 
         "reject_reason",
     ):
         assert key in candidate
-    # The evidence wire key remains compatible, while the human rejection reason
-    # must not describe this heuristic as a stationarity test.
+    # The rejection reason must describe the implemented mean-reversion heuristic.
     assert candidate["reject_reason"] == "mean-reversion heuristic below minimum"

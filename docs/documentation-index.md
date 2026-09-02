@@ -24,8 +24,6 @@
 - [`docs/refactoring/architecture-audit-20260825.md`](refactoring/architecture-audit-20260825.md) — 重构前的架构和正确性审计。
 - [`docs/refactoring/industrial-refactoring-report-20260825.md`](refactoring/industrial-refactoring-report-20260825.md) — 工业重构、正确性修复和验证报告。
 - [`docs/refactoring/solo-operations-hardening-report-20260825.md`](refactoring/solo-operations-hardening-report-20260825.md) — 单用户运维加固和验证报告。
-- [`docs/stress90-live-handoff-20260826.md`](stress90-live-handoff-20260826.md) — Stress-90 工程交接与审计记录，不是当前运行契约。
-- [`docs/stress90-live-continuation-prompt-20260826.md`](stress90-live-continuation-prompt-20260826.md) — Stress-90 工程续办提示与审计记录，不是当前运行契约。
 
 ## 当前开发设计与计划
 
@@ -33,14 +31,12 @@
 - [`docs/superpowers/plans/2026-08-25-stress90-live-productionization.md`](superpowers/plans/2026-08-25-stress90-live-productionization.md) — 分阶段 TDD、验证、review 和交付计划。
 - [`docs/superpowers/specs/2026-08-31-signal-evidence-gate-closure-design.md`](superpowers/specs/2026-08-31-signal-evidence-gate-closure-design.md) — 信号 UNKNOWN、诊断证据、研究授权与仓库门禁闭环设计。
 - [`docs/superpowers/plans/2026-08-31-signal-evidence-gate-closure.md`](superpowers/plans/2026-08-31-signal-evidence-gate-closure.md) — 本轮分阶段 TDD、验证、审查、合并与 ruleset 计划。
-- [`docs/superpowers/specs/2026-09-02-current-only-breaking-cleanup-design.md`](superpowers/specs/2026-09-02-current-only-breaking-cleanup-design.md) — current-only compatibility cleanup 的批准设计和安全边界。
-- [`docs/superpowers/plans/2026-09-02-current-only-breaking-cleanup.md`](superpowers/plans/2026-09-02-current-only-breaking-cleanup.md) — current-only cleanup 的分阶段实施、验证和交付计划。
 
 ## 当前研究证据
 
 - [`docs/stress90-bounded-research-evidence.md`](stress90-bounded-research-evidence.md) — 有界研究过程、失败路线和防过拟合记录。
 - [`docs/stress90-final-evidence.md`](stress90-final-evidence.md) — 固定离线压力研究候选的完整输入与结果；保留当时 `production_wiring=false`，不能用后来的 wiring 倒写历史。
-- [`docs/stress90-fixed-input-github-vault-receipt.md`](stress90-fixed-input-github-vault-receipt.md) — 五份固定历史输入的私有 GitHub vault、冻结摘要与空目录恢复脱敏收据；兼容回放已退役，不含原始数据，也不授权 live、扩大风险或 prospective evidence。
+- [`docs/stress90-fixed-input-github-vault-receipt.md`](stress90-fixed-input-github-vault-receipt.md) — 五份固定历史输入的私有 GitHub vault、冻结摘要与空目录恢复脱敏收据；不含原始数据，也不授权 live、扩大风险或 prospective evidence。
 
 ## 历史或已替代记录
 

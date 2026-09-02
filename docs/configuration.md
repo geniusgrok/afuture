@@ -2,7 +2,7 @@
 
 本文是 TOML 配置的当前权威说明。示例文件用于起步，本文解释字段含义、默认值、单位和关键约束；运行前仍应执行 `afuture validate --config <配置文件>`。
 
-配置是 current-only contract：本页和示例中没有列出的 section/field、已经移除的字段和 alias 都会失败关闭。加载器不会为旧 TOML 猜测字段、补齐缺失 current-required field、静默映射别名或保留未知 extension key。业务/安全默认值仍只适用于当前 schema，而不是旧配置兼容层。旧配置应作为历史证据归档；操作者从当前示例重新创建配置并在 bootstrap/reconciliation 前验证。
+加载器只接受本页和示例中列出的 section/field；未知字段、重复字段和缺失的必填字段会直接报错。表中列出的默认值属于明确的业务或安全语义。
 
 比例均使用小数，例如 `0.35` 表示 35%。时间窗口使用中国期货本地时间 `HH:MM-HH:MM`，可以跨午夜。没有显式注明“必填”的字段使用代码默认值。
 
@@ -40,10 +40,8 @@ CTP 凭证不进入 TOML：
 `stress90-order-journal-rollover` 还要求 operator 生成的唯一 64 位十六进制
 `--operation-id`。只有同一 prepared 事务的精确崩溃重试才能复用该值；新的资金流、账户切换、policy 迁移或 journal epoch 必须使用新值。
 
-其中 `directional-policy-migrate` 是 current policy 的受控 lifecycle transaction，不是 TOML、
-state、registry 或 nonce ledger 的格式迁移。它只允许从当前、已验证、`HALTED`、kill-switched、
-flat 且 reconciled 的 runtime 进入 current `execution_aligned` policy；旧 artifact 不能通过该命令
-转换或修补。
+其中 `directional-policy-migrate` 是受控的 policy lifecycle transaction，只允许从已验证、
+`HALTED`、kill-switched、flat 且 reconciled 的 Stress-90 runtime 进入 `execution_aligned` policy。
 
 ## 2. 账户和交易风险
 

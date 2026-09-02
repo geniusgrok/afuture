@@ -222,7 +222,6 @@ class CtpBroker(Broker):
         self._last_position_snapshot_monotonic = 0.0
         self._contract_catalog: dict[str, ContractInfo] = {}
         self._contract_catalog_accumulator = CtpContractCatalogAccumulator()
-        self._legacy_catalog_request_id = 0
         self._contract_catalog_refresh_lock = Lock()
         self._contract_catalog_refresh_state_lock = Lock()
         self._contract_catalog_refresh_event: Event | None = None
@@ -2113,23 +2112,6 @@ class CtpBroker(Broker):
                     if self._contract_catalog_refresh_request_id == request_id:
                         self._contract_catalog_refresh_request_id = None
                         self._contract_catalog_refresh_event = None
-
-    def _handle_contract_metadata(self, data: dict) -> None:
-        """Compatibility hook for tests; production uses the full response boundary."""
-
-        self._legacy_catalog_request_id += 1
-        normalized = dict(data)
-        normalized.setdefault("OpenDate", "")
-        self._begin_contract_catalog_generation(
-            request_id=self._legacy_catalog_request_id,
-            trading_day=self.get_trading_day(),
-        )
-        self._handle_contract_catalog_response(
-            normalized,
-            {},
-            self._legacy_catalog_request_id,
-            True,
-        )
 
     def get_live_contract_specs(
         self, symbols: list[str], timeout_seconds: float = 10.0

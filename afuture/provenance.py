@@ -190,7 +190,7 @@ def production_source_tree_digest(repo: str | Path) -> tuple[str, tuple[tuple[st
 def git_commit_is_ancestor(repo: str | Path, ancestor: str, descendant: str) -> bool:
     root = canonical_safe_path(repo, label="repository")
     if _SHA40.fullmatch(ancestor) is None or _SHA40.fullmatch(descendant) is None:
-        raise ProvenanceError("Git compatibility commits must be full SHA-1 values")
+        raise ProvenanceError("Git ancestry commits must be full SHA-1 values")
     try:
         result = subprocess.run(
             [_git_binary(), "-C", str(root), "merge-base", "--is-ancestor", ancestor, descendant],

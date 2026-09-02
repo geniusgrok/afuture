@@ -1,10 +1,8 @@
 # Architecture and Correctness Audit — 2026-08-25
 
 > **Historical, non-executable snapshot.** This dated audit records facts and
-> decisions from 2026-08-25. It is superseded for operations by the current-only
-> contracts in `README.md`, `docs/architecture.md`, `docs/configuration.md`, and
-> `docs/stress90-live-runbook.md`; do not restore its compatibility or migration
-> instructions.
+> decisions from 2026-08-25. For operations, use `README.md`, `docs/architecture.md`,
+> `docs/configuration.md`, and `docs/stress90-live-runbook.md`.
 
 ## Scope and baseline
 

@@ -138,7 +138,7 @@
 达到研究目标后还必须：
 
 - specific-contract roll-safe 验证；
-- RiskManager/PairExecutor 兼容性测试；
+- RiskManager/PairExecutor 组合测试；
 - 同交易所双腿 exchange/contract metadata 正确；
 - 真实 L1 Shadow 与 test cabinet 仍是实盘前置门。
 

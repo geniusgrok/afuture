@@ -140,7 +140,7 @@ DataFrame helpers become deterministic loops over these row primitives. Producti
 
 `Stress90Decision` must expose base/OI/cost/survivor maps, current HHI, prior median, freeze flag, input days/digests, pre/post-state and daily decision digest. Every map is normalized to the full 50-product order before digesting.
 
-- [ ] **Step 7: Run pure and legacy mechanism tests**
+- [ ] **Step 7: Run pure and shared mechanism tests**
 
 Run:
 
@@ -418,7 +418,7 @@ class DirectionalRiskResponseMode(str, Enum):
     FREEZE_NEW_RISK = "freeze_new_risk"
 ```
 
-Live TOML with enabled directional and missing `policy` fails validation. Direct legacy/replay construction may normalize blank policy to `execution_aligned`. Stress-90 requires the frozen 50 products and account exclusivity.
+Live TOML with enabled directional and missing `policy` fails validation. Replay construction may normalize blank policy to `execution_aligned`. Stress-90 requires the frozen 50 products and account exclusivity.
 
 - [ ] **Step 3: Write planner/acceptance parity tests**
 
@@ -510,7 +510,7 @@ Assert status exposes policy/version/digest, bootstrap, target/input days, OHLC/
 
 Status may inspect `.prev` only as warnings; readiness always derives from current files. Doctor validates 50-product OHLC, 9-product OI expected/observed/missing sets, state/seed identity, day continuity, activity/catalog, live specs and activation flat/reconcile gates.
 
-- [ ] **Step 3: Write and implement live 15bp compatibility gate**
+- [ ] **Step 3: Write and implement live 15bp cost gate**
 
 ```python
 def estimate_one_way_cost_bps(spec, tick, *, close_today: bool) -> Stress90CostEstimate:

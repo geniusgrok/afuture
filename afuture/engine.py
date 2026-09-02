@@ -472,12 +472,12 @@ class TradingEngine:
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             self.emergency_stop(f"invalid trade event: {exc}")
             return False
-        legacy_identity = self._legacy_trade_identity(trade, trading_day)
+        unqualified_identity = self._unqualified_trade_identity(trade, trading_day)
         if identity in self._recent_trade_id_set:
             return False
-        if legacy_identity in self._recent_trade_id_set:
+        if unqualified_identity in self._recent_trade_id_set:
             self.emergency_stop(
-                "ambiguous legacy trade identity; broker reconciliation is required"
+                "ambiguous unqualified trade identity; broker reconciliation is required"
             )
             return False
         if not self.broker.owns_order(trade.order_id):
@@ -522,7 +522,7 @@ class TradingEngine:
         return f"{trading_day}:{trade.exchange}:{trade.trade_id}"
 
     @staticmethod
-    def _legacy_trade_identity(trade: Trade, trading_day: str) -> str:
+    def _unqualified_trade_identity(trade: Trade, trading_day: str) -> str:
         return f"{trading_day}:{trade.trade_id}"
 
     def _handle_order_event(self, order) -> None:
@@ -911,7 +911,7 @@ class TradingEngine:
             )
             selected = self.auto_manager.select(self.broker, now=now, protected_pair_ids=protected)
         except Exception as exc:
-            # 当日目录或扫描不可确认时，旧的无持仓 Auto pair 不再拥有开仓权。
+            # 当日目录或扫描不可确认时，无持仓 Auto pair 不拥有开仓权。
             # 已有持仓 pair 仍保留管理/退出权限，等待下一次成功刷新恢复候选资格。
             self._retiring_auto_pairs.update(self._auto_pair_ids - protected)
             self._record("auto_scan_error", {"reason": str(exc)})

@@ -1021,7 +1021,7 @@ def test_bootstrap_preflight_rejects_oi_sidecar_without_current(
     assert not (runtime / "stress90_policy_state.json").exists()
 
 
-@pytest.mark.parametrize("incident", ["schema2", "invalid_chain"])
+@pytest.mark.parametrize("incident", ["noncurrent_schema", "invalid_chain"])
 def test_bootstrap_preflight_uses_oi_store_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1043,11 +1043,12 @@ def test_bootstrap_preflight_uses_oi_store_validation(
     through, expectations = _write_synthetic_archive(runtime)
     expectations = _promote_synthetic_profile(monkeypatch, expectations)
     store = Stress90OiEvidenceStore(runtime / "stress90_oi_evidence.json")
-    if incident == "schema2":
+    if incident == "noncurrent_schema":
         unsigned = {
             "kind": OI_EVIDENCE_KIND,
             "schema_version": 2,
             "sequence": 9,
+            "parent_checksum": "1" * 64,
             "state": {
                 "completed": [],
                 "in_progress": None,
@@ -1061,7 +1062,7 @@ def test_bootstrap_preflight_uses_oi_store_validation(
             json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         store.path.write_text(json.dumps({**unsigned, "checksum": checksum}), encoding="utf-8")
-        expected_error = "schema 2"
+        expected_error = "schema is unsupported"
     else:
         first = store.save_state(Stress90OiEvidenceState())
         store.save_state(

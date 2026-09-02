@@ -40,7 +40,7 @@
 ### B.1 Stress-90 当前代码 wiring（不构成 activation）
 
 - [x] `directional.policy` 在生产配置中必须显式为 `execution_aligned` 或 `stress90`。
-- [x] `stress90` 使用独立 manager/runtime adapter；旧 `execution_aligned` state 不会静默迁移成 Stress-90。
+- [x] `stress90` 使用独立 manager/runtime adapter；policy state identity 必须与配置一致。
 - [x] 普通模式保留 0.25 target scaling；Stress-90 使用 1x raw candidate，不被 `DirectionalRiskScaledPolicy` 重复包装。
 - [x] 研究 batch、bootstrap incremental 和 live runtime 共用同一纯候选 primitives；live 不导入 `tools/` 或 acceptance CLI。
 - [x] policy definition、固定历史 candidate 和 daily decision 使用三个不同 digest。
@@ -83,7 +83,7 @@
 - [ ] 已持有合约的保留条件和挑战合约的成交量/持仓量双重优势与离线重建一致；没有已持有合约时按持仓量、成交量、到期日和合约代码依次排序。
 - [ ] 新部署没有上一完整交易日快照时不会新增风险。
 - [ ] 日内重启后能恢复最近成功批次 checkpoint 的 `in_progress` 和最近一份 `completed`；交易日切换和正常停机会强制落盘。
-- [ ] 旧版无 schema/checksum 的裸 activity 文件已保留诊断副本并通过完整交易日 Shadow 重建，没有手工伪造迁移。
+- [ ] activity 文件的 envelope、schema、checksum、identity 和数值均通过校验；无效文件已保留诊断副本，并通过完整交易日 Shadow 重建。
 - [ ] 流动性快照落后于最新完整信号交易日时拒绝增加风险。
 
 ## E. 信号日期、策略状态和仓位收缩
@@ -188,14 +188,14 @@
 - [ ] Broker 保证金和手续费与合约参数及结算单一致。
 - [ ] Doctor 显示 Stress-90 policy/seed/state identity、target continuity、OHLC/OI/activity alignment、九品种 coverage 和完整 integer preview，且 `stress90_ready=true`。
 - [ ] Doctor 逐计划合约估算开仓、平昨、平今、1 tick、spread 和 depth；确定性最低成本显著高于 15bp 的合约保持 activation blocker。
-- [ ] 真实成本不兼容时使用独立命名的新矩阵重跑，没有动态修改固定 Stress-90 cost hurdle。
+- [ ] 真实成本超过固定门槛时使用独立命名的新矩阵重跑，没有动态修改 Stress-90 cost hurdle。
 
 ## J. 重启和状态真相
 
 - [ ] 每次第二次及后续 state save 产生 `<state>.prev`，内容是上一份通过 checksum 的 envelope。
 - [ ] 损坏 current state 时程序返回失败，绝不自动采用 `.prev`。
 - [ ] 当前状态非 UTF-8、包含重复 `(symbol, exchange)` 持仓身份，或柜台与本地持仓交易所不一致时拒绝继续运行；同代码跨交易所不会碰撞。
-- [ ] 成交幂等键使用 `(trading_day, exchange, trade_id)` 并在 CTP 启动前恢复；旧 `(trading_day, trade_id)` 命中时显式停机对账，不静默吞掉跨交易所同 ID 新成交。
+- [ ] 成交幂等键使用 `(trading_day, exchange, trade_id)` 并在 CTP 启动前恢复；缺少 exchange 的 identity 命中时显式停机对账，不静默吞掉跨交易所同 ID 新成交。
 - [ ] CTP 当前交易日确实来自交易 API `getTradingDay()`；缺少 gateway/td_api/getter/合法值时失败关闭，不回退本机自然日。
 - [ ] 延迟的较旧 account event 不会让交易日倒退或重分今/昨仓；状态保持不变并失败关闭。
 - [ ] audit/alert JSONL 到达 20 MiB 后在完整记录边界轮转，最多保留 14 份备份。
@@ -280,7 +280,7 @@
 - [ ] Any risk-overlay change was rebound only from `HALTED`, kill-switch=true, Broker/local flat, zero active orders and fresh reconciliation.
 - [ ] A prior same-day execution intent was not reinterpreted under a new overlay.
 - [ ] `stress90-capacity-report` returned `orders_sent=0` and `cancels_sent=0` using real CTP margin/commission evidence.
-- [ ] One-lot notional, buffered long/short margin, one-tick/spread cost and 15bp compatibility were reviewed for every selected non-zero product.
+- [ ] One-lot notional, buffered long/short margin, one-tick/spread cost and the 15bp gate were reviewed for every selected non-zero product.
 - [ ] Integer zeroing, margin/funding clipping, HHI/drawdown freezes, product HHI, largest product share and tracking error are acceptable for commissioning.
 - [ ] The commissioning example was adjusted from measured one-lot stress and actual account equity; no warning was used to relax hard risk.
 
@@ -289,9 +289,9 @@
 - [ ] production bootstrap bundle 由官方固定摘要与固定 candidate 生成，`stress90-bundle-verify` 明确通过；测试 fixture 没有进入生产路径。
 - [ ] bundle 安装目标为空，安装后 seed/policy/OI/OHLC/activity identity 与 manifest 完全一致，未生成账户绑定、permit 或订单事实。
 - [ ] 最终目标机、最终虚拟环境、最终 `vnpy_ctp` 已就绪后执行 `deployment-seal`；`deployment-verify` 对 Git HEAD、tracked source digest、配置、constraints、Python/OS/CPU/executable、runtime、registry、bundle、risk overlay 和 native module 均无漂移。
-- [ ] production `status` 能显示 deployment 诊断；deployment 不匹配时 `doctor`/`shadow`/`live` 失败关闭，不能依赖旧 permit 继续运行。
+- [ ] production `status` 能显示 deployment 诊断；deployment 不匹配时 `doctor`/`shadow`/`live` 失败关闭，现有 permit 同时失效。
 - [ ] 至少完成一次 `HALTED` + `kill_switch=true` 的 `backup-runtime` 与独立 `verify-backup`；备份成员只有 allowlist 权威证据，不含配置、日志、报告、告警和原始凭证。
-- [ ] 至少完成一次离线恢复演练：目标 runtime 为空、registry staging 独立、恢复过程零 Broker writes，恢复结果保持 `HALTED` + kill switch，旧 technical permit 失效。
+- [ ] 至少完成一次离线恢复演练：目标 runtime 为空、registry staging 独立、恢复过程零 Broker writes，恢复结果保持 `HALTED` + kill switch，恢复前的 technical permit 失效。
 - [ ] 恢复演练后按 `status` → `deployment-verify` → 无报单 `doctor` → fresh permit 完成重新准入；任何身份漂移都先停机解释，不手工复制 `.prev` 或修改 checksum。
 
 ## 盘前、托管与 Watchdog

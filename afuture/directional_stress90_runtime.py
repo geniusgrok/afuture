@@ -1279,12 +1279,12 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             except (AttributeError, TypeError, ValueError) as exc:
                 return False, (), f"invalid crash-window trade: {exc}"
             identity = f"{current}:{trade.exchange}:{trade.trade_id}"
-            legacy = f"{current}:{trade.trade_id}"
+            unqualified_identity = f"{current}:{trade.trade_id}"
             already_known = identity in known
             if already_known and not callable(exact_identity):
                 continue
-            if legacy in known:
-                return False, (), "ambiguous legacy trade identity"
+            if unqualified_identity in known:
+                return False, (), "ambiguous unqualified trade identity"
             order = self.broker.get_order(trade.order_id)
             owned = order is not None and self.broker.owns_order(trade.order_id)
             if owned and callable(exact_identity):

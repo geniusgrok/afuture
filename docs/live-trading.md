@@ -162,7 +162,7 @@ D+1 实时行情仍用于价格、盘口、涨跌停、保证金和下单，但�
 
 新部署没有完整快照时不新增风险；重启后的快照落后于已确认的价格历史时同样拒绝新增风险。
 
-旧版本仅保存 completed snapshot、没有当前 envelope/checksum 的 `directional_activity.json` 不是可迁移证据。不要手工补 schema 或 checksum；保存原文件用于诊断，移走不兼容文件后用 Shadow 重新观察一个完整柜台交易日，直到 `status` 和 `doctor` 都通过。
+`directional_activity.json` 必须通过 envelope、checksum、identity 和数值校验。校验失败时保存原文件用于诊断，移走无效文件后用 Shadow 重新观察一个完整柜台交易日，直到 `status` 和 `doctor` 都通过。
 
 ## 8. 信号缓存、新鲜度和仓位收缩
 
@@ -251,7 +251,7 @@ Stress-90 Shadow 使用 `runtime/shadow/` 下单独 bootstrap、activation 和�
 - 账户限制全部通过；
 - 启动对账通过。
 
-`recover-state` 只是人工恢复入口，不能跳过停机原因和柜台对账。它会在 CTP 启动前恢复可证明交易所的成交 identity；状态仍含旧 `(trading_day, trade_id)` 时拒绝采纳，必须先人工完成柜台对账。
+`recover-state` 只是人工恢复入口，不能跳过停机原因和柜台对账。它会在 CTP 启动前恢复可证明交易所的成交 identity；任何 identity 缺少 exchange 时拒绝采纳，必须先人工完成柜台对账。
 
 
 ### 11.1 Stress-90 账户连续性模式
@@ -262,7 +262,7 @@ Stress-90 默认 `directional.account_continuity_mode = "strict"`。未配置该
 
 跨日必须显式执行 `afuture stress90-operator-roll-forward`，并同时提供 `--confirm-live`、`--confirm-operator-continuity`、唯一 64-hex `--operation-id`、`--operator-reason` 和 `AFUTURE_OPERATOR_CONTINUITY_ACK=I_CONFIRM_EXCLUSIVE_ACCOUNT_AND_NO_EXTERNAL_ACTIVITY`。命令只在 `HALTED`、kill switch 开启、fresh account/positions/session ownership 完整、活动委托为零、journal 无未终态/unknown、Broker/local 持仓一致且当前 Deposit/Withdraw 都为零时推进；它不报单也不撤单。周五到周一等自然日间隔可以由 operator receipt 明确确认，但不能跳过已经存在的中间 OHLC/OI session 数据，也不使用本机日期、`BDay` 或静态节假日日历猜测交易日。
 
-成功后 generic/policy state 仍通过原有 recoverable lifecycle transaction/CAS 原子推进，runtime 仍为 `HALTED`、kill switch 仍开启、`metadata_verified=false`。旧 activation permit 被失效，必须再次执行 `status`、`doctor` 并签发新的 technical permit。任何人工交易、外部委托、入金、出金或无法解释的资金变化都不能算策略收益；必须先用现有 `stress90-account-rebase` 建立新的账户 epoch，然后才能重新建立 operator continuity。
+成功后 generic/policy state 仍通过 recoverable lifecycle transaction/CAS 原子推进，runtime 仍为 `HALTED`、kill switch 仍开启、`metadata_verified=false`。此前的 activation permit 被失效，必须再次执行 `status`、`doctor` 并签发新的 technical permit。任何人工交易、外部委托、入金、出金或无法解释的资金变化都不能算策略收益；必须先用 `stress90-account-rebase` 建立新的账户 epoch，然后才能重新建立 operator continuity。
 
 ## 12. 启动对账与执行质量
 
@@ -308,4 +308,4 @@ deployment-verify
 
 `prepare-session` 和 `watchdog` 都不能报单、撤单、修改交易 state、签发 permit 或自动解除 HALTED。`prepare-session` 可以连接只读 CTP/Doctor Broker 取得 fresh facts；`watchdog` 完全不需要 CTP 凭证且不会连接 Broker。
 
-Live 启动在构造 order-capable Broker 前检查 `process_run.json`。上一进程没有 clean receipt、receipt 损坏或链不确定时，启动必须 fail closed 到 `HALTED` + kill switch，并失效旧 permit；operator 重新完成盘前检查、Doctor 和新的 permit 后才允许再次尝试。systemd 的自动 restart 不构成 activation authority。
+Live 启动在构造 order-capable Broker 前检查 `process_run.json`。上一进程没有 clean receipt、receipt 损坏或链不确定时，启动必须 fail closed 到 `HALTED` + kill switch，并失效现有 permit；operator 重新完成盘前检查、Doctor 和新的 permit 后才允许再次尝试。systemd 的自动 restart 不构成 activation authority。

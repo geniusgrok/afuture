@@ -30,7 +30,7 @@ class PortfolioRiskAnalyzer:
 
     生产路径优先使用带时间戳的固定时间桶，只在双方共同存在的时间桶上计算
     价差变化相关性，避免不同品种/不同 Tick 频率按“第 N 个样本”错误对齐。
-    旧的无时间戳 ``update(pair_id, value)`` 仍保留用于兼容纯单元测试和离线调用。
+    无时间戳 ``update(pair_id, value)`` 用于按统一采样顺序生成的离线序列。
     """
 
     def __init__(
@@ -82,7 +82,7 @@ class PortfolioRiskAnalyzer:
         """按价差一阶变化计算滚动相关系数。
 
         任一侧存在带时间戳观测时，只使用共同时间桶；证据不足时返回 ``None``，
-        绝不退回序号对齐制造伪相关。只有完全没有时间戳数据的旧调用才使用兼容路径。
+        绝不退回序号对齐制造伪相关。两侧都没有时间戳时才使用按观测顺序对齐的数据。
         """
         return self._correlation_evidence(left, right).correlation
 
@@ -103,7 +103,7 @@ class PortfolioRiskAnalyzer:
         right_values = list(self._series[right])
         sample_count = min(len(left_values), len(right_values))
         if sample_count < self.min_samples:
-            return _CorrelationEvidence.unknown("insufficient legacy samples")
+            return _CorrelationEvidence.unknown("insufficient untimestamped samples")
         return self._correlation_evidence_from_values(
             left_values[-sample_count:],
             right_values[-sample_count:],

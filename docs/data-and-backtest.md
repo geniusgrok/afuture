@@ -58,7 +58,7 @@ D 日已选合约的收盘到 D+1 开盘盈亏
 
 Stress-90 的 target trading day 同样只接受当前 CTP `getTradingDay()`。上一 activity/signal/OI day 必须由已经完成并持久化的柜台交易日证据确定；周末、法定节假日、临时休市和 missed target day 不能用 `pandas.BDay` 或人工猜测跳过。seed 与当前首个 live target 之间若有 gap，必须携带完整 manifest 逐日 replay。
 
-`DirectionalActivityTracker` 每次有实质变化的最新观察都原子写入带 schema 和 checksum 的 `directional_activity.json`，同时保存 `completed` 和 `in_progress`。重启会恢复进行中观察，只在权威 `Tick.trading_day` 推进时冻结前一完整交易日。旧版无 envelope/checksum、只有 completed 的活动文件不自动迁移；必须保留诊断副本并重新观察一个完整柜台交易日。周末、节假日和夜盘都依赖柜台交易日证据，不能根据自然日小时差猜测数据是否最新。
+`DirectionalActivityTracker` 每次有实质变化的最新观察都原子写入带 schema 和 checksum 的 `directional_activity.json`，同时保存 `completed` 和 `in_progress`。重启会恢复进行中观察，只在权威 `Tick.trading_day` 推进时冻结前一完整交易日。活动文件校验失败时必须保留诊断副本，并重新观察一个完整柜台交易日。周末、节假日和夜盘都依赖柜台交易日证据，不能根据自然日小时差猜测数据是否最新。
 
 方向组合要求价格历史覆盖流动性快照对应的交易日。第一次启动尚未形成完整快照时，系统不增加方向风险。
 

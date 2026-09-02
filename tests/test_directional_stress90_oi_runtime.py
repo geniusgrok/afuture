@@ -123,9 +123,9 @@ def _block_inside_pristine_oi_load(store_path: str, entered, release) -> None:
 
     store = Stress90OiEvidenceStore(store_path)
 
-    def blocked_load(*, required: bool, legacy_lock_evidence: bool):
+    def blocked_load(*, required: bool, preexisting_lock_evidence: bool):
         assert required is False
-        assert legacy_lock_evidence is False
+        assert preexisting_lock_evidence is False
         entered.set()
         release.wait(timeout=30)
         return None
@@ -134,7 +134,7 @@ def _block_inside_pristine_oi_load(store_path: str, entered, release) -> None:
     store.load_record()
 
 
-def _create_and_hold_legacy_oi_lock(lock_path: str, start, acquired, release) -> None:
+def _create_and_hold_preexisting_oi_lock(lock_path: str, start, acquired, release) -> None:
     start.wait(timeout=10)
     path = Path(lock_path)
     descriptor = os.open(
@@ -1693,11 +1693,12 @@ def test_oi_store_missing_lineage_and_schema2_are_explicit_blockers(tmp_path: Pa
         with pytest.raises(OiEvidenceIntegrityError, match="lineage|lock"):
             operation()
 
-    legacy_path = tmp_path / "legacy-schema2.json"
-    legacy_unsigned = {
+    unsupported_path = tmp_path / "noncurrent-schema2.json"
+    unsupported_unsigned = {
         "kind": OI_EVIDENCE_KIND,
         "schema_version": 2,
         "sequence": 9,
+        "parent_checksum": "1" * 64,
         "state": {
             "completed": [],
             "in_progress": None,
@@ -1707,21 +1708,21 @@ def test_oi_store_missing_lineage_and_schema2_are_explicit_blockers(tmp_path: Pa
             "volume_resets": 0,
         },
     }
-    legacy_checksum = sha256(
-        json.dumps(legacy_unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    unsupported_checksum = sha256(
+        json.dumps(unsupported_unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    legacy_path.write_text(
-        json.dumps({**legacy_unsigned, "checksum": legacy_checksum}),
+    unsupported_path.write_text(
+        json.dumps({**unsupported_unsigned, "checksum": unsupported_checksum}),
         encoding="utf-8",
     )
-    legacy = Stress90OiEvidenceStore(legacy_path)
+    unsupported = Stress90OiEvidenceStore(unsupported_path)
     for operation in (
-        legacy.load_required_record,
-        lambda: legacy.save_state(Stress90OiEvidenceState(), expected_sequence=9),
+        unsupported.load_required_record,
+        lambda: unsupported.save_state(Stress90OiEvidenceState(), expected_sequence=9),
     ):
         with pytest.raises(
             OiEvidenceIntegrityError,
-            match="schema 2.*complete authoritative counter trading day",
+            match="schema is unsupported",
         ):
             operation()
 
@@ -1795,7 +1796,7 @@ def test_killed_pristine_oi_read_leaves_no_false_lineage(tmp_path: Path) -> None
     assert store.save_state(Stress90OiEvidenceState()).sequence == 1
 
 
-def test_pristine_oi_save_rejects_legacy_lock_created_after_absence_check(
+def test_pristine_oi_save_rejects_preexisting_lock_created_after_absence_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1811,18 +1812,18 @@ def test_pristine_oi_save_rejects_legacy_lock_created_after_absence_check(
     release = context.Event()
     store = Stress90OiEvidenceStore(tmp_path / "oi.json")
     creator = context.Process(
-        target=_create_and_hold_legacy_oi_lock,
+        target=_create_and_hold_preexisting_oi_lock,
         args=(str(store.lock_path), start, acquired, release),
     )
     creator.start()
     real_load = store._load_unlocked
     injected = False
 
-    def load_then_create_legacy_lock(*, required: bool, legacy_lock_evidence: bool):
+    def load_then_create_preexisting_lock(*, required: bool, preexisting_lock_evidence: bool):
         nonlocal injected
         record = real_load(
             required=required,
-            legacy_lock_evidence=legacy_lock_evidence,
+            preexisting_lock_evidence=preexisting_lock_evidence,
         )
         if record is None and not injected:
             injected = True
@@ -1830,7 +1831,7 @@ def test_pristine_oi_save_rejects_legacy_lock_created_after_absence_check(
             assert acquired.wait(timeout=10)
         return record
 
-    monkeypatch.setattr(store, "_load_unlocked", load_then_create_legacy_lock)
+    monkeypatch.setattr(store, "_load_unlocked", load_then_create_preexisting_lock)
     delayed_release = Timer(1, release.set)
     delayed_release.start()
     try:
@@ -1874,7 +1875,7 @@ def test_oi_visible_lock_eexist_is_held_through_critical_section(
 
     monkeypatch.setattr(store, "_exists", create_during_initial_check)
     with store._exclusive_lock() as lock:
-        assert lock.legacy_lock_evidence is False
+        assert lock.preexisting_lock_evidence is False
         assert lock.visible_descriptor is not None
         contender = os.open(store.lock_path, os.O_RDWR)
         try:

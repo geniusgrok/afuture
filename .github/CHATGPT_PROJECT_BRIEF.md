@@ -21,12 +21,6 @@ afuture 支持两条账户互斥的正式运行链：跨期价差策略，以及
 - 让离线研究、历史收益、Shadow 或测试柜台自动授权真实资金交易；
 - 让研究工具直接进入 live 订单路径。
 
-### Current-only 兼容性边界
-
-afuture 只支持当前代码、API/CLI、TOML 配置、runtime state、account/runtime registry、nonce ledger 和当前研究输入契约。旧版本的代码/API/CLI、配置字段、schema-less 或旧 schema state、旧 registry、migration artifact、historical compatibility adapter 都不是受支持的输入；解析必须 fail closed，不能猜测、默认补齐、过滤未知字段、静默 fallback 或自动转换。
-
-旧 runtime 应完整归档为 incident/provenance evidence，再在新的路径执行明确的 current bootstrap 或 initialization，并重新按 Broker/CTP 真相 reconciliation；不维护 migration path。这项边界不适用于当前交易安全：Broker/CTP 成交真相、exactly-once、CTP order journal、crash-fill recovery、leases/locks、CAS/sequence/checksum/lineage、identity/nonce、kill switch、`HALTED`/`REDUCE_ONLY`、Shadow 隔离、reconciliation、backup/restore、Stress-90 fail-closed 与 current schema `.prev` 都是必须保留的当前机制。
-
 ## 3. Architecture and Module Boundaries
 
 稳定依赖方向：统一数据模型和配置 → 纯计算与策略规则 → 策略、风控和订单计划 → 运行时编排 → Broker、持久化、命令行和报告。
@@ -85,10 +79,8 @@ afuture 只支持当前代码、API/CLI、TOML 配置、runtime state、account/
 
 最低 Python 版本为 3.10。以下命令由 `pyproject.toml`、`README.md` 和 `.github/workflows/ci.yml` 支持。
 
-Python `>=3.10`、`tomli` fallback、Python 3.10/3.13 matrix 和 Windows core/replay/config-validation
-smoke 均是当前仓库契约，不能仅为清理而移除。真实生产 Python 版本超出仓库事实，仍是部署前
-UNKNOWN；Windows smoke 不承诺 Stress-90 live 或 CTP native ABI 可用，后者只在目标 POSIX 机器上
-验证并 fail closed。
+项目支持 Python `>=3.10`，CI 覆盖 Python 3.10/3.13 与 Windows core/replay/config-validation。
+Stress-90 live 和 CTP native ABI 只在目标 POSIX 机器上验证。
 
 ```bash
 python -m venv .venv
@@ -139,7 +131,7 @@ CTP、Shadow 和 live 操作必须按相应 runbook 与 production checklist 执
 - 不得绕过 Broker 成交、`PositionBook` 和 `RiskManager`。
 - 不得引入第二套账户状态机，或让 sidecar、缓存和报告成为账户真相。
 - 不得用本机日期、旧交易日或猜测值替代权威 CTP trading day。
-- 不得自动恢复损坏状态、自动采用 `.prev`、覆盖损坏原件或静默迁移不兼容状态。
+- 不得自动恢复损坏状态、自动采用 `.prev` 或覆盖损坏原件。
 - 不得将 Shadow、bootstrap、doctor、capacity report、历史收益或 production wiring 解释为真钱许可。
 - 不得在仓库、模板、配置、日志或治理文档中保存账户凭证。
 - 不得擅自改写 Git 历史或 force push。

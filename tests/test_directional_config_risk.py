@@ -134,7 +134,7 @@ exchanges = ["DCE"]
         load_config(live, require_ctp_credentials=False)
 
 
-def test_stress90_rejects_explicit_legacy_rebalance_window(tmp_path: Path) -> None:
+def test_stress90_rejects_removed_rebalance_window(tmp_path: Path) -> None:
     from afuture.execution_aligned_policy import FROZEN_PRODUCTS
 
     config = _write(
@@ -231,7 +231,7 @@ account_registry = "/var/lib/afuture/account-runtime-registry-copy.json"
         load_config(split_registry)
 
 
-def test_execution_aligned_order_capable_config_remains_legacy_compatible(
+def test_execution_aligned_live_config_does_not_require_stress90_account_identity(
     tmp_path: Path,
     monkeypatch,
 ):

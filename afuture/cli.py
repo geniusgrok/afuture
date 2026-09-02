@@ -631,7 +631,7 @@ def _seed_state_aware_ctp_broker(broker, state, *, reject_ambiguous: bool) -> No
 
     if reject_ambiguous and ambiguous:
         raise RuntimeError(
-            "state recovery contains ambiguous legacy trade identities; "
+            "state recovery contains ambiguous unqualified trade identities; "
             "broker reconciliation is required before adoption"
         )
     broker.seed_trade_identities(qualified)
@@ -647,7 +647,7 @@ def _recover_state(config, args, logger) -> int:
         raise ValueError("recover-state requires system.mode=live")
     if config.directional.enabled and config.directional.policy == "stress90":
         raise RuntimeError(
-            "legacy recover-state is not authorized for Stress-90; use the durable order "
+            "recover-state is not available for Stress-90; use the durable order "
             "journal/execution-intent restart path, or an explicit HALTED lifecycle rebase"
         )
     _require_production_confirmation(config, args)
@@ -1111,8 +1111,8 @@ def _run_shadow(config, args, logger) -> int:
     shadow_state = shadow_paths["state"]
     if not isinstance(shadow_state, Path):  # pragma: no cover - internal contract
         raise RuntimeError("shadow state path is invalid")
-    # Legacy Shadow sessions retain their existing empty-account behavior. Stress-90
-    # state is account-path evidence and must survive restart exactly like live state.
+    # Ephemeral Shadow sessions start with empty local state. Stress-90 state is
+    # account-path evidence and must survive restart exactly like live state.
     if shadow_paths["persistent"] is not True and shadow_state.exists():
         shadow_state.unlink()
     shadow_journal = shadow_paths["journal"]

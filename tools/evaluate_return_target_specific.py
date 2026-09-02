@@ -236,12 +236,6 @@ def build_roll_safe_execution_returns(
     return close_panel, gap_panel, intraday_panel, selections, quality
 
 
-def build_roll_safe_returns(raw: pd.DataFrame):
-    """Compatibility helper for earlier research callers."""
-    close, _gap, _intraday, selections, quality = build_roll_safe_execution_returns(raw)
-    return close, selections, quality
-
-
 def apply_product_weights(
     returns: pd.DataFrame,
     weights: pd.DataFrame,

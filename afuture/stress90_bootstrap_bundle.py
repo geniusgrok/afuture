@@ -390,7 +390,7 @@ def verify_stress90_bundle(
     require_production: bool = True,
     repo_dir: str | Path | None = None,
 ) -> BootstrapBundleVerification:
-    """Verify bundle bytes and current-code compatibility without modifying the bundle."""
+    """Verify bundle bytes and current code identity without modifying the bundle."""
 
     try:
         verified = verify_archive(
@@ -411,7 +411,7 @@ def verify_stress90_bundle(
             source_commit = _hex40(manifest["source_commit"], label="bundle source commit")
             if not git_commit_is_ancestor(repo, source_commit, current_head):
                 raise BootstrapBundleError(
-                    "bundle source commit is not compatible with current checkout"
+                    "bundle source commit is not an ancestor of the current checkout"
                 )
             if manifest["constraints"] != _constraints(repo):
                 raise BootstrapBundleError("bundle constraints differ from current implementation")

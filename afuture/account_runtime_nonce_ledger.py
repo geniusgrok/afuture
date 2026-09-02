@@ -326,16 +326,18 @@ class AccountRuntimeNonceLedger:
             raise AccountRuntimeNonceLedgerError("nonce transition count is invalid")
         return self.transitions / f"{nonce_count:016d}.json"
 
-    def _reject_legacy_migration_artifact(self) -> None:
+    def _reject_reserved_artifact(self) -> None:
         artifact = self.directory / "migration.json"
         try:
             exists = artifact.exists() or artifact.is_symlink()
         except OSError as exc:
             raise AccountRuntimeNonceLedgerError(
-                "nonce ledger migration artifact path is invalid"
+                "nonce ledger directory contains an invalid reserved artifact"
             ) from exc
         if exists:
-            raise AccountRuntimeNonceLedgerError("nonce ledger migration artifact is unsupported")
+            raise AccountRuntimeNonceLedgerError(
+                "nonce ledger directory contains an unsupported reserved artifact"
+            )
 
     def initialize_ready(
         self,
@@ -361,7 +363,7 @@ class AccountRuntimeNonceLedger:
         base_registry_sequence: int | None = None,
         base_registry_checksum: str | None = None,
     ) -> None:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         _sha(source_digest, "nonce ledger source digest")
         _sha(initial_root, "nonce ledger initial root")
         if type(initial_count) is not int or initial_count < 0:
@@ -390,7 +392,7 @@ class AccountRuntimeNonceLedger:
         self._durable_create_exact(self.ready_path, payload, maximum=_MAX_RECEIPT_BYTES)
 
     def load_ready_anchor(self) -> dict[str, object]:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         raw = _decode_json(
             self._read_exact(self.ready_path, maximum=_MAX_RECEIPT_BYTES, label="ready marker"),
             maximum=_MAX_RECEIPT_BYTES,
@@ -607,7 +609,7 @@ class AccountRuntimeNonceLedger:
             )
 
     def create_transition(self, unsigned: dict[str, object]) -> dict[str, object]:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         self._validate_transition_unsigned(unsigned)
         self._validate_transition_proof(unsigned)
         transition = {**unsigned, "checksum": _digest(unsigned)}
@@ -622,7 +624,7 @@ class AccountRuntimeNonceLedger:
         return transition
 
     def load_transition(self, nonce_count: int) -> dict[str, object] | None:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         transition = self._load_transition_raw(nonce_count)
         if transition is None:
             return None
@@ -744,7 +746,7 @@ class AccountRuntimeNonceLedger:
         raise AccountRuntimeNonceLedgerError("nonce ledger proof exceeds 256 bits")
 
     def lookup(self, root: str, nonce: str) -> AccountRuntimeNonceReceipt | None:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         path, leaf = self._proof(root, nonce)
         del path
         if leaf is None or leaf["operation_nonce"] != nonce:
@@ -755,14 +757,14 @@ class AccountRuntimeNonceLedger:
         return receipt
 
     def require_receipt(self, root: str, nonce: str) -> AccountRuntimeNonceReceipt:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         receipt = self.lookup(root, nonce)
         if receipt is None:
             raise AccountRuntimeNonceLedgerError("nonce is not a member of the anchored ledger")
         return receipt
 
     def membership_node_paths(self, root: str, nonce: str) -> tuple[Path, ...]:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         path, leaf = self._proof(root, nonce)
         if leaf is None or leaf["operation_nonce"] != nonce:
             raise AccountRuntimeNonceLedgerError("nonce membership proof is absent")
@@ -776,7 +778,7 @@ class AccountRuntimeNonceLedger:
         receipt: AccountRuntimeNonceReceipt,
         fault_after_receipt: bool = False,
     ) -> AccountRuntimeNonceInsertion:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         if type(old_count) is not int or old_count < 0:
             raise AccountRuntimeNonceLedgerError("nonce ledger count is invalid")
         if old_count >= MAX_NONCE_RECEIPTS:
@@ -841,9 +843,9 @@ class AccountRuntimeNonceLedger:
         )
 
     def largest_receipt_size(self) -> int:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         return max((path.stat().st_size for path in self.receipts.glob("*.json")), default=0)
 
     def largest_node_size(self) -> int:
-        self._reject_legacy_migration_artifact()
+        self._reject_reserved_artifact()
         return max((path.stat().st_size for path in self.nodes.glob("*.json")), default=0)

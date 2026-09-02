@@ -100,7 +100,7 @@ These changes only reject states that are already invalid under the exchange off
 - Validate an existing state before deriving the next sequence. A corrupt or unsupported state must remain untouched and must block save.
 - Preserve atomic temp-file replacement; add durability steps only where portable and testable.
 - Define the single-writer assumption explicitly and detect sequence regression or unexpected replacement where feasible.
-- Keep restart compatibility for valid envelopes supported by the current schema contract.
+- Keep restart behavior for valid envelopes supported by the schema contract.
 - Test corruption, truncated JSON, checksum mismatch, sequence increments, atomic replacement, and preservation of the original file on failure.
 
 ### 5.3 CTP fail-closed conversion
@@ -123,7 +123,7 @@ These changes only reject states that are already invalid under the exchange off
 Extraction is permitted only after characterization tests protect current behavior.
 
 - `TradingEngine`: extract pair-execution quality lifecycle calculations if the resulting component owns a coherent state transition and removes duplicated accounting. Broker event order, public methods, and engine behavior remain stable.
-- Directional acceptance: extract pure data preparation, window validation, and result-accounting helpers where they are reused. Existing evaluator entry points remain compatibility facades.
+- Directional acceptance: extract pure data preparation, window validation, and result-accounting helpers where they are reused. Existing evaluator entry points remain thin delegates during extraction.
 - CLI: retain parsing and dispatch; move construction only where it duplicates `runtime_factory`. Do not introduce a service/factory hierarchy.
 - Configuration: keep typed dataclasses and existing configuration files; centralize validation messages or conversions only where semantics are duplicated.
 
@@ -147,9 +147,9 @@ All Markdown files will be classified as current authority, decision/evidence re
 - Data/backtest, configuration, risk, live, and runbook documents must use the implemented names, defaults, units, commands, and behavior.
 - Stress-80 and Stress-90 evidence remains immutable historical evidence except for clear status metadata and cross-links. It must not be rewritten to imply live activation.
 - Stale claims, including completed CI described as pending and old research targets described as current behavior, will be corrected or explicitly marked historical.
-- A final refactoring report will record defects, architecture decisions, tests, behavior compatibility, evidence reproduction, and genuine limitations.
+- A final refactoring report will record defects, architecture decisions, tests, behavior impact, evidence reproduction, and genuine limitations.
 
-## 6. Public API and compatibility
+## 6. Public API and behavior
 
 No intentional breaking public API change is planned. Existing imports, CLI commands, configuration keys, event models, report fields, and evaluator entry points remain available unless the audit proves one is unreferenced and misleading. Any contemplated removal requires repository and history evidence; uncertain interfaces remain.
 
@@ -201,8 +201,8 @@ Each checkpoint is a coherent commit and is pushed to `refactor/industrial-quali
 
 | Risk | Control |
 | --- | --- |
-| Validated economic behavior changes during extraction | Characterization tests and frozen matrix comparison; keep compatibility facades |
-| Fail-closed validation rejects valid legacy data | Enumerate supported protocol/data variants and test them before tightening |
+| Validated economic behavior changes during extraction | Characterization tests and frozen matrix comparison; keep thin delegates during extraction |
+| Fail-closed validation rejects valid data | Enumerate supported protocol/data variants and test them before tightening |
 | Large formatting diff obscures semantics | Isolate mechanical formatting or omit it when it adds insufficient value |
 | Full evidence depends on unavailable artifacts or environment | Use fixed PR artifacts, verify digests, and report any irreducible environment gap |
 | Documentation overstates production readiness | Separate live runtime, research checkpoint, historical evidence, and deployment prerequisites |

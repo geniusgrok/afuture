@@ -1306,7 +1306,7 @@ def test_recover_state_seeds_fresh_ctp_before_inclusive_snapshot_replay_and_adop
     assert broker.delivery_counters()["critical_enqueued"] == 0
 
 
-def test_recover_state_refuses_ambiguous_legacy_identity_before_ctp_start(
+def test_recover_state_refuses_ambiguous_unqualified_identity_before_ctp_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1315,7 +1315,7 @@ def test_recover_state_refuses_ambiguous_legacy_identity_before_ctp_start(
         RuntimeState(
             kill_switch=True,
             trading_day="20260825",
-            recent_trade_ids=["20260825:LEGACY-T1"],
+            recent_trade_ids=["20260825:UNQUALIFIED-T1"],
         )
     )
 
@@ -1324,10 +1324,10 @@ def test_recover_state_refuses_ambiguous_legacy_identity_before_ctp_start(
             return "a" * 64
 
         def seed_trade_identities(self, _identities):
-            raise AssertionError("ambiguous legacy identities must not be seeded")
+            raise AssertionError("ambiguous unqualified identities must not be seeded")
 
         def start(self):
-            raise AssertionError("ambiguous legacy recovery must fail before CTP start")
+            raise AssertionError("ambiguous identity recovery must fail before CTP start")
 
     monkeypatch.setattr("afuture.broker.ctp.CtpBroker", lambda _credentials: NeverStartedBroker())
     monkeypatch.setenv("AFUTURE_RECOVERY_ACK", "I_VERIFIED_CTP_POSITIONS")
@@ -1343,7 +1343,7 @@ def test_recover_state_refuses_ambiguous_legacy_identity_before_ctp_start(
         snapshot_wait=0.1,
     )
 
-    with pytest.raises(RuntimeError, match="ambiguous legacy trade identities"):
+    with pytest.raises(RuntimeError, match="ambiguous unqualified trade identities"):
         _recover_state(config, args, SimpleNamespace(warning=lambda *_args: None))
 
 
@@ -1399,7 +1399,7 @@ def test_recover_state_is_not_an_account_path_authority_for_stress90(
 ) -> None:
     class NeverConstructedBroker:
         def __init__(self, _credentials):
-            raise AssertionError("Stress-90 legacy recovery must fail before CTP construction")
+            raise AssertionError("Stress-90 generic recovery must fail before CTP construction")
 
     monkeypatch.setattr("afuture.broker.ctp.CtpBroker", NeverConstructedBroker)
     monkeypatch.setenv("AFUTURE_RECOVERY_ACK", "I_VERIFIED_CTP_POSITIONS")
@@ -1420,7 +1420,7 @@ def test_recover_state_is_not_an_account_path_authority_for_stress90(
         snapshot_wait=0.1,
     )
 
-    with pytest.raises(RuntimeError, match="not authorized for Stress-90"):
+    with pytest.raises(RuntimeError, match="not available for Stress-90"):
         _recover_state(config, args, SimpleNamespace(warning=lambda *_args: None))
 
 
