@@ -2552,7 +2552,7 @@ class CtpOrderSubmissionJournal:
         with self._exclusive_lock():
             loaded = self._load_state_unlocked(full_archive=False)
             if loaded is None:
-                raise CtpOrderJournalIntegrityError("required CTP order journal is missing")
+                return 0
             record = loaded.record
             terminal = tuple(entry for entry in record.entries if entry.status in _FINAL_STATUSES)
             entries = tuple(
