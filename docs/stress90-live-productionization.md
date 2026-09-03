@@ -66,7 +66,7 @@ policy 切换不是普通配置热更新。首次绑定 Stress-90 identity 必�
 - `historical_candidate_weight_sha256` 标识固定历史完整候选矩阵；
 - `daily_decision_digest` 标识某一 target day 的输入、各层目标和 post-state。
 
-`step_stress90_candidate(...)` 只接受显式 prior state、权威 target trading day、Base 权重、已完成 close history 和已完成 OI flow。它不读取 Broker、账户、网络、文件、本机日期或当前未完成 PnL；同一规范输入产生相同字节 digest。每层都校验有限值、50 品种 manifest、support、方向和 gross。
+`step_stress90_candidate(...)` 只接受显式 prior state、权威 target trading day、Base 权重、已完成 close history 和已完成 OI flow。它不读取 Broker、账户、网络、文件、本机日期或当前未完成 PnL；同一规范输入产生相同字节 digest。每层都校验 50 品种 manifest、support、方向和 gross。UNKNOWN OI 不得支持 entry、同向加仓或反转进入新方向；UNKNOWN close 不得支持 entry 或同向加仓；二者都不会阻止减仓或退出。缺价离开 20-session 活跃窗口后，完整窗口恢复正常判断。
 
 ## 4. 候选经济行为
 
@@ -86,8 +86,8 @@ Stress-90 使用四份彼此分责的带 schema/sequence/checksum 文件：
 
 | 文件 | 内容 |
 | --- | --- |
-| `stress90_bootstrap_seed.json` | 固定输入 manifest、policy identity、最后三层 candidate state、完整 prior HHI 和历史摘要 |
-| `stress90_policy_state.json` | last completed target、prepared decision、三层 state、HHI、completed account wealth/HWM 和最近两日 adaptive returns |
+| `stress90_bootstrap_seed.json` | 固定输入 manifest、精确历史缺口 manifest、policy identity、最后三层 candidate state、完整 prior HHI 和历史摘要 |
+| `stress90_policy_state.json` | bootstrap 缺口 identity、last completed target、prepared decision、三层 state、HHI、completed account wealth/HWM 和最近两日 adaptive returns |
 | `stress90_oi_evidence.json` | in-progress 与 completed raw 60m/session evidence、覆盖集合和缺失集合 |
 | `stress90_execution_intent.json` | 已持久的每日整数目标和 reduction/opening plan identity |
 | `stress90_ctp_orders.json` + archive/epoch manifest | 第一张 official send 前的 durable order authorization、完整 fill economics、跨容量/账户 epoch 的不可变冷链 |

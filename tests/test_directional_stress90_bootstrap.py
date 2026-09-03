@@ -330,6 +330,119 @@ def _promote_synthetic_profile(monkeypatch: pytest.MonkeyPatch, expectations):
     return replace(expectations, official_historical_profile=True)
 
 
+def test_bootstrap_accepts_only_the_exact_declared_daily_cells(tmp_path: Path):
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        _load_continuous_panels,
+    )
+
+    runtime = tmp_path / "runtime"
+    _through, _expectations = _write_synthetic_archive(runtime)
+    path = runtime / "broad_daily_universe.csv"
+    rows = pd.read_csv(path)
+    days = sorted(rows["date"].unique())
+    allowed = frozenset({(pd.Timestamp(days[3]), "AP"), (pd.Timestamp(days[5]), "CF")})
+    for day, product in allowed:
+        rows = rows.loc[~((pd.to_datetime(rows["date"]) == day) & (rows["product"] == product))]
+    rows.to_csv(path, index=False)
+
+    _raw, open_prices, close_prices = _load_continuous_panels(
+        path,
+        allowed_missing=allowed,
+    )
+    assert {
+        (day, product)
+        for day, product in allowed
+        if pd.isna(open_prices.at[day, product]) and pd.isna(close_prices.at[day, product])
+    } == allowed
+
+    with pytest.raises(Stress90BootstrapError, match="declared gaps"):
+        _load_continuous_panels(path, allowed_missing=frozenset())
+
+
+def test_bootstrap_accepts_only_the_exact_declared_specific_contract_gaps(tmp_path: Path):
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        _load_archived_weights,
+        _validate_specific_contracts,
+    )
+
+    runtime = tmp_path / "runtime"
+    through, _expectations = _write_synthetic_archive(runtime)
+    targets = _load_archived_weights(
+        runtime / "execution_aligned_weights.csv",
+        pd.Timestamp(datetime.strptime(through, "%Y%m%d")),
+    ).index
+    path = runtime / "return_target_specific_contracts.csv"
+    rows = pd.read_csv(path)
+    missing = frozenset({(targets[2], "AP"), (targets[4], "CF")})
+    for day, product in missing:
+        rows = rows.loc[~((pd.to_datetime(rows["date"]) == day) & (rows["product"] == product))]
+    rows.to_csv(path, index=False)
+
+    _validate_specific_contracts(path, pd.DatetimeIndex(targets), allowed_missing=missing)
+    with pytest.raises(Stress90BootstrapError, match="declared gaps"):
+        _validate_specific_contracts(path, pd.DatetimeIndex(targets))
+
+
+def test_bootstrap_accepts_only_the_exact_declared_target_skip():
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        _validate_target_continuity,
+    )
+
+    sessions = pd.bdate_range("2026-01-05", periods=6)
+    missing = sessions[3]
+    targets = sessions[1:].delete(2)
+    _validate_target_continuity(
+        targets,
+        sessions,
+        allowed_missing_sessions=frozenset({missing}),
+    )
+    with pytest.raises(Stress90BootstrapError, match="gap cannot be skipped"):
+        _validate_target_continuity(targets, sessions)
+
+
+def test_bootstrap_accepts_only_the_exact_declared_oi_source_gap(tmp_path: Path):
+    from afuture.directional_stress90_bootstrap import (
+        Stress90BootstrapError,
+        _build_lagged_flow,
+        _load_archived_weights,
+        _load_continuous_panels,
+    )
+
+    runtime = tmp_path / "runtime"
+    through, _expectations = _write_synthetic_archive(runtime)
+    _raw, _open, close = _load_continuous_panels(runtime / "broad_daily_universe.csv")
+    targets = _load_archived_weights(
+        runtime / "execution_aligned_weights.csv",
+        pd.Timestamp(datetime.strptime(through, "%Y%m%d")),
+    ).index
+    bars = pd.concat(
+        [
+            pd.read_csv(runtime / "prior_two_year_broad_60m.csv"),
+            pd.read_csv(runtime / "two_year_broad_60m.csv"),
+        ],
+        ignore_index=True,
+    )
+    bars["datetime"] = pd.to_datetime(bars["datetime"])
+    source_day = targets[3]
+    bars = bars.loc[
+        ~((bars["datetime"].dt.normalize() == source_day) & (bars["product"].str.upper() == "TA"))
+    ]
+    allowed = frozenset({(source_day, "TA")})
+
+    lagged, _source_days = _build_lagged_flow(
+        bars,
+        pd.DatetimeIndex(targets),
+        close.index,
+        allowed_missing=allowed,
+    )
+    assert pd.isna(lagged.at[targets[4], "TA"])
+    with pytest.raises(Stress90BootstrapError, match="OI coverage incomplete"):
+        _build_lagged_flow(bars, pd.DatetimeIndex(targets), close.index)
+
+
 def test_dry_run_rebuilds_base_and_replays_incremental_candidate_exactly(tmp_path: Path):
     from afuture.directional_stress90_bootstrap import bootstrap_stress90
 

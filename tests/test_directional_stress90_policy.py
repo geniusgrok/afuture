@@ -159,6 +159,33 @@ def test_missing_oi_flow_is_not_legal_zero_flow():
     ) == {"A": 0.0}
 
 
+def test_missing_oi_flow_allows_only_zero_risk_and_reduction():
+    from afuture.directional_stress90_policy import apply_oi_confirmation_row
+
+    assert apply_oi_confirmation_row(
+        raw_weights={"A": 0.0, "TA": 0.0},
+        prior_applied={"A": 1.0, "TA": 0.0},
+        completed_flow={"A": None, "TA": None},
+        supported_products=("A", "TA"),
+    ) == {"A": 0.0, "TA": 0.0}
+
+
+@pytest.mark.parametrize(("current", "target"), [(0.0, 1.0), (0.5, 1.0), (1.0, -1.0)])
+def test_missing_oi_flow_still_rejects_entry_add_and_reversal(current, target):
+    from afuture.directional_stress90_policy import (
+        Stress90InputIncomplete,
+        apply_oi_confirmation_row,
+    )
+
+    with pytest.raises(Stress90InputIncomplete, match="missing completed OI flow: A"):
+        apply_oi_confirmation_row(
+            raw_weights={"A": target},
+            prior_applied={"A": current},
+            completed_flow={"A": None},
+            supported_products=("A",),
+        )
+
+
 def _close_path(daily_return: float, sessions: int = 20) -> tuple[float, ...]:
     values = [100.0]
     for _ in range(sessions):
@@ -201,6 +228,31 @@ def test_cost_gate_blocks_only_entry_and_same_sign_add():
     )
 
     assert result == {"A": 0.0, "AG": 0.5, "AL": 0.25, "AU": -1.0}
+
+
+def test_missing_close_in_active_window_blocks_increase_but_not_reduction():
+    from afuture.directional_stress90_policy import apply_cost_gate_row
+
+    incomplete = list(_close_path(0.001))
+    incomplete[-2] = float("nan")
+
+    assert apply_cost_gate_row(
+        oi_weights={"A": 1.0, "AG": 0.5},
+        prior_approved={"A": 0.0, "AG": 1.0},
+        completed_close_history={"A": incomplete, "AG": incomplete},
+    ) == {"A": 0.0, "AG": 0.5}
+
+
+def test_missing_close_outside_twenty_session_window_no_longer_blocks_increase():
+    from afuture.directional_stress90_policy import apply_cost_gate_row
+
+    recovered = (float("nan"), *_close_path(0.001))
+
+    assert apply_cost_gate_row(
+        oi_weights={"A": 1.0},
+        prior_approved={"A": 0.0},
+        completed_close_history={"A": recovered},
+    ) == {"A": 1.0}
 
 
 def test_survivor_reallocation_preserves_support_sign_gross_and_turnover_tie_break():

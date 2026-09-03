@@ -1,10 +1,10 @@
 """Deterministic, fixed-input bootstrap for the production Stress-90 state machine.
 
 This module is deliberately independent of ``tools/`` and evaluator entrypoints.  It
-validates immutable source bytes before parsing, rebuilds the frozen base policy, then
-replays the same incremental primitives used by live runtime.  Only the documented
-historical profile may create a live seed/state; alternate expectations are test-only
-dry runs and can never be promoted accidentally.
+validates immutable source bytes before parsing and replays the same incremental
+primitives used by live runtime.  The byte-pinned historical archive carries a narrow,
+audited gap manifest; every other input profile remains complete-by-construction.  Only
+the documented historical profile may create a live seed/state.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from hashlib import sha256
 from math import isfinite
@@ -53,6 +53,7 @@ from .directional_stress90_policy import (
     Stress90CandidatePath,
     build_stress90_candidate_path,
     candidate_weight_digest,
+    step_stress90_candidate,
 )
 from .directional_stress90_state import (
     FIXED_BOOTSTRAP_INPUT_NAMES,
@@ -98,6 +99,24 @@ FIXED_STRESS90_INPUT_SHA256 = MappingProxyType(
         ),
     }
 )
+
+# Byte-identity guard for the one frozen archive whose vendor gaps are known and
+# independently audited.  Tests may replace the public expectations, but that must
+# never grant another archive these exemptions.
+_KNOWN_GAP_INPUT_SHA256 = MappingProxyType(dict(FIXED_STRESS90_INPUT_SHA256))
+_KNOWN_BROAD_DAILY_GAPS = frozenset(
+    {
+        (pd.Timestamp("2024-01-30"), "AP"),
+        (pd.Timestamp("2024-01-30"), "CF"),
+        (pd.Timestamp("2024-03-01"), "AP"),
+        (pd.Timestamp("2024-03-01"), "CF"),
+        (pd.Timestamp("2024-05-10"), "AP"),
+    }
+)
+_KNOWN_TARGET_DAY_GAPS = frozenset({pd.Timestamp("2022-09-21")})
+_KNOWN_OI_GAP_PRODUCT = "TA"
+_KNOWN_OI_GAP_FIRST_DAY = pd.Timestamp("2024-05-20")
+_KNOWN_OI_GAP_LAST_DAY = pd.Timestamp("2024-08-20")
 
 _BASE_PARITY_ATOL = 5e-15
 _LAYER_PARITY_ATOL = 1e-14
@@ -188,8 +207,9 @@ OFFICIAL_STRESS90_BOOTSTRAP_EXPECTATIONS = Stress90BootstrapExpectations(
 @dataclass(frozen=True)
 class Stress90BootstrapResult:
     source_manifest: Mapping[str, str]
+    bootstrap_gap_manifest: Mapping[str, tuple[str, ...]]
     candidate_weight_sha256: str
-    base_max_abs_error: float
+    base_max_abs_error: float | None
     batch_incremental_max_abs_error: float
     target_day_count: int
     first_target_day: str
@@ -205,6 +225,9 @@ class Stress90BootstrapResult:
     def to_dict(self) -> dict[str, object]:
         return {
             "source_manifest": dict(self.source_manifest),
+            "bootstrap_gap_manifest": {
+                name: list(entries) for name, entries in self.bootstrap_gap_manifest.items()
+            },
             "candidate_weight_sha256": self.candidate_weight_sha256,
             "base_max_abs_error": self.base_max_abs_error,
             "batch_incremental_max_abs_error": self.batch_incremental_max_abs_error,
@@ -228,6 +251,37 @@ def _is_official_profile(expectations: Stress90BootstrapExpectations) -> bool:
         and dict(expectations.input_sha256) == dict(FIXED_STRESS90_INPUT_SHA256)
         and expectations.candidate_weight_sha256
         == STRESS90_POLICY.historical_candidate_weight_sha256
+    )
+
+
+def _uses_known_gap_archive(source_manifest: Mapping[str, str]) -> bool:
+    return dict(source_manifest) == dict(_KNOWN_GAP_INPUT_SHA256)
+
+
+def _gap_manifest(
+    *,
+    broad: frozenset[tuple[pd.Timestamp, str]],
+    specific: frozenset[tuple[pd.Timestamp, str]],
+    targets: frozenset[pd.Timestamp],
+    oi: frozenset[tuple[pd.Timestamp, str]],
+) -> Mapping[str, tuple[str, ...]]:
+    if not broad and not specific and not targets and not oi:
+        return MappingProxyType({})
+    return MappingProxyType(
+        {
+            "broad_daily_missing_open_close": tuple(
+                sorted(f"{day.date().isoformat()}/{product}" for day, product in broad)
+            ),
+            "specific_contract_daily_missing": tuple(
+                sorted(f"{day.date().isoformat()}/{product}" for day, product in specific)
+            ),
+            "execution_weight_target_skips": tuple(
+                sorted(day.date().isoformat() for day in targets)
+            ),
+            "oi_source_session_missing": tuple(
+                sorted(f"{day.date().isoformat()}/{product}" for day, product in oi)
+            ),
+        }
     )
 
 
@@ -278,7 +332,11 @@ def _read_csv(path: Path, *, name: str) -> pd.DataFrame:
     return frame
 
 
-def _load_continuous_panels(path: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def _load_continuous_panels(
+    path: Path,
+    *,
+    allowed_missing: frozenset[tuple[pd.Timestamp, str]] = frozenset(),
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     frame = _read_csv(path, name="broad daily universe")
     required = {"date", "product", "open", "close"}
     if not required.issubset(frame.columns):
@@ -307,8 +365,20 @@ def _load_continuous_panels(path: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.
     close_prices = frame.pivot(index="date", columns="product", values="close").sort_index()
     open_prices = open_prices.reindex(columns=STRESS90_POLICY.products)
     close_prices = close_prices.reindex(index=open_prices.index, columns=STRESS90_POLICY.products)
-    if open_prices.isna().any().any() or close_prices.isna().any().any():
-        raise Stress90BootstrapError("broad daily universe lacks complete 50-product coverage")
+    open_missing = {
+        (open_prices.index[row], open_prices.columns[column])
+        for row, column in zip(*np.where(open_prices.isna().to_numpy()), strict=True)
+    }
+    close_missing = {
+        (close_prices.index[row], close_prices.columns[column])
+        for row, column in zip(*np.where(close_prices.isna().to_numpy()), strict=True)
+    }
+    if open_missing != close_missing:
+        raise Stress90BootstrapError("broad daily universe has asymmetric open/close gaps")
+    if open_missing != set(allowed_missing):
+        raise Stress90BootstrapError(
+            "broad daily universe lacks complete 50-product coverage outside declared gaps"
+        )
     if not open_prices.index.is_monotonic_increasing or open_prices.index.has_duplicates:
         raise Stress90BootstrapError("broad daily universe sessions are not canonical")
     return frame, open_prices.astype(float), close_prices.astype(float)
@@ -349,17 +419,29 @@ def _load_archived_weights(path: Path, through: pd.Timestamp) -> pd.DataFrame:
     return weights
 
 
-def _validate_target_continuity(targets: pd.DatetimeIndex, sessions: pd.DatetimeIndex) -> None:
+def _validate_target_continuity(
+    targets: pd.DatetimeIndex,
+    sessions: pd.DatetimeIndex,
+    *,
+    allowed_missing_sessions: frozenset[pd.Timestamp] = frozenset(),
+) -> None:
     positions = sessions.get_indexer(targets)
     if bool((positions < 0).any()):
         raise Stress90BootstrapError("frozen target day is absent from broad daily sessions")
-    if len(positions) > 1 and not np.array_equal(np.diff(positions), np.ones(len(positions) - 1)):
+    covered = sessions[positions[0] : positions[-1] + 1]
+    missing = set(covered) - set(targets)
+    if missing != set(allowed_missing_sessions):
         raise Stress90BootstrapError("frozen target-day gap cannot be skipped")
     if positions[0] <= 0:
         raise Stress90BootstrapError("bootstrap needs a completed session before first target")
 
 
-def _validate_specific_contracts(path: Path, targets: pd.DatetimeIndex) -> pd.DataFrame:
+def _validate_specific_contracts(
+    path: Path,
+    targets: pd.DatetimeIndex,
+    *,
+    allowed_missing: frozenset[tuple[pd.Timestamp, str]] = frozenset(),
+) -> pd.DataFrame:
     frame = _read_csv(path, name="specific-contract daily evidence")
     required = {"date", "delivery", "product", "symbol", "open", "close", "volume", "hold"}
     missing = required - set(frame.columns)
@@ -392,11 +474,16 @@ def _validate_specific_contracts(path: Path, targets: pd.DatetimeIndex) -> pd.Da
         raise Stress90BootstrapError("specific-contract evidence contains duplicate date/symbol")
     covered = frame[frame["date"].isin(targets)].groupby("date")["product"].agg(set)
     required_products = set(STRESS90_POLICY.products)
-    for target in targets:
-        if target not in covered.index or not required_products.issubset(covered.loc[target]):
-            raise Stress90BootstrapError(
-                f"specific-contract evidence lacks 50-product coverage: {target.date()}"
-            )
+    observed_missing = {
+        (target, product)
+        for target in targets
+        for product in required_products
+        if target not in covered.index or product not in covered.loc[target]
+    }
+    if observed_missing != set(allowed_missing):
+        raise Stress90BootstrapError(
+            "specific-contract evidence lacks 50-product coverage outside declared gaps"
+        )
     return frame
 
 
@@ -469,36 +556,29 @@ def _build_lagged_flow(
     bars: pd.DataFrame,
     targets: pd.DatetimeIndex,
     sessions: pd.DatetimeIndex,
+    *,
+    allowed_missing: frozenset[tuple[pd.Timestamp, str]] = frozenset(),
 ) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
     first_position = int(sessions.get_loc(targets[0]))
     source_days = pd.DatetimeIndex([sessions[first_position - 1], *targets[:-1]])
-    raw_days = pd.DatetimeIndex(bars["datetime"].dt.normalize())
     supported = set(STRESS90_POLICY.oi_products)
-    for source_day in source_days:
-        received = set(bars.loc[raw_days == source_day, "product"])
-        missing = sorted(supported - received)
-        if missing:
-            raise Stress90BootstrapError(
-                f"60m OI coverage incomplete for {source_day.date()}: missing={missing}"
-            )
     flow = build_daily_price_oi_flow(bars)
+    observed_missing: set[tuple[pd.Timestamp, str]] = set()
     for source_day in source_days:
-        if source_day not in flow.index:
-            raise Stress90BootstrapError(
-                f"60m OI coverage did not produce completed flow: {source_day.date()}"
-            )
-        missing = sorted(supported - set(flow.columns[flow.loc[source_day].notna()]))
-        if missing:
-            raise Stress90BootstrapError(
-                f"60m OI coverage incomplete for {source_day.date()}: missing={missing}"
-            )
+        received = (
+            set(flow.columns[flow.loc[source_day].notna()]) if source_day in flow.index else set()
+        )
+        observed_missing.update((source_day, product) for product in supported - received)
+    if observed_missing != set(allowed_missing):
+        raise Stress90BootstrapError(
+            "60m OI coverage incomplete outside declared gaps; "
+            f"observed={sorted(observed_missing)}, allowed={sorted(allowed_missing)}"
+        )
     lagged = lag_flow_to_target_days(
         flow,
         target_days=targets,
         products=STRESS90_POLICY.oi_products,
     )
-    if lagged.isna().any().any():
-        raise Stress90BootstrapError("60m OI coverage contains missing/incomplete target flow")
     return lagged.astype(float), source_days
 
 
@@ -589,24 +669,42 @@ def _bootstrap_stress90(
             "live seed/state creation requires the official immutable historical profile"
         )
     source_manifest = _verify_source_bytes(runtime, expectations)
+    known_gap_archive = _uses_known_gap_archive(source_manifest)
+    broad_gaps = _KNOWN_BROAD_DAILY_GAPS if known_gap_archive else frozenset()
 
     _continuous, open_prices, close_prices = _load_continuous_panels(
-        runtime / "broad_daily_universe.csv"
+        runtime / "broad_daily_universe.csv",
+        allowed_missing=broad_gaps,
     )
     archived = _load_archived_weights(runtime / "execution_aligned_weights.csv", through)
     targets = pd.DatetimeIndex(archived.index)
-    _validate_target_continuity(targets, close_prices.index)
+    target_gaps = (
+        frozenset(day for day in _KNOWN_TARGET_DAY_GAPS if targets[0] < day < targets[-1])
+        if known_gap_archive
+        else frozenset()
+    )
+    _validate_target_continuity(
+        targets,
+        close_prices.index,
+        allowed_missing_sessions=target_gaps,
+    )
     specific_contracts = _validate_specific_contracts(
-        runtime / "return_target_specific_contracts.csv", targets
+        runtime / "return_target_specific_contracts.csv",
+        targets,
+        allowed_missing=broad_gaps,
     )
 
-    rebuilt_full = ExecutionAlignedAggressivePolicy(STRESS90_POLICY.products).weight_history(
-        open_prices, close_prices
-    )
-    rebuilt = rebuilt_full.reindex(index=targets, columns=STRESS90_POLICY.products)
-    base_error = _max_abs_error(rebuilt, archived)
-    if not isfinite(base_error) or base_error > _BASE_PARITY_ATOL:
-        raise Stress90BootstrapError(f"base policy parity failed; max_abs_error={base_error:.17g}")
+    base_error: float | None = None
+    if not known_gap_archive:
+        rebuilt_full = ExecutionAlignedAggressivePolicy(STRESS90_POLICY.products).weight_history(
+            open_prices, close_prices
+        )
+        rebuilt = rebuilt_full.reindex(index=targets, columns=STRESS90_POLICY.products)
+        base_error = _max_abs_error(rebuilt, archived)
+        if not isfinite(base_error) or base_error > _BASE_PARITY_ATOL:
+            raise Stress90BootstrapError(
+                f"base policy parity failed; max_abs_error={base_error:.17g}"
+            )
 
     bars = _load_60m(
         (
@@ -614,7 +712,29 @@ def _bootstrap_stress90(
             runtime / "two_year_broad_60m.csv",
         )
     )
-    lagged, source_days = _build_lagged_flow(bars, targets, close_prices.index)
+    first_position = int(close_prices.index.get_loc(targets[0]))
+    expected_source_days = pd.DatetimeIndex([close_prices.index[first_position - 1], *targets[:-1]])
+    oi_gaps = (
+        frozenset(
+            (day, _KNOWN_OI_GAP_PRODUCT)
+            for day in expected_source_days
+            if _KNOWN_OI_GAP_FIRST_DAY <= day <= _KNOWN_OI_GAP_LAST_DAY
+        )
+        if known_gap_archive
+        else frozenset()
+    )
+    lagged, source_days = _build_lagged_flow(
+        bars,
+        targets,
+        close_prices.index,
+        allowed_missing=oi_gaps,
+    )
+    gap_manifest = _gap_manifest(
+        broad=broad_gaps,
+        specific=broad_gaps,
+        targets=target_gaps,
+        oi=oi_gaps,
+    )
     path = build_stress90_candidate_path(
         base_weights=archived,
         completed_close_prices=close_prices,
@@ -749,16 +869,23 @@ def _bootstrap_stress90(
             )
         except OiEvidenceIntegrityError as exc:
             raise Stress90BootstrapError(str(exc)) from exc
-        seed = Stress90BootstrapSeed.from_candidate_state(
-            path.final_state,
-            bootstrap_source_manifest=source_manifest,
-            bootstrap_through_day=through_text,
-            last_completed_input_day=source_days[-1].strftime("%Y%m%d"),
-        )
-        final_decision = path.decisions[-1]
-        final_input_day = str(final_decision.input_days["completed_close"])
         final_target = pd.Timestamp(targets[-1])
-        final_history = close_prices.loc[close_prices.index < final_target]
+        completed_open = open_prices.loc[open_prices.index <= through]
+        completed_close = close_prices.loc[close_prices.index <= through]
+        complete_rows = np.isfinite(completed_open.to_numpy(float)).all(axis=1) & np.isfinite(
+            completed_close.to_numpy(float)
+        ).all(axis=1)
+        if not bool(complete_rows.any()):
+            raise Stress90BootstrapError("no complete OHLC suffix is available for live cache")
+        last_incomplete = np.flatnonzero(~complete_rows)
+        suffix_start = int(last_incomplete[-1] + 1) if len(last_incomplete) else 0
+        completed_open = completed_open.iloc[suffix_start:]
+        completed_close = completed_close.iloc[suffix_start:]
+        if len(completed_close) < STRESS90_POLICY.completed_lookback_sessions + 1:
+            raise Stress90BootstrapError("complete OHLC suffix is too short for live cost gate")
+
+        final_history = completed_close.loc[completed_close.index < final_target]
+        final_input_day = pd.Timestamp(final_history.index[-1]).strftime("%Y%m%d")
         final_inputs = Stress90DecisionInputs(
             previous_target_trading_day=final_input_day,
             target_trading_day=through_text,
@@ -774,13 +901,34 @@ def _bootstrap_stress90(
             completed_close_day=final_input_day,
             completed_oi_day=final_input_day,
         )
+        final_decision = step_stress90_candidate(
+            prior_state=path.decisions[-1].prior_state,
+            target_trading_day=through_text,
+            base_weights=final_inputs.base_weights,
+            completed_close_history=final_inputs.completed_close_history,
+            completed_oi_flow=final_inputs.completed_oi_flow,
+            completed_close_day=final_input_day,
+            completed_oi_day=final_input_day,
+        )
+        if dict(final_decision.survivor_weights) != dict(path.decisions[-1].survivor_weights):
+            raise Stress90BootstrapError("complete OHLC suffix changed final candidate weights")
+        path = replace(
+            path,
+            decisions=(*path.decisions[:-1], final_decision),
+            final_state=final_decision.post_state,
+        )
+        seed = Stress90BootstrapSeed.from_candidate_state(
+            path.final_state,
+            bootstrap_source_manifest=source_manifest,
+            bootstrap_gap_manifest=gap_manifest,
+            bootstrap_through_day=through_text,
+            last_completed_input_day=source_days[-1].strftime("%Y%m%d"),
+        )
         prepared = Stress90PreparedDecision.from_decision(
             final_decision,
             previous_target_trading_day=final_input_day,
             source_input_digest=stress90_decision_inputs_digest(final_inputs),
         )
-        completed_open = open_prices.loc[open_prices.index <= through]
-        completed_close = close_prices.loc[close_prices.index <= through]
         activity = _through_day_activity_snapshot(specific_contracts, through)
         creation_tokens: list[DurableFileCreationToken] = []
         oi_phase_started = False
@@ -865,6 +1013,7 @@ def _bootstrap_stress90(
 
     return Stress90BootstrapResult(
         source_manifest=source_manifest,
+        bootstrap_gap_manifest=gap_manifest,
         candidate_weight_sha256=digest,
         base_max_abs_error=base_error,
         batch_incremental_max_abs_error=adapter_error,

@@ -6,7 +6,7 @@ import json
 import os
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from hashlib import sha256
 from math import isfinite
@@ -31,12 +31,13 @@ from .durable_file_creation import (
     durable_file_lock,
 )
 
-STRESS90_STATE_SCHEMA_VERSION = 4
+STRESS90_STATE_SCHEMA_VERSION = 5
 STRESS90_STATE_KIND = "afuture.directional.stress90.policy-state"
-STRESS90_SEED_SCHEMA_VERSION = 1
+STRESS90_SEED_SCHEMA_VERSION = 2
 STRESS90_SEED_KIND = "afuture.directional.stress90.bootstrap-seed"
 MAX_COMPLETED_CONCENTRATIONS = 100_000
 MAX_BOOTSTRAP_SOURCES = 32
+MAX_BOOTSTRAP_GAPS = 1_000
 FIXED_BOOTSTRAP_INPUT_NAMES = (
     "broad_daily_universe.csv",
     "return_target_specific_contracts.csv",
@@ -111,6 +112,30 @@ def _valid_source_manifest(raw: object) -> Mapping[str, str]:
             raw_digest,
             name=f"bootstrap source digest for {raw_name}",
         )
+    return MappingProxyType(dict(sorted(result.items())))
+
+
+def _valid_gap_manifest(raw: object) -> Mapping[str, tuple[str, ...]]:
+    if not isinstance(raw, Mapping) or len(raw) > MAX_BOOTSTRAP_SOURCES:
+        raise Stress90StateIntegrityError("bootstrap gap manifest is invalid")
+    result: dict[str, tuple[str, ...]] = {}
+    total = 0
+    for raw_name, raw_entries in raw.items():
+        if not isinstance(raw_name, str) or not raw_name or raw_name in result:
+            raise Stress90StateIntegrityError("bootstrap gap manifest names are invalid")
+        if not isinstance(raw_entries, (list, tuple)):
+            raise Stress90StateIntegrityError("bootstrap gap manifest entries are invalid")
+        entries = tuple(raw_entries)
+        if (
+            any(not isinstance(entry, str) or not entry for entry in entries)
+            or len(set(entries)) != len(entries)
+            or entries != tuple(sorted(entries))
+        ):
+            raise Stress90StateIntegrityError("bootstrap gap manifest entries are not canonical")
+        total += len(entries)
+        result[raw_name] = entries
+    if total > MAX_BOOTSTRAP_GAPS:
+        raise Stress90StateIntegrityError("bootstrap gap manifest is too large")
     return MappingProxyType(dict(sorted(result.items())))
 
 
@@ -195,6 +220,7 @@ def _bootstrap_identity_digest(
     products_manifest_digest: str,
     supported_oi_products: Sequence[str],
     bootstrap_source_manifest: Mapping[str, str],
+    bootstrap_gap_manifest: Mapping[str, Sequence[str]],
     bootstrap_through_day: str,
     bootstrap_candidate_state_digest: str,
     historical_candidate_weight_sha256: str,
@@ -206,6 +232,7 @@ def _bootstrap_identity_digest(
             "products_manifest_digest": products_manifest_digest,
             "supported_oi_products": tuple(supported_oi_products),
             "bootstrap_source_manifest": bootstrap_source_manifest,
+            "bootstrap_gap_manifest": bootstrap_gap_manifest,
             "bootstrap_through_day": bootstrap_through_day,
             "bootstrap_candidate_state_digest": bootstrap_candidate_state_digest,
             "historical_candidate_weight_sha256": historical_candidate_weight_sha256,
@@ -233,6 +260,9 @@ class Stress90BootstrapSeed:
     bootstrap_candidate_state_digest: str
     historical_candidate_weight_sha256: str
     seed_digest: str
+    bootstrap_gap_manifest: Mapping[str, tuple[str, ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @classmethod
     def from_candidate_state(
@@ -240,6 +270,7 @@ class Stress90BootstrapSeed:
         candidate_state: Stress90CandidateState,
         *,
         bootstrap_source_manifest: Mapping[str, str],
+        bootstrap_gap_manifest: Mapping[str, Sequence[str]] | None = None,
         bootstrap_through_day: str,
         last_completed_input_day: str,
         definition: Stress90PolicyDefinition = STRESS90_POLICY,
@@ -259,6 +290,7 @@ class Stress90BootstrapSeed:
             name="last bootstrap decision digest",
         )
         sources = _valid_source_manifest(bootstrap_source_manifest)
+        gaps = _valid_gap_manifest(bootstrap_gap_manifest or {})
         oi = _valid_weights(candidate_state.last_oi_confirmed_weights, name="seed OI-confirmed")
         cost = _valid_weights(candidate_state.last_cost_approved_weights, name="seed cost-approved")
         survivor = _valid_weights(candidate_state.last_survivor_weights, name="seed survivor")
@@ -270,6 +302,7 @@ class Stress90BootstrapSeed:
             products_manifest_digest=definition.products_manifest_digest,
             supported_oi_products=definition.oi_products,
             bootstrap_source_manifest=sources,
+            bootstrap_gap_manifest=gaps,
             bootstrap_through_day=through,
             bootstrap_candidate_state_digest=state_digest,
             historical_candidate_weight_sha256=definition.historical_candidate_weight_sha256,
@@ -280,6 +313,7 @@ class Stress90BootstrapSeed:
             products_manifest_digest=definition.products_manifest_digest,
             supported_oi_products=definition.oi_products,
             bootstrap_source_manifest=sources,
+            bootstrap_gap_manifest=gaps,
             bootstrap_through_day=through,
             last_completed_input_day=input_day,
             last_completed_target_day=through,
@@ -344,6 +378,7 @@ class Stress90PolicyState:
     products_manifest_digest: str
     supported_oi_products: tuple[str, ...]
     bootstrap_source_manifest: Mapping[str, str]
+    bootstrap_gap_manifest: Mapping[str, tuple[str, ...]]
     bootstrap_through_day: str
     bootstrap_candidate_state_digest: str
     bootstrap_seed_digest: str
@@ -380,6 +415,7 @@ class Stress90PolicyState:
             products_manifest_digest=seed.products_manifest_digest,
             supported_oi_products=seed.supported_oi_products,
             bootstrap_source_manifest=seed.bootstrap_source_manifest,
+            bootstrap_gap_manifest=seed.bootstrap_gap_manifest,
             bootstrap_through_day=seed.bootstrap_through_day,
             bootstrap_candidate_state_digest=seed.bootstrap_candidate_state_digest,
             historical_candidate_weight_sha256=seed.historical_candidate_weight_sha256,
@@ -391,6 +427,7 @@ class Stress90PolicyState:
             products_manifest_digest=seed.products_manifest_digest,
             supported_oi_products=seed.supported_oi_products,
             bootstrap_source_manifest=seed.bootstrap_source_manifest,
+            bootstrap_gap_manifest=seed.bootstrap_gap_manifest,
             bootstrap_through_day=seed.bootstrap_through_day,
             bootstrap_candidate_state_digest=seed.bootstrap_candidate_state_digest,
             bootstrap_seed_digest=seed.seed_digest,
@@ -581,6 +618,7 @@ def _validate_state(
     if tuple(state.supported_oi_products) != definition.oi_products:
         raise Stress90StateIntegrityError("supported OI products mismatch")
     sources = _valid_source_manifest(state.bootstrap_source_manifest)
+    gaps = _valid_gap_manifest(state.bootstrap_gap_manifest)
     through = _valid_day(state.bootstrap_through_day, name="bootstrap through day")
     input_day = _valid_day(state.last_completed_input_day, name="last completed input day")
     target_day = _valid_day(state.last_completed_target_day, name="last completed target day")
@@ -595,6 +633,7 @@ def _validate_state(
         products_manifest_digest=state.products_manifest_digest,
         supported_oi_products=state.supported_oi_products,
         bootstrap_source_manifest=sources,
+        bootstrap_gap_manifest=gaps,
         bootstrap_through_day=through,
         bootstrap_candidate_state_digest=state.bootstrap_candidate_state_digest,
         historical_candidate_weight_sha256=definition.historical_candidate_weight_sha256,
@@ -707,6 +746,9 @@ def _state_payload(state: Stress90PolicyState) -> dict[str, object]:
         "products_manifest_digest": state.products_manifest_digest,
         "supported_oi_products": list(state.supported_oi_products),
         "bootstrap_source_manifest": dict(state.bootstrap_source_manifest),
+        "bootstrap_gap_manifest": {
+            name: list(entries) for name, entries in state.bootstrap_gap_manifest.items()
+        },
         "bootstrap_through_day": state.bootstrap_through_day,
         "bootstrap_candidate_state_digest": state.bootstrap_candidate_state_digest,
         "bootstrap_seed_digest": state.bootstrap_seed_digest,
@@ -737,6 +779,7 @@ _STATE_FIELDS = {
     "products_manifest_digest",
     "supported_oi_products",
     "bootstrap_source_manifest",
+    "bootstrap_gap_manifest",
     "bootstrap_through_day",
     "bootstrap_candidate_state_digest",
     "bootstrap_seed_digest",
@@ -847,6 +890,7 @@ def _state_from_payload(
         products_manifest_digest=str(raw["products_manifest_digest"]),
         supported_oi_products=tuple(supported),
         bootstrap_source_manifest=_valid_source_manifest(raw["bootstrap_source_manifest"]),
+        bootstrap_gap_manifest=_valid_gap_manifest(raw["bootstrap_gap_manifest"]),
         bootstrap_through_day=str(raw["bootstrap_through_day"]),
         bootstrap_candidate_state_digest=str(raw["bootstrap_candidate_state_digest"]),
         bootstrap_seed_digest=str(raw["bootstrap_seed_digest"]),
@@ -1102,6 +1146,7 @@ _SEED_FIELDS = {
     "products_manifest_digest",
     "supported_oi_products",
     "bootstrap_source_manifest",
+    "bootstrap_gap_manifest",
     "bootstrap_through_day",
     "last_completed_input_day",
     "last_completed_target_day",
@@ -1123,6 +1168,9 @@ def _seed_payload(seed: Stress90BootstrapSeed) -> dict[str, object]:
         "products_manifest_digest": seed.products_manifest_digest,
         "supported_oi_products": list(seed.supported_oi_products),
         "bootstrap_source_manifest": dict(seed.bootstrap_source_manifest),
+        "bootstrap_gap_manifest": {
+            name: list(entries) for name, entries in seed.bootstrap_gap_manifest.items()
+        },
         "bootstrap_through_day": seed.bootstrap_through_day,
         "last_completed_input_day": seed.last_completed_input_day,
         "last_completed_target_day": seed.last_completed_target_day,
@@ -1152,6 +1200,7 @@ def _validate_seed(
     if seed.supported_oi_products != definition.oi_products:
         raise Stress90StateIntegrityError("bootstrap seed supported OI products mismatch")
     sources = _valid_source_manifest(seed.bootstrap_source_manifest)
+    gaps = _valid_gap_manifest(seed.bootstrap_gap_manifest)
     through = _valid_day(seed.bootstrap_through_day, name="bootstrap seed through day")
     input_day = _valid_day(seed.last_completed_input_day, name="bootstrap seed input day")
     target_day = _valid_day(seed.last_completed_target_day, name="bootstrap seed target day")
@@ -1204,6 +1253,7 @@ def _validate_seed(
         products_manifest_digest=seed.products_manifest_digest,
         supported_oi_products=seed.supported_oi_products,
         bootstrap_source_manifest=sources,
+        bootstrap_gap_manifest=gaps,
         bootstrap_through_day=through,
         bootstrap_candidate_state_digest=expected_candidate_digest,
         historical_candidate_weight_sha256=seed.historical_candidate_weight_sha256,
@@ -1227,6 +1277,7 @@ def _seed_from_payload(
         products_manifest_digest=str(raw["products_manifest_digest"]),
         supported_oi_products=tuple(supported),
         bootstrap_source_manifest=_valid_source_manifest(raw["bootstrap_source_manifest"]),
+        bootstrap_gap_manifest=_valid_gap_manifest(raw["bootstrap_gap_manifest"]),
         bootstrap_through_day=str(raw["bootstrap_through_day"]),
         last_completed_input_day=str(raw["last_completed_input_day"]),
         last_completed_target_day=str(raw["last_completed_target_day"]),

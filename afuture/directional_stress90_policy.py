@@ -235,30 +235,42 @@ def apply_oi_confirmation_row(
         raise Stress90InvariantError(f"prior OI contains new product support: {unknown_prior}")
     supported = {str(product).upper() for product in supported_products}
 
-    normalized_flow: dict[str, int] = {}
-    for product in sorted(supported & set(raw)):
-        raw_flow = completed_flow.get(product)
-        if raw_flow is None or (
-            isinstance(raw_flow, (float, np.floating)) and not isfinite(float(raw_flow))
-        ):
-            raise Stress90InputIncomplete(f"missing completed OI flow: {product}")
-        if isinstance(raw_flow, bool) or raw_flow not in (-1, 0, 1):
-            raise Stress90InvariantError(f"invalid completed OI flow for {product}: {raw_flow}")
-        normalized_flow[product] = int(raw_flow)
-
     output: dict[str, float] = {}
     for product, target in raw.items():
         current = float(prior.get(product, 0.0))
+        same_side = (
+            abs(current) > _OI_EPS and abs(target) > _OI_EPS and (target > 0.0) == (current > 0.0)
+        )
+        needs_confirmation = product in supported and (
+            (abs(current) <= _OI_EPS and abs(target) > _OI_EPS)
+            or ((target > 0.0) != (current > 0.0) and abs(target) > _OI_EPS)
+            or (same_side and abs(target) > abs(current) + _OI_EPS)
+        )
+        raw_flow = completed_flow.get(product)
+        if needs_confirmation and (
+            raw_flow is None
+            or (isinstance(raw_flow, (float, np.floating)) and not isfinite(float(raw_flow)))
+        ):
+            raise Stress90InputIncomplete(f"missing completed OI flow: {product}")
+        if raw_flow is not None and not (
+            isinstance(raw_flow, (float, np.floating)) and not isfinite(float(raw_flow))
+        ):
+            if isinstance(raw_flow, bool) or raw_flow not in (-1, 0, 1):
+                raise Stress90InvariantError(f"invalid completed OI flow for {product}: {raw_flow}")
+            flow = int(raw_flow)
+        else:
+            flow = 0
+
         if product not in supported:
             applied = target
         elif abs(target) <= _OI_EPS:
             applied = 0.0
         elif abs(current) <= _OI_EPS:
-            applied = target if normalized_flow[product] == (1 if target > 0.0 else -1) else 0.0
+            applied = target if flow == (1 if target > 0.0 else -1) else 0.0
         elif (target > 0.0) != (current > 0.0):
-            applied = target if normalized_flow[product] == (1 if target > 0.0 else -1) else 0.0
+            applied = target if flow == (1 if target > 0.0 else -1) else 0.0
         elif abs(target) > abs(current) + _OI_EPS:
-            applied = target if normalized_flow[product] == (1 if target > 0.0 else -1) else current
+            applied = target if flow == (1 if target > 0.0 else -1) else current
         else:
             applied = target
         if abs(applied) > abs(target) + _OI_EPS:
@@ -276,11 +288,11 @@ def _completed_return_sum(
     lookback: int,
 ) -> float | None:
     values = tuple(float(value) for value in close_values)
-    if any(not isfinite(value) or value <= 0.0 for value in values):
-        raise Stress90InputIncomplete("completed close history must be finite and positive")
     if len(values) < lookback + 1:
         return None
     selected = values[-(lookback + 1) :]
+    if any(not isfinite(value) or value <= 0.0 for value in selected):
+        return None
     return float(
         sum(selected[index] / selected[index - 1] - 1.0 for index in range(1, len(selected)))
     )
@@ -644,12 +656,15 @@ def step_stress90_candidate(
         completed_flow=raw_oi_flow,
         supported_products=definition.oi_products,
     )
-    normalized_oi_flow: dict[str, int] = {}
+    normalized_oi_flow: dict[str, int | None] = {}
     for product in definition.oi_products:
         value = raw_oi_flow[product]
-        if value is None:  # pragma: no cover - rejected by apply_oi_confirmation_row above
-            raise Stress90InputIncomplete(f"missing completed OI flow: {product}")
-        normalized_oi_flow[product] = int(value)
+        normalized_oi_flow[product] = (
+            None
+            if value is None
+            or (isinstance(value, (float, np.floating)) and not isfinite(float(value)))
+            else int(value)
+        )
     approved = apply_cost_gate_row(
         oi_weights=oi,
         prior_approved=prior_state.last_cost_approved_weights,
@@ -775,9 +790,10 @@ def build_stress90_candidate_path(
         completed_close_prices,
         name="completed close prices",
         products=definition.products,
-        require_finite=True,
+        require_finite=False,
     )
-    if bool((close <= 0.0).any().any()):
+    finite_close = close.where(np.isfinite(close))
+    if bool((finite_close <= 0.0).any().any()):
         raise Stress90InputIncomplete("completed close prices must be positive")
     flow = _normalized_frame(
         confirming_flow,
