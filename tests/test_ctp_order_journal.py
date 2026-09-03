@@ -995,6 +995,21 @@ def test_broker_runtime_configuration_never_uses_full_cold_archive_loader(
     assert restarted.owns_order(order_id)
 
 
+def test_cold_start_checkpoint_treats_never_created_journal_as_empty(
+    tmp_path: Path,
+) -> None:
+    from afuture.broker.ctp_order_journal import CtpOrderSubmissionJournal
+
+    path = tmp_path / "stress90_ctp_orders.json"
+    assert CtpOrderSubmissionJournal(path).compact_terminal() == 0
+
+    broker = CtpBroker(_credentials())
+    _configure(broker, path)
+    broker.checkpoint_order_submission_journal()
+
+    assert not path.exists()
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
