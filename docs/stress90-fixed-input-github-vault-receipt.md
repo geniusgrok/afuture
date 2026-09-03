@@ -42,6 +42,22 @@
 
 ## 验证结果
 
+2026-09-03 对上述五份原始字节执行 production bootstrap 集成复验，确认归档本身包含：
+
+- broad daily 与 specific-contract daily 各缺同样 5 个 date/product：
+  `2024-01-30/AP`、`2024-01-30/CF`、`2024-03-01/AP`、`2024-03-01/CF`、
+  `2024-05-10/AP`；
+- `execution_aligned_weights.csv` 缺 `2022-09-21` target；
+- TA 60m OI 缺 `2024-05-20..2024-08-20` 的 66 个 source sessions；这些 target
+  上 archived TA Base 权重均为零。
+
+修复后的 bootstrap 只在五份 SHA 全部等于本收据时接受上述精确清单，并将清单写入
+seed/state identity。真实归档复验得到 957 个 target、candidate SHA-256 仍为
+`8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`、
+`historical_candidate_parity=true`、batch/incremental 最大误差 `0.0`；seed、policy state、
+OI evidence 与从 `2024-05-13` 开始的完整 OHLC cache 均创建并重新加载成功。冻结 CSV
+字节及本收据中的五个 SHA 均未修改。
+
 - 研究 loader 只接受五个 basename、size 和 SHA-256 全部精确匹配的输入；
   任一不匹配立即拒绝，矩阵继续精确校验 manifest size。
 - 当时的 fixed-archive replay 与 archive parity 通过；定向套件

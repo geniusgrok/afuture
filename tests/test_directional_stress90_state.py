@@ -44,6 +44,10 @@ def _seed_and_state():
     seed = Stress90BootstrapSeed.from_candidate_state(
         candidate,
         bootstrap_source_manifest=_SOURCE_MANIFEST,
+        bootstrap_gap_manifest={
+            "broad_daily_missing": ("2024-01-30/AP",),
+            "target_day_skips": ("2022-09-21",),
+        },
         bootstrap_through_day="20260824",
         last_completed_input_day="20260821",
     )
@@ -204,6 +208,13 @@ def test_policy_identity_and_seed_mismatch_fail_closed(tmp_path: Path):
         store.save(replace(state, products_manifest_digest="0" * 64))
     with pytest.raises(Stress90StateIntegrityError, match="bootstrap seed digest"):
         store.save(replace(state, bootstrap_seed_digest="0" * 64))
+    with pytest.raises(Stress90StateIntegrityError, match="bootstrap seed digest"):
+        store.save(
+            replace(
+                state,
+                bootstrap_gap_manifest={"target_day_skips": ("2022-09-22",)},
+            )
+        )
 
 
 def test_same_target_called_one_hundred_times_advances_and_persists_once(tmp_path: Path):
@@ -324,6 +335,13 @@ def test_seed_store_is_immutable_checksummed_and_identity_checked(tmp_path: Path
     raw["seed"]["bootstrap_through_day"] = "20260825"
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(Stress90StateIntegrityError, match="checksum"):
+        store.load_required()
+
+    raw["seed"]["bootstrap_through_day"] = seed.bootstrap_through_day
+    raw["seed"]["bootstrap_gap_manifest"]["target_day_skips"] = ["2022-09-22"]
+    raw["checksum"] = _checksum_envelope(raw)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(Stress90StateIntegrityError, match="seed digest"):
         store.load_required()
 
 

@@ -89,11 +89,22 @@ afuture stress90-bootstrap \
 
 - `historical_candidate_parity=true`；
 - candidate SHA-256 为 `8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`；
-- Base 与 archived `execution_aligned_weights.csv` 逐日一致；
+- 固定归档以 SHA-pin 的 `execution_aligned_weights.csv` 作为 Base 权威输入；由于当前
+  Base 已加入 UNKNOWN-aware 安全语义，不再把新实现对旧归档的反推伪装成历史 parity，
+  官方 profile 的 `base_max_abs_error` 为 `null`；
 - batch/incremental 最大差在实现规定的机器精度范围内；
 - `stress90_bootstrap_seed.json` 与 `stress90_policy_state.json` 成功创建。
 
-若任一文件不存在、SHA 不匹配或 parity 失败，立即停止。禁止下载另一版本数据、修改摘要或生成伪 seed。seed 只继承候选 state 和完整 prior HHI，不继承历史回测账户收益。
+这组固定字节含已审计的精确缺口：broad daily 与 specific-contract daily 各有相同的
+5 个 date/product 缺口，weights 缺 `2022-09-21` target，TA 60m OI 缺
+`2024-05-20..2024-08-20` 的 66 个 source sessions。代码只对这组完整 SHA manifest
+和这份精确清单豁免；多一个、少一个或位置变化均失败。缺口清单写入 seed 并参与
+`seed_digest`。未知 OI 不得支持 entry、加仓或反转；未知 close 不得支持 entry 或同向
+加仓；二者都不阻止减仓或退出。live OHLC cache 从最后缺口后的首个完整 session 开始。
+
+若任一文件不存在、SHA 不匹配、缺口清单变化或 candidate parity 失败，立即停止。
+禁止下载另一版本数据、修改摘要或生成伪 seed。seed 只继承候选 state 和完整 prior HHI，
+不继承历史回测账户收益。
 
 ## 4. 首次 live identity activation
 
