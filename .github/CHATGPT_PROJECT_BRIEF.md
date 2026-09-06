@@ -139,18 +139,11 @@ CTP、Shadow 和 live 操作必须按相应 runbook 与 production checklist 执
 - 不得把计划执行写成已验证完成。
 - 不得根据旧聊天猜测当前分支、SHA、PR 或 CI 状态。
 
-## 10. Context Loading Protocol
+## 10. Task Entry Points
 
-1. 新开发任务可以直接使用自然语言提出，不要求预先填写固定 Prompt。
-2. 开始任务时先读取本文件。
-3. 搜索与任务相关的开放 PR、分支和 Issue。
-4. 如果存在匹配工作，从现有现场原地继续。
-5. 当前动态任务状态默认维护在 Pull Request 正文。
-6. 不强制普通单 PR 任务创建 Issue。
-7. 优先读取目标代码、直接调用者、相关测试和直接相关配置。
-8. 只有证据不足、状态冲突或影响范围扩大时才扩大读取。
-9. 不默认加载完整仓库、完整聊天、完整日志或全部 GitHub Actions 历史。
-10. 长对话交接使用 `conversation-continuity-guard`，但 GitHub 当前现场仍是状态权威来源。
+用户可直接用自然语言提出或续接任务，无需固定 Prompt。涉及仓库分析或改动时，先读取适用的 [AGENTS.md](../AGENTS.md)，再按需读取本 brief、相关权威文档及任务现场。读取范围、授权、续接、远端保存和验证方式统一遵循 `AGENTS.md`，此处不另设流程。
+
+当前任务状态使用 [PR 模板](pull_request_template.md) 维护在匹配的 Pull Request 正文；普通单 PR 任务不额外要求 Issue。上下文和交接技能可用时按需辅助恢复，不替代 GitHub 现场核验；缺失时使用现有工具继续。
 
 ## 11. References
 
