@@ -16,7 +16,7 @@ Follow the current task's scope and acceptance criteria within platform permissi
 - Continue safe, clearly authorized work without asking for another "continue". Resolve factual ambiguities by reading; ask only for a material decision that cannot be resolved safely. Do not infer permission for spending, real trading, credential/permission changes, irreversible operations or unrelated external writes.
 - Resume matching active task branches. For new work, use a feature branch from a verified default-branch SHA and deliver through a PR; do not push directly to the default branch. Merge only with explicit authorization, preserving required reviews/checks, branch protection and conflict checks; verify the default branch after merging.
 - Save the first coherent result and meaningful later milestones as verified commits; push authorized checkpoints and verify remote SHA. No empty bootstrap commit, temporary bootstrap file or new Issue is required for routine work; honor any explicit task-specific pre-edit initialization requirement. Record current state and necessary recovery evidence locations in the matching PR using [.github/pull_request_template.md](.github/pull_request_template.md), not permanent instructions.
-- Without explicit authorization, do not `reset`, `clean`, `rebase`, force-push`, rewrite history, delete branches/worktrees, discard unknown work or overwrite unrelated changes. Never commit secrets or claim an unverified push succeeded.
+- Without explicit authorization, do not `reset`, `clean`, `rebase`, force-push, rewrite history, delete branches/worktrees, discard unknown work or overwrite unrelated changes. Never commit secrets or claim an unverified push succeeded.
 
 ## Verification and completion
 
