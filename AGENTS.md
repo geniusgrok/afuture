@@ -12,6 +12,7 @@
 - Save coherent recoverable milestones as commits, push when authorized, verify the remote SHA, and keep mutable recovery state in the matching PR.
 - Without explicit authorization, do not reset, clean, rebase, force-push, rewrite history, discard unknown work, or commit secrets.
 - Verify the smallest affected scope first and expand by impact. Run the complete applicable acceptance on the stable final candidate or when the active contract requires it earlier. Reuse evidence only while its covered behavior, inputs, dependencies, configuration and environment remain equivalent; new messages/handoffs alone do not invalidate it, while a new SHA still needs applicable exact-HEAD checks.
+- Treat a failed check, rejected candidate or invalidated hypothesis as feedback, not task completion. Diagnose the failure and, if the original goal remains reachable, continue with the shortest valid alternative path. Do not weaken acceptance criteria, suppress failed evidence, or bypass safety, authorization or frozen contracts; stop only when the goal is shown unreachable under current constraints or no safe authorized action remains.
 - Behavior-neutral documentation changes need relevant link/command/governance checks, not unrelated stress or economic reruns once neutrality is established. Do not weaken business gates, fixtures or safety checks to make checks pass.
 
 ## afuture boundaries
