@@ -1,0 +1,170 @@
+d({"message": f"queued-{index}"})
+-
+-        assert sink.pending_count <= 2
+-        assert sink.dropped_count >= 1
++        sink.send({"message": "queued"})
++        with pytest.raises(RuntimeError, match="durability"):
++            sink.send({"message": "cannot-fit"})
++        assert sink.pending_count == 2
++        assert sink.delivery_status()["error"]
+     finally:
+         release.set()
+         sink.close(timeout_seconds=1)
+@@ -65,7 +71,9 @@ def test_local_alert_evidence_is_written_before_blocked_webhook_delivery(
+         lambda *_args, **_kwargs: _BlockingResponse(entered, release),
+     )
+     path = tmp_path / "alerts.jsonl"
+-    webhook = alerts.WebhookAlertSink("https://example.invalid/hook")
++    webhook = alerts.WebhookAlertSink(
++        "https://example.invalid/hook", outbox_path=tmp_path / "outbox.db"
++    )
+     manager = alerts.AlertManager([alerts.FileAlertSink(path), webhook])
+     try:
+         manager.critical("halt now", {"reason": "unknown trade"})
+@@ -79,7 +87,7 @@ def test_local_alert_evidence_is_written_before_blocked_webhook_delivery(
+         manager.close(timeout_seconds=1)
+ 
+ 
+-def test_alert_manager_close_is_bounded_while_webhook_is_stuck(monkeypatch):
++def test_alert_manager_close_is_bounded_and_retains_undelivered_events(tmp_path, monkeypatch):
+     import afuture.alerts as alerts
+ 
+     entered = Event()
+@@ -89,7 +97,9 @@ def test_alert_manager_close_is_bounded_while_webhook_is_stuck(monkeypatch):
+         "urlopen",
+         lambda *_args, **_kwargs: _BlockingResponse(entered, release),
+     )
+-    webhook = alerts.WebhookAlertSink("https://example.invalid/hook")
++    webhook = alerts.WebhookAlertSink(
++        "https://example.invalid/hook", outbox_path=tmp_path / "outbox.db"
++    )
+     manager = alerts.AlertManager([webhook])
+     manager.critical("halt")
+     assert entered.wait(timeout=1)
+@@ -99,6 +109,29 @@ def test_alert_manager_close_is_bounded_while_webhook_is_stuck(monkeypatch):
+     started = monotonic()
+     manager.close(timeout_seconds=0.01)
+     assert monotonic() - started < 0.2
+-    assert webhook.pending_count == 0
+-    assert webhook.dropped_count == 2
++    assert webhook.pending_count == 3
++    assert webhook.delivery_status()["http_accepted"] == 0
+     release.set()
++
++
++def test_outbox_restart_keeps_identity_attempts_and_http_receipt(tmp_path):
++    from afuture.alert_outbox import AlertOutbox, AlertOutboxError
++
++    path = tmp_path / "outbox.db"
++    first = AlertOutbox(path, "https://example.invalid/a")
++    event = {"timestamp": "2026-09-23T01:00:00Z", "message": "unknown order", "level": "CRITICAL"}
++    identity = first.enqueue(event)
++    assert first.enqueue(event) == identity
++    restarted = AlertOutbox(path, "https://example.invalid/a")
++    selected = restarted.next_event()
++    assert selected == (identity, event, 1)
++    assert restarted.status()["pending"] == 1
++    with pytest.raises(AlertOutboxError, match="endpoint changed"):
++        AlertOutbox(path, "https://example.invalid/b")
++    with pytest.raises(AlertOutboxError, match="did not accept"):
++        restarted.accepted(identity, 500)
++    restarted.accepted(identity, 202)
++    status = AlertOutbox(path, "https://example.invalid/a").status()
++    assert status["pending"] == 0
++    assert status["http_accepted"] == 1
++    assert status["delivery_evidence"] == "http_acceptance_not_human_read"
+diff --git a/tests/test_runtime_lease.py b/tests/test_runtime_lease.py
+index 6386b84..0b7a4ba 100644
+--- a/tests/test_runtime_lease.py
++++ b/tests/test_runtime_lease.py
+@@ -169,3 +169,32 @@ def test_runtime_lease_capability_uses_real_runtime_identity(tmp_path: Path):
+         assert lease.authorizes_technical_activation(identity, real_runtime)
+     finally:
+         lease.release()
++
++
++def test_cli_import_without_fcntl_and_live_lease_fails_before_writes(tmp_path):
++    import os
++    import subprocess
++    import sys
++
++    probe = """
++import sys
++sys.modules['fcntl'] = None
++from afuture.cli import build_parser
++from afuture.runtime_lease import AccountExclusiveRuntimeLease, RuntimeLeaseError
++build_parser().format_help()
++try:
++    AccountExclusiveRuntimeLease(sys.argv[1], 'e'*64, role='live').acquire()
++except RuntimeLeaseError:
++    pass
++else:
++    raise AssertionError('live lease unexpectedly available without fcntl')
++"""
++    result = subprocess.run(
++        [sys.executable, "-c", probe, str(tmp_path / "runtime")],
++        env={**os.environ},
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++    assert result.returncode == 0, result.stderr
++    assert not (tmp_path / "runtime").exists()
+diff --git a/tests/test_stress90_activation_permit.py b/tests/test_stress90_activation_permit.py
+index c923853..a3c8ead 100644
+--- a/tests/test_stress90_activation_permit.py
++++ b/tests/test_stress90_activation_permit.py
+@@ -739,7 +739,7 @@ def test_consumption_precedes_single_authoritative_halted_to_running_save(
+     assert running.state.kill_switch is False
+     assert running.state.metadata_verified is False
+     assert permit_store.load_required_record().permit.status == "consumed"
+-    with pytest.raises(RuntimeError, match="not issued"):
++    with pytest.raises(RuntimeError, match="state changed"):
+         activate_stress90_from_permit(
+             state_store=state_store,
+             permit_store=permit_store,
+@@ -748,7 +748,7 @@ def test_consumption_precedes_single_authoritative_halted_to_running_save(
+         )
+ 
+ 
+-def test_crash_after_consume_leaves_halted_consumed_and_requires_new_doctor(
++def test_crash_after_consume_resumes_only_the_exact_uncommitted_activation(
+     tmp_path: Path,
+ ) -> None:
+     from afuture.state import StateStore
+@@ -790,12 +790,33 @@ def test_crash_after_consume_leaves_halted_consumed_and_requires_new_doctor(
+     persisted = real_store.load_required_record()
+     assert persisted.state.runtime_mode == RuntimeMode.HALTED.value
+     assert persisted.state.kill_switch is True
+-    with pytest.raises(RuntimeError, match="not issued"):
++    consumed = permit_store.load_required_record()
++    for wrong in (
++        replace(evidence, account_identity_digest="9" * 64),
++        replace(evidence, generic_state_sequence=evidence.generic_state_sequence + 1),
++    ):
++        with pytest.raises(RuntimeError, match="evidence mismatch"):
++            activate_stress90_from_permit(
++                state_store=real_store,
++                permit_store=permit_store,
++                evidence=wrong,
++                expected_permit_sequence=consumed.sequence,
++            )
++    running = activate_stress90_from_permit(
++        state_store=real_store,
++        permit_store=permit_store,
++        evidence=evidence,
++        expected_permit_sequence=consumed.sequence,
++    )
++    assert running.state.runtime_mode == RuntimeMode.RUNNING.value
++    assert running.sequence == persisted.sequence + 1
++    assert permit_store.load_required_record() == consumed
++    with pytest.raises(RuntimeError, match="state changed"):
+         activate_stress90_from_permit(
+             state_store=real_store,
+             permit_store=permit_store,
+             evidence=evidence,
+-            expected_permit_sequence=permit_store.load_required_record().sequence,
++            expected_permit_sequence=consumed.sequence,
+         )
+ 
+ 
