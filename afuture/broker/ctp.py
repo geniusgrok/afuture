@@ -61,6 +61,8 @@ from .ctp_session_query import (
     build_ctp_session_activity_evidence,
     plan_ctp_session_journal_recovery,
 )
+from .ctp_settlement_query import CtpSettlementDocument, CtpSettlementQuery
+from .ctp_snapshot_query import CtpSnapshotQuery, CtpSnapshotQueryError
 
 _CHINA = ZoneInfo("Asia/Shanghai")
 
@@ -239,6 +241,8 @@ class CtpBroker(Broker):
         self._contract_catalog_bootstrap_registration_open = True
         self._ctp_query_request_lock = Lock()
         self._session_refresh_lock = Lock()
+        self._settlement_query = CtpSettlementQuery()
+        self._snapshot_query_error = ""
         self._session_query_ingress_lock = RLock()
         self._session_query_state_lock = Lock()
         self._session_query_accumulators = {
@@ -593,6 +597,8 @@ class CtpBroker(Broker):
                 "CTP live dependencies are missing; install with: pip install -e '.[live]'"
             ) from exc
 
+        domain_broker = self
+
         class TrackedCtpTdApi(CtpTdApi):
             """在官方交易 API 上增加查询完成边界，不改动官方下单逻辑。"""
 
@@ -601,6 +607,21 @@ class CtpBroker(Broker):
                 self._afuture_rate_waiters: dict[int, _RateWaiter] = {}
                 self._afuture_expected_order_ref: int | None = None
                 self._afuture_request_id_lock = RLock()
+                self._afuture_snapshot_callback_lock = RLock()
+
+                def snapshot_query(kind: str) -> CtpSnapshotQuery:
+                    return CtpSnapshotQuery(
+                        kind,
+                        broker_id=domain_broker.credentials.broker_id,
+                        investor_id=domain_broker.credentials.investor_id
+                        or domain_broker.credentials.user_id,
+                        account_id=domain_broker.credentials.account_id,
+                        currency_id=domain_broker.credentials.currency_id,
+                        timeout_seconds=domain_broker.snapshot_stale_seconds,
+                    )
+
+                self._afuture_account_query = snapshot_query("account")
+                self._afuture_position_query = snapshot_query("position")
 
             def _afuture_allocate_request_id(self) -> int:
                 with self._afuture_request_id_lock:
@@ -653,23 +674,103 @@ class CtpBroker(Broker):
                 with self._afuture_request_id_lock:
                     return super().query_position(*args, **kwargs)
 
+            def _afuture_snapshot_failure(self, exc):
+                if not domain_broker._snapshot_query_error:
+                    domain_broker._snapshot_query_error = f"CTP snapshot query failed: {exc}"
+                    domain_broker._enqueue_critical(
+                        BrokerEvent("broker_error", domain_broker._snapshot_query_error)
+                    )
+
+            def _afuture_query_snapshot(self, guard, request, request_id, native):
+                try:
+                    if not guard.begin(request_id, self.getTradingDay()):
+                        return -2
+                    status = native(request, request_id)
+                    guard.submitted(request_id, status)
+                    return status
+                except Exception as exc:
+                    self._afuture_snapshot_failure(exc)
+                    return -1
+
+            def reqQryTradingAccount(self, request, request_id):
+                return self._afuture_query_snapshot(
+                    self._afuture_account_query,
+                    request,
+                    request_id,
+                    super().reqQryTradingAccount,
+                )
+
+            def reqQryInvestorPosition(self, request, request_id):
+                return self._afuture_query_snapshot(
+                    self._afuture_position_query,
+                    request,
+                    request_id,
+                    super().reqQryInvestorPosition,
+                )
+
             def onRspQryInvestorPosition(self, data, error, reqid, last):
-                error_id = int((error or {}).get("ErrorID", 0))
-                if error_id:
-                    super().onRspQryInvestorPosition(data, error, reqid, last)
-                    return
-                if not last:
-                    super().onRspQryInvestorPosition(data, error, reqid, False)
-                    return
-                if data:
-                    super().onRspQryInvestorPosition(data, error, reqid, False)
-                snapshot = list(self.positions.values())
-                for position in snapshot:
-                    self.gateway.on_position(position)
-                self.positions.clear()
-                callback = getattr(self.gateway, "_afuture_position_snapshot_callback", None)
-                if callable(callback):
-                    callback(snapshot)
+                with self._afuture_snapshot_callback_lock:
+                    try:
+                        rows = self._afuture_position_query.observe(
+                            data, error, reqid, last, trading_day=self.getTradingDay()
+                        )
+                        if rows is None:
+                            return
+                        if self.positions:
+                            raise CtpSnapshotQueryError("unowned SDK position scratch remains")
+                        # Feed each deduplicated row once and never let the SDK publish
+                        # a partial/cross-request snapshot on its own last flag.
+                        for row in rows:
+                            super().onRspQryInvestorPosition(row, {}, reqid, False)
+                        snapshot = list(self.positions.values())
+                        expected = {
+                            (row["InstrumentID"], row["ExchangeID"])
+                            for row in rows
+                            if row["Position"] > 0
+                        }
+                        observed = {(p.symbol, p.exchange.value) for p in snapshot if p.volume > 0}
+                        if observed != expected:
+                            raise CtpSnapshotQueryError(
+                                "SDK dropped or misidentified a held contract"
+                            )
+                        # The official SDK keys positions without the exchange. Refuse
+                        # collisions instead of combining two distinct contract identities.
+                        if len({row["InstrumentID"] for row in rows if row["Position"] > 0}) != len(
+                            expected
+                        ):
+                            raise CtpSnapshotQueryError("ambiguous cross-exchange SDK position key")
+                        expected_volume: dict[tuple[str, str, str], int] = {}
+                        for row in rows:
+                            key = (row["InstrumentID"], row["ExchangeID"], row["PosiDirection"])
+                            expected_volume[key] = expected_volume.get(key, 0) + row["Position"]
+                        observed_volume: dict[tuple[str, str, str], float] = {}
+                        for position in snapshot:
+                            side = domain_broker._direction_to_side(position.direction)
+                            key = (
+                                position.symbol,
+                                position.exchange.value,
+                                "2" if side is OrderSide.BUY else "3",
+                            )
+                            observed_volume[key] = observed_volume.get(key, 0) + position.volume
+                        if {k: v for k, v in expected_volume.items() if v} != {
+                            k: v for k, v in observed_volume.items() if v
+                        }:
+                            raise CtpSnapshotQueryError("SDK changed held quantity or direction")
+                        if rows and self.getTradingDay() != rows[0]["TradingDay"]:
+                            raise CtpSnapshotQueryError("trading day changed during SDK conversion")
+                        snapshot = [p for p in snapshot if p.volume > 0]
+                        for position in snapshot:
+                            self.gateway.on_position(position)
+                        callback = getattr(
+                            self.gateway, "_afuture_position_snapshot_callback", None
+                        )
+                        if callable(callback):
+                            callback(snapshot)
+                    except Exception as exc:
+                        self._afuture_snapshot_failure(exc)
+                    finally:
+                        # SDK accumulation is disposable parsing scratch, not account truth.
+                        self.positions.clear()
 
             def onRspQryInstrument(self, data, error, reqid, last):
                 # Official VeighNa owns ContractData; afuture separately publishes only
@@ -706,6 +807,11 @@ class CtpBroker(Broker):
                         bool(last),
                     )
 
+            def onRspQrySettlementInfo(self, data, error, reqid, last):
+                callback = getattr(self.gateway, "_afuture_settlement_query_callback", None)
+                if callable(callback):
+                    callback(data, error, reqid, last)
+
             def _capture_rate(self, kind: str, data, error, reqid: int, last: bool) -> None:
                 waiter = self._afuture_rate_waiters.get(reqid)
                 if waiter is None or waiter.get("kind") != kind:
@@ -726,14 +832,22 @@ class CtpBroker(Broker):
                 self._capture_rate("commission", data, error, reqid, last)
 
             def onRspQryTradingAccount(self, data, error, reqid, last):
-                # Capture cumulative CTP Deposit/Withdraw before VeighNa emits
-                # AccountData, so the domain snapshot can prove cash-flow identity.
-                if not int((error or {}).get("ErrorID", 0)) and data:
-                    callback = getattr(self.gateway, "_afuture_account_cash_flow_callback", None)
-                    if callable(callback):
-                        if not callback(dict(data)):
+                with self._afuture_snapshot_callback_lock:
+                    try:
+                        rows = self._afuture_account_query.observe(
+                            data, error, reqid, last, trading_day=self.getTradingDay()
+                        )
+                        if rows is None:
                             return
-                super().onRspQryTradingAccount(data, error, reqid, last)
+                        row = rows[0]
+                        callback = getattr(
+                            self.gateway, "_afuture_account_cash_flow_callback", None
+                        )
+                        if callable(callback) and not callback(dict(row)):
+                            return
+                        super().onRspQryTradingAccount(row, {}, reqid, True)
+                    except Exception as exc:
+                        self._afuture_snapshot_failure(exc)
 
         class TrackedCtpMdApi(CtpMdApi):
             """Preserve raw CTP day identity before VeighNa converts TickData."""
@@ -784,6 +898,7 @@ class CtpBroker(Broker):
                 self._afuture_contract_catalog_callback = None
                 self._afuture_account_cash_flow_callback = None
                 self._afuture_session_query_callback = None
+                self._afuture_settlement_query_callback = None
                 self._afuture_critical_ingress_callback = None
                 self._afuture_raw_market_connection_callback = None
                 self._afuture_raw_market_identity = None
@@ -848,6 +963,7 @@ class CtpBroker(Broker):
         gateway._afuture_contract_catalog_callback = self._handle_contract_catalog_response
         gateway._afuture_account_cash_flow_callback = self._handle_account_cash_flow
         gateway._afuture_session_query_callback = self._handle_session_query_response
+        gateway._afuture_settlement_query_callback = self._settlement_query.observe
         gateway._afuture_critical_ingress_callback = self._mark_critical_upstream_pending
         gateway._afuture_raw_market_connection_callback = self._handle_raw_market_connection_state
         self._event_engine.register(runtime["EVENT_TICK"], self._on_tick)
@@ -922,6 +1038,10 @@ class CtpBroker(Broker):
         )
 
     def health_error(self, *, now_monotonic: float | None = None) -> str | None:
+        if self._snapshot_query_error:
+            return self._snapshot_query_error
+        if self._settlement_query.integrity_error:
+            return self._settlement_query.integrity_error
         with self._contract_catalog_refresh_state_lock:
             catalog_sticky_error = self._contract_catalog_sticky_error
         if catalog_sticky_error:
@@ -1582,6 +1702,38 @@ class CtpBroker(Broker):
             self._contract_catalog.values(),
             key=lambda item: (item.product.lower(), item.expiry, item.symbol),
         )
+
+    def capture_settlement_document(
+        self, trading_day: str, *, timeout_seconds: float = 30.0
+    ) -> CtpSettlementDocument:
+        """Read a complete decoded statement, never promote it to financial proof."""
+        day = self._validate_trading_day(trading_day)
+        current_day = self.get_trading_day()
+        if day > current_day:
+            raise RuntimeError("cannot query a future settlement trading day")
+        if not self._has_expected_account_identity or not self.account_identity_verified:
+            raise RuntimeError("settlement capture requires verified explicit account identity")
+        if self._main_engine is None or not self.is_ready():
+            raise RuntimeError("CTP is not ready for settlement capture")
+        gateway = self._main_engine.get_gateway(self.gateway_name)
+        td_api = getattr(gateway, "td_api", None)
+        native_query = getattr(td_api, "reqQrySettlementInfo", None)
+        if not callable(native_query):
+            raise RuntimeError("native CTP SettlementInfo query is unavailable")
+        document = self._settlement_query.query(
+            native_query,
+            request_id=self._allocate_ctp_query_request_id(td_api),
+            broker_id=self.credentials.broker_id,
+            investor_id=self.credentials.investor_id or self.credentials.user_id,
+            account_id=self.credentials.account_id,
+            currency_id=self.credentials.currency_id,
+            trading_day=day,
+            timeout_seconds=timeout_seconds,
+        )
+        if self.get_trading_day() != current_day or not self.account_identity_verified:
+            raise RuntimeError("CTP session changed during settlement capture")
+        self._settlement_query.require_current(document)
+        return document
 
     def _allocate_ctp_query_request_id(self, td_api) -> int:
         """Allocate one request id under the afuture query serialization boundary."""

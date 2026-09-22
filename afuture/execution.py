@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime, timezone
+from time import monotonic
 
 from .economics import estimate_net_edge
 from .models import (
@@ -39,6 +42,9 @@ class PairExecutor:
         aggressive_ticks: int = 1,
         slippage_ticks: int = 1,
         close_today_first: bool = False,
+        historical_mode: bool = False,
+        health_clock: Callable[[], datetime] | None = None,
+        elapsed_clock: Callable[[], float] = monotonic,
     ) -> None:
         self.broker = broker
         self.risk_manager = risk_manager
@@ -46,6 +52,9 @@ class PairExecutor:
         self.aggressive_ticks = max(0, aggressive_ticks)
         self.slippage_ticks = max(0, slippage_ticks)
         self.close_today_first = close_today_first
+        self.historical_mode = historical_mode
+        self.health_clock = health_clock or (lambda: datetime.now(timezone.utc))
+        self.elapsed_clock = elapsed_clock
         self.rate_limiter = OrderRateLimiter(risk_manager.config.max_orders_per_minute)
 
     def execute_signal(
@@ -64,7 +73,8 @@ class PairExecutor:
         if not self.broker.is_ready():
             return ExecutionResult(False, reason="broker is not ready")
 
-        quote_decision = self.risk_manager.check_quotes([near, far], signal.timestamp)
+        now = self._decision_time(signal.timestamp)
+        quote_decision = self.risk_manager.check_quotes([near, far], now)
         if not quote_decision.allowed:
             return ExecutionResult(False, reason=quote_decision.reason)
 
@@ -72,9 +82,7 @@ class PairExecutor:
             SignalAction.LONG_SPREAD,
             SignalAction.SHORT_SPREAD,
         }
-        calendar_decision = self.risk_manager.check_pair_calendar(
-            pair, signal.timestamp, opening=opening
-        )
+        calendar_decision = self.risk_manager.check_pair_calendar(pair, now, opening=opening)
         if not calendar_decision.allowed:
             return ExecutionResult(False, reason=calendar_decision.reason)
 
@@ -95,17 +103,29 @@ class PairExecutor:
                 return ExecutionResult(False, reason="pair has no matching position to close")
             volume = max(request.volume for request in requests)
 
-        # 两腿属于同一批交易意图，必须使用同一个限速时钟值。信号时间来自已经
-        # 通过行情时效/双腿同步校验的市场事件：历史回放因此不会把数月订单压缩
-        # 到 CPU 的几秒钟；实盘若行情时间戳陈旧或跳变，则上游健康门会先失败关闭。
+        # Only historical replay may advance rate limiting with the market clock.
+        # A live signal timestamp is not evidence that real time has elapsed.
+        if rate_limit_time is not None and not self.historical_mode:
+            return ExecutionResult(False, reason="event rate-limit time is replay-only")
         limiter_now = (
-            signal.timestamp.timestamp() if rate_limit_time is None else float(rate_limit_time)
+            float(rate_limit_time if rate_limit_time is not None else signal.timestamp.timestamp())
+            if self.historical_mode
+            else self.elapsed_clock()
         )
         requests = self._prioritize_requests(requests, near, far)
         order_ids: list[str] = []
         try:
             for request in requests:
-                if not self.rate_limiter.allow(limiter_now):
+                # Metadata queries, callbacks and the first leg can consume the remaining
+                # quote lifetime. Revalidate before EACH broker write, not after the batch.
+                self._require_current_quotes(near, far)
+                if pair.session_windows and not self.risk_manager.is_pair_session_active(
+                    pair, self._decision_time(signal.timestamp)
+                ):
+                    raise RuntimeError("outside configured trading session")
+                if not self.rate_limiter.allow(
+                    limiter_now if self.historical_mode else self.elapsed_clock()
+                ):
                     raise RuntimeError("order rate limit reached")
                 order_ids.append(self.broker.send_order(request))
         except Exception as exc:
@@ -117,6 +137,19 @@ class PairExecutor:
                 volume,
             )
         return ExecutionResult(True, tuple(order_ids), volume=volume)
+
+    def _decision_time(self, event_time: datetime) -> datetime:
+        now = event_time if self.historical_mode else self.health_clock()
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("execution clock must be timezone-aware")
+        return now
+
+    def _require_current_quotes(self, near: Tick, far: Tick) -> None:
+        decision = self.risk_manager.check_quotes(
+            [near, far], self._decision_time(max(near.timestamp, far.timestamp))
+        )
+        if not decision.allowed:
+            raise RuntimeError(decision.reason)
 
     def _prepare_open(
         self,
@@ -207,6 +240,7 @@ class PairExecutor:
 
     def flatten_imbalance(self, pair: PairConfig, near: Tick, far: Tick) -> list[str]:
         """异常状态只发送减仓 FAK；普通报单限速不能阻止紧急减仓。"""
+        self._require_current_quotes(near, far)
         book = PositionBook(self.broker.get_positions())
         order_ids: list[str] = []
         for symbol, tick in (
@@ -332,6 +366,11 @@ class PairExecutor:
         for order_id in order_ids:
             self.broker.cancel_order(order_id)
 
+        try:
+            self._require_current_quotes(near, far)
+        except (RuntimeError, ValueError) as exc:
+            logger.warning("rollback requires current quotes; exposure remains: %s", exc)
+            return
         tick_map = {near.symbol: near, far.symbol: far}
         book = PositionBook(self.broker.get_positions())
         for order_id in order_ids:

@@ -39,6 +39,7 @@ from .scanner import SpreadScanner
 from .state import RuntimeState, StateStore
 
 if TYPE_CHECKING:
+    from .runtime_lease import AccountExclusiveRuntimeLease
     from .stress90_session_authority import Stress90SessionOwnershipProof
 
 _LIVE_ACK = "I_UNDERSTAND_FUTURES_RISK"
@@ -981,21 +982,31 @@ def _initialize_live_engine_after_snapshot(
     engine.initialize_after_ready()
 
 
-def _run_live(config, args, logger) -> int:
-    """完成柜台、快照、元数据、活动订单和持仓安全门后才进入实时循环。"""
+def _run_live(
+    config, args, logger, *, live_runtime_lease: AccountExclusiveRuntimeLease | None = None
+) -> int:
+    """Hold the account lease before constructing any state-writing engine."""
     from .broker.ctp import CtpBroker
+    from .runtime_lease import AccountExclusiveRuntimeLease
+
+    broker = CtpBroker(config.ctp)
+    account_digest = broker.get_account_identity_digest()
+    runtime = Path(config.state_path).parent
+    if live_runtime_lease is not None:
+        if not isinstance(live_runtime_lease, AccountExclusiveRuntimeLease) or not (
+            live_runtime_lease.authorizes_technical_activation(account_digest, runtime)
+        ):
+            raise RuntimeError("live startup requires the held matching account/runtime lease")
+        return _run_live_leased(config, args, logger, broker, live_runtime_lease)
+    with AccountExclusiveRuntimeLease(runtime, account_digest, role="live") as lease:
+        return _run_live_leased(config, args, logger, broker, lease)
+
+
+def _run_live_leased(config, args, logger, broker, lease) -> int:
+    """The caller owns the lease through construction, execution and shutdown."""
     from .journal import AuditJournal
     from .report import write_account_report
 
-    broker = CtpBroker(config.ctp)
-    from .runtime_lease import AccountExclusiveRuntimeLease
-
-    lease = AccountExclusiveRuntimeLease(
-        Path(config.state_path).parent,
-        broker.get_account_identity_digest(),
-        role="live",
-    )
-    lease.acquire()
     quality = _quality_recorder(config)
     engine = _build_cli_engine(
         config,
@@ -1089,7 +1100,6 @@ def _run_live(config, args, logger) -> int:
         except Exception as exc:
             logger.error("关闭前账户报告写入失败：%s", exc)
         engine.stop()
-        lease.release()
     return 0
 
 
@@ -6427,8 +6437,14 @@ def _write_json(payload: dict, output: str | Path | None = None) -> None:
         path.write_text(text + "\n", encoding="utf-8")
 
 
-def run_command(argv: list[str] | None = None) -> int:
+def run_command(
+    argv: list[str] | None = None,
+    *,
+    live_runtime_lease: AccountExclusiveRuntimeLease | None = None,
+) -> int:
     args = build_parser().parse_args(argv)
+    if live_runtime_lease is not None and args.command != "live":
+        raise ValueError("a borrowed live lease is only valid for the live command")
     config = load_config(
         args.config,
         require_ctp_credentials=args.command
@@ -6606,4 +6622,4 @@ def run_command(argv: list[str] | None = None) -> int:
     if config.mode != "live" or config.ctp is None:
         raise ValueError("live command requires system.mode=live")
     _require_production_confirmation(config, args)
-    return _run_live(config, args, logger)
+    return _run_live(config, args, logger, live_runtime_lease=live_runtime_lease)

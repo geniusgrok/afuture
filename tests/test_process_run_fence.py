@@ -12,6 +12,7 @@ from afuture.process_run import (
     ProcessRunStore,
     apply_unclean_restart_fence,
 )
+from afuture.runtime_lease import AccountExclusiveRuntimeLease
 from afuture.state import RuntimeState, StateStore
 
 IDENTITY = {
@@ -81,14 +82,16 @@ def test_unclean_restart_fence_halts_state_invalidates_permit_and_exits_special_
     )
     (tmp_path / "stress90_activation_permit.json").write_text("placeholder", encoding="utf-8")
 
-    result = apply_unclean_restart_fence(
-        process_store=process_store,
-        state_store=state_store,
-        runtime_dir=tmp_path,
-        deployment_digest="a" * 64,
-        runtime_identity_digest="b" * 64,
-        account_identity_digest="c" * 64,
-    )
+    with AccountExclusiveRuntimeLease(tmp_path, "c" * 64, role="live") as lease:
+        result = apply_unclean_restart_fence(
+            process_store=process_store,
+            state_store=state_store,
+            runtime_dir=tmp_path,
+            deployment_digest="a" * 64,
+            runtime_identity_digest="b" * 64,
+            account_identity_digest="c" * 64,
+            lease=lease,
+        )
     assert result.blocked is True
     assert result.exit_code == PROCESS_FENCE_EXIT_CODE
     fenced = state_store.load_required_record()
@@ -121,14 +124,16 @@ def test_restart_fence_uses_exact_state_cas(
         )
 
     monkeypatch.setattr(state_store, "save", tracked_save)
-    apply_unclean_restart_fence(
-        process_store=process_store,
-        state_store=state_store,
-        runtime_dir=tmp_path,
-        deployment_digest="a" * 64,
-        runtime_identity_digest="b" * 64,
-        account_identity_digest="c" * 64,
-    )
+    with AccountExclusiveRuntimeLease(tmp_path, "c" * 64, role="live") as lease:
+        apply_unclean_restart_fence(
+            process_store=process_store,
+            state_store=state_store,
+            runtime_dir=tmp_path,
+            deployment_digest="a" * 64,
+            runtime_identity_digest="b" * 64,
+            account_identity_digest="c" * 64,
+            lease=lease,
+        )
     assert calls[0] == (original.sequence, original.checksum)
 
 
@@ -164,3 +169,126 @@ def test_process_run_rejects_symlink(tmp_path: Path) -> None:
     with pytest.raises(ProcessRunIntegrityError, match="symlink"):
         store.begin(**IDENTITY)
     assert victim.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.parametrize("lease_kind", ["missing", "released", "foreign"])
+def test_restart_fence_without_matching_held_lease_is_read_only(tmp_path, lease_kind):
+    process_store = ProcessRunStore(tmp_path / "process_run.json")
+    process_store.begin(**IDENTITY)
+    state_store = StateStore(tmp_path / "state.json")
+    initial = state_store.save(RuntimeState(kill_switch=False, runtime_mode="RUNNING"))
+    before = process_store.path.read_bytes()
+    lease = None
+    if lease_kind != "missing":
+        lease = AccountExclusiveRuntimeLease(
+            tmp_path, ("e" if lease_kind == "foreign" else "c") * 64, role="live"
+        )
+        lease.acquire()
+        if lease_kind == "released":
+            lease.release()
+    try:
+        with pytest.raises(ProcessRunIntegrityError, match="held account/runtime lease"):
+            apply_unclean_restart_fence(
+                process_store=process_store,
+                state_store=state_store,
+                runtime_dir=tmp_path,
+                deployment_digest="a" * 64,
+                runtime_identity_digest="b" * 64,
+                account_identity_digest="c" * 64,
+                lease=lease,
+            )
+    finally:
+        if lease is not None:
+            lease.release()
+    assert process_store.path.read_bytes() == before
+    assert state_store.load_required_record().checksum == initial.checksum
+
+
+@pytest.mark.parametrize(
+    "field", ["deployment_digest", "runtime_identity_digest", "account_identity_digest"]
+)
+def test_restart_fence_never_adopts_changed_identity(tmp_path, field):
+    process_store = ProcessRunStore(tmp_path / "process_run.json")
+    process_store.begin(**IDENTITY)
+    state_store = StateStore(tmp_path / "state.json")
+    initial = state_store.save(RuntimeState())
+    kwargs = {key: value for key, value in IDENTITY.items() if key != "start_state_checksum"}
+    kwargs[field] = "e" * 64
+    with AccountExclusiveRuntimeLease(
+        tmp_path, kwargs["account_identity_digest"], role="live"
+    ) as lease:
+        with pytest.raises(ProcessRunIntegrityError, match="identity changed"):
+            apply_unclean_restart_fence(
+                process_store=process_store,
+                state_store=state_store,
+                runtime_dir=tmp_path,
+                lease=lease,
+                **kwargs,
+            )
+    assert state_store.load_required_record().checksum == initial.checksum
+    assert process_store.load_required().clean_shutdown is False
+
+
+def test_restart_fence_never_recreates_missing_account_state(tmp_path):
+    process_store = ProcessRunStore(tmp_path / "process_run.json")
+    process_store.begin(**IDENTITY)
+    state_store = StateStore(tmp_path / "state.json")
+    from afuture.state import StateIntegrityError
+
+    with AccountExclusiveRuntimeLease(tmp_path, "c" * 64, role="live") as lease:
+        with pytest.raises(StateIntegrityError):
+            apply_unclean_restart_fence(
+                process_store=process_store,
+                state_store=state_store,
+                runtime_dir=tmp_path,
+                deployment_digest="a" * 64,
+                runtime_identity_digest="b" * 64,
+                account_identity_digest="c" * 64,
+                lease=lease,
+            )
+    assert not state_store.path.exists()
+    assert process_store.load_required().clean_shutdown is False
+
+
+def test_duplicate_live_starter_cannot_fence_active_writer(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from afuture import command_router
+
+    state_path = tmp_path / "state.json"
+    config = SimpleNamespace(state_path=state_path)
+    monkeypatch.setattr(command_router, "load_config", lambda *_a, **_kw: config)
+    monkeypatch.setattr(command_router, "_configured_live_account_digest", lambda _config: "c" * 64)
+    process_store = ProcessRunStore(tmp_path / "process_run.json")
+    process_store.begin(**IDENTITY)
+    state_store = StateStore(state_path)
+    initial = state_store.save(RuntimeState(kill_switch=False, runtime_mode="RUNNING"))
+    before = process_store.path.read_bytes()
+    with AccountExclusiveRuntimeLease(tmp_path, "c" * 64, role="live"):
+        code = command_router._run_live_with_process_fence(["live", "--config", "private.toml"])
+    assert code == PROCESS_FENCE_EXIT_CODE
+    assert "already owned" in capsys.readouterr().out
+    assert state_store.load_required_record().checksum == initial.checksum
+    assert process_store.path.read_bytes() == before
+    # There is deliberately no deployment file: the duplicate must exit before
+    # even reading or changing the existing process/state/permit evidence.
+
+
+def test_engine_construction_failure_releases_live_lease(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from afuture import cli
+    from afuture.broker.ctp import CtpBroker
+
+    config = SimpleNamespace(state_path=tmp_path / "state.json", ctp=None)
+    monkeypatch.setattr(CtpBroker, "__init__", lambda *_a, **_kw: None)
+    monkeypatch.setattr(CtpBroker, "get_account_identity_digest", lambda _self: "c" * 64)
+
+    def fail_after_lock(_config):
+        raise RuntimeError("engine construction failure")
+
+    monkeypatch.setattr(cli, "_quality_recorder", fail_after_lock)
+    with pytest.raises(RuntimeError, match="construction failure"):
+        cli._run_live(config, SimpleNamespace(), SimpleNamespace())
+    with AccountExclusiveRuntimeLease(tmp_path, "c" * 64, role="live") as lease:
+        assert lease.authorizes_technical_activation("c" * 64, tmp_path)

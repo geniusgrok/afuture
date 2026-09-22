@@ -59,6 +59,28 @@ AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 
 `vnpy_ctp` 含与操作系统、CPU 和 Python ABI 相关的原生扩展。普通 CI 和非目标开发机只验证 adapter 逻辑与测试替身，不能证明目标机能导入原生模块、登录实际前置或按真实顺序收到回调。部署前必须在最终目标机的同一 Python 环境安装 `.[live]`，至少完成 import、`status`、无报单 `doctor`、连续 Shadow、断线重连和完整订单生命周期验证；未完成时不能把 CI 绿色当成 CTP 可用证据。
 
+### 3.2 隔离测试柜台的结算格式采集
+
+在确认目标是零真钱测试柜台、完成首次账户绑定并明确批准该次连接后，可使用：
+
+```bash
+afuture ctp-settlement-capture --config /etc/afuture/test.toml \
+  --trading-day 20260921 --output /private/evidence/settlement-20260921.json \
+  --confirm-test-connection
+```
+
+该命令拒绝 production 环境、缺少明确 AccountID/CurrencyID、已有输出文件和非规范绝对路径。
+它先取得同一账户/runtime 的互斥锁，再连接、等待新账户/完整持仓快照，查询指定交易日的
+`SettlementInfo`；不下单、不撤单、不推进账户状态、不签发交易许可。原生登录可能执行柜台
+结算确认，因此“零报单”不等于“零柜台写操作”，不能连接性质未确认的环境。
+
+输出以私有权限保存请求 ID、账户/交易日、SettlementID、分片序号、查询结束标志、
+依赖版本和摘要。重复相同分片只保留一次；冲突、缺片、错身份、迟到的已完成回报和非法
+文本均拒绝。`vnpy_ctp==6.7.11.4` 把每片 Content 转成 Unicode，采集不声称保留原生
+GBK 字节，也不声称已验证首片序号原点。其
+`financial_continuity_verified=false` 不能被改成结算/资金连续性已验证。
+只有核对实际柜台格式、字段语义与完整性后，才能建立版本化的确定性结算解析合同。
+
 ## 4. 启动前检查
 
 ### 4.1 本地只读状态
@@ -187,6 +209,19 @@ D+1 实时行情仍用于价格、盘口、涨跌停、保证金和下单，但�
 
 Stress-90 不使用上述 0.25 target scaling。它保留同一 adaptive soft margin envelope，但使用 1x raw candidate 做 margin-aware integer sizing，随后依次应用 completed account path 的 25% drawdown-reserve freeze 和 raw candidate HHI freeze。两个 freeze 只冻结 entry/同向 add；reduction、exit、reversal 和 same-product roll 通过。`RiskManager` 仍拥有 margin、available、gross、daily circuit 和 HALT 的最终权限。
 
+### 8.0 实时执行时钟和完整查询边界
+
+跨期和 Auto 生产路径在计算信号及每条腿真正发送前，以当前时钟重新检查报价新鲜度，
+限速使用单调经过时间。不能用两条同样滞后的行情相互证明新鲜，也不能用未来信号时间
+清空实盘限速窗口；历史回放仍显式使用事件时钟。第一条腿成交后第二条腿报价过期时，
+拒绝继续加风险，不拿陈旧价格盲目平仓，保留真实单腿暴露并进入原停机/对账链。
+
+原始账户、持仓查询在发送前登记 request ID、账户和柜台交易日；收到同一请求的结束
+标志并校验全部行后，才交给 SDK 转换并发布快照。未完成查询不更新新鲜度；重复相同行
+去重、冲突行和跨请求/跨交易日回报拒绝。SDK 静默丢失未知合约、错误方向/数量或跨交易所
+同名合约合并均拒绝，不能把不完整持仓解释为空仓。当前持仓模型不支持净持仓/套保语义，
+发现这些行时停止核验而不是折算成投机仓。
+
 ## 8.1 CTP 事件投递观测
 
 CTP 的 order、trade、position、account 和 error 回调进入关键 FIFO；Tick 按 `(symbol, exchange)` 合并成尚未投递的最新值。每轮默认最多投递 100 条并优先关键 FIFO，避免 Tick 洪峰饿死成交与账户真相。运维诊断可读取 `delivery_counters()` 的 enqueued/received/coalesced/delivered/backlog 计数；`ticks_coalesced` 上升表示旧的未消费 Tick 被更新值替换，不代表成交丢失。持续增长的 `critical_backlog` 必须视为运行容量问题，停止扩大风险并在目标机定位回调/消费延迟。
@@ -309,3 +344,11 @@ deployment-verify
 `prepare-session` 和 `watchdog` 都不能报单、撤单、修改交易 state、签发 permit 或自动解除 HALTED。`prepare-session` 可以连接只读 CTP/Doctor Broker 取得 fresh facts；`watchdog` 完全不需要 CTP 凭证且不会连接 Broker。
 
 Live 启动在构造 order-capable Broker 前检查 `process_run.json`。上一进程没有 clean receipt、receipt 损坏或链不确定时，启动必须 fail closed 到 `HALTED` + kill switch，并失效现有 permit；operator 重新完成盘前检查、Doctor 和新的 permit 后才允许再次尝试。systemd 的自动 restart 不构成 activation authority。
+
+### 单实例启动和异常重启证据
+
+生产入口先取得账户/runtime 互斥锁，再读取或推进 process-run、状态和许可。重复启动
+只读失败，不能把正在运行的实例标成异常重启、改写其停机状态或消费其许可。
+锁覆盖引擎构造到退出收尾，构造失败也释放。已有未清洁进程记录但账户状态缺失时，
+不得创建新空账户状态；账户、部署或 runtime 身份变化、损坏的进程证据也不自动收编。
+这些修复不等于跨日自动授权或资金连续性闭环，既有事故恢复门仍然有效。

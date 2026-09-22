@@ -694,3 +694,17 @@ afuture watchdog --config <config> --once --max-age-seconds 15
 `prepare-session` 一次运行后立即退出，不进入常驻循环；它不会签发 permit、恢复 RUNNING、清除 kill switch、修改 risk scale、自动 roll-forward/rebase，也不会从 live 订单路径同步调用外部 OHLC provider。安全阻断退出码为 2，配置/调用错误使用独立非零码。
 
 systemd live 模板使用 `Restart=on-failure`，但异常/不确定重启围栏使用退出码 75 并列入 `RestartPreventExitStatus`。该围栏在任何 order-capable Broker 构造前运行；旧 permit 被失效，generic state 保持/转为 HALTED 且 kill switch=true。watchdog timer 只读本地证据并告警，不 kill/restart live 进程、不平仓、不解除 HALTED。
+
+## 结算格式与无人值守验收边界
+
+`ctp-settlement-capture` 是隔离测试柜台的私有证据采集入口，使用方法和权限边界见
+[`live-trading.md`](live-trading.md#32-隔离测试柜台的结算格式采集)。它只证明指定查询的
+已知分片和完成边界，不解析资金、费用和持仓，也不提升 `settlement_verified` 或签发许可。
+必须先核验拟运行柜台的真实格式；当前零入出金、PreBalance 差额和结算确认成功都不能
+代替上一交易日完整资金活动证据。生产持仓/账户查询现在只在 request-bound 完成后发布。
+
+当前不能把 strict 命令入口、原人工 operator roll-forward 或 systemd 自动重启描述成
+无人值守跨日已完成。阶段授权/技术就绪续接、正式日历、正常跨日资金证明和自动恢复
+仍须形成同一生产闭环并通过验收后，才能替换日常人工门。没有获批目标机与测试账户时，
+不得安装或连接未知柜台；真实一个自然月必须从现场经过时间与执行证据计算，不能用
+本地测试、CI、加速回放或“服务进程存活”代替，更不能自动进入实盘。

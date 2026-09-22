@@ -286,3 +286,11 @@ POSIX target 上 fail closed，Windows smoke 不代表 CTP ABI 或真实报单�
 其错误地压缩为单条 binding。
 
 Live 使用 `runtime/process_run.json` 的 current/.prev receipt 建立异常重启围栏。任何没有 clean shutdown receipt、current 损坏或 current 缺失但 `.prev` 存在的窗口都在构造 order-capable Broker 前 fail closed：失效已签发 permit、保持/转换 `HALTED`、开启 kill switch，并以专用退出码 75 阻止 systemd 重启循环。`deploy/systemd/` 提供只含通用机器路径的 live/watchdog 模板；operator 必须在机器私有 EnvironmentFile 中提供本机运行参数，模板不内置 live confirmation、activation、roll-forward 或 rebase。
+
+### 隔离测试柜台证据采集
+
+`ctp-settlement-capture` 可在明确批准的零真钱测试环境采集 request-bound 结算文本分片；
+不下单、不推进资金基线、不签发许可。输出明确区分查询完成与财务连续性证明，参见
+[`docs/live-trading.md`](docs/live-trading.md#32-隔离测试柜台的结算格式采集)。
+无人值守跨日、目标机验证和真实一个月模拟的未通过项以
+[`docs/production-checklist.md`](docs/production-checklist.md#p-无人值守交付与证据等级) 为准。
