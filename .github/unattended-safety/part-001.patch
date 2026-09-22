@@ -200,4 +200,4 @@ index e647259..f16d2f8 100644
      def critical(self, message: str, details: dict | None = None) -> None:
          self.emit("CRITICAL", message, details)
  
- diff --git a/afuture/cli.py b/afuture/cli.py
+diff --git a/afuture/cli.py b/afuture/cli.py
