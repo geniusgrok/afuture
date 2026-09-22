@@ -1401,6 +1401,11 @@ class CtpBroker(Broker):
     def send_order(self, request: OrderRequest) -> str:
         if not self.is_ready() or self._main_engine is None:
             raise RuntimeError("CTP market/trading session is not ready")
+        query_error = self._snapshot_query_error or self._settlement_query.integrity_error
+        if query_error:
+            # This boundary also protects formally supported non-Stress-90 paths,
+            # before the event loop has consumed the critical error notification.
+            raise RuntimeError(f"CTP query evidence is invalid: {query_error}")
         if self._order_submission_journal is None:
             order_id = self._main_engine.send_order(self._to_vnpy_order(request), self.gateway_name)
             if not order_id:

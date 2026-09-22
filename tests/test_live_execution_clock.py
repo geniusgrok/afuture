@@ -142,3 +142,55 @@ def test_live_fresh_pair_reaches_real_simulated_fills():
         assert sum(p.long_total + p.short_total for p in broker.get_positions()) == 2
     finally:
         broker.stop()
+
+
+def test_fresh_quotes_cannot_override_broker_snapshot_failure(monkeypatch):
+    broker, executor, ticks = setup_execution()
+    monkeypatch.setattr(broker, "health_error", lambda: "incomplete account snapshot")
+    try:
+        result = execute(executor, ticks)
+        assert not result.accepted
+        assert result.reason == "incomplete account snapshot"
+        assert not result.order_ids
+        assert broker.get_positions() == []
+    finally:
+        broker.stop()
+
+
+def test_broker_failure_between_legs_preserves_filled_exposure(monkeypatch):
+    broker, executor, ticks = setup_execution()
+    calls = 0
+
+    def health():
+        nonlocal calls
+        calls += 1
+        return None if calls <= 2 else "account query identity mismatch"
+
+    monkeypatch.setattr(broker, "health_error", health)
+    try:
+        result = execute(executor, ticks)
+        assert not result.accepted
+        assert len(result.order_ids) == 1
+        assert "identity mismatch" in result.reason
+        assert sum(p.long_total + p.short_total for p in broker.get_positions()) == 1
+    finally:
+        broker.stop()
+
+
+def test_disconnect_during_sizing_is_rechecked_before_first_write(monkeypatch):
+    broker, executor, ticks = setup_execution()
+    calls = 0
+
+    def ready():
+        nonlocal calls
+        calls += 1
+        return calls == 1
+
+    monkeypatch.setattr(broker, "is_ready", ready)
+    try:
+        result = execute(executor, ticks)
+        assert not result.accepted
+        assert not result.order_ids
+        assert broker.get_positions() == []
+    finally:
+        broker.stop()

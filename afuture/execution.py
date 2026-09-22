@@ -72,6 +72,9 @@ class PairExecutor:
             return ExecutionResult(False, reason="hold signal")
         if not self.broker.is_ready():
             return ExecutionResult(False, reason="broker is not ready")
+        broker_health = self.broker.health_error()
+        if broker_health:
+            return ExecutionResult(False, reason=broker_health)
 
         now = self._decision_time(signal.timestamp)
         quote_decision = self.risk_manager.check_quotes([near, far], now)
@@ -145,6 +148,13 @@ class PairExecutor:
         return now
 
     def _require_current_quotes(self, near: Tick, far: Tick) -> None:
+        # A callback or snapshot query can fail during sizing or after the first
+        # leg. Quote freshness alone cannot authorize the next broker write.
+        if not self.broker.is_ready():
+            raise RuntimeError("broker is not ready")
+        broker_health = self.broker.health_error()
+        if broker_health:
+            raise RuntimeError(broker_health)
         decision = self.risk_manager.check_quotes(
             [near, far], self._decision_time(max(near.timestamp, far.timestamp))
         )

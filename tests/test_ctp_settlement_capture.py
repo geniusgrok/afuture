@@ -7,7 +7,7 @@ import pytest
 
 from afuture.broker.ctp import CtpBroker, CtpCredentials
 from afuture.broker.ctp_settlement_query import CtpSettlementQuery, CtpSettlementQueryError
-from afuture.models import AccountSnapshot
+from afuture.models import AccountSnapshot, Offset, OrderRequest, OrderSide
 
 
 def fragment(sequence=0, content="synthetic settlement\n", **changes):
@@ -263,3 +263,18 @@ def test_query_missing_document_is_distinct_from_protocol_corruption():
             timeout_seconds=0.1,
         )
     assert not query.integrity_error
+
+
+@pytest.mark.parametrize("failure", ["snapshot", "settlement"])
+def test_query_integrity_failure_blocks_native_send_before_error_event_is_consumed(failure):
+    broker = broker_with_native_query(deliver)
+    broker._main_engine.send_order = lambda *_args: pytest.fail("native send must not happen")
+    if failure == "snapshot":
+        broker._snapshot_query_error = "account query is corrupt"
+    else:
+        # An unsolicited native callback makes the real capture component sticky.
+        broker._settlement_query.observe(fragment(), {}, 1, True)
+    assert broker.is_ready()
+    request = OrderRequest("rb2610", "SHFE", OrderSide.BUY, Offset.OPEN, 1, 3500.0)
+    with pytest.raises(RuntimeError, match="query evidence is invalid"):
+        broker.send_order(request)
