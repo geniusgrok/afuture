@@ -221,6 +221,7 @@ class RuntimeHeartbeatObserver:
             ),
             "max_required_quote_age_seconds": self._quote_age(),
             "critical_queue": counters,
+            "alert_delivery": self.engine.alerts.diagnostics(),
             "active_order_count": active_count,
             "runtime_mode": str(getattr(state, "runtime_mode", "")),
             "kill_switch": bool(getattr(state, "kill_switch", False)),

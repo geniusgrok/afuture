@@ -757,7 +757,12 @@ def _recover_state(config, args, logger) -> int:
 def _build_alert_manager(config) -> AlertManager:
     sinks: list[AlertSink] = [FileAlertSink(config.alert_path)]
     if config.alert_webhook:
-        sinks.append(WebhookAlertSink(config.alert_webhook))
+        sinks.append(
+            WebhookAlertSink(
+                config.alert_webhook,
+                spool_path=Path(config.alert_path).with_suffix(".outbox.sqlite3"),
+            )
+        )
     return AlertManager(sinks)
 
 

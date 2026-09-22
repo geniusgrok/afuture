@@ -128,6 +128,24 @@ def evaluate_heartbeat(
         f"critical_backlog={backlog!r} streak={streak!r}",
     )
 
+    notification = heartbeat.get("alert_delivery")
+    if isinstance(notification, Mapping):
+        deliveries = notification.get("deliveries")
+        notifications_ok = (
+            notification.get("persistence_failures") == 0
+            and isinstance(deliveries, list)
+            and all(
+                isinstance(item, Mapping) and item.get("failed_count") == 0 for item in deliveries
+            )
+        )
+        result.add(
+            "notification_delivery",
+            notifications_ok,
+            "notification spool is healthy; HTTP acceptance does not prove human reading"
+            if notifications_ok
+            else "critical notifications could not be persisted/delivered",
+        )
+
     actual_deployment = heartbeat.get("deployment_identity_digest")
     result.add(
         "deployment_identity",
@@ -169,7 +187,11 @@ def _alert_manager(config: Any) -> AlertManager:
     sinks: list[AlertSink] = [FileAlertSink(str(config.alert_path))]
     webhook = str(getattr(config, "alert_webhook", ""))
     if webhook:
-        sinks.append(WebhookAlertSink(webhook))
+        sinks.append(
+            WebhookAlertSink(
+                webhook, spool_path=Path(config.alert_path).with_suffix(".outbox.sqlite3")
+            )
+        )
     return AlertManager(sinks)
 
 
