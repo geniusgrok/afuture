@@ -1,0 +1,204 @@
+
+index 7336bfa..72ddc8f 100644
+--- a/afuture/cli.py
++++ b/afuture/cli.py
+@@ -757,7 +757,12 @@ def _recover_state(config, args, logger) -> int:
+ def _build_alert_manager(config) -> AlertManager:
+     sinks: list[AlertSink] = [FileAlertSink(config.alert_path)]
+     if config.alert_webhook:
+-        sinks.append(WebhookAlertSink(config.alert_webhook))
++        sinks.append(
++            WebhookAlertSink(
++                config.alert_webhook,
++                outbox_path=Path(config.alert_path).with_suffix(".outbox.sqlite3"),
++            )
++        )
+     return AlertManager(sinks)
+ 
+ 
+diff --git a/afuture/runtime_lease.py b/afuture/runtime_lease.py
+index aefff71..42882e7 100644
+--- a/afuture/runtime_lease.py
++++ b/afuture/runtime_lease.py
+@@ -3,24 +3,36 @@
+ from __future__ import annotations
+ 
+ import errno
+-import fcntl
++import importlib
+ import json
+ import os
+ import re
+ import struct
++import sys
+ import tempfile
+ from hashlib import sha256
+ from pathlib import Path
++from types import ModuleType
+ from typing import IO
+ 
+ _SHA256 = re.compile(r"[0-9a-f]{64}")
+-_F_OFD_SETLK = getattr(fcntl, "F_OFD_SETLK", 37)
+ 
+ 
+ class RuntimeLeaseError(RuntimeError):
+     """Another process already owns the account or runtime execution lease."""
+ 
+ 
++def _locking_backend() -> ModuleType:
++    # Importing the CLI/replay on another OS must not attempt to acquire live locks.
++    # Order-capable execution still requires the same Linux OFD and file locks.
++    if sys.platform != "linux":
++        raise RuntimeLeaseError("account-exclusive execution requires Linux OFD locks")
++    try:
++        return importlib.import_module("fcntl")
++    except ImportError as exc:
++        raise RuntimeLeaseError("account-exclusive execution requires fcntl") from exc
++
++
+ class AccountExclusiveRuntimeLease:
+     """Hold both runtime-dir and account-global advisory locks until release."""
+ 
+@@ -44,11 +56,12 @@ class AccountExclusiveRuntimeLease:
+     def _acquire_kernel_lease(identity_digest: str) -> int:
+         """Reserve one unlink-proof Linux OFD byte-range identity lock."""
+ 
++        fcntl = _locking_backend()
+         lock_fd = os.open("/dev/null", os.O_RDWR | os.O_CLOEXEC)
+         offset = int(identity_digest, 16) % ((1 << 63) - 1)
+         flock = struct.pack("hhqqi4x", fcntl.F_WRLCK, os.SEEK_SET, offset, 1, 0)
+         try:
+-            fcntl.fcntl(lock_fd, _F_OFD_SETLK, flock)
++            fcntl.fcntl(lock_fd, getattr(fcntl, "F_OFD_SETLK", 37), flock)
+         except OSError as exc:
+             os.close(lock_fd)
+             if exc.errno in {errno.EACCES, errno.EAGAIN}:
+@@ -59,6 +72,7 @@ class AccountExclusiveRuntimeLease:
+         return lock_fd
+ 
+     def acquire(self) -> None:
++        fcntl = _locking_backend()
+         if self._handles or self._kernel_fds:
+             raise RuntimeLeaseError("account-exclusive runtime lease is already held")
+         account_kernel_digest = sha256(
+@@ -110,6 +124,9 @@ class AccountExclusiveRuntimeLease:
+         self._kernel_fds = kernel_fds
+ 
+     def release(self) -> None:
++        if not self._handles and not self._kernel_fds:
++            return
++        fcntl = _locking_backend()
+         for handle in reversed(self._handles):
+             try:
+                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+diff --git a/afuture/stress90_activation_permit.py b/afuture/stress90_activation_permit.py
+index 897953f..1e6063f 100644
+--- a/afuture/stress90_activation_permit.py
++++ b/afuture/stress90_activation_permit.py
+@@ -652,15 +652,35 @@ def activate_stress90_from_permit(
+     evidence: Stress90ActivationEvidence,
+     expected_permit_sequence: int,
+ ):
+-    """Consume first, then perform the sole authoritative HALTED→RUNNING state save."""
++    """Consume once, then commit activation; resume only its unchanged source state.
++
++    A consumed permit is not reusable. Its exact issued predecessor is a commit
++    witness for the single interrupted state save, not a fallback permit. The
++    caller must recollect all evidence while holding the account/runtime lease.
++    """
+ 
+     permit_record = permit_store.load_required_record()
+     if permit_record.sequence != expected_permit_sequence:
+         raise Stress90ActivationPermitIntegrityError(
+             "activation permit sequence changed concurrently"
+         )
+-    if permit_record.permit.status != "issued":
++    permit = permit_record.permit
++    if permit.status not in {"issued", "consumed"}:
+         raise Stress90ActivationPermitIntegrityError("activation permit is not issued")
++    if permit.evidence != evidence or permit.evidence_digest != stress90_activation_evidence_digest(
++        evidence
++    ):
++        raise Stress90ActivationPermitIntegrityError("activation permit evidence mismatch")
++    if permit.status == "consumed":
++        predecessor = permit_store.load_previous_record()
++        if (
++            predecessor.sequence + 1 != permit_record.sequence
++            or predecessor.checksum != permit_record.parent_checksum
++            or predecessor.permit != replace(permit, status="issued")
++        ):
++            raise Stress90ActivationPermitIntegrityError(
++                "consumed activation has no exact issued predecessor witness"
++            )
+     current = state_store.load_required_record()
+     if (
+         current.sequence != evidence.generic_state_sequence
+@@ -678,7 +698,8 @@ def activate_stress90_from_permit(
+         raise Stress90ActivationPermitIntegrityError(
+             "daily circuit recovery has separate authority"
+         )
+-    permit_store.consume(evidence, expected_sequence=permit_record.sequence)
++    if permit.status == "issued":
++        permit_store.consume(evidence, expected_sequence=permit_record.sequence)
+     running = replace(
+         state,
+         kill_switch=False,
+diff --git a/afuture/watchdog.py b/afuture/watchdog.py
+index 6e2e352..54ca003 100644
+--- a/afuture/watchdog.py
++++ b/afuture/watchdog.py
+@@ -169,7 +169,11 @@ def _alert_manager(config: Any) -> AlertManager:
+     sinks: list[AlertSink] = [FileAlertSink(str(config.alert_path))]
+     webhook = str(getattr(config, "alert_webhook", ""))
+     if webhook:
+-        sinks.append(WebhookAlertSink(webhook))
++        sinks.append(
++            WebhookAlertSink(
++                webhook, outbox_path=Path(config.alert_path).with_suffix(".outbox.sqlite3")
++            )
++        )
+     return AlertManager(sinks)
+ 
+ 
+diff --git a/tests/test_alerts.py b/tests/test_alerts.py
+index f493939..afbe6ce 100644
+--- a/tests/test_alerts.py
++++ b/tests/test_alerts.py
+@@ -5,8 +5,12 @@ from pathlib import Path
+ from threading import Event
+ from time import monotonic
+ 
++import pytest
++
+ 
+ class _BlockingResponse:
++    status = 200
++
+     def __init__(self, entered: Event, release: Event) -> None:
+         self.entered = entered
+         self.release = release
+@@ -24,7 +28,7 @@ class _BlockingResponse:
+         return b""
+ 
+ 
+-def test_webhook_send_never_waits_for_network_and_queue_is_bounded(monkeypatch):
++def test_webhook_send_never_waits_for_network_and_full_outbox_is_not_silent(tmp_path, monkeypatch):
+     import afuture.alerts as alerts
+ 
+     entered = Event()
+@@ -34,18 +38,20 @@ def test_webhook_send_never_waits_for_network_and_queue_is_bounded(monkeypatch):
+         "urlopen",
+         lambda *_args, **_kwargs: _BlockingResponse(entered, release),
+     )
+-    sink = alerts.WebhookAlertSink("https://example.invalid/hook", max_queue=2)
++    sink = alerts.WebhookAlertSink(
++        "https://example.invalid/hook", outbox_path=tmp_path / "outbox.db", max_pending=2
++    )
+     try:
+         started = monotonic()
+         sink.send({"message": "first"})
+         assert monotonic() - started < 0.1
+         assert entered.wait(timeout=1)
+ 
+-        for index in range(10):
+-            sink.sen
