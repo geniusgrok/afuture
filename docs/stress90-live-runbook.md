@@ -693,7 +693,7 @@ afuture watchdog --config <config> --once --max-age-seconds 15
 
 `prepare-session` 一次运行后立即退出，不进入常驻循环；它不会签发 permit、恢复 RUNNING、清除 kill switch、修改 risk scale、自动 roll-forward/rebase，也不会从 live 订单路径同步调用外部 OHLC provider。安全阻断退出码为 2，配置/调用错误使用独立非零码。
 
-systemd live 模板使用 `Restart=on-failure`，但异常/不确定重启围栏使用退出码 75 并列入 `RestartPreventExitStatus`。该围栏在任何 order-capable Broker 构造前运行；旧 permit 被失效，generic state 保持/转为 HALTED 且 kill switch=true。watchdog timer 只读本地证据并告警，不 kill/restart live 进程、不平仓、不解除 HALTED。
+systemd live 模板使用 `Restart=on-failure`，异常/不确定重启使用退出码 75 并列入 `RestartPreventExitStatus`。启动先持有账户/runtime 互斥锁，再检查进程证据。已核验身份和完整性的未清洁退出失效技术许可，并把现有账户状态设为 HALTED/kill switch；损坏、身份不符或已有账户状态丢失时保留证据并只读阻断。不得自动采用 `.prev` 或重建空账户。watchdog timer 只读证据并告警，不控制账户、不平仓、不解除 HALTED。
 
 ## 结算格式与无人值守验收边界
 

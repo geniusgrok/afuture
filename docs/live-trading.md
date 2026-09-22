@@ -343,7 +343,7 @@ deployment-verify
 
 `prepare-session` 和 `watchdog` 都不能报单、撤单、修改交易 state、签发 permit 或自动解除 HALTED。`prepare-session` 可以连接只读 CTP/Doctor Broker 取得 fresh facts；`watchdog` 完全不需要 CTP 凭证且不会连接 Broker。
 
-Live 启动在构造 order-capable Broker 前检查 `process_run.json`。上一进程没有 clean receipt、receipt 损坏或链不确定时，启动必须 fail closed 到 `HALTED` + kill switch，并失效现有 permit；operator 重新完成盘前检查、Doctor 和新的 permit 后才允许再次尝试。systemd 的自动 restart 不构成 activation authority。
+Live 启动先取得账户/runtime 锁，在构造 order-capable Broker 前检查 `process_run.json`。已核验身份和完整性的未清洁退出会失效技术许可，并把现有账户状态设为 HALTED/kill switch。损坏或异账户证据、缺失的已有账户状态保持只读阻断，不创建资金基线或自动采用 `.prev`；重复启动不得干扰活动实例。既有事故恢复仍须完成安全核验和所需授权；systemd 自动重启本身不构成 activation authority。
 
 ### 单实例启动和异常重启证据
 

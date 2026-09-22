@@ -285,7 +285,7 @@ POSIX target 上 fail closed，Windows smoke 不代表 CTP ABI 或真实报单�
 表示仍承担 account switch/rebase、Shadow/live isolation、retired identity 和 crash recovery；本轮不将
 其错误地压缩为单条 binding。
 
-Live 使用 `runtime/process_run.json` 的 current/.prev receipt 建立异常重启围栏。任何没有 clean shutdown receipt、current 损坏或 current 缺失但 `.prev` 存在的窗口都在构造 order-capable Broker 前 fail closed：失效已签发 permit、保持/转换 `HALTED`、开启 kill switch，并以专用退出码 75 阻止 systemd 重启循环。`deploy/systemd/` 提供只含通用机器路径的 live/watchdog 模板；operator 必须在机器私有 EnvironmentFile 中提供本机运行参数，模板不内置 live confirmation、activation、roll-forward 或 rebase。
+Live 启动先取得账户/runtime 互斥锁，再核验 `runtime/process_run.json` 的进程证据。身份与完整性已确认的未清洁退出，会在构造 order-capable Broker 前失效技术许可、将现有账户状态设为 HALTED/kill switch，并以退出码 75 阻止重启循环。证据损坏、身份不符或现有账户状态缺失时保留原件并只读阻断，不新建空账户、不收编 `.prev`、不改写未知账户；重复启动也不得改变当前活动实例的状态。`deploy/systemd/` 提供通用 live/watchdog 模板，机器私有参数必须放在 EnvironmentFile；自动重启不提供跨日或实盘授权。
 
 ### 隔离测试柜台证据采集
 
