@@ -296,3 +296,15 @@ def test_closed_spool_does_not_enter_closed_sqlite_connection(tmp_path):
     with pytest.raises(AlertDeliveryError, match="closed"):
         sink.send({"message": "cannot silently accept after close"})
     assert not sink.deliver_one()
+
+
+def test_webhook_redirect_is_rejected_before_forwarding_payload():
+    from urllib.request import Request
+
+    from afuture.alerts import AlertDeliveryError, _RejectWebhookRedirects
+
+    request = Request("https://example.invalid/hook", data=b"private notification", method="POST")
+    with pytest.raises(AlertDeliveryError, match="redirects"):
+        _RejectWebhookRedirects().redirect_request(
+            request, None, 307, "redirect", {}, "https://other.invalid/collect"
+        )

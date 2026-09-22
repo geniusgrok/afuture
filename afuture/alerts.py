@@ -16,7 +16,7 @@ from threading import Event, Lock, Thread
 from time import monotonic, time
 from typing import Protocol
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
 from .jsonl import DEFAULT_JSONL_BACKUP_COUNT, DEFAULT_JSONL_MAX_BYTES, RotatingJsonlWriter
@@ -63,6 +63,15 @@ class FileAlertSink:
 
 class AlertDeliveryError(RuntimeError):
     """Critical notification could not be durably queued or its spool is untrusted."""
+
+
+class _RejectWebhookRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Reject before urllib can forward notification data to another origin.
+        raise AlertDeliveryError("notification redirects are not an approved destination")
+
+
+urlopen = build_opener(_RejectWebhookRedirects()).open
 
 
 class WebhookAlertSink:

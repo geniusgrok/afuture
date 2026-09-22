@@ -440,6 +440,16 @@ class DirectionalPortfolioManager:
     def has_risk(self) -> bool:
         return any(not position.empty for position in self.broker.get_positions())
 
+    def has_active_runtime_session(self, now: datetime) -> bool:
+        if self.risk_manager.runtime_calendar is None:
+            return True
+        # A flat account still needs the subscribed catalog to wait through the
+        # auction without spending its first-entry intent on a calendar rejection.
+        symbols = self.required_symbols() | {item.symbol for item in self._catalog}
+        if not symbols:
+            raise RuntimeError("runtime calendar has no subscribed contract coverage")
+        return bool(self.risk_manager.active_runtime_symbols(symbols, now))
+
     def required_symbols(self) -> set[str]:
         symbols = {
             position.symbol for position in self.broker.get_positions() if not position.empty
@@ -712,6 +722,11 @@ class DirectionalPortfolioManager:
         account = self.broker.get_account()
         if account.trading_day != tick.trading_day:
             raise RuntimeError("quote and account trading day mismatch")
+        session = self.risk_manager.check_runtime_session(
+            request.symbol, request.exchange, current, account.trading_day
+        )
+        if not session.allowed:
+            raise RuntimeError(session.reason)
         if request.offset is Offset.OPEN:
             decision = self.risk_manager.check_contract_entry(
                 tick,
