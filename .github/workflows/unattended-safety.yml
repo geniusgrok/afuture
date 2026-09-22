@@ -1,0 +1,26 @@
+name: unattended-safety-transfer
+on:
+  push:
+    branches: [codex/unattended-24x7-20260922]
+    paths: [.github/workflows/unattended-safety.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify exact patch and save on the authorized feature branch
+        run: python .github/unattended-safety/apply.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: afuture-safety-applied-source
+          path: ${{ runner.temp }}/afuture-applied-source/
+          if-no-files-found: error
+          retention-days: 30
