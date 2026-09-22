@@ -1,0 +1,28 @@
+name: unattended-dev-tools
+on:
+  push:
+    branches: [codex/unattended-24x7-20260922]
+    paths: [.github/workflows/unattended-dev-tools.yml]
+permissions:
+  contents: read
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Download exact quality dependencies without credentials or trading access
+        run: |
+          mkdir -p "$RUNNER_TEMP/quality-tools"
+          python -m pip download --only-binary=:all: --dest "$RUNNER_TEMP/quality-tools" -c constraints/core-dev.txt ruff mypy
+          cd "$RUNNER_TEMP/quality-tools"
+          sha256sum *.whl > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unattended-quality-tools
+          path: ${{ runner.temp }}/quality-tools/
+          if-no-files-found: error
+          retention-days: 7
