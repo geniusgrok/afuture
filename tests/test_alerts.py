@@ -308,3 +308,106 @@ def test_webhook_redirect_is_rejected_before_forwarding_payload():
         _RejectWebhookRedirects().redirect_request(
             request, None, 307, "redirect", {}, "https://other.invalid/collect"
         )
+
+
+@pytest.mark.parametrize("http_status", [199, 301, 400, 500])
+def test_non_success_http_response_never_becomes_a_delivery_receipt(
+    tmp_path, monkeypatch, http_status
+):
+    import afuture.alerts as alerts
+
+    entered, release = Event(), Event()
+    release.set()
+    response = _BlockingResponse(entered, release)
+    response.status = http_status
+    monkeypatch.setattr(alerts, "urlopen", lambda *_a, **_k: response)
+    sink = alerts.WebhookAlertSink(
+        "https://example.invalid/hook", spool_path=tmp_path / "outbox.db", start_worker=False
+    )
+    try:
+        sink.send({"message": "must keep failed delivery"})
+        assert sink.deliver_one()
+        assert sink.pending_count == 1
+        assert sink.diagnostics()["last_http_accepted_utc"] is None
+    finally:
+        sink.close()
+
+
+def test_worker_storage_failure_is_observable_and_retains_the_event(tmp_path, monkeypatch):
+    from threading import Thread
+    from time import sleep
+
+    import afuture.alerts as alerts
+
+    sink = alerts.WebhookAlertSink(
+        "https://example.invalid/hook", spool_path=tmp_path / "outbox.db", start_worker=False
+    )
+    sink.send({"message": "existing pending incident"})
+    failed = Event()
+
+    def broken_claim():
+        failed.set()
+        raise sqlite3.OperationalError("storage unavailable")
+
+    monkeypatch.setattr(sink, "deliver_one", broken_claim)
+    sink._worker = Thread(target=sink._run, daemon=True)
+    sink._worker.start()
+    try:
+        assert failed.wait(timeout=1)
+        deadline = monotonic() + 1
+        while not sink.diagnostics()["worker_error_category"] and monotonic() < deadline:
+            sleep(0.001)
+        status = sink.diagnostics()
+        assert status["worker_error_category"] == "OperationalError"
+        assert status["pending_count"] == 1
+    finally:
+        sink.close()
+
+
+def test_other_outbox_schema_is_rejected_without_automatic_conversion(tmp_path):
+    import afuture.alerts as alerts
+
+    path = tmp_path / "outbox.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE identity(endpoint TEXT NOT NULL)")
+        db.execute("CREATE TABLE events(id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        db.execute("INSERT INTO events VALUES (?,?)", ("existing", '{"message":"preserve"}'))
+        db.execute("PRAGMA user_version=1")
+    before = path.read_bytes()
+    with pytest.raises(sqlite3.DatabaseError):
+        alerts.WebhookAlertSink("https://example.invalid/hook", spool_path=path, start_worker=False)
+    assert path.read_bytes() == before
+
+
+def test_http_receipts_cover_the_month_without_deleting_undelivered_events(tmp_path, monkeypatch):
+    import afuture.alerts as alerts
+
+    path = tmp_path / "outbox.db"
+    monkeypatch.setattr(alerts.WebhookAlertSink, "_deliver", lambda *_args: 202)
+    sink = alerts.WebhookAlertSink(
+        "https://example.invalid/hook", spool_path=path, start_worker=False
+    )
+    try:
+        for i in range(260):
+            sink.send({"message": f"incident-{i}"})
+            assert sink.deliver_one()
+        with sqlite3.connect(path) as db:
+            assert (
+                db.execute("SELECT COUNT(*) FROM outbox WHERE status='accepted'").fetchone()[0]
+                == 260
+            )
+            db.execute(
+                "UPDATE outbox SET accepted_at=? WHERE payload LIKE ?",
+                (time() - 33 * 86400, '%"incident-0"%'),
+            )
+        sink.send({"message": "still pending"})
+        with sqlite3.connect(path) as db:
+            assert (
+                db.execute("SELECT COUNT(*) FROM outbox WHERE status='accepted'").fetchone()[0]
+                == 259
+            )
+            assert (
+                db.execute("SELECT COUNT(*) FROM outbox WHERE status='pending'").fetchone()[0] == 1
+            )
+    finally:
+        sink.close()

@@ -86,7 +86,7 @@ class WebhookAlertSink:
     _MAX_DATABASE_BYTES = 32 * 1024 * 1024
     _MAX_RETRY_SECONDS = 60.0
     _DEDUP_SECONDS = 60.0
-    _RETAIN_ACCEPTED = 256
+    _RETAIN_ACCEPTED_SECONDS = 32 * 86400
 
     def __init__(
         self,
@@ -128,6 +128,7 @@ class WebhookAlertSink:
         self._wake = Event()
         self._db_closed = False
         self._last_diagnostics: dict[str, object] = {}
+        self._worker_error_category = ""
         self._worker: Thread | None = None
         self._open_spool()
         if start_worker:
@@ -238,9 +239,8 @@ class WebhookAlertSink:
                             "durable alert spool is full; unacknowledged events retained"
                         )
                     self._db.execute(
-                        "DELETE FROM outbox WHERE event_id IN (SELECT event_id FROM outbox "
-                        "WHERE status='accepted' ORDER BY accepted_at DESC LIMIT -1 OFFSET ?)",
-                        (self._RETAIN_ACCEPTED,),
+                        "DELETE FROM outbox WHERE status='accepted' AND accepted_at<?",
+                        (now - self._RETAIN_ACCEPTED_SECONDS,),
                     )
                     self._db.execute(
                         "INSERT INTO outbox(event_id,fingerprint,payload,created,next_try) VALUES(?,?,?,?,?)",
@@ -264,6 +264,7 @@ class WebhookAlertSink:
         return {
             "pending_count": counts.get("pending", 0) + counts.get("inflight", 0),
             "failed_count": counts.get("failed", 0),
+            "worker_error_category": self._worker_error_category,
             "last_http_accepted_utc": None
             if accepted is None
             else datetime.fromtimestamp(accepted, timezone.utc).isoformat(),
@@ -371,11 +372,17 @@ class WebhookAlertSink:
             while not self._closed.is_set():
                 try:
                     delivered = self.deliver_one()
+                    with self._state_lock:
+                        self._worker_error_category = ""
                 except Exception as exc:
-                    logger.error(
-                        "alert spool worker failed (%s); pending evidence retained",
-                        type(exc).__name__,
-                    )
+                    category = type(exc).__name__
+                    with self._state_lock:
+                        changed = self._worker_error_category != category
+                        self._worker_error_category = category
+                    if changed:
+                        logger.error(
+                            "alert spool worker failed (%s); pending evidence retained", category
+                        )
                     delivered = False
                 if not delivered:
                     self._wake.wait(timeout=0.25)

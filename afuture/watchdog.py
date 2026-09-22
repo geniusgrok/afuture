@@ -135,7 +135,10 @@ def evaluate_heartbeat(
             notification.get("persistence_failures") == 0
             and isinstance(deliveries, list)
             and all(
-                isinstance(item, Mapping) and item.get("failed_count") == 0 for item in deliveries
+                isinstance(item, Mapping)
+                and item.get("failed_count") == 0
+                and not item.get("worker_error_category")
+                for item in deliveries
             )
         )
         result.add(

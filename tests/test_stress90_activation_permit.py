@@ -791,6 +791,17 @@ def test_crash_after_consume_resumes_exact_uncommitted_activation(
     assert persisted.state.runtime_mode == RuntimeMode.HALTED.value
     assert persisted.state.kill_switch is True
     consumed = permit_store.load_required_record()
+    for wrong in (
+        replace(evidence, account_identity_digest="9" * 64),
+        replace(evidence, generic_state_sequence=evidence.generic_state_sequence + 1),
+    ):
+        with pytest.raises(RuntimeError, match="evidence mismatch"):
+            activate_stress90_from_permit(
+                state_store=real_store,
+                permit_store=permit_store,
+                evidence=wrong,
+                expected_permit_sequence=consumed.sequence,
+            )
     running = activate_stress90_from_permit(
         state_store=real_store,
         permit_store=permit_store,
