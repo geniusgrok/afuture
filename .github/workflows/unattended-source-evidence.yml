@@ -1,7 +1,6 @@
 name: unattended-source-evidence
 
-# Development transport only: no broker credentials, account access or deployment.
-# Removed once the source-backed runtime validation is integrated into normal CI.
+# Temporary development transport; no broker access, secrets or deployment.
 on:
   push:
     branches: [codex/unattended-24x7-20260922]
@@ -16,17 +15,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - name: Preserve source and Git object manifest
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/afuture-source"
+          mkdir -p "$RUNNER_TEMP/afuture-source/tools"
           git rev-parse HEAD > "$RUNNER_TEMP/afuture-source/SOURCE_SHA"
           git ls-tree -r --full-tree HEAD > "$RUNNER_TEMP/afuture-source/git-tree.txt"
           git archive --format=tar.gz --output="$RUNNER_TEMP/afuture-source/source.tar.gz" HEAD
-          sha256sum "$RUNNER_TEMP/afuture-source/source.tar.gz" > "$RUNNER_TEMP/afuture-source/SHA256SUMS"
+          python -m pip download --only-binary=:all: --dest "$RUNNER_TEMP/afuture-source/tools" ruff==0.16.4 mypy==1.20.2
+          (cd "$RUNNER_TEMP/afuture-source" && sha256sum source.tar.gz tools/* > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
-          name: afuture-source-${{ github.sha }}
+          name: afuture-source-and-tools-${{ github.sha }}
           path: ${{ runner.temp }}/afuture-source/
           retention-days: 7
           if-no-files-found: error
