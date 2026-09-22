@@ -575,6 +575,7 @@ def _run_live_with_process_fence_owned(argv: list[str], config, lease) -> int:
         runtime_identity_digest=runtime_digest,
         account_identity_digest=account_digest,
         start_state_checksum=start_state.checksum,
+        _allow_unclean_parent=fence.resume_activation,
     )
     process_uuid = record.process_uuid
     set_current_process_uuid(process_uuid)
