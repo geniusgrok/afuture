@@ -1,0 +1,70 @@
+name: unattended-send-gate-transfer
+on:
+  push:
+    branches: [codex/unattended-24x7-20260922]
+    paths: [.github/workflows/unattended-send-gate-transfer.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Reconstruct and verify four source files without counter access
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib,json,os,subprocess,tempfile
+          from pathlib import Path
+          BRANCH="codex/unattended-24x7-20260922"
+          def git(*args): return subprocess.check_output(["git",*args],text=True).strip()
+          assert os.environ["GITHUB_REPOSITORY"]=="ychenracing/afuture"
+          assert os.environ["GITHUB_REF"]=="refs/heads/"+BRANCH
+          assert git("rev-parse","HEAD")==os.environ["GITHUB_SHA"]
+          assert not git("status","--porcelain")
+          manifest={"base_sha":"5f0ffebef1697f0279d378b61c7fbdf0d200d300","base_tree":"14f7325494107841459408cca44a9af8e9b61908","files":[{"after":"e2736d47a5553fd13863acdaa5b990e9a71df821","before":"311306b0e3576bf53ac567f652bcd7058b9ceaca","bytes":149193,"path":"afuture/broker/ctp.py","sha256":"dd49095e96003e82180ddde937f671b06285835e46ce97059830680afeefbd75"},{"after":"bed084407b907c3a391fb7f68a3f0a7b9464bfb3","before":"a68248b5ef3b282fbc000a2bfbe54854fad4ef51","bytes":16083,"path":"afuture/execution.py","sha256":"fbb4c60745d45dd1d290c5788d9330a3f2e6b89b1a941409fcffd5086df777f1"},{"after":"a56b7b09ad67eb5ee88e2108898b6941dcf5aada","before":"605e1d48395b5fa4eea36f2a7e3ed3e03aa31900","bytes":10130,"path":"tests/test_ctp_settlement_capture.py","sha256":"fb6afbd6837ea1e3438ab5f6be0dbd9e53eb24cef60c32bacabbf597ea02d5df"},{"after":"1a79957c28aca2046349cdf3d6bedee87c2db9f0","before":"ba02269ffc50f5c9f4d90f2c2d41b273f943597a","bytes":6276,"path":"tests/test_live_execution_clock.py","sha256":"0bdb91ff590c7070bb9c9ee2f9b1892416c102160def28ad36fef850f64b44fa"}],"patch_bytes":6085,"patch_sha256":"99bd67c0b74cd86156ad9a6b187bf31e377bc9e461ec766c2a6dadc3202edaa1"}
+          patch='diff --git a/afuture/broker/ctp.py b/afuture/broker/ctp.py\nindex 311306b0e3576bf53ac567f652bcd7058b9ceaca..e2736d47a5553fd13863acdaa5b990e9a71df821 100644\n--- a/afuture/broker/ctp.py\n+++ b/afuture/broker/ctp.py\n@@ -1401,6 +1401,11 @@ class CtpBroker(Broker):\n     def send_order(self, request: OrderRequest) -> str:\n         if not self.is_ready() or self._main_engine is None:\n             raise RuntimeError("CTP market/trading session is not ready")\n+        query_error = self._snapshot_query_error or self._settlement_query.integrity_error\n+        if query_error:\n+            # This boundary also protects formally supported non-Stress-90 paths,\n+            # before the event loop has consumed the critical error notification.\n+            raise RuntimeError(f"CTP query evidence is invalid: {query_error}")\n         if self._order_submission_journal is None:\n             order_id = self._main_engine.send_order(self._to_vnpy_order(request), self.gateway_name)\n             if not order_id:\ndiff --git a/afuture/execution.py b/afuture/execution.py\nindex a68248b5ef3b282fbc000a2bfbe54854fad4ef51..bed084407b907c3a391fb7f68a3f0a7b9464bfb3 100644\n--- a/afuture/execution.py\n+++ b/afuture/execution.py\n@@ -72,6 +72,9 @@ class PairExecutor:\n             return ExecutionResult(False, reason="hold signal")\n         if not self.broker.is_ready():\n             return ExecutionResult(False, reason="broker is not ready")\n+        broker_health = self.broker.health_error()\n+        if broker_health:\n+            return ExecutionResult(False, reason=broker_health)\n \n         now = self._decision_time(signal.timestamp)\n         quote_decision = self.risk_manager.check_quotes([near, far], now)\n@@ -145,6 +148,13 @@ class PairExecutor:\n         return now\n \n     def _require_current_quotes(self, near: Tick, far: Tick) -> None:\n+        # A callback or snapshot query can fail during sizing or after the first\n+        # leg. Quote freshness alone cannot authorize the next broker write.\n+        if not self.broker.is_ready():\n+            raise RuntimeError("broker is not ready")\n+        broker_health = self.broker.health_error()\n+        if broker_health:\n+            raise RuntimeError(broker_health)\n         decision = self.risk_manager.check_quotes(\n             [near, far], self._decision_time(max(near.timestamp, far.timestamp))\n         )\ndiff --git a/tests/test_ctp_settlement_capture.py b/tests/test_ctp_settlement_capture.py\nindex 605e1d48395b5fa4eea36f2a7e3ed3e03aa31900..a56b7b09ad67eb5ee88e2108898b6941dcf5aada 100644\n--- a/tests/test_ctp_settlement_capture.py\n+++ b/tests/test_ctp_settlement_capture.py\n@@ -7,7 +7,7 @@ import pytest\n \n from afuture.broker.ctp import CtpBroker, CtpCredentials\n from afuture.broker.ctp_settlement_query import CtpSettlementQuery, CtpSettlementQueryError\n-from afuture.models import AccountSnapshot\n+from afuture.models import AccountSnapshot, Offset, OrderRequest, OrderSide\n \n \n def fragment(sequence=0, content="synthetic settlement\\n", **changes):\n@@ -263,3 +263,18 @@ def test_query_missing_document_is_distinct_from_protocol_corruption():\n             timeout_seconds=0.1,\n         )\n     assert not query.integrity_error\n+\n+\n+@pytest.mark.parametrize("failure", ["snapshot", "settlement"])\n+def test_query_integrity_failure_blocks_native_send_before_error_event_is_consumed(failure):\n+    broker = broker_with_native_query(deliver)\n+    broker._main_engine.send_order = lambda *_args: pytest.fail("native send must not happen")\n+    if failure == "snapshot":\n+        broker._snapshot_query_error = "account query is corrupt"\n+    else:\n+        # An unsolicited native callback makes the real capture component sticky.\n+        broker._settlement_query.observe(fragment(), {}, 1, True)\n+    assert broker.is_ready()\n+    request = OrderRequest("rb2610", "SHFE", OrderSide.BUY, Offset.OPEN, 1, 3500.0)\n+    with pytest.raises(RuntimeError, match="query evidence is invalid"):\n+        broker.send_order(request)\ndiff --git a/tests/test_live_execution_clock.py b/tests/test_live_execution_clock.py\nindex ba02269ffc50f5c9f4d90f2c2d41b273f943597a..1a79957c28aca2046349cdf3d6bedee87c2db9f0 100644\n--- a/tests/test_live_execution_clock.py\n+++ b/tests/test_live_execution_clock.py\n@@ -142,3 +142,55 @@ def test_live_fresh_pair_reaches_real_simulated_fills():\n         assert sum(p.long_total + p.short_total for p in broker.get_positions()) == 2\n     finally:\n         broker.stop()\n+\n+\n+def test_fresh_quotes_cannot_override_broker_snapshot_failure(monkeypatch):\n+    broker, executor, ticks = setup_execution()\n+    monkeypatch.setattr(broker, "health_error", lambda: "incomplete account snapshot")\n+    try:\n+        result = execute(executor, ticks)\n+        assert not result.accepted\n+        assert result.reason == "incomplete account snapshot"\n+        assert not result.order_ids\n+        assert broker.get_positions() == []\n+    finally:\n+        broker.stop()\n+\n+\n+def test_broker_failure_between_legs_preserves_filled_exposure(monkeypatch):\n+    broker, executor, ticks = setup_execution()\n+    calls = 0\n+\n+    def health():\n+        nonlocal calls\n+        calls += 1\n+        return None if calls <= 2 else "account query identity mismatch"\n+\n+    monkeypatch.setattr(broker, "health_error", health)\n+    try:\n+        result = execute(executor, ticks)\n+        assert not result.accepted\n+        assert len(result.order_ids) == 1\n+        assert "identity mismatch" in result.reason\n+        assert sum(p.long_total + p.short_total for p in broker.get_positions()) == 1\n+    finally:\n+        broker.stop()\n+\n+\n+def test_disconnect_during_sizing_is_rechecked_before_first_write(monkeypatch):\n+    broker, executor, ticks = setup_execution()\n+    calls = 0\n+\n+    def ready():\n+        nonlocal calls\n+        calls += 1\n+        return calls == 1\n+\n+    monkeypatch.setattr(broker, "is_ready", ready)\n+    try:\n+        result = execute(executor, ticks)\n+        assert not result.accepted\n+        assert not result.order_ids\n+        assert broker.get_positions() == []\n+    finally:\n+        broker.stop()\n'
+          assert git("rev-parse","HEAD^")==manifest["base_sha"]
+          raw=patch.encode()
+          assert len(raw)==manifest["patch_bytes"] and hashlib.sha256(raw).hexdigest()==manifest["patch_sha256"]
+          for f in manifest["files"]:
+              assert git("rev-parse","HEAD:"+f["path"])==f["before"]
+          with tempfile.NamedTemporaryFile(suffix=".patch") as out:
+              out.write(raw);out.flush()
+              subprocess.run(["git","apply","--index","--check",out.name],check=True)
+              subprocess.run(["git","apply","--index",out.name],check=True)
+          assert set(git("diff","--cached","--name-only").splitlines())=={f["path"] for f in manifest["files"]}
+          assert not git("diff","--name-only")
+          for f in manifest["files"]:
+              data=Path(f["path"]).read_bytes()
+              assert len(data)==f["bytes"] and hashlib.sha256(data).hexdigest()==f["sha256"]
+              assert git("rev-parse",":"+f["path"])==f["after"]
+          assert git("ls-remote","origin","refs/heads/"+BRANCH).split()[0]==os.environ["GITHUB_SHA"]
+          git("config","user.name","github-actions[bot]")
+          git("config","user.email","41898282+github-actions[bot]@users.noreply.github.com")
+          git("commit","-m","fix: reject broker evidence failures before each live order")
+          git("push","origin","HEAD:refs/heads/"+BRANCH)
+          sha=git("rev-parse","HEAD")
+          assert git("ls-remote","origin","refs/heads/"+BRANCH).split()[0]==sha
+          out=Path(os.environ["RUNNER_TEMP"])/"send-gate-evidence"
+          out.mkdir()
+          (out/"SOURCE_SHA").write_text(sha+"\n")
+          (out/"git-tree.txt").write_text(git("ls-tree","-r","--full-tree","HEAD")+"\n")
+          (out/"manifest.json").write_text(json.dumps(manifest,sort_keys=True)+"\n")
+          (out/"fix.patch").write_bytes(raw)
+          git("archive","--format=tar.gz","--output="+str(out/"source.tar.gz"),"HEAD")
+          (out/"SHA256SUMS").write_text("".join(hashlib.sha256(p.read_bytes()).hexdigest()+"  "+p.name+"\n" for p in sorted(out.iterdir())))
+          print(json.dumps({"source_sha":sha,"files_verified":len(manifest["files"]),"field_validation":False}))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: send-gate-source-${{ github.sha }}
+          path: ${{ runner.temp }}/send-gate-evidence/
+          retention-days: 7
+          if-no-files-found: error
