@@ -1,0 +1,254 @@
++## P. 无人值守交付与证据等级
++
++- [x] 生产跨期/Auto 报单按当前时钟校验新鲜度，每腿发送前复核；限速使用单调时间。
++- [x] 生产启动在 process-run/状态/许可写入之前取得账户锁；缺失账户状态不自动初始化。
++- [x] 原始账户/持仓查询按 request ID、完整结束标志和身份归集后发布；冲突和 SDK 丢仓拒绝。
++- [x] 隔离测试柜台结算格式采集入口已接入实际 CTP adapter；其产物不是资金连续性证明。
++- [ ] 目标机原生依赖、实际结算格式、查询顺序与完整性已核验。
++- [ ] 正常跨日和阶段授权续接已闭合，不需要每日人工操作。
++- [ ] 正式交易日历、夜盘/节假日、数据准备、维护重连与既有风控已形成统一生产路径。
++- [ ] 关键通知实际送达级别与独立主机失联检测已经实测。
++- [ ] 已批准的隔离测试目标机服务实际安装、启动并保留源码/配置/账户身份收据。
++- [ ] 一个真实自然月已完成，交易日、时段、委托成交、恢复和人工介入均有可复核记录。
++
++上面的离线机械项目不代表无人值守整体通过。正常停机不等于账户已经平仓；
++工程交付、目标机/测试柜台、真实月份和极小资金授权分别判断，模拟服务不得自动切换真钱。
+diff --git a/docs/stress90-live-runbook.md b/docs/stress90-live-runbook.md
+index cf4f7be50a9e55bea9b99a4bef8ba063c9ee8960..fc382c2e5307fe499f8d18db80f3406ce56ff789 100644
+--- a/docs/stress90-live-runbook.md
++++ b/docs/stress90-live-runbook.md
+@@ -694,3 +694,17 @@ afuture watchdog --config <config> --once --max-age-seconds 15
+ `prepare-session` 一次运行后立即退出，不进入常驻循环；它不会签发 permit、恢复 RUNNING、清除 kill switch、修改 risk scale、自动 roll-forward/rebase，也不会从 live 订单路径同步调用外部 OHLC provider。安全阻断退出码为 2，配置/调用错误使用独立非零码。
+ 
+ systemd live 模板使用 `Restart=on-failure`，但异常/不确定重启围栏使用退出码 75 并列入 `RestartPreventExitStatus`。该围栏在任何 order-capable Broker 构造前运行；旧 permit 被失效，generic state 保持/转为 HALTED 且 kill switch=true。watchdog timer 只读本地证据并告警，不 kill/restart live 进程、不平仓、不解除 HALTED。
++
++## 结算格式与无人值守验收边界
++
++`ctp-settlement-capture` 是隔离测试柜台的私有证据采集入口，使用方法和权限边界见
++[`live-trading.md`](live-trading.md#32-隔离测试柜台的结算格式采集)。它只证明指定查询的
++已知分片和完成边界，不解析资金、费用和持仓，也不提升 `settlement_verified` 或签发许可。
++必须先核验拟运行柜台的真实格式；当前零入出金、PreBalance 差额和结算确认成功都不能
++代替上一交易日完整资金活动证据。生产持仓/账户查询现在只在 request-bound 完成后发布。
++
++当前不能把 strict 命令入口、原人工 operator roll-forward 或 systemd 自动重启描述成
++无人值守跨日已完成。阶段授权/技术就绪续接、正式日历、正常跨日资金证明和自动恢复
++仍须形成同一生产闭环并通过验收后，才能替换日常人工门。没有获批目标机与测试账户时，
++不得安装或连接未知柜台；真实一个自然月必须从现场经过时间与执行证据计算，不能用
++本地测试、CI、加速回放或“服务进程存活”代替，更不能自动进入实盘。
+diff --git a/tests/test_auto_hardening.py b/tests/test_auto_hardening.py
+index 66c719766da50d97657ab1158a1f6fd549ced3c9..800f727148376a139b48a14f86b3971d4ce4cadf 100644
+--- a/tests/test_auto_hardening.py
++++ b/tests/test_auto_hardening.py
+@@ -301,7 +301,7 @@ def test_pair_executor_submits_thinner_leg_first():
+     broker.publish_tick(far)
+ 
+     risk = RiskManager(RiskConfig(min_depth_multiple=2.0))
+-    executor = PairExecutor(broker, risk, specs(), slippage_ticks=0)
++    executor = PairExecutor(broker, risk, specs(), slippage_ticks=0, historical_mode=True)
+     pair = PairConfig(
+         "p",
+         "m2609",
+diff --git a/tests/test_ctp_settlement_capture.py b/tests/test_ctp_settlement_capture.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..605e1d48395b5fa4eea36f2a7e3ed3e03aa31900
+--- /dev/null
++++ b/tests/test_ctp_settlement_capture.py
+@@ -0,0 +1,265 @@
++"""Inject native query callbacks into production CtpBroker; no field acceptance claim."""
++
++from dataclasses import replace
++from types import SimpleNamespace
++
++import pytest
++
++from afuture.broker.ctp import CtpBroker, CtpCredentials
++from afuture.broker.ctp_settlement_query import CtpSettlementQuery, CtpSettlementQueryError
++from afuture.models import AccountSnapshot
++
++
++def fragment(sequence=0, content="synthetic settlement\n", **changes):
++    return {
++        "BrokerID": "9999",
++        "InvestorID": "investor",
++        "AccountID": "account",
++        "CurrencyID": "CNY",
++        "TradingDay": "20260921",
++        "SettlementID": 1,
++        "SequenceNo": sequence,
++        "Content": content,
++        **changes,
++    }
++
++
++def broker_with_native_query(callback):
++    broker = CtpBroker(
++        CtpCredentials(
++            "user",
++            "unused",
++            "9999",
++            "tcp://test.invalid:1",
++            "tcp://test.invalid:2",
++            "app",
++            "unused",
++            environment="test",
++            account_id="account",
++            currency_id="CNY",
++            investor_id="investor",
++        )
++    )
++    api = SimpleNamespace(
++        getTradingDay=lambda: "20260922",
++        reqid=100,
++        login_status=True,
++        contract_inited=True,
++        reqQrySettlementInfo=lambda request, reqid: callback(broker, request, reqid),
++    )
++    gateway = SimpleNamespace(td_api=api, md_api=SimpleNamespace(login_status=True))
++    broker._main_engine = SimpleNamespace(get_gateway=lambda _: gateway)
++    broker._account_identity_verified_state = True
++    broker._account_identity_verified_day = "20260922"
++    broker._last_account = AccountSnapshot(
++        balance=100,
++        equity=100,
++        available=100,
++        margin=0,
++        realized_pnl=0,
++        unrealized_pnl=0,
++        trading_day="20260922",
++        cash_flow_verified=True,
++    )
++    return broker
++
++
++def deliver(broker, request, reqid):
++    assert request == {
++        "BrokerID": "9999",
++        "InvestorID": "investor",
++        "AccountID": "account",
++        "CurrencyID": "CNY",
++        "TradingDay": "20260921",
++    }
++    broker._settlement_query.observe(fragment(1, "second\n"), {}, reqid, False)
++    broker._settlement_query.observe(fragment(0, "first\n"), {}, reqid, False)
++    broker._settlement_query.observe(fragment(0, "first\n"), {}, reqid, False)
++    broker._settlement_query.observe(None, {}, reqid, True)
++    return 0
++
++
++def test_production_broker_captures_identity_bound_ordered_fragments_without_financial_authority():
++    broker = broker_with_native_query(deliver)
++    account_before = broker._last_account
++    document = broker.capture_settlement_document("20260921", timeout_seconds=0.1)
++    assert document.request_id == 101
++    assert document.content == "first\nsecond\n"
++    assert len(document.evidence_digest) == 64
++    envelope = document.to_dict()
++    assert envelope["query_end_received"] is True
++    assert envelope["native_bytes_preserved"] is False
++    assert envelope["financial_continuity_verified"] is False
++    assert envelope["sequence_origin_verified"] is False
++    assert broker._last_account == account_before
++    assert broker._critical_enqueued == 0
++
++
++@pytest.mark.parametrize(
++    "change",
++    [
++        {"BrokerID": "other"},
++        {"InvestorID": "other"},
++        {"AccountID": "other"},
++        {"CurrencyID": "USD"},
++        {"TradingDay": "20260920"},
++        {"Content": ""},
++        {"Content": "\ufffd"},
++        {"Content": "a\x00b"},
++        {"Content": b"bytes"},
++        {"SequenceNo": True},
++        {"SettlementID": True},
++        {"Unknown": 1},
++    ],
++)
++def test_changed_or_uninterpretable_native_identity_is_rejected(change):
++    def invalid(broker, request, reqid):
++        broker._settlement_query.observe(fragment(**change), {}, reqid, True)
++        return 0
++
++    broker = broker_with_native_query(invalid)
++    with pytest.raises(CtpSettlementQueryError):
++        broker.capture_settlement_document("20260921", timeout_seconds=0.1)
++    assert broker._settlement_query.integrity_error
++
++
++@pytest.mark.parametrize(
++    "case", ["gap", "conflict", "mixed_settlement", "wrong_request", "duplicate_end"]
++)
++def test_fragments_cannot_manufacture_query_completeness(case):
++    def invalid(broker, request, reqid):
++        sink = broker._settlement_query
++        sink.observe(fragment(0, "a"), {}, reqid, False)
++        if case == "gap":
++            sink.observe(fragment(2, "c"), {}, reqid, True)
++        elif case == "conflict":
++            sink.observe(fragment(0, "b"), {}, reqid, True)
++        elif case == "mixed_settlement":
++            sink.observe(fragment(1, "b", SettlementID=2), {}, reqid, True)
++        elif case == "wrong_request":
++            sink.observe(fragment(1, "b"), {}, reqid + 1, True)
++        else:
++            sink.observe(None, {}, reqid, True)
++            sink.observe(None, {}, reqid, True)
++        return 0
++
++    broker = broker_with_native_query(invalid)
++    with pytest.raises(CtpSettlementQueryError):
++        broker.capture_settlement_document("20260921", timeout_seconds=0.1)
++
++
++def test_no_end_marker_is_not_a_complete_query_and_late_timeout_is_retired():
++    old = []
++
++    def unfinished(broker, request, reqid):
++        old.append(reqid)
++        broker._settlement_query.observe(fragment(), {}, reqid, False)
++        return 0
++
++    broker = broker_with_native_query(unfinished)
++    with pytest.raises(CtpSettlementQueryError, match="did not finish"):
++        broker.capture_settlement_document("20260921", timeout_seconds=0.002)
++    broker._settlement_query.observe(None, {}, old[0], True)
++    assert not broker._settlement_query.integrity_error
++    broker._main_engine.get_gateway("CTP").td_api.reqQrySettlementInfo = lambda request, reqid: (
++        deliver(broker, request, reqid)
++    )
++    assert (
++        broker.capture_settlement_document("20260921", timeout_seconds=0.1).content
++        == "first\nsecond\n"
++    )
++
++
++def test_late_reply_after_success_invalidates_capture_without_account_mutation():
++    broker = broker_with_native_query(deliver)
++    document = broker.capture_settlement_document("20260921", timeout_seconds=0.1)
++    broker._settlement_query.observe(fragment(), {}, document.request_id, True)
++    with pytest.raises(CtpSettlementQueryError, match="no longer"):
++        broker._settlement_query.require_current(document)
++    assert broker.health_error() == broker._settlement_query.integrity_error
++
++
++def test_successful_capture_is_not_reused_for_another_query():
++    broker = broker_with_native_query(deliver)
++    first = broker.capture_settlement_document("20260921", timeout_seconds=0.1)
++    second = broker.capture_settlement_document("20260921", timeout_seconds=0.1)
++    assert second.request_id > first.request_id
++    with pytest.raises(CtpSettlementQueryError):
++        broker._settlement_query.require_current(first)
++    broker._settlement_query.require_current(second)
++
++
++def test_query_refuses_unverified_current_account_before_native_call():
++    broker = broker_with_native_query(lambda *_: pytest.fail("native call must not happen"))
++    broker._last_account = replace(broker._last_account, cash_flow_verified=False)
++    with pytest.raises(RuntimeError, match="verified explicit"):
++        broker.capture_settlement_document("20260921")
++
++

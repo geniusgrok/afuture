@@ -1,0 +1,268 @@
++                            data, error, reqid, last, trading_day=self.getTradingDay()
++                        )
++                        if rows is None:
++                            return
++                        row = rows[0]
++                        callback = getattr(
++                            self.gateway, "_afuture_account_cash_flow_callback", None
++                        )
++                        if callable(callback) and not callback(dict(row)):
+                             return
+-                super().onRspQryTradingAccount(data, error, reqid, last)
++                        super().onRspQryTradingAccount(row, {}, reqid, True)
++                    except Exception as exc:
++                        self._afuture_snapshot_failure(exc)
+ 
+         class TrackedCtpMdApi(CtpMdApi):
+             """Preserve raw CTP day identity before VeighNa converts TickData."""
+@@ -784,6 +898,7 @@ class CtpBroker(Broker):
+                 self._afuture_contract_catalog_callback = None
+                 self._afuture_account_cash_flow_callback = None
+                 self._afuture_session_query_callback = None
++                self._afuture_settlement_query_callback = None
+                 self._afuture_critical_ingress_callback = None
+                 self._afuture_raw_market_connection_callback = None
+                 self._afuture_raw_market_identity = None
+@@ -848,6 +963,7 @@ class CtpBroker(Broker):
+         gateway._afuture_contract_catalog_callback = self._handle_contract_catalog_response
+         gateway._afuture_account_cash_flow_callback = self._handle_account_cash_flow
+         gateway._afuture_session_query_callback = self._handle_session_query_response
++        gateway._afuture_settlement_query_callback = self._settlement_query.observe
+         gateway._afuture_critical_ingress_callback = self._mark_critical_upstream_pending
+         gateway._afuture_raw_market_connection_callback = self._handle_raw_market_connection_state
+         self._event_engine.register(runtime["EVENT_TICK"], self._on_tick)
+@@ -922,6 +1038,10 @@ class CtpBroker(Broker):
+         )
+ 
+     def health_error(self, *, now_monotonic: float | None = None) -> str | None:
++        if self._snapshot_query_error:
++            return self._snapshot_query_error
++        if self._settlement_query.integrity_error:
++            return self._settlement_query.integrity_error
+         with self._contract_catalog_refresh_state_lock:
+             catalog_sticky_error = self._contract_catalog_sticky_error
+         if catalog_sticky_error:
+@@ -1583,6 +1703,38 @@ class CtpBroker(Broker):
+             key=lambda item: (item.product.lower(), item.expiry, item.symbol),
+         )
+ 
++    def capture_settlement_document(
++        self, trading_day: str, *, timeout_seconds: float = 30.0
++    ) -> CtpSettlementDocument:
++        """Read a complete decoded statement, never promote it to financial proof."""
++        day = self._validate_trading_day(trading_day)
++        current_day = self.get_trading_day()
++        if day > current_day:
++            raise RuntimeError("cannot query a future settlement trading day")
++        if not self._has_expected_account_identity or not self.account_identity_verified:
++            raise RuntimeError("settlement capture requires verified explicit account identity")
++        if self._main_engine is None or not self.is_ready():
++            raise RuntimeError("CTP is not ready for settlement capture")
++        gateway = self._main_engine.get_gateway(self.gateway_name)
++        td_api = getattr(gateway, "td_api", None)
++        native_query = getattr(td_api, "reqQrySettlementInfo", None)
++        if not callable(native_query):
++            raise RuntimeError("native CTP SettlementInfo query is unavailable")
++        document = self._settlement_query.query(
++            native_query,
++            request_id=self._allocate_ctp_query_request_id(td_api),
++            broker_id=self.credentials.broker_id,
++            investor_id=self.credentials.investor_id or self.credentials.user_id,
++            account_id=self.credentials.account_id,
++            currency_id=self.credentials.currency_id,
++            trading_day=day,
++            timeout_seconds=timeout_seconds,
++        )
++        if self.get_trading_day() != current_day or not self.account_identity_verified:
++            raise RuntimeError("CTP session changed during settlement capture")
++        self._settlement_query.require_current(document)
++        return document
++
+     def _allocate_ctp_query_request_id(self, td_api) -> int:
+         """Allocate one request id under the afuture query serialization boundary."""
+ 
+diff --git a/afuture/broker/ctp_settlement_query.py b/afuture/broker/ctp_settlement_query.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..66ad7563320c4466307450c698d6aeb9bcdfb8ed
+--- /dev/null
++++ b/afuture/broker/ctp_settlement_query.py
+@@ -0,0 +1,321 @@
++"""Request-bound capture of CTP SettlementInfo, without interpreting account facts.
++
++Completion of the transport query is NOT proof of financial continuity.  In
++particular, the supported vnpy binding exposes already-decoded Content strings,
++not native GBK bytes.  No balance, funding or position flag is upgraded here.
++"""
++
++from __future__ import annotations
++
++import json
++import math
++from collections import deque
++from collections.abc import Callable
++from dataclasses import asdict, dataclass
++from datetime import datetime, timezone
++from hashlib import sha256
++from threading import Event, Lock, RLock
++from time import monotonic, sleep
++
++_FIELDS = frozenset(
++    {
++        "TradingDay",
++        "SettlementID",
++        "BrokerID",
++        "InvestorID",
++        "SequenceNo",
++        "Content",
++        "AccountID",
++        "CurrencyID",
++    }
++)
++_MAX_FRAGMENTS = 4096
++_MAX_CONTENT_BYTES = 2_000_000
++
++
++class CtpSettlementQueryError(RuntimeError):
++    """A requested statement has no complete, identity-consistent transport result."""
++
++
++def _day(value: object) -> str:
++    if type(value) is not str or len(value) != 8 or not value.isascii() or not value.isdigit():
++        raise CtpSettlementQueryError("settlement trading day must be YYYYMMDD")
++    try:
++        parsed = datetime.strptime(value, "%Y%m%d")
++    except ValueError as exc:
++        raise CtpSettlementQueryError("settlement trading day is invalid") from exc
++    if parsed.strftime("%Y%m%d") != value:
++        raise CtpSettlementQueryError("settlement trading day is invalid")
++    return value
++
++
++def _integer(value: object, name: str, *, minimum: int = 0) -> int:
++    if type(value) is not int or value < minimum:
++        raise CtpSettlementQueryError(f"settlement {name} is invalid")
++    return value
++
++
++def _identity(value: object) -> str:
++    if type(value) is not str or not value or value.strip() != value:
++        raise CtpSettlementQueryError("settlement account identity is incomplete")
++    return value
++
++
++@dataclass(frozen=True)
++class CtpSettlementFragment:
++    sequence: int
++    content: str
++
++
++@dataclass(frozen=True)
++class CtpSettlementDocument:
++    """Immutable query evidence. Not a normalized or approved settlement statement."""
++
++    request_id: int
++    broker_id: str
++    investor_id: str
++    account_id: str
++    currency_id: str
++    trading_day: str
++    settlement_id: int
++    fragments: tuple[CtpSettlementFragment, ...]
++    received_at_utc: str
++    query_elapsed_seconds: float
++    evidence_digest: str
++
++    @property
++    def content(self) -> str:
++        return "".join(fragment.content for fragment in self.fragments)
++
++    def to_dict(self) -> dict[str, object]:
++        body = asdict(self)
++        body.update(
++            kind="afuture.ctp-settlement-capture",
++            schema_version=1,
++            query_end_received=True,
++            native_bytes_preserved=False,
++            content_representation="vnpy-decoded-unicode-fragments",
++            sequence_origin_verified=False,
++            financial_continuity_verified=False,
++            orders_sent=0,
++            cancels_sent=0,
++        )
++        return body
++
++
++class CtpSettlementQuery:
++    """One bounded native query; callbacks can never mix request generations.
++
++    A timeout retires that id. Delayed replies to a retired timeout are ignored;
++    a second end marker or a reply to a successfully completed query is a sticky
++    protocol failure. No caller may reuse a captured document after that failure.
++    """
++
++    def __init__(self) -> None:
++        self._serial = Lock()
++        self._lock = RLock()
++        self._event = Event()
++        self._active_id: int | None = None
++        self._completed_id: int | None = None
++        self._completed_document: CtpSettlementDocument | None = None
++        self._retired: deque[int] = deque(maxlen=128)
++        self._identity: dict[str, str] = {}
++        self._rows: dict[int, CtpSettlementFragment] = {}
++        self._settlement_id: int | None = None
++        self._byte_count = 0
++        self._error = ""
++        self._integrity_error = ""
++
++    @property
++    def integrity_error(self) -> str:
++        with self._lock:
++            return self._integrity_error
++
++    def observe(self, data, error, request_id: int, last: bool) -> None:
++        """Native callback ingress; never throw into the SDK callback thread."""
++        with self._lock:
++            try:
++                request_id = _integer(request_id, "request ID", minimum=1)
++                if type(last) is not bool:
++                    raise CtpSettlementQueryError("settlement end marker must be boolean")
++                if request_id in self._retired:
++                    return
++                if request_id != self._active_id or self._event.is_set():
++                    raise CtpSettlementQueryError(
++                        "settlement reply outside active query generation"
++                    )
++                if error is not None and type(error) is not dict:
++                    raise CtpSettlementQueryError("settlement error envelope is invalid")
++                code = _integer((error or {}).get("ErrorID", 0), "ErrorID")
++                if code:
++                    # The caller may retry a known broker refusal in a new query.
++                    # Do not retain potentially sensitive free-text ErrorMsg.
++                    self._error = f"CTP settlement query rejected: ErrorID={code}"
++                    self._event.set()
++                    return
++                if data is not None and data != {}:
++                    if type(data) is not dict or set(data) != _FIELDS:
++                        raise CtpSettlementQueryError("settlement fragment fields changed")
++                    if any(data[key] != value for key, value in self._identity.items()):
++                        raise CtpSettlementQueryError("settlement fragment account/day mismatch")
++                    settlement_id = _integer(data["SettlementID"], "settlement ID")
++                    if self._settlement_id is None:
++                        self._settlement_id = settlement_id
++                    if self._settlement_id != settlement_id:
++                        raise CtpSettlementQueryError("settlement identity changed within query")
++                    sequence = _integer(data["SequenceNo"], "sequence")
++                    content = data["Content"]
++                    if (
++                        type(content) is not str
++                        or not content
++                        or "\x00" in content
++                        or "\ufffd" in content
++                    ):
++                        raise CtpSettlementQueryError(
++                            "settlement Content is missing or undecodable"
++                        )
++                    encoded = content.encode("utf-8", errors="strict")
++                    if len(encoded) > 8192:
++                        raise CtpSettlementQueryError("settlement fragment is oversized")
