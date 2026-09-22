@@ -169,3 +169,32 @@ def test_runtime_lease_capability_uses_real_runtime_identity(tmp_path: Path):
         assert lease.authorizes_technical_activation(identity, real_runtime)
     finally:
         lease.release()
+
+
+def test_cli_import_without_fcntl_and_live_lease_fails_before_writes(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    probe = """
+import sys
+sys.modules['fcntl'] = None
+from afuture.cli import build_parser
+from afuture.runtime_lease import AccountExclusiveRuntimeLease, RuntimeLeaseError
+build_parser().format_help()
+try:
+    AccountExclusiveRuntimeLease(sys.argv[1], 'e'*64, role='live').acquire()
+except RuntimeLeaseError:
+    pass
+else:
+    raise AssertionError('live lease unexpectedly available without fcntl')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(tmp_path / "runtime")],
+        env={**os.environ},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "runtime").exists()

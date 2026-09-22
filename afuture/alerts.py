@@ -7,7 +7,6 @@ import logging
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Protocol
@@ -56,110 +55,99 @@ class FileAlertSink:
 
 
 class WebhookAlertSink:
-    """Bounded asynchronous JSON webhook with no network I/O on caller threads."""
+    """Durable at-least-once JSON webhook; no network I/O on the trading thread."""
 
     def __init__(
         self,
         url: str,
         timeout_seconds: float = 3.0,
         *,
-        max_queue: int = 256,
+        outbox_path: str | Path,
+        max_pending: int = 4096,
     ) -> None:
-        if not url:
-            raise ValueError("webhook URL is required")
-        if timeout_seconds <= 0.0:
-            raise ValueError("webhook timeout must be positive")
-        if isinstance(max_queue, bool) or not isinstance(max_queue, int) or max_queue < 1:
-            raise ValueError("webhook queue bound must be a positive integer")
+        from .alert_outbox import AlertOutbox
+
+        if not url or not 0 < timeout_seconds <= 30:
+            raise ValueError("webhook URL and bounded positive timeout are required")
         self.url = url
         self.timeout_seconds = timeout_seconds
-        self._queue: Queue[dict[str, object]] = Queue(maxsize=max_queue)
+        self.outbox = AlertOutbox(outbox_path, url, max_pending=max_pending)
         self._closed = Event()
-        self._discard_pending = Event()
+        self._wake = Event()
         self._state_lock = Lock()
-        self._dropped_count = 0
-        self._worker = Thread(
-            target=self._run,
-            name="afuture-alert-webhook",
-            daemon=True,
-        )
+        self._worker_error = ""
+        self._worker = Thread(target=self._run, name="afuture-alert-webhook", daemon=True)
         self._worker.start()
 
     def send(self, event: dict[str, object]) -> None:
         with self._state_lock:
             if self._closed.is_set():
                 raise RuntimeError("webhook alert sink is closed")
-            try:
-                self._queue.put_nowait(dict(event))
-            except Full:
-                self._dropped_count += 1
-                dropped = self._dropped_count
-                if dropped == 1 or dropped & (dropped - 1) == 0:
-                    logger.error(
-                        "webhook alert queue full; dropped=%d; local alert evidence remains authoritative",
-                        dropped,
-                    )
+            self.outbox.enqueue(dict(event))
+        self._wake.set()
 
     @property
     def pending_count(self) -> int:
-        return self._queue.qsize()
+        pending = self.outbox.status()["pending"]
+        if not isinstance(pending, int):
+            raise RuntimeError("notification pending count is invalid")
+        return pending
 
-    @property
-    def dropped_count(self) -> int:
-        with self._state_lock:
-            return self._dropped_count
+    def delivery_status(self) -> dict[str, object]:
+        status = self.outbox.status()
+        if self._worker_error:
+            status["error"] = self._worker_error
+        return status
 
-    def _deliver(self, event: dict[str, object]) -> None:
-        body = json.dumps(event, ensure_ascii=False).encode("utf-8")
+    def _deliver(self, event_id: str, event: dict[str, object]) -> int:
+        body = json.dumps(
+            {**event, "event_id": event_id}, ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
         request = Request(
-            self.url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+            self.url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Idempotency-Key": event_id,
+            },
+            method="POST",
         )
         with urlopen(request, timeout=self.timeout_seconds) as response:
+            status = int(response.status)
             response.read(1)
+        return status
 
     def _run(self) -> None:
-        while not self._closed.is_set() or not self._queue.empty():
+        while not self._closed.is_set():
             try:
-                event = self._queue.get(timeout=0.05)
-            except Empty:
-                continue
-            if self._discard_pending.is_set():
-                self._queue.task_done()
-                return
-            try:
-                self._deliver(event)
+                item = self.outbox.next_event()
+                if item is None:
+                    self._wake.wait(timeout=0.5)
+                    self._wake.clear()
+                    continue
+                event_id, event, attempt = item
+                try:
+                    status = self._deliver(event_id, event)
+                    self.outbox.accepted(event_id, status)
+                except Exception as exc:
+                    self.outbox.failed(event_id, attempt, type(exc).__name__)
+                    logger.warning(
+                        "notification delivery failed (%s); event retained, attempt=%d",
+                        type(exc).__name__,
+                        attempt,
+                    )
             except Exception as exc:
-                logger.warning(
-                    "alert delivery failed for sink %s (%s)",
-                    type(self).__name__,
-                    type(exc).__name__,
-                )
-            finally:
-                self._queue.task_done()
+                # Storage failure is visible to supervision, never silently discarded.
+                self._worker_error = f"notification worker failure ({type(exc).__name__})"
+                logger.error(self._worker_error)
+                return
 
     def close(self, *, timeout_seconds: float = 1.0) -> None:
         with self._state_lock:
             self._closed.set()
+        self._wake.set()
         self._worker.join(timeout=max(0.0, timeout_seconds))
-        if not self._worker.is_alive():
-            return
-        self._discard_pending.set()
-        discarded = 0
-        while True:
-            try:
-                self._queue.get_nowait()
-            except Empty:
-                break
-            else:
-                discarded += 1
-                self._queue.task_done()
-        if discarded:
-            with self._state_lock:
-                self._dropped_count += discarded
-            logger.error(
-                "webhook close deadline expired; discarded=%d; local alert evidence remains authoritative",
-                discarded,
-            )
+        # Pending rows are deliberately retained across close, timeout and process death.
 
 
 class AlertManager:
@@ -185,6 +173,9 @@ class AlertManager:
                     type(sink).__name__,
                     type(exc).__name__,
                 )
+
+    def delivery_status(self) -> list[dict[str, object]]:
+        return [sink.delivery_status() for sink in self.sinks if isinstance(sink, WebhookAlertSink)]
 
     def critical(self, message: str, details: dict | None = None) -> None:
         self.emit("CRITICAL", message, details)

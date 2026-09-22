@@ -169,7 +169,11 @@ def _alert_manager(config: Any) -> AlertManager:
     sinks: list[AlertSink] = [FileAlertSink(str(config.alert_path))]
     webhook = str(getattr(config, "alert_webhook", ""))
     if webhook:
-        sinks.append(WebhookAlertSink(webhook))
+        sinks.append(
+            WebhookAlertSink(
+                webhook, outbox_path=Path(config.alert_path).with_suffix(".outbox.sqlite3")
+            )
+        )
     return AlertManager(sinks)
 
 

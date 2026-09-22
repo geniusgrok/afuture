@@ -739,7 +739,7 @@ def test_consumption_precedes_single_authoritative_halted_to_running_save(
     assert running.state.kill_switch is False
     assert running.state.metadata_verified is False
     assert permit_store.load_required_record().permit.status == "consumed"
-    with pytest.raises(RuntimeError, match="not issued"):
+    with pytest.raises(RuntimeError, match="state changed"):
         activate_stress90_from_permit(
             state_store=state_store,
             permit_store=permit_store,
@@ -748,7 +748,7 @@ def test_consumption_precedes_single_authoritative_halted_to_running_save(
         )
 
 
-def test_crash_after_consume_leaves_halted_consumed_and_requires_new_doctor(
+def test_crash_after_consume_resumes_only_the_exact_uncommitted_activation(
     tmp_path: Path,
 ) -> None:
     from afuture.state import StateStore
@@ -790,12 +790,33 @@ def test_crash_after_consume_leaves_halted_consumed_and_requires_new_doctor(
     persisted = real_store.load_required_record()
     assert persisted.state.runtime_mode == RuntimeMode.HALTED.value
     assert persisted.state.kill_switch is True
-    with pytest.raises(RuntimeError, match="not issued"):
+    consumed = permit_store.load_required_record()
+    for wrong in (
+        replace(evidence, account_identity_digest="9" * 64),
+        replace(evidence, generic_state_sequence=evidence.generic_state_sequence + 1),
+    ):
+        with pytest.raises(RuntimeError, match="evidence mismatch"):
+            activate_stress90_from_permit(
+                state_store=real_store,
+                permit_store=permit_store,
+                evidence=wrong,
+                expected_permit_sequence=consumed.sequence,
+            )
+    running = activate_stress90_from_permit(
+        state_store=real_store,
+        permit_store=permit_store,
+        evidence=evidence,
+        expected_permit_sequence=consumed.sequence,
+    )
+    assert running.state.runtime_mode == RuntimeMode.RUNNING.value
+    assert running.sequence == persisted.sequence + 1
+    assert permit_store.load_required_record() == consumed
+    with pytest.raises(RuntimeError, match="state changed"):
         activate_stress90_from_permit(
             state_store=real_store,
             permit_store=permit_store,
             evidence=evidence,
-            expected_permit_sequence=permit_store.load_required_record().sequence,
+            expected_permit_sequence=consumed.sequence,
         )
 
 

@@ -652,15 +652,35 @@ def activate_stress90_from_permit(
     evidence: Stress90ActivationEvidence,
     expected_permit_sequence: int,
 ):
-    """Consume first, then perform the sole authoritative HALTED→RUNNING state save."""
+    """Consume once, then commit activation; resume only its unchanged source state.
+
+    A consumed permit is not reusable. Its exact issued predecessor is a commit
+    witness for the single interrupted state save, not a fallback permit. The
+    caller must recollect all evidence while holding the account/runtime lease.
+    """
 
     permit_record = permit_store.load_required_record()
     if permit_record.sequence != expected_permit_sequence:
         raise Stress90ActivationPermitIntegrityError(
             "activation permit sequence changed concurrently"
         )
-    if permit_record.permit.status != "issued":
+    permit = permit_record.permit
+    if permit.status not in {"issued", "consumed"}:
         raise Stress90ActivationPermitIntegrityError("activation permit is not issued")
+    if permit.evidence != evidence or permit.evidence_digest != stress90_activation_evidence_digest(
+        evidence
+    ):
+        raise Stress90ActivationPermitIntegrityError("activation permit evidence mismatch")
+    if permit.status == "consumed":
+        predecessor = permit_store.load_previous_record()
+        if (
+            predecessor.sequence + 1 != permit_record.sequence
+            or predecessor.checksum != permit_record.parent_checksum
+            or predecessor.permit != replace(permit, status="issued")
+        ):
+            raise Stress90ActivationPermitIntegrityError(
+                "consumed activation has no exact issued predecessor witness"
+            )
     current = state_store.load_required_record()
     if (
         current.sequence != evidence.generic_state_sequence
@@ -678,7 +698,8 @@ def activate_stress90_from_permit(
         raise Stress90ActivationPermitIntegrityError(
             "daily circuit recovery has separate authority"
         )
-    permit_store.consume(evidence, expected_sequence=permit_record.sequence)
+    if permit.status == "issued":
+        permit_store.consume(evidence, expected_sequence=permit_record.sequence)
     running = replace(
         state,
         kill_switch=False,
