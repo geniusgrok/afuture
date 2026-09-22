@@ -284,16 +284,18 @@ class RiskManager:
         requested_volume: int,
         spec: ContractSpec,
         session_windows: tuple[str, ...] = (),
+        now: datetime | None = None,
     ) -> RiskDecision:
         """方向组合单合约开仓前复用实盘微观结构硬门。"""
         if requested_volume <= 0:
             return RiskDecision(False, "requested volume is not positive")
-        quote_decision = self.check_quotes([tick], tick.timestamp)
+        reference = tick.timestamp if now is None else now
+        quote_decision = self.check_quotes([tick], reference)
         if not quote_decision.allowed:
             return quote_decision
-        if session_windows and not self._inside_sessions(tick.timestamp, session_windows):
+        if session_windows and not self._inside_sessions(reference, session_windows):
             return RiskDecision(False, "outside configured trading session")
-        if session_windows and not self._inside_open_close_buffer(tick.timestamp, session_windows):
+        if session_windows and not self._inside_open_close_buffer(reference, session_windows):
             return RiskDecision(False, "inside session open/close safety window")
 
         width_ticks = (tick.ask_price - tick.bid_price) / spec.price_tick

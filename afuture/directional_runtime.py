@@ -7,10 +7,11 @@ is observability-only and never participates in trading decisions.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from threading import Event, Lock, Thread
+from time import monotonic
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -75,6 +76,9 @@ class DirectionalPortfolioManager:
         static_specs: Mapping[str, ContractSpec] | None = None,
         quality_recorder=None,
         raw_tick_observer=None,
+        historical_mode: bool = False,
+        health_clock: Callable[[], datetime] | None = None,
+        elapsed_clock: Callable[[], float] = monotonic,
     ) -> None:
         config.validate()
         self.config = config
@@ -89,6 +93,9 @@ class DirectionalPortfolioManager:
         self.rate_limiter = OrderRateLimiter(risk_manager.config.max_orders_per_minute)
         self.quality = quality_recorder
         self.raw_tick_observer = raw_tick_observer
+        self.historical_mode = historical_mode
+        self.health_clock = health_clock or (lambda: datetime.now(timezone.utc))
+        self.elapsed_clock = elapsed_clock
         self._catalog: list[ContractInfo] = []
         self._subscribed_contracts: set[tuple[str, str]] = set()
         self._ticks: dict[str, Tick] = {}
@@ -509,16 +516,16 @@ class DirectionalPortfolioManager:
             spec = self._specs.get(symbol)
             if position is None or tick is None:
                 return DirectionalActionResult(
-                    "reject", f"missing reduction quote/position for {symbol}"
+                    "reject", f"missing reduction quote/position for {symbol}", tuple(order_ids)
                 )
             if spec is None:
                 try:
                     spec = self._ensure_specs({symbol})[symbol]
                 except Exception as exc:
-                    return DirectionalActionResult("reject", str(exc))
-            quote = self.risk_manager.check_quotes([tick], now)
+                    return DirectionalActionResult("reject", str(exc), tuple(order_ids))
+            quote = self.risk_manager.check_quotes([tick], self._decision_time(now))
             if not quote.allowed:
-                return DirectionalActionResult("reject", quote.reason)
+                return DirectionalActionResult("reject", quote.reason, tuple(order_ids))
             side = OrderSide.BUY if delta > 0 else OrderSide.SELL
             try:
                 children = book.plan_close(
@@ -531,12 +538,15 @@ class DirectionalPortfolioManager:
                     reference=reference,
                 )
             except ValueError as exc:
-                return DirectionalActionResult("reject", str(exc))
+                return DirectionalActionResult("reject", str(exc), tuple(order_ids))
             for child in children:
-                if not self.rate_limiter.allow(now.timestamp()):
-                    return DirectionalActionResult("reject", "order rate limit reached")
                 request = replace(child, order_type=OrderType.FAK)
                 try:
+                    self._require_current_order_evidence(request, tick, spec, now)
+                    # Reuse the fill book's offset/bucket validation against the
+                    # latest Broker snapshot; a reduce label grants no bypass.
+                    PositionBook(self.broker.get_positions()).validate_close_request(request)
+                    self._require_order_rate(now)
                     order_id = self.broker.send_order(request)
                     order_ids.append(order_id)
                     self._register_quality_order(order_id, request, spec, now)
@@ -570,7 +580,7 @@ class DirectionalPortfolioManager:
                 )
             side = OrderSide.BUY if delta > 0 else OrderSide.SELL
             volume = abs(int(delta))
-            quote = self.risk_manager.check_quotes([tick], now)
+            quote = self.risk_manager.check_quotes([tick], self._decision_time(now))
             if not quote.allowed:
                 return DirectionalActionResult("reject", quote.reason)
             market = self.risk_manager.check_contract_entry(
@@ -579,6 +589,7 @@ class DirectionalPortfolioManager:
                 requested_volume=volume,
                 spec=spec,
                 session_windows=self._entry_session_windows(item.product),
+                now=self._decision_time(now),
             )
             if not market.allowed:
                 return DirectionalActionResult("reject", market.reason)
@@ -643,11 +654,16 @@ class DirectionalPortfolioManager:
 
         order_ids: list[str] = []
         for request in requests:
-            if not self.rate_limiter.allow(now.timestamp()):
-                return DirectionalActionResult(
-                    "reject", "order rate limit reached", tuple(order_ids)
-                )
             try:
+                item = selected_by_symbol[request.symbol]
+                self._require_current_order_evidence(
+                    request,
+                    self._ticks[request.symbol],
+                    specs[request.symbol],
+                    now,
+                    product=item.product,
+                )
+                self._require_order_rate(now)
                 order_id = self.broker.send_order(request)
                 order_ids.append(order_id)
                 self._register_quality_order(order_id, request, specs[request.symbol], now)
@@ -658,6 +674,55 @@ class DirectionalPortfolioManager:
                     tuple(order_ids),
                 )
         return DirectionalActionResult("open", order_ids=tuple(order_ids))
+
+    def _decision_time(self, event_time: datetime) -> datetime:
+        now = event_time if self.historical_mode else self.health_clock()
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("directional execution clock must be timezone-aware")
+        return now
+
+    def _require_order_rate(self, event_time: datetime) -> None:
+        elapsed = event_time.timestamp() if self.historical_mode else self.elapsed_clock()
+        if not self.rate_limiter.allow(elapsed):
+            raise RuntimeError("order rate limit reached")
+
+    def _require_current_order_evidence(
+        self,
+        request: OrderRequest,
+        tick: Tick,
+        spec: ContractSpec,
+        event_time: datetime,
+        *,
+        product: str = "",
+    ) -> None:
+        # This runs after sizing/authorization and before EVERY child write.
+        # A previous check is not authority to send through a later fault.
+        if not self.broker.is_ready():
+            raise RuntimeError("broker is not ready")
+        health = getattr(self.broker, "health_error", None)
+        if not callable(health):
+            if not self.historical_mode:
+                raise RuntimeError("Broker health evidence is unavailable")
+        elif error := health():
+            raise RuntimeError(error)
+        current = self._decision_time(event_time)
+        quote = self.risk_manager.check_quotes([tick], current)
+        if not quote.allowed:
+            raise RuntimeError(quote.reason)
+        account = self.broker.get_account()
+        if account.trading_day != tick.trading_day:
+            raise RuntimeError("quote and account trading day mismatch")
+        if request.offset is Offset.OPEN:
+            decision = self.risk_manager.check_contract_entry(
+                tick,
+                request.side,
+                requested_volume=request.volume,
+                spec=spec,
+                session_windows=self._entry_session_windows(product),
+                now=current,
+            )
+            if not decision.allowed:
+                raise RuntimeError(decision.reason)
 
     def _opening_policy_rejection(
         self,

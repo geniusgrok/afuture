@@ -10,6 +10,7 @@ from .directional_risk import (
     DirectionalRiskResponseMode,
     DirectionalRiskScaledPolicy,
 )
+from .directional_runtime import DirectionalPortfolioManager
 from .engine import TradingEngine
 from .models import Order, RuntimeMode, Tick, Trade
 from .state import MAX_RECENT_TRADE_IDS
@@ -30,6 +31,10 @@ class DirectionalTradingEngine(TradingEngine):
     def __init__(self, *args, directional_manager, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.directional_manager = directional_manager
+        if isinstance(directional_manager, DirectionalPortfolioManager):
+            directional_manager.historical_mode = self.historical_mode
+            directional_manager.health_clock = self.health_clock
+            directional_manager.elapsed_clock = self.executor.elapsed_clock
         self._directional_initialized = False
         self.directional_manager.completed_returns_provider = lambda: tuple(
             self.state.recent_daily_returns
