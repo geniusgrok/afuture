@@ -18,8 +18,9 @@ import time
 import urllib.error
 import urllib.request
 from bisect import bisect_right
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -152,7 +153,9 @@ def map_oi_bars_to_trading_day(
 
 def _json_default(value):
     if is_dataclass(value):
-        return asdict(value)
+        return {field.name: getattr(value, field.name) for field in fields(value)}
+    if isinstance(value, Mapping):
+        return dict(value)
     if isinstance(value, (pd.Timestamp, datetime)):
         return value.isoformat()
     if isinstance(value, np.generic):

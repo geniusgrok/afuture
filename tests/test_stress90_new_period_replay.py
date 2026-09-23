@@ -190,3 +190,21 @@ def test_oi_source_day_for_first_target_uses_the_prestart_observed_session():
     source_days = _oi_source_days_for_targets(target_days, observed_days)
 
     assert source_days.tolist() == list(pd.to_datetime(["2026-08-20", "2026-08-21"]))
+
+
+def test_evidence_json_serializes_readonly_mappings_in_frozen_dataclasses():
+    from dataclasses import dataclass
+    from json import dumps
+    from types import MappingProxyType
+
+    from tools.replay_directional_stress90_new_period import _json_default
+
+    @dataclass(frozen=True)
+    class Decision:
+        state: object
+
+    value = Decision(MappingProxyType({"layers": MappingProxyType({"base": 1})}))
+
+    payload = dumps(value, default=_json_default, sort_keys=True)
+
+    assert payload == '{"state": {"layers": {"base": 1}}}'
