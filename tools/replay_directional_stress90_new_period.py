@@ -777,6 +777,21 @@ def _build_historical_candidate(
     )
 
 
+def _oi_source_days_for_targets(
+    target_days: pd.DatetimeIndex | pd.Series | list,
+    observed_days: pd.DatetimeIndex | pd.Series | list,
+) -> pd.DatetimeIndex:
+    targets = pd.DatetimeIndex(pd.to_datetime(list(target_days), errors="coerce")).normalize()
+    observed = pd.DatetimeIndex(pd.to_datetime(list(observed_days), errors="coerce")).normalize()
+    observed = observed[~observed.isna()].unique().sort_values()
+    if targets.empty or not observed[observed < targets[0]].size:
+        raise ValueError(
+            "OI source-day mapping requires an observed session before the first target"
+        )
+    prior = observed[observed < targets[0]][-1]
+    return pd.DatetimeIndex([prior, *targets[:-1]]).unique().sort_values()
+
+
 def _fixed_oi_flow_tail(fixed_bars: pd.DataFrame) -> pd.DataFrame:
     fixed_tail = fixed_bars.copy()
     fixed_tail["datetime"] = pd.to_datetime(fixed_tail["datetime"], errors="coerce")
@@ -1511,9 +1526,7 @@ def run_replay(args: argparse.Namespace) -> dict:
         output / "market_normalized" / "oi_60m_mapping_status.csv",
     )
 
-    source_days = (
-        pd.DatetimeIndex([calendar[calendar < START][-1], *calendar[:-1]]).unique().sort_values()
-    )
+    source_days = _oi_source_days_for_targets(calendar, observed_calendar)
     needed_flow_days = pd.DatetimeIndex(
         source_days[(source_days >= START - pd.Timedelta(days=1)) & (source_days <= actual_end)]
     ).unique()
@@ -1539,7 +1552,7 @@ def run_replay(args: argparse.Namespace) -> dict:
         lagged_flow.rename_axis("target_trading_day").reset_index(),
         output / "strategy" / "oi_flow_available_by_target_day.csv",
     )
-    oi_source_days = pd.DatetimeIndex([calendar[calendar < START][-1], *calendar[:-1]])
+    oi_source_days = _oi_source_days_for_targets(calendar, observed_calendar)
     _csv_frame(
         pd.DataFrame(
             {

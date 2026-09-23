@@ -179,3 +179,14 @@ def test_oi_session_coverage_keeps_rows_for_each_supported_product(monkeypatch):
 
     assert coverage.loc[0, "rows"] == 1
     assert coverage.loc[0, "symbols"] == "A2610"
+
+
+def test_oi_source_day_for_first_target_uses_the_prestart_observed_session():
+    from tools.replay_directional_stress90_new_period import _oi_source_days_for_targets
+
+    target_days = pd.to_datetime(["2026-08-21", "2026-08-24"])
+    observed_days = pd.to_datetime(["2026-08-19", "2026-08-20", "2026-08-21", "2026-08-24"])
+
+    source_days = _oi_source_days_for_targets(target_days, observed_days)
+
+    assert source_days.tolist() == list(pd.to_datetime(["2026-08-20", "2026-08-21"]))
