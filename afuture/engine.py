@@ -1188,8 +1188,18 @@ class TradingEngine:
         try:
             account = self.broker.get_account()
             account.validate()
-            self.risk_manager.check_account(account)
-            self.state.equity_high_watermark = self.risk_manager.high_watermark
+            awaiting_settlement = (
+                self.state.trading_day
+                and account.trading_day != self.state.trading_day
+                and getattr(
+                    getattr(self, "directional_manager", None),
+                    "requires_explicit_settlement_roll_forward",
+                    False,
+                )
+            )
+            if not awaiting_settlement:
+                self.risk_manager.check_account(account)
+                self.state.equity_high_watermark = self.risk_manager.high_watermark
         except Exception as exc:
             logger.warning("account refresh during state persistence failed: %s", exc)
         self.state_store.save(self.state)
