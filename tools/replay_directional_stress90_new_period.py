@@ -384,8 +384,8 @@ def _fetch_official_reference_sources(output: Path) -> list[dict]:
         "SHFE",
         "INE",
     )
-    rows = []
-    for name in source_names:
+
+    def fetch_one(name: str) -> dict:
         url = OFFICIAL_SOURCE_URLS[name]
         path = output / "market_raw" / "official_sources" / f"{name.lower()}"
         errors = []
@@ -413,19 +413,25 @@ def _fetch_official_reference_sources(output: Path) -> list[dict]:
         path = path.with_suffix(suffix)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(body)
-        rows.append(
-            {
-                "name": name,
-                "url": url,
-                "status_code": status_code,
-                "content_type": content_type,
-                "result": "ok" if body and not errors else "error",
-                "error": " | ".join(errors),
-                "size_bytes": len(body),
-                "path": path.relative_to(output).as_posix(),
-                "sha256": _sha256(path),
-            }
-        )
+        return {
+            "name": name,
+            "url": url,
+            "status_code": status_code,
+            "content_type": content_type,
+            "result": "ok" if body and not errors else "error",
+            "error": " | ".join(errors),
+            "size_bytes": len(body),
+            "path": path.relative_to(output).as_posix(),
+            "sha256": _sha256(path),
+        }
+
+    rows = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(fetch_one, name): name for name in source_names}
+        for future in as_completed(futures):
+            rows.append(future.result())
+            print(f"official_reference_fetch={len(rows)}/{len(source_names)}", flush=True)
+    rows.sort(key=lambda item: str(item["name"]))
     _write_json(output / "official_source_fetch_log.json", rows)
     return rows
 
