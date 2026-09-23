@@ -1,3 +1,4 @@
+import json
 from datetime import timezone
 
 import pandas as pd
@@ -6,6 +7,7 @@ import pytest
 from afuture.directional_acceptance import (
     PRODUCT_MULTIPLIERS,
     DirectionalProductionAcceptance,
+    DirectionalSimulationCheckpoint,
     ProductionMechanicsConfig,
 )
 
@@ -269,6 +271,62 @@ def test_prepared_contract_context_can_be_reused_without_renormalizing(monkeypat
     assert calls == 1
     pd.testing.assert_frame_equal(first.daily, second.daily)
     assert first.final_equity == second.final_equity
+
+
+def test_account_checkpoint_resume_matches_one_continuous_simulation():
+    from afuture.directional_concentration_freeze import (
+        ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance,
+    )
+
+    raw = pd.DataFrame(
+        [
+            contract_row(date="2026-08-20", open=100.0, close=100.0),
+            contract_row(date="2026-08-21", open=100.0, close=101.0),
+            contract_row(date="2026-08-24", open=101.0, close=103.0),
+            contract_row(date="2026-08-25", open=104.0, close=102.0),
+        ]
+    )
+    weights = pd.DataFrame(
+        {"A": [0.5, 0.75, 0.5]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-24", "2026-08-25"]),
+    )
+    config = ProductionMechanicsConfig(max_contract_volume=100)
+    prepared = ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
+        config,
+        completed_concentrations=(0.25, 0.5),
+    ).prepare_contracts(raw)
+
+    uninterrupted_sim = ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
+        config,
+        completed_concentrations=(0.25, 0.5),
+    )
+    uninterrupted = uninterrupted_sim.simulate(raw, weights, cost_bps=5.0, prepared=prepared)
+    prefix_sim = ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
+        config,
+        completed_concentrations=(0.25, 0.5),
+    )
+    prefix = prefix_sim.simulate(raw, weights.iloc[:2], cost_bps=5.0, prepared=prepared)
+    resumed_sim = ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
+        config,
+        completed_concentrations=(0.25, 0.5),
+    )
+    suffix = resumed_sim.simulate(
+        raw,
+        weights.iloc[2:],
+        cost_bps=5.0,
+        prepared=prepared,
+        checkpoint=DirectionalSimulationCheckpoint.from_dict(
+            json.loads(json.dumps(prefix.final_checkpoint.to_dict()))
+        ),
+    )
+
+    pd.testing.assert_frame_equal(pd.concat([prefix.daily, suffix.daily]), uninterrupted.daily)
+    pd.testing.assert_frame_equal(
+        pd.concat([prefix.events, suffix.events], ignore_index=True),
+        uninterrupted.events,
+    )
+    assert suffix.final_equity == uninterrupted.final_equity
+    assert suffix.final_checkpoint == uninterrupted.final_checkpoint
 
 
 def contract_row(**overrides):

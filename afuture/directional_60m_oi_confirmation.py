@@ -39,11 +39,22 @@ _REQUIRED_COLUMNS = {
 }
 
 
-def build_daily_price_oi_flow(raw: pd.DataFrame) -> pd.DataFrame:
-    """Build parameter-free completed-session direction from 60-minute contract bars."""
+def build_daily_price_oi_flow(
+    raw: pd.DataFrame,
+    *,
+    trading_day_column: str | None = None,
+) -> pd.DataFrame:
+    """Build parameter-free completed-session direction from 60-minute contract bars.
+
+    ``trading_day_column`` lets offline data adapters carry an exchange trading-day
+    mapping for bars whose timestamp falls on the prior calendar evening. Omitting it
+    retains the frozen historical calendar-date grouping.
+    """
     missing = _REQUIRED_COLUMNS - set(raw.columns)
     if missing:
         raise ValueError(f"60m OI confirmation missing columns: {sorted(missing)}")
+    if trading_day_column is not None and trading_day_column not in raw.columns:
+        raise ValueError(f"60m OI confirmation missing trading-day column: {trading_day_column}")
 
     frame = raw.copy()
     frame["datetime"] = pd.to_datetime(frame["datetime"], errors="coerce")
@@ -63,7 +74,11 @@ def build_daily_price_oi_flow(raw: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame(dtype=float)
 
-    frame["date"] = frame["datetime"].dt.normalize()
+    if trading_day_column is None:
+        frame["date"] = frame["datetime"].dt.normalize()
+    else:
+        frame["date"] = pd.to_datetime(frame[trading_day_column], errors="coerce").dt.normalize()
+        frame = frame.dropna(subset=["date"])
     frame.sort_values(["date", "product", "symbol", "datetime"], inplace=True)
     contract = frame.groupby(["date", "product", "symbol"], as_index=False, sort=False).agg(
         first_open=("open", "first"),
