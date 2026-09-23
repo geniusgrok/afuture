@@ -258,6 +258,16 @@ def test_account_event_restart_comparison_uses_canonical_within_day_order():
     assert joined.action.tolist() == ["gap", "entry", "intraday"]
 
 
+def test_contract_spec_query_summary_accepts_the_fetchers_dataframe_result():
+    from tools.replay_directional_stress90_new_period import _contract_spec_query_summary
+
+    summary = _contract_spec_query_summary(
+        pd.DataFrame({"result": ["ok", "ok", "empty_response", "error"]})
+    )
+
+    assert summary == {"responses_ok": 2, "responses_empty": 1, "responses_error": 1}
+
+
 def test_oi_source_day_for_first_target_uses_the_prestart_observed_session():
     from tools.replay_directional_stress90_new_period import _oi_source_days_for_targets
 

@@ -495,6 +495,19 @@ def _account_multipliers_from_specs(
     return account_multipliers, audited_specs, pd.DataFrame(rows)
 
 
+def _contract_spec_query_summary(query_rows: pd.DataFrame | list[dict]) -> dict[str, int]:
+    records = (
+        query_rows.to_dict(orient="records")
+        if isinstance(query_rows, pd.DataFrame)
+        else list(query_rows)
+    )
+    return {
+        "responses_ok": sum(item.get("result") == "ok" for item in records),
+        "responses_empty": sum(item.get("result") == "empty_response" for item in records),
+        "responses_error": sum(item.get("result") == "error" for item in records),
+    }
+
+
 def _fetch_official_reference_sources(output: Path) -> list[dict]:
     source_names = (
         "DCE_2026_HOLIDAY",
@@ -1915,9 +1928,7 @@ def run_replay(args: argparse.Namespace) -> dict:
         "contract_spec_evidence": {
             "provider": "AKShare/Sina futures_contract_detail(symbol=...) per account-selected specific contract",
             "selected_contracts": len(selected_symbols),
-            "responses_ok": sum(item["result"] == "ok" for item in spec_query_rows),
-            "responses_empty": sum(item["result"] == "empty_response" for item in spec_query_rows),
-            "responses_error": sum(item["result"] == "error" for item in spec_query_rows),
+            **_contract_spec_query_summary(spec_query_rows),
             "multiplier_matches_frozen_model": int(
                 selected_contract_specs.model_multiplier_matches_provider.sum()
             )
