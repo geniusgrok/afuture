@@ -1,0 +1,28 @@
+name: unattended-source-publish
+on:
+  push:
+    branches: [codex/transfer-afuture-5e542ad-20260923]
+    paths: [.github/workflows/unattended-publish.yml, .github/transfer-5e542ad/**]
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Verify and import original Git objects without trading access
+        run: python .github/transfer-5e542ad/publish.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: afuture-publish-5e542ad
+          path: ${{ runner.temp }}/afuture-publish/
+          if-no-files-found: error
+          retention-days: 90
