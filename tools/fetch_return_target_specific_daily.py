@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 
-import akshare as ak
 import pandas as pd
 
 START = pd.Timestamp("2022-05-01")
@@ -123,6 +122,7 @@ def delivery_date(symbol: str) -> pd.Timestamp:
 
 
 def _download(symbol: str) -> pd.DataFrame:
+    import akshare as ak
     last_error: Exception | None = None
     for attempt in range(3):
         try:

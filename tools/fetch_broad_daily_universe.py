@@ -10,7 +10,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import akshare as ak
 import pandas as pd
 
 START = pd.Timestamp("2022-08-22")
@@ -72,6 +71,7 @@ MAX_WORKERS = 8
 
 
 def _download(product: str) -> tuple[pd.DataFrame | None, str | None]:
+    import akshare as ak
     symbol = f"{product}0"
     last_error: Exception | None = None
     for attempt in range(3):

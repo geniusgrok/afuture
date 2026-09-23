@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import akshare as ak
 import pandas as pd
 
 START = pd.Timestamp("2024-08-21")
@@ -53,6 +52,7 @@ def symbols() -> list[str]:
 
 
 def main() -> None:
+    import akshare as ak
     output = Path("runtime")
     output.mkdir(parents=True, exist_ok=True)
     frames: list[pd.DataFrame] = []
