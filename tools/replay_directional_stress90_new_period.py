@@ -679,7 +679,7 @@ def _complete_observed_calendar(
         & (complete.close > 0.0)
     ]
     expected = pd.bdate_range(start, end_cap)
-    counts = complete.groupby("date").product.nunique()
+    counts = complete.groupby("date")["product"].nunique()
     observed = (
         pd.DatetimeIndex(counts[counts == len(broad_fetch.PRODUCTS)].index)
         .normalize()
@@ -777,13 +777,23 @@ def _build_historical_candidate(
     )
 
 
+def _fixed_oi_flow_tail(fixed_bars: pd.DataFrame) -> pd.DataFrame:
+    fixed_tail = fixed_bars.copy()
+    fixed_tail["datetime"] = pd.to_datetime(fixed_tail["datetime"], errors="coerce")
+    return fixed_tail[
+        (fixed_tail["datetime"] >= OVERLAP_START)
+        & (fixed_tail["datetime"] <= FROZEN_CUTOFF)
+        & fixed_tail["product"].isin(oi_gate.SUPPORTED_PRODUCTS)
+    ]
+
+
 def _session_coverage(mapped_bars: pd.DataFrame, required_days: pd.DatetimeIndex) -> pd.DataFrame:
     use = mapped_bars[mapped_bars.trading_day.isin(required_days)].copy()
     use["clock_label"] = use.datetime.dt.strftime("%H:%M")
     rows = []
     for day in required_days:
         for product in oi_gate.SUPPORTED_PRODUCTS:
-            subset = use[(use.trading_day == day) & (use.product == product)]
+            subset = use[(use.trading_day == day) & (use["product"] == product)]
             labels = set(subset.clock_label)
             rows.append(
                 {
@@ -1485,13 +1495,7 @@ def run_replay(args: argparse.Namespace) -> dict:
 
     # New rows start strictly after the immutable source cutoff. Overlap rows remain in
     # the provider-return and conflict files only; the frozen versions own that period.
-    fixed_tail = fixed_bars.copy()
-    fixed_tail["datetime"] = pd.to_datetime(fixed_tail.datetime, errors="coerce")
-    fixed_tail = fixed_tail[
-        (fixed_tail.datetime >= OVERLAP_START)
-        & (fixed_tail.datetime <= FROZEN_CUTOFF)
-        & fixed_tail.product.isin(oi_gate.SUPPORTED_PRODUCTS)
-    ]
+    fixed_tail = _fixed_oi_flow_tail(fixed_bars)
     fetched_tail = oi_vendor[
         (oi_vendor.datetime > FROZEN_CUTOFF)
         & (oi_vendor.datetime <= actual_end + pd.Timedelta(hours=23, minutes=59))
@@ -1711,7 +1715,7 @@ def run_replay(args: argparse.Namespace) -> dict:
             "common_complete_cutoff": actual_end.date().isoformat(),
             "target_trading_days": int(len(calendar)),
             "continuous_products": len(broad_fetch.PRODUCTS),
-            "specific_contract_products": len(specific_all.product.unique()),
+            "specific_contract_products": specific_all["product"].nunique(),
             "supported_oi_products": list(oi_gate.SUPPORTED_PRODUCTS),
             "target_missing_specific_product_days": target_missing_specific,
             "missing_oi_flow_target_days": missing_oi_flow,

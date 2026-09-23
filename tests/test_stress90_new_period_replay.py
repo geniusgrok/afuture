@@ -138,3 +138,44 @@ def test_base_weight_prefix_audit_rejects_mismatch_inside_frozen_policy_window()
     assert policy_mismatches[["date", "product", "generated", "frozen"]].to_dict(
         orient="records"
     ) == [{"date": "2024-08-21", "product": "A", "generated": 0.25, "frozen": -0.25}]
+
+
+def test_fixed_oi_flow_tail_filters_the_product_column_and_time_boundaries(monkeypatch):
+    import tools.replay_directional_stress90_new_period as replay
+
+    monkeypatch.setattr(replay.oi_gate, "SUPPORTED_PRODUCTS", ("A",))
+    bars = pd.DataFrame(
+        {
+            "datetime": pd.to_datetime(
+                ["2026-08-19 22:00", "2026-08-18 22:00", "2026-08-19 22:00", "2026-08-21 22:00"]
+            ),
+            "product": ["A", "A", "Z", "A"],
+            "symbol": ["A2610", "A2610", "Z2610", "A2610"],
+        }
+    )
+
+    selected = replay._fixed_oi_flow_tail(bars)
+
+    assert selected[["datetime", "product", "symbol"]].to_dict(orient="records") == [
+        {"datetime": pd.Timestamp("2026-08-19 22:00"), "product": "A", "symbol": "A2610"}
+    ]
+
+
+def test_oi_session_coverage_keeps_rows_for_each_supported_product(monkeypatch):
+    import tools.replay_directional_stress90_new_period as replay
+
+    monkeypatch.setattr(replay.oi_gate, "SUPPORTED_PRODUCTS", ("A",))
+    day = pd.Timestamp("2026-08-21")
+    mapped = pd.DataFrame(
+        {
+            "trading_day": [day],
+            "datetime": [pd.Timestamp("2026-08-20 22:00")],
+            "product": ["A"],
+            "symbol": ["A2610"],
+        }
+    )
+
+    coverage = replay._session_coverage(mapped, pd.DatetimeIndex([day]))
+
+    assert coverage.loc[0, "rows"] == 1
+    assert coverage.loc[0, "symbols"] == "A2610"
