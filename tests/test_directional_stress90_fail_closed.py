@@ -88,6 +88,7 @@ def _manager(tmp_path: Path, positions: list[ContractPosition]):
         DirectionalConfig(enabled=True, policy="stress90", products=FROZEN_PRODUCTS),
         broker,
         RiskManager(RiskConfig(margin_estimate_buffer=1.25)),
+        historical_mode=True,
         policy_state_path=state_path,
         seed_path=seed_path,
         oi_evidence_path=tmp_path / "missing_oi.json",

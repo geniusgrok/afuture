@@ -301,7 +301,7 @@ def test_pair_executor_submits_thinner_leg_first():
     broker.publish_tick(far)
 
     risk = RiskManager(RiskConfig(min_depth_multiple=2.0))
-    executor = PairExecutor(broker, risk, specs(), slippage_ticks=0)
+    executor = PairExecutor(broker, risk, specs(), slippage_ticks=0, historical_mode=True)
     pair = PairConfig(
         "p",
         "m2609",

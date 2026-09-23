@@ -59,6 +59,28 @@ AFUTURE_LIVE_ACK=I_UNDERSTAND_FUTURES_RISK
 
 `vnpy_ctp` 含与操作系统、CPU 和 Python ABI 相关的原生扩展。普通 CI 和非目标开发机只验证 adapter 逻辑与测试替身，不能证明目标机能导入原生模块、登录实际前置或按真实顺序收到回调。部署前必须在最终目标机的同一 Python 环境安装 `.[live]`，至少完成 import、`status`、无报单 `doctor`、连续 Shadow、断线重连和完整订单生命周期验证；未完成时不能把 CI 绿色当成 CTP 可用证据。
 
+### 3.2 隔离测试柜台的结算格式采集
+
+在确认目标是零真钱测试柜台、完成首次账户绑定并明确批准该次连接后，可使用：
+
+```bash
+afuture ctp-settlement-capture --config /etc/afuture/test.toml \
+  --trading-day 20260921 --output /private/evidence/settlement-20260921.json \
+  --confirm-test-connection
+```
+
+该命令拒绝 production 环境、缺少明确 AccountID/CurrencyID、已有输出文件和非规范绝对路径。
+它先取得同一账户/runtime 的互斥锁，再连接、等待新账户/完整持仓快照，查询指定交易日的
+`SettlementInfo`；不下单、不撤单、不推进账户状态、不签发交易许可。原生登录可能执行柜台
+结算确认，因此“零报单”不等于“零柜台写操作”，不能连接性质未确认的环境。
+
+输出以私有权限保存请求 ID、账户/交易日、SettlementID、分片序号、查询结束标志、
+依赖版本和摘要。重复相同分片只保留一次；冲突、缺片、错身份、迟到的已完成回报和非法
+文本均拒绝。`vnpy_ctp==6.7.11.4` 把每片 Content 转成 Unicode，采集不声称保留原生
+GBK 字节，也不声称已验证首片序号原点。其
+`financial_continuity_verified=false` 不能被改成结算/资金连续性已验证。
+只有核对实际柜台格式、字段语义与完整性后，才能建立版本化的确定性结算解析合同。
+
 ## 4. 启动前检查
 
 ### 4.1 本地只读状态
@@ -187,6 +209,19 @@ D+1 实时行情仍用于价格、盘口、涨跌停、保证金和下单，但�
 
 Stress-90 不使用上述 0.25 target scaling。它保留同一 adaptive soft margin envelope，但使用 1x raw candidate 做 margin-aware integer sizing，随后依次应用 completed account path 的 25% drawdown-reserve freeze 和 raw candidate HHI freeze。两个 freeze 只冻结 entry/同向 add；reduction、exit、reversal 和 same-product roll 通过。`RiskManager` 仍拥有 margin、available、gross、daily circuit 和 HALT 的最终权限。
 
+### 8.0 实时执行时钟和完整查询边界
+
+跨期和 Auto 生产路径在计算信号及每条腿真正发送前，以当前时钟重新检查报价新鲜度，
+限速使用单调经过时间。不能用两条同样滞后的行情相互证明新鲜，也不能用未来信号时间
+清空实盘限速窗口；历史回放仍显式使用事件时钟。第一条腿成交后第二条腿报价过期时，
+拒绝继续加风险，不拿陈旧价格盲目平仓，保留真实单腿暴露并进入原停机/对账链。
+
+原始账户、持仓查询在发送前登记 request ID、账户和柜台交易日；收到同一请求的结束
+标志并校验全部行后，才交给 SDK 转换并发布快照。未完成查询不更新新鲜度；重复相同行
+去重、冲突行和跨请求/跨交易日回报拒绝。SDK 静默丢失未知合约、错误方向/数量或跨交易所
+同名合约合并均拒绝，不能把不完整持仓解释为空仓。当前持仓模型不支持净持仓/套保语义，
+发现这些行时停止核验而不是折算成投机仓。
+
 ## 8.1 CTP 事件投递观测
 
 CTP 的 order、trade、position、account 和 error 回调进入关键 FIFO；Tick 按 `(symbol, exchange)` 合并成尚未投递的最新值。每轮默认最多投递 100 条并优先关键 FIFO，避免 Tick 洪峰饿死成交与账户真相。运维诊断可读取 `delivery_counters()` 的 enqueued/received/coalesced/delivered/backlog 计数；`ticks_coalesced` 上升表示旧的未消费 Tick 被更新值替换，不代表成交丢失。持续增长的 `critical_backlog` 必须视为运行容量问题，停止扩大风险并在目标机定位回调/消费延迟。
@@ -308,4 +343,31 @@ deployment-verify
 
 `prepare-session` 和 `watchdog` 都不能报单、撤单、修改交易 state、签发 permit 或自动解除 HALTED。`prepare-session` 可以连接只读 CTP/Doctor Broker 取得 fresh facts；`watchdog` 完全不需要 CTP 凭证且不会连接 Broker。
 
-Live 启动在构造 order-capable Broker 前检查 `process_run.json`。上一进程没有 clean receipt、receipt 损坏或链不确定时，启动必须 fail closed 到 `HALTED` + kill switch，并失效现有 permit；operator 重新完成盘前检查、Doctor 和新的 permit 后才允许再次尝试。systemd 的自动 restart 不构成 activation authority。
+Live 启动先取得账户/runtime 锁，在构造 order-capable Broker 前检查 `process_run.json`。未清洁退出默认失效技术许可并保持 HALTED/kill switch；唯一自动续接例外是 runbook 规定的“许可已消费、原状态尚未提交”且全量证据仍一致的同次提交。损坏或异账户证据、缺失的已有账户状态保持只读阻断，不创建资金基线或自动采用 `.prev`；重复启动不得干扰活动实例。既有事故恢复仍须完成安全核验和所需授权；systemd 自动重启本身不构成 activation authority。
+
+### 单实例启动和异常重启证据
+
+生产入口先取得账户/runtime 互斥锁，再读取或推进 process-run、状态和许可。重复启动
+只读失败，不能把正在运行的实例标成异常重启、改写其停机状态或消费其许可。
+锁覆盖引擎构造到退出收尾，构造失败也释放。已有未清洁进程记录但账户状态缺失时，
+不得创建新空账户状态；账户、部署或 runtime 身份变化、损坏的进程证据也不自动收编。
+这些修复不等于跨日自动授权或资金连续性闭环，既有事故恢复门仍然有效。
+
+
+### 运行日历与当前报单时间
+
+非历史模式的 live/Shadow 引擎在 `runtime_factory` 装配带版本、来源、日期覆盖、完整开休市日期和 SHA-256 的 `afuture/runtime_calendar.json`，由现有 RiskManager 裁决，普通双腿与方向性每笔报单、失衡减仓和已成交腿的减仓回滚均不能绕过。没有新增账户事实源。当前 bundle 覆盖 2025-12-31 至 2026-12-31、现有 50 个 Stress-90 品种及普通路径的原油 SC；它不将 SC 加入策略品种池。未知合约/交易所、未覆盖日期、损坏日历、实际柜台交易日冲突均拒绝，而不是回退到周一至周五。
+
+SHFE/INE 时段采用已核对的交易所时间表；DCE/CZCE 品种时段沿用仓库 2026-08-25 固定资料及其交易所来源，没有冒称本次重新核验了这两个交易所的每份业务细则。年度休市使用各交易所 2026 年通知，DCE/CZCE 原通知的公开转载路径在 source 中明确记录。当前没有公告增量下载器；新增或变更的正式时段、年度覆盖扩展必须进入获批源码/日历版本后重新验证，不能在运行中猜测。部署 seal 的 tracked production source digest 覆盖该 JSON，改动日历会使旧部署身份不匹配。
+
+夜盘自然日期与柜台交易日分开：周五夜盘和周六凌晨可属于周一交易日；节前取消的夜盘不恢复；日盘休息区间不触发行情陈旧告警。全量未知日期仍会阻断并告警。心跳对行情年龄使用相同休市过滤，但不会用休市清除账户、身份或硬风险错误。Runtime 在闭市/集合竞价期间不消耗尚未形成的方向性首次入场意图；逐产品入场窗口、D→D+1 信号和风险参数没有放宽。
+
+RB/HC/BU 的实际夜盘在 23:00 结束，与原冻结研究表的 01:00 不同；运行时限制单独纠正，冻结研究表、政策摘要和既有研究结果不倒写。生产每笔方向性开仓/减仓重新检查当前行情、柜台健康、实际交易日；减仓还检查 Broker 当前今昨仓、方向和数量。事件时间只能用于显式历史回放，生产限速用单调时间。异常中已成交的持仓和订单身份不会因为后续拒单而抹除。
+
+### 持久关键通知
+
+配置 `AFUTURE_ALERT_WEBHOOK` 后，CLI 与无柜台能力的 watchdog 复用 `paths.alerts` 同目录的 `.outbox.sqlite3`。事件先写入受限权限、目标地址摘要绑定的 SQLite spool，再由通知线程进行有超时的 HTTPS 发送。不会跟随重定向泄漏事件到未批准地址。已有 spool 的身份、结构或完整性不匹配时保留原件并拒绝使用，不自动转换、清空或重建；此类部署切换应按通知事故接管，不属于正常每日操作。默认未解决事件上限 2048 条，单事件上限 16 KiB，数据库上限 32 MiB；HTTP 已接收的收据保留 32 天用于覆盖自然月，仍受数据库总量硬界约束，不能为腾空间删除未确认事件；重复告警合并计数。
+
+进程中断保留 pending/inflight/failed；重新领取使用同一 event_id 和 Idempotency-Key，语义是至少一次送达，接收端应去重。默认每事件最多 6 次尝试，退避有界；耗尽保留 failed 并在日志/心跳/watchdog 中明确升级。队列满、无法持久化或源损坏不静默删除旧事件；失败计数可见，损坏 spool 不自动重建。修复通知端后应按受控事故流程处置 failed 原件，不能删除数据库掩盖失败。
+
+心跳 `alert_delivery` 与 watchdog 显示 pending/failed 数和最后 HTTP 接收时间。2xx 只证明通知端接受请求，不证明人已阅读。交易进程和同机 watchdog 都不能证明整机断电后通知送达；独立接收端/主机失联监测仍必须在获批环境中实测，目前没有已完成的现场证据。

@@ -119,9 +119,16 @@ class RuntimeHeartbeatObserver:
         quotes = getattr(self.engine, "quotes", {})
         if not isinstance(quotes, dict):
             return 0.0
-        now = datetime.now(timezone.utc)
+        clock = getattr(self.engine, "health_clock", None)
+        now = clock() if callable(clock) else datetime.now(timezone.utc)
+        risk = getattr(self.engine, "risk_manager", None)
+        active = set(quotes)
+        if risk is not None:
+            active = risk.active_runtime_symbols(active, now)
         ages: list[float] = []
-        for tick in quotes.values():
+        for symbol, tick in quotes.items():
+            if symbol not in active:
+                continue
             timestamp = getattr(tick, "timestamp", None)
             if isinstance(timestamp, datetime) and timestamp.tzinfo is not None:
                 ages.append(
@@ -221,6 +228,7 @@ class RuntimeHeartbeatObserver:
             ),
             "max_required_quote_age_seconds": self._quote_age(),
             "critical_queue": counters,
+            "alert_delivery": self.engine.alerts.diagnostics(),
             "active_order_count": active_count,
             "runtime_mode": str(getattr(state, "runtime_mode", "")),
             "kill_switch": bool(getattr(state, "kill_switch", False)),

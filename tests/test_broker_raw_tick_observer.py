@@ -227,6 +227,7 @@ def test_directional_manager_installs_expected_universe_before_subscribing_and_c
         ),
         broker,
         RiskManager(RiskConfig()),
+        historical_mode=True,
         raw_tick_observer=observer,
     )
 

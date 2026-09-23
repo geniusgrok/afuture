@@ -17,7 +17,7 @@ from .durable_json import (
     read_regular_json,
 )
 from .models import RuntimeMode
-from .state import RuntimeState, StateIntegrityError, StateStore
+from .state import StateIntegrityError, StateStore
 
 PROCESS_RUN_KIND = "afuture.runtime.process-run"
 PROCESS_RUN_SCHEMA_VERSION = 1
@@ -69,6 +69,7 @@ class RestartFenceResult:
     exit_code: int
     reason: str = ""
     process_uuid: str = ""
+    resume_activation: bool = False
 
 
 def current_process_uuid() -> str | None:
@@ -420,8 +421,8 @@ class ProcessRunStore:
 
 
 def _halt_state_exact(state_store: StateStore, *, reason: str):
-    current = state_store.load_record()
-    state = RuntimeState() if current is None else current.state
+    current = state_store.load_required_record()
+    state = current.state
     halted = replace(
         state,
         kill_switch=True,
@@ -432,8 +433,8 @@ def _halt_state_exact(state_store: StateStore, *, reason: str):
     try:
         return state_store.save(
             halted,
-            expected_sequence=0 if current is None else current.sequence,
-            expected_checksum="" if current is None else current.checksum,
+            expected_sequence=current.sequence,
+            expected_checksum=current.checksum,
         )
     except StateIntegrityError as exc:
         raise ProcessRunIntegrityError(
@@ -464,12 +465,61 @@ def apply_unclean_restart_fence(
     deployment_digest: str,
     runtime_identity_digest: str,
     account_identity_digest: str,
+    lease=None,
 ) -> RestartFenceResult:
     """Halt exact local truth and invalidate technical authority after an unclean run."""
 
     previous = process_store.load_record()
     if previous is None or previous.clean_shutdown:
         return RestartFenceResult(False, 0)
+    from .runtime_lease import AccountExclusiveRuntimeLease
+
+    if not isinstance(lease, AccountExclusiveRuntimeLease) or not (
+        lease.authorizes_technical_activation(account_identity_digest, runtime_dir)
+    ):
+        raise ProcessRunIntegrityError("restart fence requires the held account/runtime lease")
+    if (
+        previous.deployment_digest != deployment_digest
+        or previous.runtime_identity_digest != runtime_identity_digest
+        or previous.account_identity_digest != account_identity_digest
+    ):
+        raise ProcessRunIntegrityError("restart fence identity changed; explicit recovery required")
+    # A crash between consuming the permit and the first RUNNING save has not
+    # crossed the order-capable boundary. Preserve that exact commit intent;
+    # never label the previous process clean or invalidate its receipt. Any
+    # intervening write/phase advancement follows the normal incident fence.
+    current = state_store.load_required_record()
+    if (
+        previous.phase
+        in {
+            "run_marker_written",
+            "broker_constructed",
+            "broker_ready_not_activated",
+            "permit_consumed",
+            "running_state_pending",
+        }
+        and previous.start_state_checksum == current.checksum
+        and previous.latest_state_checksum == current.checksum
+    ):
+        from .stress90_activation_permit import (
+            Stress90ActivationPermitStore,
+            can_resume_stress90_activation,
+        )
+
+        if can_resume_stress90_activation(
+            permit_store=Stress90ActivationPermitStore(
+                Path(runtime_dir) / "stress90_activation_permit.json"
+            ),
+            state_record=current,
+            account_identity_digest=account_identity_digest,
+        ):
+            return RestartFenceResult(
+                False,
+                0,
+                "uncommitted activation requires fresh Broker verification",
+                previous.process_uuid,
+                True,
+            )
     reason = (
         f"unclean restart fence: prior process {previous.process_uuid} stopped in {previous.phase}"
     )

@@ -11,9 +11,9 @@
 
 ## Current routing state
 
-- As reviewed on 2026-09-07, there is no open owner-authored implementation PR to treat as the default continuation target.
-- For a new authorized task, resolve the latest `main`, then create a feature branch and deliver through a PR as required by `AGENTS.md`.
-- If a later matching PR exists, resume it instead of creating a replacement and treat its current body/comments as the mutable task-state authority.
+- The unattended 24×7 implementation task resumes PR #55 in `ychenracing/afuture`; inspect its current remote branch, diff, checks and reviews before acting. Do not create a replacement PR for that task.
+- Match any available local Git commits and recovery bundle against the remote before overwriting or assuming the PR body contains unpushed work. Unpushed work is not remote-saved work.
+- For other authorized tasks, resolve the matching active PR or latest `main` and follow `AGENTS.md`.
 
 ## Guardrails
 
@@ -26,4 +26,4 @@
 
 Before acting on mutable state, verify the current `main`, matching open PRs, relevant checks, and the explicit task contract. If this index conflicts with current GitHub state or a later authorized task, GitHub/task authority wins and this file should be updated narrowly.
 
-_Last reviewed: 2026-09-07._
+_Last reviewed: 2026-09-23._

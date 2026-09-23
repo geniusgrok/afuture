@@ -38,6 +38,7 @@ from .position import PositionBook
 from .quality import ExecutionQualityRecorder
 from .reconcile import compare_positions
 from .risk import RiskManager
+from .runtime_calendar import RuntimeCalendarError
 from .state import MAX_RECENT_TRADE_IDS, RuntimeState, StateStore
 from .strategy import CalendarSpreadStrategy
 
@@ -88,6 +89,8 @@ class TradingEngine:
             self.specs,
             aggressive_ticks=aggressive_ticks,
             slippage_ticks=slippage_ticks,
+            historical_mode=historical_mode,
+            health_clock=health_clock,
         )
 
         self.quotes: dict[str, Tick] = {}
@@ -334,7 +337,10 @@ class TradingEngine:
                 self.emergency_stop(decision.reason)
                 return
 
-            self._refresh_auto_pairs(tick.timestamp)
+            reference = self._health_reference_time()
+            if reference is None:
+                return
+            self._refresh_auto_pairs(reference)
             for pair_id, pair in list(self.pairs.items()):
                 if tick.symbol not in {pair.near_symbol, pair.far_symbol}:
                     continue
@@ -347,7 +353,7 @@ class TradingEngine:
                     continue
 
                 quote_time = max(near.timestamp, far.timestamp)
-                quote_decision = self.risk_manager.check_quotes([near, far], quote_time)
+                quote_decision = self.risk_manager.check_quotes([near, far], reference)
                 if not quote_decision.allowed:
                     continue
 
@@ -604,12 +610,14 @@ class TradingEngine:
             return ""
 
         session_reference = reference.astimezone(_CHINA_TZ)
-        active_pairs = [
-            pair
-            for pair in self.pairs.values()
-            if not pair.session_windows
-            or self.risk_manager.is_pair_session_active(pair, session_reference)
-        ]
+        try:
+            active_pairs = [
+                pair
+                for pair in self.pairs.values()
+                if self.risk_manager.is_pair_session_active(pair, session_reference)
+            ]
+        except RuntimeCalendarError as exc:
+            return str(exc)
         if not active_pairs:
             return ""
 

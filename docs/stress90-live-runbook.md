@@ -200,7 +200,7 @@ afuture doctor \
 unset AFUTURE_STRESS90_ACTIVATION_PERMIT_ACK
 ```
 
-该 permit 只允许一次 `HALTED → RUNNING` 技术状态转换，不能代表多日 Shadow、测试柜台、极小真钱或扩大风险门已通过。permit 在账户 lease 内先被消费、再保存 RUNNING；两步之间崩溃时状态保持 `HALTED` 且 permit 已消费，必须重新运行 Doctor 签发，禁止自动复用。
+该 permit 只允许一次 `HALTED → RUNNING` 技术状态转换，不能代表多日 Shadow、测试柜台、极小真钱或扩大风险门已通过。permit 在账户 lease 内先被消费、再保存 RUNNING。两步之间崩溃时，下一次启动可以在同一账户/runtime lease 下完成原提交，但必须同时证明：issued→consumed 的相邻 sequence/checksum 链完整；账户、环境和部署身份不变；generic state 仍为原许可绑定的确切 sequence/checksum；当前重新取得的完整 Broker/session/数据证据与原许可一致。此路径不再次消费许可，不以 `.prev` 恢复账户，不生成新的授权。后续人工停机、任何状态推进、证据变化、撤销或损坏均使此续接不成立；日损熔断仍由独立的既定恢复职责处理。
 
 
 ### 6.1 可选：个人独占账户的 operator-managed 跨日
@@ -693,4 +693,17 @@ afuture watchdog --config <config> --once --max-age-seconds 15
 
 `prepare-session` 一次运行后立即退出，不进入常驻循环；它不会签发 permit、恢复 RUNNING、清除 kill switch、修改 risk scale、自动 roll-forward/rebase，也不会从 live 订单路径同步调用外部 OHLC provider。安全阻断退出码为 2，配置/调用错误使用独立非零码。
 
-systemd live 模板使用 `Restart=on-failure`，但异常/不确定重启围栏使用退出码 75 并列入 `RestartPreventExitStatus`。该围栏在任何 order-capable Broker 构造前运行；旧 permit 被失效，generic state 保持/转为 HALTED 且 kill switch=true。watchdog timer 只读本地证据并告警，不 kill/restart live 进程、不平仓、不解除 HALTED。
+systemd live 模板使用 `Restart=on-failure`，异常/不确定重启使用退出码 75 并列入 `RestartPreventExitStatus`。启动先持有账户/runtime 互斥锁，再检查进程证据。未清洁退出默认失效技术许可并保持 HALTED/kill switch，只有本手册 Doctor 许可章节定义的同次 activation 提交窄窗口可按原证据续接；损坏、身份不符或已有账户状态丢失时保留证据并只读阻断。不得自动采用 `.prev` 或重建空账户。watchdog timer 只读证据并告警，不控制账户、不平仓、不解除 HALTED。
+
+## 结算格式与无人值守验收边界
+
+`ctp-settlement-capture` 是隔离测试柜台的私有证据采集入口，使用方法和权限边界见
+[`live-trading.md`](live-trading.md#32-隔离测试柜台的结算格式采集)。它只证明指定查询的
+已知分片和完成边界，不解析资金、费用和持仓，也不提升 `settlement_verified` 或签发许可。
+必须先核验拟运行柜台的真实格式；当前零入出金、PreBalance 差额和结算确认成功都不能
+代替上一交易日完整资金活动证据。生产持仓/账户查询现在只在 request-bound 完成后发布。
+
+当前不能把 strict 命令入口、原人工 operator roll-forward 或 systemd 自动重启描述成
+无人值守跨日已完成。已接入的运行日历和同次许可提交续接不替代阶段授权、正常跨日资金证明、数据准备与维护恢复的联合验收；这些职责仍未形成完整自动闭环，现有日常人工门尚未被整体替换。没有获批目标机与测试账户时，
+不得安装或连接未知柜台；真实一个自然月必须从现场经过时间与执行证据计算，不能用
+本地测试、CI、加速回放或“服务进程存活”代替，更不能自动进入实盘。

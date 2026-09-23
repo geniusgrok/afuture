@@ -13,6 +13,7 @@ from afuture.runtime_heartbeat import (
     install_engine_heartbeat_hooks,
     sigterm_as_keyboard_interrupt,
 )
+from afuture.runtime_lease import AccountExclusiveRuntimeLease
 from afuture.state import RuntimeState, StateStore
 
 IDENTITY = {
@@ -32,14 +33,16 @@ def test_restart_fence_preserves_crashed_run_as_previous_receipt(tmp_path: Path)
     state_store = StateStore(tmp_path / "state.json")
     state_store.save(RuntimeState())
 
-    result = apply_unclean_restart_fence(
-        process_store=process_store,
-        state_store=state_store,
-        runtime_dir=tmp_path,
-        deployment_digest="a" * 64,
-        runtime_identity_digest="b" * 64,
-        account_identity_digest="c" * 64,
-    )
+    with AccountExclusiveRuntimeLease(tmp_path, "c" * 64, role="live") as lease:
+        result = apply_unclean_restart_fence(
+            process_store=process_store,
+            state_store=state_store,
+            runtime_dir=tmp_path,
+            deployment_digest="a" * 64,
+            runtime_identity_digest="b" * 64,
+            account_identity_digest="c" * 64,
+            lease=lease,
+        )
 
     assert result.blocked is True
     current = process_store.load_required()
