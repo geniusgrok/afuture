@@ -5,6 +5,7 @@
 ## 当前权威文档
 
 - [`AGENTS.md`](../AGENTS.md) — 开发、验证和协作约定。
+- [`PROJECT_STATE.md`](../PROJECT_STATE.md) — 项目恢复入口与状态核验路线。
 - [`README.md`](../README.md) — 项目定位、能力、使用方式和边界。
 - [`docs/glossary.md`](glossary.md) — 术语、缩写和公式的统一定义。
 - [`docs/architecture.md`](architecture.md) — 当前模块边界、依赖方向和数据流。

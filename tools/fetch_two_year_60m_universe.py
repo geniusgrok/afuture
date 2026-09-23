@@ -53,6 +53,7 @@ def symbols() -> list[str]:
 
 def main() -> None:
     import akshare as ak
+
     output = Path("runtime")
     output.mkdir(parents=True, exist_ok=True)
     frames: list[pd.DataFrame] = []

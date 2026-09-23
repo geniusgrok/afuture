@@ -123,6 +123,7 @@ def delivery_date(symbol: str) -> pd.Timestamp:
 
 def _download(symbol: str) -> pd.DataFrame:
     import akshare as ak
+
     last_error: Exception | None = None
     for attempt in range(3):
         try:

@@ -72,6 +72,7 @@ MAX_WORKERS = 8
 
 def _download(product: str) -> tuple[pd.DataFrame | None, str | None]:
     import akshare as ak
+
     symbol = f"{product}0"
     last_error: Exception | None = None
     for attempt in range(3):
