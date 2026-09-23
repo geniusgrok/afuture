@@ -1152,6 +1152,48 @@ def _write_account_ledger(result, scenario: str, output: Path) -> tuple[Path, Pa
     return positions_path, no_trade_path
 
 
+def _canonical_account_events(events: pd.DataFrame) -> pd.DataFrame:
+    """Give same-day account events a stable audit order across checkpoint restores."""
+    frame = events.copy()
+    if frame.empty:
+        return frame.reset_index(drop=True)
+    kind = frame["kind"].astype(str) if "kind" in frame else pd.Series("", index=frame.index)
+    action = frame["action"].astype(str) if "action" in frame else pd.Series("", index=frame.index)
+    frame["_audit_phase"] = np.select(
+        [
+            kind.eq("pnl") & action.eq("gap"),
+            kind.eq("trade"),
+            kind.eq("pnl") & action.eq("intraday"),
+        ],
+        [0, 1, 2],
+        default=3,
+    )
+    columns = [
+        column
+        for column in (
+            "date",
+            "_audit_phase",
+            "product",
+            "symbol",
+            "kind",
+            "action",
+            "lots_before",
+            "lots_after",
+            "delta_lots",
+            "price",
+            "turnover_notional",
+            "transaction_cost",
+            "gross_pnl",
+        )
+        if column in frame
+    ]
+    return (
+        frame.sort_values(columns, kind="stable", na_position="last")
+        .drop(columns="_audit_phase")
+        .reset_index(drop=True)
+    )
+
+
 def _simulate_account(
     *,
     scenario: str,
@@ -1182,7 +1224,7 @@ def _simulate_account(
     if result.final_checkpoint is None:
         raise RuntimeError(f"{scenario} account simulation produced no checkpoint")
     daily = result.daily.copy()
-    events = result.events.copy()
+    events = _canonical_account_events(result.events)
     daily_path = output / "account" / scenario.lower() / "daily_ledger.csv"
     events_path = output / "account" / scenario.lower() / "events.csv"
     _csv_frame(daily.rename_axis("date").reset_index(), daily_path)
@@ -1267,9 +1309,11 @@ def _simulate_account(
         checkpoint=restored_checkpoint,
     )
     daily_joined = pd.concat([prefix.daily, resumed.daily])
-    events_joined = pd.concat([prefix.events, resumed.events], ignore_index=True)
+    events_joined = _canonical_account_events(
+        pd.concat([prefix.events, resumed.events], ignore_index=True)
+    )
     pd.testing.assert_frame_equal(daily_joined, result.daily)
-    pd.testing.assert_frame_equal(events_joined, result.events)
+    pd.testing.assert_frame_equal(events_joined, _canonical_account_events(result.events))
     if (
         resumed.final_equity != result.final_equity
         or resumed.final_checkpoint != result.final_checkpoint

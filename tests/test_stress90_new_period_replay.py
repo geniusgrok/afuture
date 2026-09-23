@@ -237,6 +237,27 @@ def test_account_lots_use_current_selected_contract_multiplier_and_preserve_audi
     assert audited_specs.account_multiplier_used.tolist() == [5.0, 5.0, 5.0]
 
 
+def test_account_event_restart_comparison_uses_canonical_within_day_order():
+    from tools.replay_directional_stress90_new_period import _canonical_account_events
+
+    events = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-09-07"] * 3),
+            "kind": ["pnl", "trade", "pnl"],
+            "action": ["gap", "entry", "intraday"],
+            "product": ["BU", "RU", "BU"],
+            "symbol": ["BU2610", "RU2701", "BU2610"],
+            "delta_lots": [0, 1, 0],
+        }
+    )
+
+    joined = _canonical_account_events(events.iloc[[2, 0, 1]])
+    continuous = _canonical_account_events(events)
+
+    pd.testing.assert_frame_equal(joined, continuous)
+    assert joined.action.tolist() == ["gap", "entry", "intraday"]
+
+
 def test_oi_source_day_for_first_target_uses_the_prestart_observed_session():
     from tools.replay_directional_stress90_new_period import _oi_source_days_for_targets
 
