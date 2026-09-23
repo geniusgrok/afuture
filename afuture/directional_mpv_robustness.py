@@ -11,7 +11,12 @@ from collections.abc import Mapping
 
 import pandas as pd
 
-from .directional_acceptance import PRODUCT_MULTIPLIERS, TargetLotStages
+from .directional_acceptance import (
+    PRODUCT_MULTIPLIERS,
+    DirectionalSimulationCheckpoint,
+    ProductionSimulationResult,
+    TargetLotStages,
+)
 from .directional_mpv_research import MPVResearchOptimization, optimize_with_causal_mpv
 from .directional_robustness import MarginAwareDirectionalProductionAcceptance
 
@@ -39,7 +44,17 @@ class MPVDirectionalProductionAcceptance(MarginAwareDirectionalProductionAccepta
         frame = frame[frame["date"].notna() & (frame["date"] < cutoff)]
         return [dict(row) for row in frame.to_dict(orient="records")]
 
-    def simulate(self, raw, weights, *, cost_bps: float, prepared=None):
+    def simulate(
+        self,
+        raw,
+        weights,
+        *,
+        cost_bps: float,
+        prepared=None,
+        checkpoint: DirectionalSimulationCheckpoint | Mapping[str, object] | None = None,
+    ) -> ProductionSimulationResult:
+        if checkpoint is not None:
+            raise ValueError("MPV research adapter does not support account checkpoint resume")
         index = pd.DatetimeIndex(pd.to_datetime(getattr(weights, "index", []), errors="coerce"))
         valid = index[~index.isna()]
         self._mpv_observed_event_rows = self._seed_rows_before(valid.min()) if len(valid) else []

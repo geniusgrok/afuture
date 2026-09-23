@@ -76,7 +76,7 @@ afuture status --config config/afuture.directional-live.example.toml
 - 运行路径是否可写、可访问；
 - 磁盘是否至少剩余 100 MiB。
 
-Stress-90 还检查 seed/policy/OI/intent 的 schema、sequence、checksum 和 identity，展示 bootstrap through day、last target、input digests、各层 decision digest、HHI/prior median、两个 freeze、completed account wealth/HWM/drawdown、target/current lots、gross、tracking error、policy/data gap 和 remaining blockers。
+Stress-90 还检查 seed/policy/OI/intent 的 schema、sequence、checksum 和 identity，展示 bootstrap through day、last target、input digests、各层 decision digest、HHI/prior median、回撤预留状态、completed account wealth/HWM/drawdown、target/current lots、gross、tracking error、policy/data gap 和 remaining blockers。
 
 当前状态损坏时命令返回 2。`state.json.prev` 只供人工诊断，不能自动恢复，也不能绕过 `recover-state`。
 
@@ -185,7 +185,7 @@ D+1 实时行情仍用于价格、盘口、涨跌停、保证金和下单，但�
 
 当前交易日尚未完成的盈亏不能影响当前目标。该规则只能降低风险。
 
-Stress-90 不使用上述 0.25 target scaling。它保留同一 adaptive soft margin envelope，但使用 1x raw candidate 做 margin-aware integer sizing，随后依次应用 completed account path 的 25% drawdown-reserve freeze 和 raw candidate HHI freeze。两个 freeze 只冻结 entry/同向 add；reduction、exit、reversal 和 same-product roll 通过。`RiskManager` 仍拥有 margin、available、gross、daily circuit 和 HALT 的最终权限。
+Stress-90 不使用上述 0.25 target scaling。它保留同一 adaptive soft margin envelope，但使用 1x raw candidate 做 margin-aware integer sizing，随后应用 completed account path 的 25% drawdown-reserve freeze。HHI 只用于观测，不否决开仓；回撤预留仍只冻结 entry/同向 add，reduction、exit、reversal 和 same-product roll 通过。`RiskManager` 仍拥有 margin、available、gross、daily circuit 和 HALT 的最终权限。
 
 ## 8.1 CTP 事件投递观测
 
@@ -274,7 +274,7 @@ Stress-90 默认 `directional.account_continuity_mode = "strict"`。未配置该
 - 成交：实际价格、滑点、手续费、延迟、部分成交和拒单；
 - 周期：实际换手、目标偏差和剩余风险。
 
-Stress-90 每个 target day 另记录 Base/OI/cost/survivor、HHI/prior median、两个 freeze、raw/margin-fitted/drawdown-frozen/HHI-frozen/final lots、reduction/opening plan 和 daily decision digest；计划/成交记录包含 expected open、planned/actual price、one-way cost、p95 cost、partial/reject、latency 和 model/actual turnover。
+Stress-90 每个 target day 另记录 Base/OI/cost/survivor、HHI/prior median、回撤预留状态、raw/margin-fitted/drawdown-frozen/HHI-observed/final lots、reduction/opening plan 和 daily decision digest；计划/成交记录包含 expected open、planned/actual price、one-way cost、p95 cost、partial/reject、latency 和 model/actual turnover。
 
 使用 `afuture quality-report` 持续汇总这些证据，并与结算单核对。
 

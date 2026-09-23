@@ -69,7 +69,7 @@ class Stress90PolicyDefinition:
     """Immutable economic and hard-risk identity of the Stress-90 policy."""
 
     policy_id: str = "directional.stress90"
-    definition_version: int = 1
+    definition_version: int = 2
     products: tuple[str, ...] = FROZEN_PRODUCTS
     oi_products: tuple[str, ...] = SUPPORTED_OI_PRODUCTS
     template_ids: tuple[str, ...] = EXECUTION_TEMPLATE_IDS
@@ -81,7 +81,7 @@ class Stress90PolicyDefinition:
     completed_lookback_sessions: int = 20
     benefit_horizon_sessions: int = 3
     cost_hurdle_bps: float = 15.0
-    hhi_rule: str = "abs_weight_hhi_le_strictly_prior_expanding_median"
+    hhi_rule: str = "abs_weight_hhi_observation_only"
     session_manifest_digest: str = SESSION_MANIFEST_DIGEST
     hard_drawdown_ratio: float = 0.30
     daily_loss_ratio: float = 0.05
@@ -95,7 +95,7 @@ class Stress90PolicyDefinition:
     def __post_init__(self) -> None:
         expected = {
             "policy_id": "directional.stress90",
-            "definition_version": 1,
+            "definition_version": 2,
             "products": FROZEN_PRODUCTS,
             "oi_products": SUPPORTED_OI_PRODUCTS,
             "template_ids": EXECUTION_TEMPLATE_IDS,
@@ -107,7 +107,7 @@ class Stress90PolicyDefinition:
             "completed_lookback_sessions": 20,
             "benefit_horizon_sessions": 3,
             "cost_hurdle_bps": 15.0,
-            "hhi_rule": "abs_weight_hhi_le_strictly_prior_expanding_median",
+            "hhi_rule": "abs_weight_hhi_observation_only",
             "session_manifest_digest": SESSION_MANIFEST_DIGEST,
             "hard_drawdown_ratio": 0.30,
             "daily_loss_ratio": 0.05,
@@ -471,7 +471,7 @@ def advance_concentration_history(
     completed_concentrations: Sequence[float],
     weights: Mapping[str, float],
 ) -> tuple[float | None, float | None, bool, tuple[float, ...]]:
-    """Compare with strictly-prior HHI median, then append the current HHI."""
+    """Record causal HHI diagnostics without restricting new risk."""
 
     history = tuple(float(value) for value in completed_concentrations)
     if any(not isfinite(value) or not 0.0 < value <= 1.0 for value in history):
@@ -480,8 +480,7 @@ def advance_concentration_history(
     prior_median = float(median(history)) if history else None
     if current is None:
         return None, prior_median, False, history
-    freeze = bool(prior_median is not None and current <= prior_median)
-    return current, prior_median, freeze, (*history, current)
+    return current, prior_median, False, (*history, current)
 
 
 @dataclass(frozen=True)

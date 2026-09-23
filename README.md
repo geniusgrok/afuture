@@ -39,7 +39,7 @@ Stress-90 账户连续性默认使用 `account_continuity_mode = "strict"`，保
 
 系统在 D+1 根据上一完整交易日的成交量、持仓量、挂牌和到期信息选择具体合约，再把目标权重转换成整数手数。转换过程同时受保证金、可用资金、总敞口和单合约手数限制。减仓必须先成交，随后才允许增加风险。
 
-生产配置必须在 `execution_aligned` 和 `stress90` 中显式二选一。前者使用 0.25 风险缩放；后者使用固定 Base→60m Price×OI→20/3/15bp cost gate→survivor reallocation 候选，并在整数 lots 层分别应用 25% completed-path drawdown reserve freeze 和 HHI concentration freeze。两个 freeze 只阻止新风险；最终硬风险权限仍属于 `RiskManager`。
+生产配置必须在 `execution_aligned` 和 `stress90` 中显式二选一。前者使用 0.25 风险缩放；后者使用固定 Base→60m Price×OI→20/3/15bp cost gate→survivor reallocation 候选，并在整数 lots 层应用 25% completed-path drawdown reserve freeze。HHI 保留为观测指标，不否决开仓；最终硬风险权限仍属于 `RiskManager`。
 
 ## 架构
 

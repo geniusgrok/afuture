@@ -95,7 +95,7 @@ ExecutionAlignedAggressivePolicy Base（50 品种、96 templates、11/3/3）
 
 Stress-90 raw observer 在 CTP Tick 成功转换后、Tick coalescing 前收到每个有效 Tick。它只做有界内存聚合，按权威 CTP `trading_day` 和固定 session manifest 构造 in-progress/completed 60m evidence；磁盘 checkpoint 发生在一个有界 broker event batch 完成后。九个支持品种保存 expected/observed/missing contract coverage，因此没有观察到潜在 dominant contract 时不能生成伪 `flow=0`。
 
-Stress-90 target day 的状态顺序是：校验完整输入，原子保存 exactly-once prepared decision，读取 Broker truth，生成 raw/margin-fitted integer lots，依次应用 completed-path 25% drawdown reserve freeze 和 HHI freeze，保存 execution intent，再生成 reduction-first orders。崩溃恢复复用同一 decision/intent；HHI 与候选 state 不随订单、成交或账户结果重复推进。详细边界见 [`stress90-live-productionization.md`](stress90-live-productionization.md)。
+Stress-90 target day 的状态顺序是：校验完整输入并记录 HHI 观测，原子保存 exactly-once prepared decision，读取 Broker truth，生成 raw/margin-fitted integer lots，应用 completed-path 25% drawdown reserve freeze，保存 execution intent，再生成 reduction-first orders。崩溃恢复复用同一 decision/intent；HHI 与候选 state 不随订单、成交或账户结果重复推进。详细边界见 [`stress90-live-productionization.md`](stress90-live-productionization.md)。
 
 ## 5. 离线账户验证
 

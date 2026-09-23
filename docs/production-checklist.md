@@ -45,7 +45,7 @@
 - [x] 研究 batch、bootstrap incremental 和 live runtime 共用同一纯候选 primitives；live 不导入 `tools/` 或 acceptance CLI。
 - [x] policy definition、固定历史 candidate 和 daily decision 使用三个不同 digest。
 - [x] prepared decision 在第一张订单前 exactly once 落盘；重启复用同一 decision/intent。
-- [x] 25% completed-path reserve 与 raw candidate HHI freeze 独立记录，均只冻结新风险。
+- [x] 25% completed-path reserve 只冻结新风险；raw candidate HHI 仅用于观测，不否决开仓。
 - [x] raw CTP 60m evidence 在 Tick coalescing 前采集，callback 不做阻塞式 IO。
 - [x] OHLC provider 被移出订单路径；live 只读 validated cache。
 - [x] `status`、`doctor`、Shadow quality、activation/rebase 和 vendor comparator 已接线。
@@ -163,7 +163,7 @@
 - [ ] raw evidence expected/observed/missing contract coverage 覆盖九个 OI 品种的所有 eligible futures contracts。
 - [ ] 夜盘跨午夜、60m boundary、volume reset、duplicate/out-of-order/late Tick、rollover 和重启证据可解释。
 - [ ] CTP/vendor comparator 的 first open、last close、first/last hold、volume、dominant 和 flow 逐日可解释；没有 unexplained flow difference。
-- [ ] 每日 quality 含 Base/OI/cost/survivor、HHI/prior median、两个 freeze、全部 integer stages 和 reduction/opening plan。
+- [ ] 每日 quality 含 Base/OI/cost/survivor、HHI/prior median、回撤预留状态、全部 integer stages 和 reduction/opening plan。
 
 ## I. Doctor / 测试柜台
 
