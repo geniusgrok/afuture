@@ -11,11 +11,10 @@ Stress-90 已成为一个显式、可选且与普通 `execution_aligned` 隔离�
 → 60m Price×OI 方向变化确认
 → 20/3/15bp 固定成本门
 → survivor reallocation
-→ raw candidate HHI
+→ raw candidate HHI 观测
 → exactly-once prepared decision
 → live contract/margin-aware integer sizing
 → 25% completed-path drawdown-reserve freeze
-→ HHI concentration freeze
 → reduction-first Broker execution
 ```
 
@@ -37,7 +36,7 @@ Stress-90 已成为一个显式、可选且与普通 `execution_aligned` 隔离�
 | policy | manager | 策略风险响应 | current 边界 |
 | --- | --- | --- | --- |
 | `execution_aligned` | `ExecutionAlignedDirectionalPortfolioManager` | 使用 `0.25` target-weight scaling | 配置和运行时必须显式选择该 policy |
-| `stress90` | `Stress90DirectionalPortfolioManager` | 使用 `1x` raw candidate，再在整数 lots 层分别应用两个 freeze | policy state identity 必须与配置一致 |
+| `stress90` | `Stress90DirectionalPortfolioManager` | 使用 `1x` raw candidate，再在整数 lots 层应用 25% 回撤预留冻结 | policy state identity 必须与配置一致 |
 
 manager 通过明确的 `policy_risk_response_mode` capability 告诉引擎如何响应风险。Stress-90 不靠类名或 `isinstance` 特判，因此不会再被 `DirectionalRiskScaledPolicy` 重复缩放。两种模式仍共享 adaptive soft margin envelope 和最终权威 `RiskManager`。
 
@@ -55,7 +54,7 @@ policy 切换不是普通配置热更新。首次绑定 Stress-90 identity 必�
 - completed lookback `20`、benefit horizon `3`、单边 hurdle `15bp`；
 - Base/Stress endpoint `5bp/15bp`；
 - gross cap `2x`；
-- HHI expanding-median 规则；
+- HHI expanding-median 观测规则（不作开仓否决）；
 - `30%-5%=25%` drawdown reserve；
 - 固定历史 candidate SHA-256；
 - 不可放宽的 hard-risk envelope。
@@ -76,9 +75,9 @@ policy 切换不是普通配置热更新。首次绑定 Stress-90 identity 必�
 
 survivor reallocation 不创造 support、不改变方向、不超过 OI-confirmed gross 或 `2x`。第一目标最小化相对 OI-confirmed 目标的 L1 tracking error，第二目标最小化相对上一 applied target 的 L1 turnover，并使用固定比例 tie-break。
 
-HHI 在 survivor product weights 上按绝对权重归一化计算。先与 strictly-prior finite HHI history 的中位数比较，再追加当前 HHI；历史为空不触发，当前 HHI `<=` prior median 时触发。只要完整 target 成功生成，不论有没有可交易合约、订单或成交，HHI 都 exactly once 推进。HHI 不读取实际持仓、成交或账户 PnL。
+HHI 在 survivor product weights 上按绝对权重归一化计算。先读取 strictly-prior finite HHI history 的中位数，再追加当前 HHI；两项只用于观测，即使当前 HHI `<=` prior median 也不否决新增风险。只要完整 target 成功生成，不论有没有可交易合约、订单或成交，HHI 都 exactly once 推进。HHI 不读取实际持仓、成交或账户 PnL。
 
-25% reserve 只读取已经完成的柜台交易日账户收益，以复利 wealth 和 completed high-watermark 的充分统计量判断。当前未完成日 PnL 不进入该路径。两个 freeze 都只冻结新风险和同向加仓；减仓、退出、反转和同品种换月继续通过。
+25% reserve 只读取已经完成的柜台交易日账户收益，以复利 wealth 和 completed high-watermark 的充分统计量判断。当前未完成日 PnL 不进入该路径。这项 freeze 只冻结新风险和同向加仓；减仓、退出、反转和同品种换月继续通过。
 
 ## 5. Exactly-once 状态
 
@@ -173,15 +172,15 @@ Stress-90 runtime 的 target day 只取 `CtpBroker.get_trading_day()`。本机�
 1. 验证 CTP current trading day 和上一完整 activity day；
 2. 验证 OHLC、60m OI 和 activity coverage；
 3. 生成 Base、OI、cost、survivor 和 raw candidate HHI；
-4. 先比较 prior HHI median，再推进 HHI，并原子保存 prepared decision；
+4. 记录 prior HHI median，再推进 HHI，并原子保存 prepared decision；
 5. 读取 Broker 账户、持仓、quotes 和 live contract specs；
 6. 依上一完整 activity 选择具体合约并做 margin-aware integer sizing；
-7. 应用 adaptive margin envelope、completed-path drawdown reserve freeze、再应用 HHI freeze；
+7. 应用 adaptive margin envelope 和 completed-path drawdown reserve freeze；
 8. 生成 reduction-first plan；Broker 确认 reductions 后重新读取 truth，并再次运行 `RiskManager.check_open_orders()`；
 9. 仅在当前产品首个固定 entry window 内允许 openings；错过窗口不追单，但 target state 仍推进；
 10. 所有持仓变化只来自 Broker trade callback。
 
-HHI 始终使用第 3 步 raw candidate product weights，不使用整数手数、账户结果或 risk governor 输出。硬 `RiskManager` 保持最终否决权。
+HHI 始终使用第 3 步 raw candidate product weights，不使用整数手数、账户结果或 risk governor 输出，且不否决开仓。硬 `RiskManager` 保持最终否决权。
 
 ## 8. 失败关闭矩阵
 

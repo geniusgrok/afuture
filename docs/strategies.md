@@ -98,7 +98,7 @@ Auto 不允许：
 
 普通 `execution_aligned` 在最近一个完整交易日收益不高于 -2%，或最近两个完整日收益的样本波动不低于 3% 时，把下一目标缩小到 25%；当前交易日尚未完成的盈亏不能进入这个判断。
 
-Stress-90 不套该 0.25 target scaling。它使用 1x raw candidate 做 adaptive margin-aware integer sizing，再依次应用 completed-path 25% drawdown reserve freeze 和 raw survivor HHI freeze。两个 freeze 只阻止 entry 和同向 add，不能阻止 reduction、exit、reversal 或 same-product roll，也不能绕过最终 `RiskManager`。
+Stress-90 不套该 0.25 target scaling。它使用 1x raw candidate 做 adaptive margin-aware integer sizing，再应用 completed-path 25% drawdown reserve freeze。HHI 仅保留观测统计，不否决 entry 或同向 add。减仓、退出、反转、同品种换月及最终 `RiskManager` 权限不变。
 
 调仓严格执行：
 
@@ -116,7 +116,7 @@ Stress-90 不套该 0.25 target scaling。它使用 1x raw candidate 做 adaptiv
 
 历史代号 `Stress-90` 的方向研究候选在固定输入的离线账户模拟中通过了预设压力门。当前代码后来把同一候选接成显式可选 runtime policy；历史 evidence 仍保留当时 `production_wiring=false`。
 
-Stress-90 的完整产品目标顺序是 Base→九品种 completed 60m Price×OI confirmation→20/3/15bp cost gate→survivor reallocation→HHI。HHI 在 raw survivor weights 上与 strictly-prior expanding median 比较；触发时只冻结新增风险。离线 batch、bootstrap replay 和 live incremental path 共用同一纯 primitives。
+Stress-90 的完整产品目标顺序是 Base→九品种 completed 60m Price×OI confirmation→20/3/15bp cost gate→survivor reallocation→HHI 观测。HHI 仍在 raw survivor weights 上计算并与 strictly-prior expanding median 比较，结果只用于诊断；离线 batch、bootstrap replay 和 live incremental path 共用同一纯 primitives。
 
 `directional.policy = "stress90"` 只选择真实的 Stress-90 manager；还必须完成固定 bootstrap、identity activation、完整数据 coverage 和现场 gates。代码接线不能替代多日 Shadow、测试柜台、未来数据、真实成本和极小资金。完整固定输入和结果见 [`stress90-final-evidence.md`](stress90-final-evidence.md)，当前边界见 [`stress90-live-productionization.md`](stress90-live-productionization.md)。
 
