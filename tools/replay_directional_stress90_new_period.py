@@ -184,6 +184,73 @@ def _csv_frame(frame: pd.DataFrame, path: Path) -> None:
     frame.to_csv(path, index=False, lineterminator="\n")
 
 
+def _base_weight_prefix_audit(
+    generated: pd.DataFrame,
+    archived: pd.DataFrame,
+    *,
+    policy_start: pd.Timestamp,
+    cutoff: pd.Timestamp,
+    tolerance: float = 1e-12,
+) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
+    """Compare the current fixed policy only where its candidate is frozen.
+
+    Older archived weights remain available as warmup evidence, but pre-policy
+    history came from earlier lineages and is reported separately instead of
+    being treated as a current-policy parity requirement.
+    """
+    cutoff = pd.Timestamp(cutoff).normalize()
+    policy_start = pd.Timestamp(policy_start).normalize()
+    eligible_index = generated.index[
+        (generated.index >= policy_start) & (generated.index <= cutoff)
+    ]
+    pre_policy_index = generated.index[
+        (generated.index < policy_start) & (generated.index <= cutoff)
+    ]
+    columns = list(generated.columns)
+
+    def mismatches(index: pd.Index) -> tuple[int, pd.DataFrame]:
+        actual = generated.loc[index, columns].astype(float)
+        expected = archived.reindex(index=index, columns=columns, fill_value=0.0).fillna(0.0)
+        equal = np.isclose(
+            actual.to_numpy(float), expected.to_numpy(float), rtol=0.0, atol=tolerance
+        )
+        locations = np.argwhere(~equal)
+        rows = [
+            {
+                "date": pd.Timestamp(index[row]).date().isoformat(),
+                "product": str(columns[column]),
+                "generated": float(actual.iat[row, column]),
+                "frozen": float(expected.iat[row, column]),
+            }
+            for row, column in locations
+        ]
+        return int(locations.shape[0]), pd.DataFrame(
+            rows, columns=["date", "product", "generated", "frozen"]
+        )
+
+    mismatch_count, policy_mismatches = mismatches(eligible_index)
+    pre_policy_mismatch_count, pre_policy_mismatches = mismatches(pre_policy_index)
+    summary = {
+        "passed": mismatch_count == 0,
+        "comparison_start": eligible_index.min().date().isoformat()
+        if len(eligible_index)
+        else None,
+        "comparison_end": eligible_index.max().date().isoformat() if len(eligible_index) else None,
+        "cell_comparisons": int(len(eligible_index) * len(columns)),
+        "mismatch_count": mismatch_count,
+        "pre_policy_start": pre_policy_index.min().date().isoformat()
+        if len(pre_policy_index)
+        else None,
+        "pre_policy_end": pre_policy_index.max().date().isoformat()
+        if len(pre_policy_index)
+        else None,
+        "pre_policy_cell_comparisons": int(len(pre_policy_index) * len(columns)),
+        "pre_policy_mismatch_count": pre_policy_mismatch_count,
+        "tolerance": tolerance,
+    }
+    return summary, policy_mismatches, pre_policy_mismatches
+
+
 def _month_range(start: pd.Timestamp, end: pd.Timestamp) -> list[tuple[int, int]]:
     result = []
     current = pd.Timestamp(start.year, start.month, 1)
@@ -1363,29 +1430,40 @@ def run_replay(args: argparse.Namespace) -> dict:
         ["date", "product"]
     )
     generated_weights = execution_target.generate_execution_signal_weights(continuous_all)
-    archived_reindex = base_weights_frozen.reindex(
-        index=generated_weights.index[generated_weights.index <= FROZEN_CUTOFF.normalize()],
-        columns=generated_weights.columns,
-        fill_value=0.0,
-    ).fillna(0.0)
-    generated_prefix = generated_weights.loc[archived_reindex.index, archived_reindex.columns]
-    parity = np.isclose(
-        generated_prefix.to_numpy(float), archived_reindex.to_numpy(float), rtol=0.0, atol=1e-12
+    policy_start = pd.Timestamp(mechanics.WINDOWS["train"][0])
+    base_weight_prefix_audit, policy_weight_mismatches, pre_policy_weight_mismatches = (
+        _base_weight_prefix_audit(
+            generated_weights,
+            base_weights_frozen,
+            policy_start=policy_start,
+            cutoff=FROZEN_CUTOFF,
+        )
     )
-    parity_rows = int(parity.size)
-    if not bool(parity.all()):
-        mismatches = np.argwhere(~parity)
-        details = [
-            {
-                "date": pd.Timestamp(generated_prefix.index[row]).date().isoformat(),
-                "product": str(generated_prefix.columns[column]),
-                "generated": float(generated_prefix.iat[row, column]),
-                "frozen": float(archived_reindex.iat[row, column]),
-            }
-            for row, column in mismatches[:20]
-        ]
-        _write_json(output / "strategy" / "base_weight_prefix_mismatches.json", details)
-        raise RuntimeError(f"current main base weights differ from frozen prefix: {details[:5]}")
+    _csv_frame(
+        policy_weight_mismatches,
+        output / "strategy" / "base_weight_prefix_mismatches.csv",
+    )
+    _csv_frame(
+        pre_policy_weight_mismatches,
+        output / "strategy" / "pre_policy_weight_history_differences.csv",
+    )
+    _write_json(
+        output / "strategy" / "base_weight_prefix_audit.json",
+        {
+            **base_weight_prefix_audit,
+            "policy_start_source": "tools/evaluate_directional_production_mechanics.py:WINDOWS['train'][0]",
+            "policy_mismatch_file": "strategy/base_weight_prefix_mismatches.csv",
+            "pre_policy_mismatch_file": "strategy/pre_policy_weight_history_differences.csv",
+            "pre_policy_mismatch_samples": pre_policy_weight_mismatches.head(20).to_dict(
+                orient="records"
+            ),
+        },
+    )
+    if not base_weight_prefix_audit["passed"]:
+        details = policy_weight_mismatches.head(20).to_dict(orient="records")
+        raise RuntimeError(
+            f"current frozen-policy base weights differ from the archived prefix: {details[:5]}"
+        )
     base_weights_new = generated_weights.reindex(
         index=calendar, columns=base_weights_frozen.columns
     )
@@ -1609,9 +1687,10 @@ def run_replay(args: argparse.Namespace) -> dict:
             ],
             "historical_candidate_expected_digest": EXPECTED_CANDIDATE_WEIGHT_SHA256,
             "base_weight_prefix_parity": {
-                "passed": True,
-                "cell_comparisons": parity_rows,
-                "tolerance": 1e-12,
+                **base_weight_prefix_audit,
+                "policy_start_source": "tools/evaluate_directional_production_mechanics.py:WINDOWS['train'][0]",
+                "policy_mismatch_file": "strategy/base_weight_prefix_mismatches.csv",
+                "pre_policy_mismatch_file": "strategy/pre_policy_weight_history_differences.csv",
             },
         },
         "scope": {

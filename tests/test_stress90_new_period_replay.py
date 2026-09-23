@@ -92,3 +92,49 @@ def test_contract_spec_extracts_multiplier_tick_and_last_trading_rule():
     assert spec["price_tick"] == 0.5
     assert spec["last_trading_day_rule"] == "合约月份第10个交易日"
     assert spec["product"] == "I"
+
+
+def test_base_weight_prefix_audit_scopes_parity_to_frozen_policy_window():
+    from tools.replay_directional_stress90_new_period import _base_weight_prefix_audit
+
+    dates = pd.to_datetime(["2024-08-20", "2024-08-21", "2024-08-22"])
+    generated = pd.DataFrame({"A": [0.5, 0.25, 0.0], "B": [0.0, -0.25, 0.5]}, index=dates)
+    archived = pd.DataFrame({"A": [0.0, 0.25, 0.0], "B": [0.0, -0.25, 0.5]}, index=dates)
+
+    summary, policy_mismatches, pre_policy_mismatches = _base_weight_prefix_audit(
+        generated,
+        archived,
+        policy_start=pd.Timestamp("2024-08-21"),
+        cutoff=pd.Timestamp("2024-08-22"),
+    )
+
+    assert summary["passed"] is True
+    assert summary["comparison_start"] == "2024-08-21"
+    assert summary["cell_comparisons"] == 4
+    assert policy_mismatches.empty
+    assert summary["pre_policy_cell_comparisons"] == 2
+    assert summary["pre_policy_mismatch_count"] == 1
+    assert pre_policy_mismatches[["date", "product", "generated", "frozen"]].to_dict(
+        orient="records"
+    ) == [{"date": "2024-08-20", "product": "A", "generated": 0.5, "frozen": 0.0}]
+
+
+def test_base_weight_prefix_audit_rejects_mismatch_inside_frozen_policy_window():
+    from tools.replay_directional_stress90_new_period import _base_weight_prefix_audit
+
+    dates = pd.to_datetime(["2024-08-20", "2024-08-21"])
+    generated = pd.DataFrame({"A": [0.5, 0.25]}, index=dates)
+    archived = pd.DataFrame({"A": [0.0, -0.25]}, index=dates)
+
+    summary, policy_mismatches, _pre_policy_mismatches = _base_weight_prefix_audit(
+        generated,
+        archived,
+        policy_start=pd.Timestamp("2024-08-21"),
+        cutoff=pd.Timestamp("2024-08-21"),
+    )
+
+    assert summary["passed"] is False
+    assert summary["mismatch_count"] == 1
+    assert policy_mismatches[["date", "product", "generated", "frozen"]].to_dict(
+        orient="records"
+    ) == [{"date": "2024-08-21", "product": "A", "generated": 0.25, "frozen": -0.25}]
