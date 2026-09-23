@@ -57,6 +57,27 @@ class ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance(
         )
         self._completed_concentrations = list(updated)
 
+    def _checkpoint_strategy_state(self) -> dict[str, object]:
+        return {
+            "completed_concentrations": tuple(self._completed_concentrations),
+            "concentration_freeze_triggered": self.concentration_freeze_triggered,
+        }
+
+    def _restore_checkpoint_strategy_state(self, state: Mapping[str, object]) -> None:
+        if set(state) != {"completed_concentrations", "concentration_freeze_triggered"}:
+            raise ValueError("checkpoint concentration state is invalid")
+        raw_history = state["completed_concentrations"]
+        if not isinstance(raw_history, (list, tuple)):
+            raise ValueError("checkpoint concentration history is invalid")
+        history = [float(value) for value in raw_history]
+        if any(not isfinite(value) or not 0.0 < value <= 1.0 for value in history):
+            raise ValueError("checkpoint concentration history is invalid")
+        triggered = state["concentration_freeze_triggered"]
+        if not isinstance(triggered, bool):
+            raise ValueError("checkpoint concentration freeze state is invalid")
+        self._completed_concentrations = history
+        self.concentration_freeze_triggered = triggered
+
     def target_lot_stages(
         self,
         *,

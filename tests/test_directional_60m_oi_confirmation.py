@@ -98,6 +98,39 @@ def test_daily_flow_direction_is_first_open_to_last_close_when_oi_increases():
     assert flow.loc[pd.Timestamp("2026-01-05"), "RB"] == -1.0
 
 
+def test_daily_flow_can_group_night_bars_into_explicit_exchange_trading_day():
+    _, build_flow, _, _ = _api()
+    raw = pd.DataFrame(
+        [
+            {
+                "datetime": "2026-08-20 22:00",
+                "trading_day": "2026-08-21",
+                "product": "A",
+                "symbol": "A2609",
+                "open": 100.0,
+                "close": 110.0,
+                "volume": 10,
+                "hold": 100,
+            },
+            {
+                "datetime": "2026-08-21 15:00",
+                "trading_day": "2026-08-21",
+                "product": "A",
+                "symbol": "A2609",
+                "open": 111.0,
+                "close": 105.0,
+                "volume": 10,
+                "hold": 120,
+            },
+        ]
+    )
+
+    flow = build_flow(raw, trading_day_column="trading_day")
+
+    assert list(flow.index) == [pd.Timestamp("2026-08-21")]
+    assert flow.loc[pd.Timestamp("2026-08-21"), "A"] == 1.0
+
+
 def test_flow_is_shifted_exactly_one_frozen_target_session():
     _, _, lag_flow, _ = _api()
     flow = pd.DataFrame(

@@ -8,8 +8,10 @@ proxy assumption rather than claimed exact CTP history.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from math import floor, isfinite
 
@@ -142,11 +144,97 @@ class TargetLotStages:
 
 
 @dataclass(frozen=True)
+class DirectionalSimulationCheckpoint:
+    """Serializable end-of-session state for resuming a historical account proxy."""
+
+    last_day: pd.Timestamp
+    equity: float
+    high_watermark: float
+    lots: tuple[tuple[str, int], ...]
+    previous_close: tuple[tuple[str, float], ...]
+    completed_returns: tuple[float, ...]
+    halted: bool
+    first_divergence: str
+    strategy_state: tuple[tuple[str, object], ...]
+    configuration_digest: str
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_version": 1,
+            "last_day": pd.Timestamp(self.last_day).strftime("%Y-%m-%d"),
+            "equity": self.equity,
+            "high_watermark": self.high_watermark,
+            "lots": dict(self.lots),
+            "previous_close": dict(self.previous_close),
+            "completed_returns": list(self.completed_returns),
+            "halted": self.halted,
+            "first_divergence": self.first_divergence,
+            "strategy_state": {
+                name: list(value) if isinstance(value, tuple) else value
+                for name, value in self.strategy_state
+            },
+            "configuration_digest": self.configuration_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> DirectionalSimulationCheckpoint:
+        if payload.get("schema_version") != 1:
+            raise ValueError("unsupported directional simulation checkpoint schema")
+        try:
+            lots_raw = payload["lots"]
+            previous_close_raw = payload["previous_close"]
+            completed_returns_raw = payload["completed_returns"]
+            if not isinstance(lots_raw, Mapping):
+                raise TypeError("lots must be a mapping")
+            if not isinstance(previous_close_raw, Mapping):
+                raise TypeError("previous_close must be a mapping")
+            if not isinstance(completed_returns_raw, (list, tuple)):
+                raise TypeError("completed_returns must be a sequence")
+            strategy_state = payload["strategy_state"]
+            if not isinstance(strategy_state, Mapping):
+                raise TypeError("strategy_state must be a mapping")
+            equity = float(str(payload["equity"]))
+            high_watermark = float(str(payload["high_watermark"]))
+            if not isfinite(equity) or not isfinite(high_watermark):
+                raise ValueError("checkpoint equity values must be finite")
+            return cls(
+                last_day=pd.Timestamp(str(payload["last_day"])).normalize(),
+                equity=equity,
+                high_watermark=high_watermark,
+                lots=tuple(
+                    sorted((str(symbol), int(str(volume))) for symbol, volume in lots_raw.items())
+                ),
+                previous_close=tuple(
+                    sorted(
+                        (str(symbol), float(str(price)))
+                        for symbol, price in previous_close_raw.items()
+                    )
+                ),
+                completed_returns=tuple(float(str(value)) for value in completed_returns_raw),
+                halted=bool(payload["halted"]),
+                first_divergence=str(payload["first_divergence"]),
+                strategy_state=tuple(
+                    sorted(
+                        (
+                            str(name),
+                            tuple(value) if isinstance(value, (list, tuple)) else value,
+                        )
+                        for name, value in strategy_state.items()
+                    )
+                ),
+                configuration_digest=str(payload["configuration_digest"]),
+            )
+        except (KeyError, AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("invalid directional simulation checkpoint") from exc
+
+
+@dataclass(frozen=True)
 class ProductionSimulationResult:
     daily: pd.DataFrame
     events: pd.DataFrame
     final_equity: float
     first_divergence: str = ""
+    final_checkpoint: DirectionalSimulationCheckpoint | None = None
 
 
 @dataclass(frozen=True)
@@ -276,6 +364,23 @@ class DirectionalProductionAcceptance:
     ) -> None:
         """Behavior-neutral hook for adapters using exogenous target state."""
         del day, product_weights
+
+    def _checkpoint_strategy_state(self) -> dict[str, object]:
+        return {}
+
+    def _restore_checkpoint_strategy_state(self, state: Mapping[str, object]) -> None:
+        if state:
+            raise ValueError("checkpoint contains unsupported strategy state")
+
+    def _checkpoint_configuration_digest(self, cost_bps: float) -> str:
+        payload = {
+            "simulator": f"{type(self).__module__}.{type(self).__qualname__}",
+            "config": asdict(self.config),
+            "cost_bps": float(cost_bps),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
     @staticmethod
     def _product(symbol: str) -> str:
@@ -808,6 +913,7 @@ class DirectionalProductionAcceptance:
         *,
         cost_bps: float,
         prepared: PreparedDirectionalContracts | None = None,
+        checkpoint: DirectionalSimulationCheckpoint | Mapping[str, object] | None = None,
     ) -> ProductionSimulationResult:
         cost_bps = float(cost_bps)
         if not isfinite(cost_bps) or cost_bps < 0:
@@ -839,16 +945,38 @@ class DirectionalProductionAcceptance:
         if bool((weight_frame.abs().sum(axis=1) > 2.0 + 1e-10).any()):
             raise ValueError("production mechanics weights exceed 2x gross")
 
+        if isinstance(checkpoint, Mapping):
+            checkpoint = DirectionalSimulationCheckpoint.from_dict(checkpoint)
+        if checkpoint is not None:
+            if not isinstance(checkpoint, DirectionalSimulationCheckpoint):
+                raise ValueError("invalid directional simulation checkpoint")
+            if checkpoint.configuration_digest != self._checkpoint_configuration_digest(cost_bps):
+                raise ValueError("checkpoint configuration does not match this simulation")
+            if (
+                not weight_frame.empty
+                and pd.Timestamp(weight_frame.index[0]) <= checkpoint.last_day
+            ):
+                raise ValueError("resumed simulation dates must follow the checkpoint day")
+            equity = float(checkpoint.equity)
+            high_watermark = float(checkpoint.high_watermark)
+            lots = dict(checkpoint.lots)
+            previous_close = dict(checkpoint.previous_close)
+            completed_returns = list(checkpoint.completed_returns)
+            halted = bool(checkpoint.halted)
+            first_divergence = str(checkpoint.first_divergence)
+            self._restore_checkpoint_strategy_state(dict(checkpoint.strategy_state))
+        else:
+            equity = float(self.config.initial_capital)
+            high_watermark = equity
+            lots = {}
+            previous_close = {}
+            completed_returns = []
+            halted = False
+            first_divergence = ""
+
         by_day_symbol = context.by_day_symbol
         activity_by_day = context.activity_by_day
         available_activity_days = context.available_activity_days
-        equity = float(self.config.initial_capital)
-        high_watermark = equity
-        lots: dict[str, int] = {}
-        previous_close: dict[str, float] = {}
-        completed_returns: list[float] = []
-        halted = False
-        first_divergence = ""
         output_rows: list[dict] = []
         event_rows: list[dict] = []
         cost_rate = cost_bps / 10000.0
@@ -1381,9 +1509,27 @@ class DirectionalProductionAcceptance:
         else:
             daily.set_index("date", inplace=True)
         events = pd.DataFrame(event_rows, columns=AUDIT_EVENT_COLUMNS)
+        if weight_frame.empty:
+            final_checkpoint = checkpoint
+        else:
+            final_checkpoint = DirectionalSimulationCheckpoint(
+                last_day=pd.Timestamp(weight_frame.index[-1]).normalize(),
+                equity=float(equity),
+                high_watermark=float(high_watermark),
+                lots=tuple(sorted((str(symbol), int(volume)) for symbol, volume in lots.items())),
+                previous_close=tuple(
+                    sorted((str(symbol), float(price)) for symbol, price in previous_close.items())
+                ),
+                completed_returns=tuple(float(value) for value in completed_returns),
+                halted=bool(halted),
+                first_divergence=str(first_divergence),
+                strategy_state=tuple(sorted(self._checkpoint_strategy_state().items())),
+                configuration_digest=self._checkpoint_configuration_digest(cost_bps),
+            )
         return ProductionSimulationResult(
             daily=daily,
             events=events,
             final_equity=float(equity),
             first_divergence=first_divergence,
+            final_checkpoint=final_checkpoint,
         )
