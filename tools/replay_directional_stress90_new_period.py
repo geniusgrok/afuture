@@ -427,14 +427,72 @@ def _fetch_selected_contract_specs(
     )
     _csv_frame(specs, output / "coverage" / "selected_contract_specs.csv")
     _csv_frame(queries, output / "market_spec_query_log.csv")
-    if not specs.empty:
-        mismatch = specs[~specs.model_multiplier_matches_provider]
-        if not mismatch.empty:
-            raise RuntimeError(
-                "frozen simulation contract multipliers disagree with selected contract metadata: "
-                f"{mismatch[['symbol', 'frozen_model_multiplier', 'provider_multiplier']].to_dict('records')}"
-            )
+    missing = sorted(set(unique_symbols) - set(specs.symbol.astype(str)))
+    if missing:
+        raise RuntimeError(f"selected contract specification responses are missing: {missing}")
     return specs, queries
+
+
+def _account_multipliers_from_specs(
+    selected_specs: pd.DataFrame,
+) -> tuple[dict[str, float], pd.DataFrame, pd.DataFrame]:
+    """Use verified effective contract multipliers in account economics only."""
+    required = {"product", "symbol", "provider_multiplier"}
+    if not required.issubset(selected_specs.columns) or selected_specs.empty:
+        raise RuntimeError("selected contract multiplier evidence is missing")
+
+    account_multipliers = PRODUCT_MULTIPLIERS.copy()
+    audited_specs = selected_specs.copy()
+    audited_specs["provider_multiplier"] = pd.to_numeric(
+        audited_specs.provider_multiplier, errors="coerce"
+    )
+    if (
+        audited_specs.provider_multiplier.isna().any()
+        or not np.isfinite(audited_specs.provider_multiplier.to_numpy(float)).all()
+    ):
+        missing = (
+            audited_specs.loc[audited_specs.provider_multiplier.isna(), "symbol"]
+            .astype(str)
+            .tolist()
+        )
+        raise RuntimeError(f"effective contract multipliers are missing: {missing}")
+
+    rows = []
+    for product, group in audited_specs.groupby("product", sort=True):
+        values = sorted(set(group.provider_multiplier.astype(float)))
+        if len(values) != 1:
+            raise RuntimeError(
+                "selected contracts for one product have conflicting effective multipliers: "
+                f"product={product} symbols={group.symbol.tolist()} multipliers={values}"
+            )
+        effective = values[0]
+        frozen = float(PRODUCT_MULTIPLIERS.get(product, np.nan))
+        account_multipliers[str(product)] = effective
+        rows.append(
+            {
+                "product": str(product),
+                "selected_contract_count": int(group.symbol.nunique()),
+                "selected_contracts": ";".join(sorted(group.symbol.astype(str).unique())),
+                "frozen_model_multiplier": frozen,
+                "effective_provider_multiplier": effective,
+                "account_multiplier_used": effective,
+                "differs_from_frozen_model": not bool(
+                    np.isclose(effective, frozen, rtol=0.0, atol=1e-12)
+                ),
+            }
+        )
+
+    multiplier_by_product = {row["product"]: row["account_multiplier_used"] for row in rows}
+    audited_specs["account_multiplier_used"] = audited_specs["product"].map(multiplier_by_product)
+    audited_specs["account_multiplier_matches_provider"] = np.isclose(
+        audited_specs.account_multiplier_used,
+        audited_specs.provider_multiplier,
+        rtol=0.0,
+        atol=1e-12,
+    )
+    if not audited_specs.account_multiplier_matches_provider.all():
+        raise RuntimeError("account multiplier map does not cover every selected contract")
+    return account_multipliers, audited_specs, pd.DataFrame(rows)
 
 
 def _fetch_official_reference_sources(output: Path) -> list[dict]:
@@ -1320,6 +1378,23 @@ def _chinese_report(report: dict) -> str:
     base = report["scenarios"]["Base"]
     stress = report["scenarios"]["Stress"]
     coverage = report["coverage"]
+    multiplier_evidence = report["contract_spec_evidence"]
+    multiplier_overrides = multiplier_evidence["model_multiplier_discrepancies"]
+    multiplier_note = ""
+    if multiplier_overrides:
+        details = "；".join(
+            f"{item['product']}：冻结研究映射 {item['frozen_model_multiplier']:g}，"
+            f"本区间有效具体合约 {item['selected_contracts']} 为 "
+            f"{item['effective_provider_multiplier']:g} 吨/手"
+            for item in multiplier_overrides
+        )
+        multiplier_note = f"""
+## 具体合约规格差异
+
+- 所选的 {multiplier_evidence["selected_contracts"]} 个具体合约均取得非空规格，账户计算使用当前规格。{details}。账户手数折算、名义敞口、盈亏、成本及保证金估算均按该具体合约有效乘数计算。
+- 该差异来自合约规格证据，不改变模板、策略权重、候选池或风险阈值；模型原始乘数与采用乘数并列保存在 `coverage/selected_contract_specs.csv` 和 `coverage/account_multiplier_audit.csv`。
+- TA 规格以郑商所《精对苯二甲酸（PTA）期货业务细则》（2024-02-06 起施行）第 3 条为官方依据，全文原件见 `market_raw/official_sources/czce_ta.pdf`，该规则载明交易单位为 5 吨/手。其官方入口：{OFFICIAL_SOURCE_URLS["CZCE_TA"]}。
+"""
     return f"""# Stress-90 新增区间连续账户历史回放
 
 ## 范围和证据等级
@@ -1338,6 +1413,7 @@ def _chinese_report(report: dict) -> str:
 | Stress | {stress["cost_bps"]} bp | {stress["margin_rate_proxy"]:.0%} | ¥{stress["ending_equity"]:,.2f} | ¥{stress["net_profit"]:,.2f} | {stress["net_return"]:.3%} | {stress["max_drawdown"]:.3%} | {stress["trade_events"]} | ¥{stress["turnover_notional"]:,.2f} | ¥{stress["transaction_cost"]:,.2f} |
 
 初始权益均为 ¥500,000、期初空仓、无入金。成本分别为 5/15 bp；保证金率分别为 12%/15%代理。策略目标、整数手数、合约选择、减仓优先、风险门和保证金代理缓冲沿用冻结代码，没有搜索或修改。
+{multiplier_note}
 
 ## 数据时序与边界
 
@@ -1640,6 +1716,17 @@ def run_replay(args: argparse.Namespace) -> dict:
         selected_symbols,
         output=output,
     )
+    account_multipliers, selected_contract_specs, multiplier_audit = (
+        _account_multipliers_from_specs(selected_contract_specs)
+    )
+    _csv_frame(
+        selected_contract_specs,
+        output / "coverage" / "selected_contract_specs.csv",
+    )
+    _csv_frame(
+        multiplier_audit,
+        output / "coverage" / "account_multiplier_audit.csv",
+    )
     _write_json(
         output / "coverage" / "official_source_urls.json",
         {
@@ -1653,15 +1740,22 @@ def run_replay(args: argparse.Namespace) -> dict:
 
     # Compare one checkpoint restart of the account in both cost/margin cases.
     scenarios = {}
-    for scenario in ("Base", "Stress"):
-        summary, _result = _simulate_account(
-            scenario=scenario,
-            specific=specific_all,
-            weights=candidate_new,
-            preperiod_weights=candidate_old,
-            output=output,
-        )
-        scenarios[scenario] = summary
+    frozen_multipliers = PRODUCT_MULTIPLIERS.copy()
+    try:
+        PRODUCT_MULTIPLIERS.clear()
+        PRODUCT_MULTIPLIERS.update(account_multipliers)
+        for scenario in ("Base", "Stress"):
+            summary, _result = _simulate_account(
+                scenario=scenario,
+                specific=specific_all,
+                weights=candidate_new,
+                preperiod_weights=candidate_old,
+                output=output,
+            )
+            scenarios[scenario] = summary
+    finally:
+        PRODUCT_MULTIPLIERS.clear()
+        PRODUCT_MULTIPLIERS.update(frozen_multipliers)
 
     target_missing_specific = []
     for day in calendar:
@@ -1785,6 +1879,17 @@ def run_replay(args: argparse.Namespace) -> dict:
             )
             if not selected_contract_specs.empty
             else 0,
+            "account_multiplier_matches_selected_contracts": int(
+                selected_contract_specs.account_multiplier_matches_provider.sum()
+            )
+            if not selected_contract_specs.empty
+            else 0,
+            "model_multiplier_discrepancies": multiplier_audit.loc[
+                multiplier_audit.differs_from_frozen_model
+            ].to_dict("records"),
+            "account_multiplier_audit": "coverage/account_multiplier_audit.csv",
+            "account_economics_use_effective_selected_contract_multiplier": True,
+            "strategy_weights_and_risk_thresholds_changed": False,
             "price_tick_used_in_simulation": False,
             "query_log": "market_spec_query_log.csv",
             "normalized_table": "coverage/selected_contract_specs.csv",

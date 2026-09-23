@@ -211,6 +211,32 @@ def test_preperiod_terminal_state_is_first_decision_prior_state():
     )
 
 
+def test_account_lots_use_current_selected_contract_multiplier_and_preserve_audit():
+    from tools.replay_directional_stress90_new_period import (
+        PRODUCT_MULTIPLIERS,
+        _account_multipliers_from_specs,
+    )
+
+    selected = pd.DataFrame(
+        {
+            "product": ["TA", "TA", "SR"],
+            "symbol": ["TA2701", "TA2612", "SR2701"],
+            "provider_multiplier": [5.0, 5.0, 5.0],
+        }
+    )
+
+    multipliers, audited_specs, product_audit = _account_multipliers_from_specs(selected)
+
+    assert PRODUCT_MULTIPLIERS["TA"] == 10.0
+    assert multipliers["TA"] == 5.0
+    assert multipliers["SR"] == 5.0
+    ta_audit = product_audit.set_index("product").loc["TA"]
+    assert ta_audit["frozen_model_multiplier"] == 10.0
+    assert ta_audit["account_multiplier_used"] == 5.0
+    assert bool(ta_audit["differs_from_frozen_model"])
+    assert audited_specs.account_multiplier_used.tolist() == [5.0, 5.0, 5.0]
+
+
 def test_oi_source_day_for_first_target_uses_the_prestart_observed_session():
     from tools.replay_directional_stress90_new_period import _oi_source_days_for_targets
 
