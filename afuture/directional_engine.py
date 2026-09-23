@@ -156,6 +156,23 @@ class DirectionalTradingEngine(TradingEngine):
             self.emergency_stop(f"directional initialization failed: {exc}")
 
     def on_tick(self, tick: Tick) -> None:
+        if (
+            not self.halted
+            and self.state.trading_day
+            and getattr(
+                self.directional_manager, "requires_explicit_settlement_roll_forward", False
+            )
+        ):
+            try:
+                account_day = str(self.broker.get_account().trading_day or "")
+            except Exception as exc:
+                self.emergency_stop(f"Stress-90 account trading day unavailable: {exc}")
+                return
+            if account_day != self.state.trading_day:
+                self.emergency_stop(
+                    "Stress-90 requires explicit settlement roll-forward before ticks"
+                )
+                return
         try:
             self.directional_manager.observe(tick)
         except Exception as exc:
