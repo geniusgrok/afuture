@@ -268,6 +268,52 @@ def test_contract_spec_query_summary_accepts_the_fetchers_dataframe_result():
     assert summary == {"responses_ok": 2, "responses_empty": 1, "responses_error": 1}
 
 
+def test_future_data_append_does_not_change_completed_candidate_decision():
+    from afuture.directional_stress90_policy import (
+        STRESS90_POLICY,
+        Stress90CandidateState,
+        build_stress90_candidate_path,
+    )
+    from tools.replay_directional_stress90_new_period import (
+        _verify_future_append_invariance,
+    )
+
+    products = list(STRESS90_POLICY.products)
+    oi_products = list(STRESS90_POLICY.oi_products)
+    target_days = pd.to_datetime(["2026-08-21", "2026-08-24"])
+    base = pd.DataFrame(0.0, index=target_days, columns=products)
+    base.loc[target_days[1], "TA"] = 0.5
+    close = pd.DataFrame(
+        100.0,
+        index=pd.to_datetime(["2026-08-20", "2026-08-21", "2026-08-24"]),
+        columns=products,
+    )
+    close.loc[pd.Timestamp("2026-08-24")] = 10000.0
+    flow = pd.DataFrame(float("nan"), index=target_days, columns=oi_products)
+    flow.loc[target_days[1], "TA"] = 1.0
+    initial = Stress90CandidateState.initial(STRESS90_POLICY)
+    full_path = build_stress90_candidate_path(
+        base_weights=base,
+        completed_close_prices=close,
+        confirming_flow=flow,
+        initial_state=initial,
+    )
+
+    result = _verify_future_append_invariance(
+        full_path,
+        base_weights=base,
+        completed_close_prices=close,
+        confirming_flow=flow,
+        initial_state=initial,
+        control_position=0,
+    )
+
+    assert result["passed"] is True
+    assert result["future_target_sessions_appended"] == 1
+    assert result["decision_digest_match"] is True
+    assert result["prior_state_digest_match"] is True
+
+
 def test_oi_source_day_for_first_target_uses_the_prestart_observed_session():
     from tools.replay_directional_stress90_new_period import _oi_source_days_for_targets
 

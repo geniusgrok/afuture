@@ -1031,6 +1031,61 @@ def _verify_strategy_restart(
     }
 
 
+def _verify_future_append_invariance(
+    full_path,
+    *,
+    base_weights: pd.DataFrame,
+    completed_close_prices: pd.DataFrame,
+    confirming_flow: pd.DataFrame,
+    initial_state,
+    control_position: int,
+) -> dict:
+    """Prove appended later sessions cannot change a completed target-day decision."""
+    position = int(control_position)
+    if position < 0 or position >= len(base_weights) - 1:
+        raise ValueError("future append control must leave at least one later target session")
+    target_day = pd.Timestamp(base_weights.index[position]).normalize()
+    prefix_base = base_weights.iloc[: position + 1]
+    prefix_close = completed_close_prices.loc[completed_close_prices.index < target_day]
+    prefix_flow = confirming_flow.reindex(index=prefix_base.index)
+    truncated = build_stress90_candidate_path(
+        base_weights=prefix_base,
+        completed_close_prices=prefix_close,
+        confirming_flow=prefix_flow,
+        initial_state=initial_state,
+    )
+    completed = full_path.decisions[position]
+    compared = truncated.decisions[-1]
+    decision_match = compared.daily_decision_digest == completed.daily_decision_digest
+    prior_match = candidate_state_digest(compared.prior_state) == candidate_state_digest(
+        completed.prior_state
+    )
+    post_match = candidate_state_digest(compared.post_state) == candidate_state_digest(
+        completed.post_state
+    )
+    appended_targets = len(base_weights) - position - 1
+    appended_close_rows = int((completed_close_prices.index >= target_day).sum())
+    passed = bool(decision_match and prior_match and post_match and appended_close_rows > 0)
+    result = {
+        "passed": passed,
+        "target_day": target_day.date().isoformat(),
+        "truncated_close_last_day": pd.Timestamp(prefix_close.index.max()).date().isoformat(),
+        "full_close_through_day": pd.Timestamp(completed_close_prices.index.max())
+        .date()
+        .isoformat(),
+        "future_target_sessions_appended": int(appended_targets),
+        "future_close_rows_appended": appended_close_rows,
+        "decision_digest_match": bool(decision_match),
+        "prior_state_digest_match": bool(prior_match),
+        "post_state_digest_match": bool(post_match),
+        "decision_digest": completed.daily_decision_digest,
+        "post_state_digest": candidate_state_digest(completed.post_state),
+    }
+    if not passed:
+        raise AssertionError(f"future data append changed a completed strategy decision: {result}")
+    return result
+
+
 def _account_config(margin_proxy: float) -> ProductionMechanicsConfig:
     return ProductionMechanicsConfig(
         initial_capital=mechanics.INITIAL_CAPITAL,
@@ -1437,6 +1492,7 @@ def _chinese_report(report: dict) -> str:
     coverage = report["coverage"]
     multiplier_evidence = report["contract_spec_evidence"]
     multiplier_overrides = multiplier_evidence["model_multiplier_discrepancies"]
+    future_append = report.get("future_append_invariance", {})
     multiplier_note = ""
     if multiplier_overrides:
         details = "；".join(
@@ -1482,11 +1538,12 @@ def _chinese_report(report: dict) -> str:
 ## 验证与限制
 
 - 新旧 fixed candidate 交接摘要与预存 SHA 一致；新增 base 权重在 8 月 20 日前逐项与冻结权重比较。
+- 未来截断/追加对照：在 `{future_append.get("target_day", "未记录")}` 用该日之后已完成行情截断重算，决策、先验状态和后验状态摘要均与完整追加至 `{future_append.get("full_close_through_day", "未记录")}` 的路径一致；追加 `{future_append.get("future_target_sessions_appended", 0)}` 个后续目标交易日，通过。
 - Stress-90 策略中段 checkpoint 的恢复后缀逐日决策/状态与不中断路径一致；Base 和 Stress 账户从同一中段 checkpoint 恢复后，逐日权益、风险行、全部模拟事件和最终持仓状态逐项一致。
 - 短区间 CAGR/Sharpe 不适用旧两年收益门槛。没有真实 CTP 订单、成交、结算或一个自然月现场运行记录。
 - PR #55 仍是独立的 Draft/未合并工程路径；结算桥接、每日技术许可和自动化现场编排仍未完成，本报告不把它们标为通过。
 
-完整文件清单及哈希见 `run_manifest.json`、`SHA256SUMS`；私库远端回读收据随后记录分支、commit、tree、blob 和 SHA-256 对照。
+完整文件清单及哈希见 `run_manifest.json`、`SHA256SUMS`；冻结原件的远端对象回读对照见 `audit/frozen_input_remote_readback.json`，私库运行包的分块回读收据随 run 一同保存。
 """
 
 
@@ -1725,6 +1782,15 @@ def run_replay(args: argparse.Namespace) -> dict:
         confirming_flow=lagged_flow.reindex(columns=STRESS90_POLICY.oi_products),
         initial_state=fixed_candidate_path.final_state,
     )
+    future_append_check = _verify_future_append_invariance(
+        path,
+        base_weights=base_weights_new,
+        completed_close_prices=close_new,
+        confirming_flow=lagged_flow.reindex(columns=STRESS90_POLICY.oi_products),
+        initial_state=fixed_candidate_path.final_state,
+        control_position=max(0, len(base_weights_new) // 2 - 1),
+    )
+    _write_json(output / "strategy" / "future_append_invariance.json", future_append_check)
     _candidate_layer_table(path, output)
     _write_json(
         output / "strategy" / "preperiod_terminal_state.json",
@@ -1986,6 +2052,7 @@ def run_replay(args: argparse.Namespace) -> dict:
         },
         "scenarios": scenarios,
         "restart_verification": restart_check,
+        "future_append_invariance": future_append_check,
         "fixed_input_manifest": fixed_manifest,
         "fixed_input_postrun_verification": fixed_inputs_after,
         "runtime": {
