@@ -181,6 +181,36 @@ def test_oi_session_coverage_keeps_rows_for_each_supported_product(monkeypatch):
     assert coverage.loc[0, "symbols"] == "A2610"
 
 
+def test_preperiod_terminal_state_is_first_decision_prior_state():
+    from afuture.directional_stress90_policy import (
+        STRESS90_POLICY,
+        Stress90CandidateState,
+        build_stress90_candidate_path,
+        candidate_state_digest,
+    )
+    from tools.replay_directional_stress90_new_period import _preperiod_terminal_state
+
+    target_day = pd.Timestamp("2026-08-21")
+    products = list(STRESS90_POLICY.products)
+    oi_products = list(STRESS90_POLICY.oi_products)
+    initial_state = Stress90CandidateState.initial(STRESS90_POLICY)
+    path = build_stress90_candidate_path(
+        base_weights=pd.DataFrame(0.0, index=[target_day], columns=products),
+        completed_close_prices=pd.DataFrame(
+            100.0, index=[pd.Timestamp("2026-08-20")], columns=products
+        ),
+        confirming_flow=pd.DataFrame(float("nan"), index=[target_day], columns=oi_products),
+        initial_state=initial_state,
+    )
+
+    assert path.decisions[0].prior_state == initial_state
+    assert _preperiod_terminal_state(path) == initial_state
+    assert (
+        candidate_state_digest(_preperiod_terminal_state(path))
+        == path.decisions[0].input_digests["prior_state"]
+    )
+
+
 def test_oi_source_day_for_first_target_uses_the_prestart_observed_session():
     from tools.replay_directional_stress90_new_period import _oi_source_days_for_targets
 

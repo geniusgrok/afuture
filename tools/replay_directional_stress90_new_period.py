@@ -894,6 +894,17 @@ def _candidate_layer_table(path, output: Path) -> None:
     _csv_frame(details, output / "strategy" / "daily_decision_index.csv")
 
 
+def _preperiod_terminal_state(path):
+    """Return the state consumed by the first replay decision, with digest proof."""
+    if not path.decisions:
+        raise RuntimeError("new-period candidate path has no first target-day decision")
+    first = path.decisions[0]
+    state = first.prior_state
+    if first.input_digests.get("prior_state") != candidate_state_digest(state):
+        raise RuntimeError("first target-day prior-state digest does not match its state")
+    return state
+
+
 def _verify_strategy_restart(
     *,
     base_weights: pd.DataFrame,
@@ -1585,9 +1596,9 @@ def run_replay(args: argparse.Namespace) -> dict:
     _write_json(
         output / "strategy" / "preperiod_terminal_state.json",
         {
-            "candidate_state": path.decisions[0].pre_state,
+            "candidate_state": _preperiod_terminal_state(path),
             "preperiod_candidate_state_digest": candidate_state_digest(
-                fixed_candidate_path.final_state
+                _preperiod_terminal_state(path)
             ),
             "first_new_decision_digest": path.decisions[0].daily_decision_digest,
             "first_new_target_day": pd.Timestamp(base_weights_new.index[0]).date().isoformat(),
