@@ -1,0 +1,36 @@
+name: unattended-publication
+on:
+  push:
+    branches: [codex/unattended-publish-20260923]
+    paths: [.github/workflows/unattended-publication.yml]
+permissions:
+  contents: write
+jobs:
+  preserve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create ephemeral encrypted-transfer recipient
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/unattended-publication"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/unattended-publication/private.pem" 2>/dev/null
+          openssl pkey -in "$RUNNER_TEMP/unattended-publication/private.pem" -pubout -out "$RUNNER_TEMP/unattended-publication/public.pem"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unattended-publication-public-key
+          path: ${{ runner.temp }}/unattended-publication/public.pem
+          retention-days: 1
+      - name: Verify originals and publish preserved Git objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/publication/transfer.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unattended-publication-readback
+          path: ${{ runner.temp }}/unattended-publication/readback/
+          if-no-files-found: error
+          retention-days: 90

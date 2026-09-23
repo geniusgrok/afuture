@@ -1,0 +1,14 @@
+{
+  "archive_name": "AFUTURE_UNATTENDED_RECOVERY_20260923.zip",
+  "archive_length": 33174493,
+  "archive_sha256": "0c6197cb203117d2a9392bb6b02dfc03bb570450eadc19c065ff01f4b9f51c71",
+  "source_head": "5e542ade663c8d8331a1bf69e27f55dffc9cab47",
+  "source_tree": "9bfcb8dc61f6ff996befdbd8fb3960e08a300b63",
+  "expected_target_head": "8aad2cb00ceb1a409428bec078ccf0e8bd132a33",
+  "target_branch": "codex/unattended-24x7-20260922",
+  "transfer_branch": "codex/unattended-publish-20260923",
+  "source_ref": "codex/unattended-verified-source-20260923",
+  "evidence_ref": "codex/unattended-evidence-20260923",
+  "transaction": "afuture-publish-5e542ade-20260923",
+  "backup_drive_id": "1tKUctho5Tvdj3oPASxw2waXNDv4E6CIp"
+}
