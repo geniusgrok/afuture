@@ -285,7 +285,7 @@ POSIX target 上 fail closed，Windows smoke 不代表 CTP ABI 或真实报单�
 表示仍承担 account switch/rebase、Shadow/live isolation、retired identity 和 crash recovery；本轮不将
 其错误地压缩为单条 binding。
 
-Live 启动先取得账户/runtime 互斥锁，再核验 `runtime/process_run.json` 的进程证据。身份与完整性已确认的未清洁退出，会在构造 order-capable Broker 前失效技术许可、将现有账户状态设为 HALTED/kill switch，并以退出码 75 阻止重启循环。证据损坏、身份不符或现有账户状态缺失时保留原件并只读阻断，不新建空账户、不收编 `.prev`、不改写未知账户；重复启动也不得改变当前活动实例的状态。`deploy/systemd/` 提供通用 live/watchdog 模板，机器私有参数必须放在 EnvironmentFile；自动重启不提供跨日或实盘授权。
+Live 启动先取得账户/runtime 互斥锁，再核验 `runtime/process_run.json` 的进程证据。除已消费许可与未提交状态间、可证明仍属于原提交的窄窗口外，身份与完整性已确认的未清洁退出会失效技术许可、将现有账户状态设为 HALTED/kill switch，并以退出码 75 阻止重启循环。同次提交续接规则见 Stress-90 runbook，不提供新的阶段授权。证据损坏、身份不符或现有账户状态缺失时保留原件并只读阻断，不新建空账户、不收编 `.prev`、不改写未知账户；重复启动也不得改变当前活动实例的状态。`deploy/systemd/` 提供通用 live/watchdog 模板，机器私有参数必须放在 EnvironmentFile；自动重启不提供跨日或实盘授权。
 
 ### 隔离测试柜台证据采集
 
@@ -294,3 +294,7 @@ Live 启动先取得账户/runtime 互斥锁，再核验 `runtime/process_run.js
 [`docs/live-trading.md`](docs/live-trading.md#32-隔离测试柜台的结算格式采集)。
 无人值守跨日、目标机验证和真实一个月模拟的未通过项以
 [`docs/production-checklist.md`](docs/production-checklist.md#p-无人值守交付与证据等级) 为准。
+
+
+运行日历、逐笔报单检查和持久关键通知说明见
+[`docs/live-trading.md`](docs/live-trading.md#运行日历与当前报单时间)。这些安全路径已接入生产工厂；它们不把尚未闭合的跨日结算、阶段授权、日常准备或现场一个月验收标为通过。

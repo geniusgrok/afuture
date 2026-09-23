@@ -10,8 +10,10 @@ from .directional_risk import (
     DirectionalRiskResponseMode,
     DirectionalRiskScaledPolicy,
 )
+from .directional_runtime import DirectionalPortfolioManager
 from .engine import TradingEngine
 from .models import Order, RuntimeMode, Tick, Trade
+from .runtime_calendar import RuntimeCalendarError
 from .state import MAX_RECENT_TRADE_IDS
 
 _DAILY_CIRCUIT_REASON = "daily loss limit reached"
@@ -30,6 +32,10 @@ class DirectionalTradingEngine(TradingEngine):
     def __init__(self, *args, directional_manager, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.directional_manager = directional_manager
+        if isinstance(directional_manager, DirectionalPortfolioManager):
+            directional_manager.historical_mode = self.historical_mode
+            directional_manager.health_clock = self.health_clock
+            directional_manager.elapsed_clock = self.executor.elapsed_clock
         self._directional_initialized = False
         self.directional_manager.completed_returns_provider = lambda: tuple(
             self.state.recent_daily_returns
@@ -232,7 +238,14 @@ class DirectionalTradingEngine(TradingEngine):
         if not self._enforce_realized_gross_after_critical_boundary():
             return
         try:
-            result = self.directional_manager.maybe_rebalance(self._reference_now())
+            now = self._reference_now()
+            if isinstance(self.directional_manager, DirectionalPortfolioManager) and not (
+                self.directional_manager.has_active_runtime_session(now)
+            ):
+                # Do not spend a first-entry intent on an auction, recess or holiday.
+                # Critical callbacks, account checks and risk handling ran above.
+                return
+            result = self.directional_manager.maybe_rebalance(now)
             if result.action == "risk_off":
                 self._record(
                     "directional_rebalance",
@@ -580,6 +593,12 @@ class DirectionalTradingEngine(TradingEngine):
             return ""
         reference = self._health_reference_time()
         if reference is None:
+            return ""
+        try:
+            required = self.risk_manager.active_runtime_symbols(required, reference)
+        except RuntimeCalendarError as exc:
+            return str(exc)
+        if not required:
             return ""
         quotes_ready = required.issubset(self.quotes)
         if not quotes_ready and self._quote_initialization_grace_active():

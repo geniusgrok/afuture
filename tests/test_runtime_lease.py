@@ -171,30 +171,34 @@ def test_runtime_lease_capability_uses_real_runtime_identity(tmp_path: Path):
         lease.release()
 
 
-def test_cli_import_without_fcntl_and_live_lease_fails_before_writes(tmp_path):
-    import os
+def test_cli_help_imports_without_fcntl_and_acquire_fails_before_writes(tmp_path: Path):
     import subprocess
     import sys
 
-    probe = """
+    code = """
 import sys
 sys.modules['fcntl'] = None
-from afuture.cli import build_parser
+from pathlib import Path
 from afuture.runtime_lease import AccountExclusiveRuntimeLease, RuntimeLeaseError
-build_parser().format_help()
+from afuture import command_router
+runtime = Path(sys.argv[1]) / 'must-not-be-created'
+lease = AccountExclusiveRuntimeLease(runtime, '9' * 64, role='live')
 try:
-    AccountExclusiveRuntimeLease(sys.argv[1], 'e'*64, role='live').acquire()
-except RuntimeLeaseError:
-    pass
+    lease.acquire()
+except RuntimeLeaseError as exc:
+    assert 'Linux OFD' in str(exc)
 else:
-    raise AssertionError('live lease unexpectedly available without fcntl')
+    raise AssertionError('unsupported platform acquired lease')
+assert not runtime.exists()
+lease.release()
+raise SystemExit(command_router.main(['--help']))
 """
     result = subprocess.run(
-        [sys.executable, "-c", probe, str(tmp_path / "runtime")],
-        env={**os.environ},
+        [sys.executable, "-c", code, str(tmp_path)],
         capture_output=True,
         text=True,
+        timeout=15,
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert not (tmp_path / "runtime").exists()
+    assert "usage:" in result.stdout

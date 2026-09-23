@@ -67,6 +67,7 @@ def test_stale_completed_activity_cannot_hide_newer_completed_signal_day():
         ),
         _SignalBroker(),
         RiskManager(RiskConfig()),
+        historical_mode=True,
         signal_provider=_SignalProvider(),
         policy=_Policy(),
         activity_tracker=tracker,

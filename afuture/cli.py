@@ -760,7 +760,7 @@ def _build_alert_manager(config) -> AlertManager:
         sinks.append(
             WebhookAlertSink(
                 config.alert_webhook,
-                outbox_path=Path(config.alert_path).with_suffix(".outbox.sqlite3"),
+                spool_path=Path(config.alert_path).with_suffix(".outbox.sqlite3"),
             )
         )
     return AlertManager(sinks)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import importlib
 import json
 import os
 import re
@@ -12,7 +11,6 @@ import sys
 import tempfile
 from hashlib import sha256
 from pathlib import Path
-from types import ModuleType
 from typing import IO
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -22,15 +20,19 @@ class RuntimeLeaseError(RuntimeError):
     """Another process already owns the account or runtime execution lease."""
 
 
-def _locking_backend() -> ModuleType:
-    # Importing the CLI/replay on another OS must not attempt to acquire live locks.
-    # Order-capable execution still requires the same Linux OFD and file locks.
+def _locking_api():
+    # Importing commands and help must work on research-only platforms.  The
+    # unlink-proof account lease itself requires Linux OFD locking; never fall
+    # back to weaker file-only locking on an unsupported platform.
     if sys.platform != "linux":
-        raise RuntimeLeaseError("account-exclusive execution requires Linux OFD locks")
+        raise RuntimeLeaseError("order-capable runtime requires Linux OFD locking")
     try:
-        return importlib.import_module("fcntl")
+        import fcntl
     except ImportError as exc:
-        raise RuntimeLeaseError("account-exclusive execution requires fcntl") from exc
+        raise RuntimeLeaseError("order-capable runtime requires Linux OFD locking") from exc
+    if not hasattr(fcntl, "F_OFD_SETLK"):
+        raise RuntimeLeaseError("order-capable runtime requires Linux OFD locking")
+    return fcntl
 
 
 class AccountExclusiveRuntimeLease:
@@ -56,12 +58,12 @@ class AccountExclusiveRuntimeLease:
     def _acquire_kernel_lease(identity_digest: str) -> int:
         """Reserve one unlink-proof Linux OFD byte-range identity lock."""
 
-        fcntl = _locking_backend()
+        fcntl = _locking_api()
         lock_fd = os.open("/dev/null", os.O_RDWR | os.O_CLOEXEC)
         offset = int(identity_digest, 16) % ((1 << 63) - 1)
         flock = struct.pack("hhqqi4x", fcntl.F_WRLCK, os.SEEK_SET, offset, 1, 0)
         try:
-            fcntl.fcntl(lock_fd, getattr(fcntl, "F_OFD_SETLK", 37), flock)
+            fcntl.fcntl(lock_fd, fcntl.F_OFD_SETLK, flock)
         except OSError as exc:
             os.close(lock_fd)
             if exc.errno in {errno.EACCES, errno.EAGAIN}:
@@ -72,7 +74,7 @@ class AccountExclusiveRuntimeLease:
         return lock_fd
 
     def acquire(self) -> None:
-        fcntl = _locking_backend()
+        fcntl = _locking_api()
         if self._handles or self._kernel_fds:
             raise RuntimeLeaseError("account-exclusive runtime lease is already held")
         account_kernel_digest = sha256(
@@ -126,7 +128,7 @@ class AccountExclusiveRuntimeLease:
     def release(self) -> None:
         if not self._handles and not self._kernel_fds:
             return
-        fcntl = _locking_backend()
+        fcntl = _locking_api()
         for handle in reversed(self._handles):
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

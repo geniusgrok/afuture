@@ -38,6 +38,7 @@ from .position import PositionBook
 from .quality import ExecutionQualityRecorder
 from .reconcile import compare_positions
 from .risk import RiskManager
+from .runtime_calendar import RuntimeCalendarError
 from .state import MAX_RECENT_TRADE_IDS, RuntimeState, StateStore
 from .strategy import CalendarSpreadStrategy
 
@@ -609,12 +610,14 @@ class TradingEngine:
             return ""
 
         session_reference = reference.astimezone(_CHINA_TZ)
-        active_pairs = [
-            pair
-            for pair in self.pairs.values()
-            if not pair.session_windows
-            or self.risk_manager.is_pair_session_active(pair, session_reference)
-        ]
+        try:
+            active_pairs = [
+                pair
+                for pair in self.pairs.values()
+                if self.risk_manager.is_pair_session_active(pair, session_reference)
+            ]
+        except RuntimeCalendarError as exc:
+            return str(exc)
         if not active_pairs:
             return ""
 

@@ -69,6 +69,7 @@ class RestartFenceResult:
     exit_code: int
     reason: str = ""
     process_uuid: str = ""
+    resume_activation: bool = False
 
 
 def current_process_uuid() -> str | None:
@@ -483,6 +484,42 @@ def apply_unclean_restart_fence(
         or previous.account_identity_digest != account_identity_digest
     ):
         raise ProcessRunIntegrityError("restart fence identity changed; explicit recovery required")
+    # A crash between consuming the permit and the first RUNNING save has not
+    # crossed the order-capable boundary. Preserve that exact commit intent;
+    # never label the previous process clean or invalidate its receipt. Any
+    # intervening write/phase advancement follows the normal incident fence.
+    current = state_store.load_required_record()
+    if (
+        previous.phase
+        in {
+            "run_marker_written",
+            "broker_constructed",
+            "broker_ready_not_activated",
+            "permit_consumed",
+            "running_state_pending",
+        }
+        and previous.start_state_checksum == current.checksum
+        and previous.latest_state_checksum == current.checksum
+    ):
+        from .stress90_activation_permit import (
+            Stress90ActivationPermitStore,
+            can_resume_stress90_activation,
+        )
+
+        if can_resume_stress90_activation(
+            permit_store=Stress90ActivationPermitStore(
+                Path(runtime_dir) / "stress90_activation_permit.json"
+            ),
+            state_record=current,
+            account_identity_digest=account_identity_digest,
+        ):
+            return RestartFenceResult(
+                False,
+                0,
+                "uncommitted activation requires fresh Broker verification",
+                previous.process_uuid,
+                True,
+            )
     reason = (
         f"unclean restart fence: prior process {previous.process_uuid} stopped in {previous.phase}"
     )

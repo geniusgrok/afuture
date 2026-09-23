@@ -34,6 +34,9 @@ afuture = "afuture.command_router:main"
 [tool.setuptools.packages.find]
 include = ["afuture*"]
 
+[tool.setuptools.package-data]
+afuture = ["runtime_calendar.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

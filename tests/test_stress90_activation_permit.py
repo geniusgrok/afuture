@@ -748,7 +748,7 @@ def test_consumption_precedes_single_authoritative_halted_to_running_save(
         )
 
 
-def test_crash_after_consume_resumes_only_the_exact_uncommitted_activation(
+def test_crash_after_consume_resumes_exact_uncommitted_activation(
     tmp_path: Path,
 ) -> None:
     from afuture.state import StateStore
@@ -808,9 +808,16 @@ def test_crash_after_consume_resumes_only_the_exact_uncommitted_activation(
         evidence=evidence,
         expected_permit_sequence=consumed.sequence,
     )
+    assert running.sequence == evidence.generic_state_sequence + 1
     assert running.state.runtime_mode == RuntimeMode.RUNNING.value
-    assert running.sequence == persisted.sequence + 1
+    assert not running.state.kill_switch
     assert permit_store.load_required_record() == consumed
+    # A later manual halt, even with identical balances, must not be unlocked.
+    manual = real_store.save(
+        replace(running.state, runtime_mode="HALTED", kill_switch=True, kill_reason="manual"),
+        expected_sequence=running.sequence,
+        expected_checksum=running.checksum,
+    )
     with pytest.raises(RuntimeError, match="state changed"):
         activate_stress90_from_permit(
             state_store=real_store,
@@ -818,6 +825,7 @@ def test_crash_after_consume_resumes_only_the_exact_uncommitted_activation(
             evidence=evidence,
             expected_permit_sequence=consumed.sequence,
         )
+    assert real_store.load_required_record() == manual
 
 
 def test_runtime_authority_requires_exact_held_account_lease(tmp_path: Path) -> None:
@@ -990,3 +998,107 @@ def test_doctor_permit_fails_closed_without_each_technical_authority(
         )
 
     assert not (tmp_path / "stress90_activation_permit.json").exists()
+
+
+def test_consumed_activation_crash_reenters_real_startup_without_faking_clean_shutdown(
+    tmp_path: Path,
+) -> None:
+    from afuture.process_run import ProcessRunStore, apply_unclean_restart_fence
+    from afuture.runtime_lease import AccountExclusiveRuntimeLease
+    from afuture.state import StateStore
+    from afuture.stress90_activation_permit import (
+        Stress90ActivationPermitStore,
+        Stress90TechnicalActivationAuthority,
+        collect_stress90_activation_evidence,
+    )
+
+    account, *_ = _write_activation_evidence(tmp_path)
+    state_store = StateStore(tmp_path / "state.json")
+    original = state_store.load_required_record()
+    catalog = [ContractInfo("M2612", "DCE", "M", "2026-12-15")]
+    evidence = collect_stress90_activation_evidence(
+        runtime_dir=tmp_path,
+        state_store=state_store,
+        account_identity_digest=account,
+        account_snapshot=_verified_account_snapshot(),
+        ctp_trading_day="20260825",
+        broker_positions=[],
+        active_orders=[],
+        catalog=catalog,
+        **_empty_session_evidence(),
+    )
+    permits = Stress90ActivationPermitStore(tmp_path / "stress90_activation_permit.json")
+    issued = permits.issue(evidence)
+    processes = ProcessRunStore(tmp_path / "process_run.json")
+    identities = dict(
+        deployment_digest="a" * 64,
+        runtime_identity_digest="b" * 64,
+        account_identity_digest=account,
+    )
+    old = processes.begin(**identities, start_state_checksum=original.checksum)
+    processes.mark_phase(old.process_uuid, "broker_constructed")
+    consumed = permits.consume(evidence, expected_sequence=issued.sequence)
+
+    class Broker:
+        snapshot = _verified_account_snapshot()
+
+        def get_account_identity_digest(self):
+            return account
+
+        def get_account(self):
+            return self.snapshot
+
+        def get_trading_day(self):
+            return "20260825"
+
+        def get_positions(self):
+            return []
+
+        def get_active_orders(self):
+            return []
+
+        def get_session_trades(self):
+            return []
+
+        def owns_order(self, _order_id):
+            return False
+
+        def get_contract_catalog(self):
+            return catalog
+
+        def require_session_activity_evidence_current(self, query):
+            assert query == _session_activity_proof().evidence
+
+    broker = Broker()
+    with AccountExclusiveRuntimeLease(tmp_path, account, role="live") as lease:
+        recovery = apply_unclean_restart_fence(
+            process_store=processes,
+            state_store=state_store,
+            runtime_dir=tmp_path,
+            lease=lease,
+            **identities,
+        )
+        assert not recovery.blocked and recovery.resume_activation
+        assert not processes.load_required().clean_shutdown
+        assert state_store.load_required_record() == original
+        assert permits.load_required_record() == consumed
+        new = processes.begin(
+            **identities,
+            start_state_checksum=original.checksum,
+            _allow_unclean_parent=recovery.resume_activation,
+        )
+        assert new.process_uuid != old.process_uuid
+        assert not new.clean_shutdown
+        authority = Stress90TechnicalActivationAuthority(tmp_path)
+        authority.startup_session_authority.last_proof = _session_activity_proof()
+        # The local proof admits startup only. Fresh changed Broker facts still
+        # prevent activation; restoring the query facts completes the one CAS.
+        broker.snapshot = replace(broker.snapshot, equity=broker.snapshot.equity - 1)
+        with pytest.raises(RuntimeError, match="evidence mismatch"):
+            authority.activate(state_store=state_store, broker=broker, lease=lease)
+        assert state_store.load_required_record() == original
+        broker.snapshot = _verified_account_snapshot()
+        running = authority.activate(state_store=state_store, broker=broker, lease=lease)
+        assert running.sequence == original.sequence + 1
+        assert running.state.runtime_mode == "RUNNING"
+        assert permits.load_required_record() == consumed

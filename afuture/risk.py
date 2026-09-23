@@ -20,6 +20,7 @@ from .models import (
     SignalAction,
     Tick,
 )
+from .runtime_calendar import RuntimeCalendarError, RuntimeTradingCalendar
 
 _CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -116,8 +117,14 @@ class OrderRateLimiter:
 class RiskManager:
     """决定是否允许交易和最大手数，不负责挑选套利机会。"""
 
-    def __init__(self, config: RiskConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: RiskConfig | None = None,
+        *,
+        runtime_calendar: RuntimeTradingCalendar | None = None,
+    ) -> None:
         self.config = config or RiskConfig()
+        self.runtime_calendar = runtime_calendar
         self._validate_config()
         self._day_start_equity: float | None = None
         self._trading_day = ""
@@ -284,16 +291,18 @@ class RiskManager:
         requested_volume: int,
         spec: ContractSpec,
         session_windows: tuple[str, ...] = (),
+        now: datetime | None = None,
     ) -> RiskDecision:
         """方向组合单合约开仓前复用实盘微观结构硬门。"""
         if requested_volume <= 0:
             return RiskDecision(False, "requested volume is not positive")
-        quote_decision = self.check_quotes([tick], tick.timestamp)
+        reference = tick.timestamp if now is None else now
+        quote_decision = self.check_quotes([tick], reference)
         if not quote_decision.allowed:
             return quote_decision
-        if session_windows and not self._inside_sessions(tick.timestamp, session_windows):
+        if session_windows and not self._inside_sessions(reference, session_windows):
             return RiskDecision(False, "outside configured trading session")
-        if session_windows and not self._inside_open_close_buffer(tick.timestamp, session_windows):
+        if session_windows and not self._inside_open_close_buffer(reference, session_windows):
             return RiskDecision(False, "inside session open/close safety window")
 
         width_ticks = (tick.ask_price - tick.bid_price) / spec.price_tick
@@ -415,11 +424,37 @@ class RiskManager:
             current_contract_volumes=current_contract_volumes,
         )
 
+    def check_runtime_session(
+        self, symbol: str, exchange: str, now: datetime, counter_day: str
+    ) -> RiskDecision:
+        """Runtime calendar can restrict, never supply, Broker account authority."""
+        if self.runtime_calendar is None:
+            return RiskDecision(True)
+        try:
+            self.runtime_calendar.require_order_session(symbol, exchange, now, counter_day)
+        except RuntimeCalendarError as exc:
+            return RiskDecision(False, str(exc))
+        return RiskDecision(True)
+
+    def active_runtime_symbols(self, symbols: set[str], now: datetime) -> set[str]:
+        """Filter only known rest intervals; unknown coverage is an explicit error."""
+        if self.runtime_calendar is None:
+            return symbols
+        return {
+            symbol
+            for symbol in symbols
+            if self.runtime_calendar.expected_trading_day(symbol, now) is not None
+        }
+
     def is_pair_session_active(self, pair: PairConfig, timestamp: datetime) -> bool:
-        """判断组合当前是否处于中国本地交易时段；未配置时默认活跃。"""
-        if not pair.session_windows:
-            return True
-        return self._inside_sessions(timestamp, pair.session_windows)
+        """Intersect approved strategy windows with covered expected exchange sessions."""
+        if self.runtime_calendar is not None:
+            if any(
+                self.runtime_calendar.expected_trading_day(symbol, timestamp, pair.exchange) is None
+                for symbol in (pair.near_symbol, pair.far_symbol)
+            ):
+                return False
+        return not pair.session_windows or self._inside_sessions(timestamp, pair.session_windows)
 
     def _inside_sessions(self, timestamp: datetime, windows: tuple[str, ...]) -> bool:
         local = self._china_timestamp(timestamp)

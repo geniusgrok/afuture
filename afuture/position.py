@@ -77,7 +77,7 @@ class PositionBook:
     @staticmethod
     def _validate_close_volume(
         position: ContractPosition,
-        trade: Trade,
+        trade: Trade | OrderRequest,
     ) -> None:
         """A close-today/close-yesterday fill cannot borrow another bucket."""
         if trade.side is OrderSide.SELL:
@@ -121,6 +121,18 @@ class PositionBook:
                 position.short_price * position.short_total + trade.price * trade.volume
             ) / total
             position.short_today += trade.volume
+
+    def validate_close_request(self, request: OrderRequest) -> None:
+        """Validate a planned close without advancing fill-owned position state."""
+        if (
+            request.offset not in (Offset.CLOSE, Offset.CLOSE_TODAY, Offset.CLOSE_YESTERDAY)
+            or not isinstance(request.side, OrderSide)
+            or type(request.volume) is not int
+            or request.volume <= 0
+        ):
+            raise ValueError("invalid close order direction, offset or quantity")
+        position = self.get(request.symbol, request.exchange)
+        self._validate_close_volume(position, request)
 
     def plan_close(
         self,

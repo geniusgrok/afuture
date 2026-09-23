@@ -122,6 +122,7 @@ class PairExecutor:
                 # Metadata queries, callbacks and the first leg can consume the remaining
                 # quote lifetime. Revalidate before EACH broker write, not after the batch.
                 self._require_current_quotes(near, far)
+                self._require_order_session(request, near, far)
                 if pair.session_windows and not self.risk_manager.is_pair_session_active(
                     pair, self._decision_time(signal.timestamp)
                 ):
@@ -160,6 +161,23 @@ class PairExecutor:
         )
         if not decision.allowed:
             raise RuntimeError(decision.reason)
+
+    def _require_order_session(self, request: OrderRequest, near: Tick, far: Tick) -> None:
+        if self.risk_manager.runtime_calendar is not None:
+            account = self.broker.get_account()
+            tick = near if request.symbol == near.symbol else far
+            if tick.trading_day != account.trading_day:
+                raise RuntimeError("quote and account trading day mismatch")
+            decision = self.risk_manager.check_runtime_session(
+                request.symbol,
+                request.exchange,
+                self._decision_time(tick.timestamp),
+                account.trading_day,
+            )
+            if not decision.allowed:
+                raise RuntimeError(decision.reason)
+        if request.offset is not Offset.OPEN:
+            PositionBook(self.broker.get_positions()).validate_close_request(request)
 
     def _prepare_open(
         self,
@@ -273,6 +291,8 @@ class PairExecutor:
                     price=self._aggressive_price(tick, side),
                     reference=f"{pair.pair_id}:repair",
                 ):
+                    self._require_current_quotes(near, far)
+                    self._require_order_session(child, near, far)
                     order_ids.append(
                         self.broker.send_order(replace(child, order_type=OrderType.FAK))
                     )
@@ -403,6 +423,8 @@ class PairExecutor:
                 reference=f"{order.request.reference}:rollback",
             ):
                 try:
+                    self._require_current_quotes(near, far)
+                    self._require_order_session(child, near, far)
                     self.broker.send_order(replace(child, order_type=OrderType.FAK))
                 except Exception as exc:
                     # 后续由引擎的失衡审计进入 REDUCE_ONLY，不在此处假装回滚成功。

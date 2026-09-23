@@ -104,7 +104,14 @@ def build_runtime_engine(
     )
 
     require_no_pending_stress90_lifecycle_transaction(Path(state_store.path).parent)
-    risk_manager = RiskManager(config.risk)
+    from .runtime_calendar import RuntimeTradingCalendar
+
+    risk_manager = RiskManager(
+        config.risk,
+        runtime_calendar=(
+            RuntimeTradingCalendar.load() if config.mode == "live" and not historical_mode else None
+        ),
+    )
     common = dict(
         auto_flatten_imbalance=config.auto_flatten_imbalance,
         aggressive_ticks=config.aggressive_ticks,

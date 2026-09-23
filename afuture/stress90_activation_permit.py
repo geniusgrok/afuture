@@ -652,11 +652,11 @@ def activate_stress90_from_permit(
     evidence: Stress90ActivationEvidence,
     expected_permit_sequence: int,
 ):
-    """Consume once, then commit activation; resume only its unchanged source state.
+    """Commit one activation; a consumed receipt can finish only its unchanged source.
 
-    A consumed permit is not reusable. Its exact issued predecessor is a commit
-    witness for the single interrupted state save, not a fallback permit. The
-    caller must recollect all evidence while holding the account/runtime lease.
+    The caller must collect fresh Broker evidence under the account lease on
+    every attempt.  A consumed receipt is not a reusable authorization: any
+    intervening state save (including a manual halt) makes this CAS ineligible.
     """
 
     permit_record = permit_store.load_required_record()
@@ -664,23 +664,15 @@ def activate_stress90_from_permit(
         raise Stress90ActivationPermitIntegrityError(
             "activation permit sequence changed concurrently"
         )
-    permit = permit_record.permit
-    if permit.status not in {"issued", "consumed"}:
+    if permit_record.permit.status == "consumed":
+        _require_consumed_predecessor(permit_store, permit_record)
+    elif permit_record.permit.status != "issued":
         raise Stress90ActivationPermitIntegrityError("activation permit is not issued")
-    if permit.evidence != evidence or permit.evidence_digest != stress90_activation_evidence_digest(
-        evidence
+    if (
+        evidence != permit_record.permit.evidence
+        or stress90_activation_evidence_digest(evidence) != permit_record.permit.evidence_digest
     ):
         raise Stress90ActivationPermitIntegrityError("activation permit evidence mismatch")
-    if permit.status == "consumed":
-        predecessor = permit_store.load_previous_record()
-        if (
-            predecessor.sequence + 1 != permit_record.sequence
-            or predecessor.checksum != permit_record.parent_checksum
-            or predecessor.permit != replace(permit, status="issued")
-        ):
-            raise Stress90ActivationPermitIntegrityError(
-                "consumed activation has no exact issued predecessor witness"
-            )
     current = state_store.load_required_record()
     if (
         current.sequence != evidence.generic_state_sequence
@@ -698,7 +690,7 @@ def activate_stress90_from_permit(
         raise Stress90ActivationPermitIntegrityError(
             "daily circuit recovery has separate authority"
         )
-    if permit.status == "issued":
+    if permit_record.permit.status == "issued":
         permit_store.consume(evidence, expected_sequence=permit_record.sequence)
     running = replace(
         state,
@@ -712,6 +704,52 @@ def activate_stress90_from_permit(
         running,
         expected_sequence=current.sequence,
         expected_checksum=current.checksum,
+    )
+
+
+def _require_consumed_predecessor(
+    store: Stress90ActivationPermitStore,
+    consumed: Stress90ActivationPermitRecord,
+) -> None:
+    """Validate an issued→consumed transition, without adopting previous state."""
+    previous = store.load_previous_record()
+    if (
+        consumed.permit.status != "consumed"
+        or previous.permit.status != "issued"
+        or previous.sequence + 1 != consumed.sequence
+        or previous.checksum != consumed.parent_checksum
+        or replace(previous.permit, status="consumed") != consumed.permit
+    ):
+        raise Stress90ActivationPermitIntegrityError(
+            "consumed activation receipt has no exact issued predecessor"
+        )
+
+
+def can_resume_stress90_activation(
+    *, permit_store: Stress90ActivationPermitStore, state_record, account_identity_digest: str
+) -> bool:
+    """Permit only pre-activation crash recovery; this grants no trading authority.
+
+    Production startup still queries/reconciles the complete current Broker
+    session and calls activate_stress90_from_permit with freshly collected facts.
+    """
+    state = state_record.state
+    if (
+        state.runtime_mode != RuntimeMode.HALTED.value
+        or not state.kill_switch
+        or not state.reconciled
+        or state.directional_daily_circuit_day
+    ):
+        return False
+    record = permit_store.load_record()
+    if record is None or record.permit.status != "consumed":
+        return False
+    _require_consumed_predecessor(permit_store, record)
+    evidence = record.permit.evidence
+    return bool(
+        evidence.account_identity_digest == account_identity_digest
+        and evidence.generic_state_sequence == state_record.sequence
+        and evidence.generic_state_checksum == state_record.checksum
     )
 
 
