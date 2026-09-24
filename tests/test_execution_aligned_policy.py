@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from afuture.directional_acceptance import DirectionalProductionAcceptance
+from afuture.execution_aligned_policy import _holding_proxy_stream
 from afuture.execution_aligned_policy import (
     _EXECUTION_TEMPLATE_IDS,
     _EXECUTION_TEMPLATES,
@@ -20,6 +22,40 @@ from afuture.execution_aligned_policy import (
     _signal_scores,
     _template_weight_path,
 )
+
+
+def test_holding_proxy_gap_roll_and_missing_exit_price():
+    days = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"])
+    rows = [
+        (days[0], "A2405", 100, 100, 50000),
+        (days[1], "A2405", 110, 110, 50000),
+        (days[1], "A2409", 200, 200, 60000),
+        (days[2], "A2405", 120, 120, 50000),
+        (days[2], "A2409", 200, 190, 60000),
+        (days[3], "A2409", 180, 180, 60000),
+    ]
+    contracts = pd.DataFrame(
+        [
+            dict(date=day, symbol=symbol, product="A", open=opening, close=closing,
+                 volume=30000 if symbol.endswith("09") else 20000, hold=hold,
+                 delivery="2024-09-15" if symbol.endswith("09") else "2024-05-15")
+            for day, symbol, opening, closing, hold in rows
+        ]
+    )
+    prepared = DirectionalProductionAcceptance().prepare_contracts(contracts)
+    weights = pd.DataFrame({"A": [0.0, 1.0, -1.0, 0.0]}, index=days)
+    result = _holding_proxy_stream(weights, prepared, cost_bps=0)
+    assert result.iloc[0] == 0
+    assert result.iloc[1] == 0  # a new entry cannot earn the prior 100 -> 110 gap
+    gap = 500000 / 110 * 10
+    assert abs(result.iloc[2] - (gap + (500000 + gap) / 200 * 10) / 500000) < 1e-12
+    assert result.iloc[3] > 0  # yesterday's short owes its 190 -> 180 gap before exit
+    assert _holding_proxy_stream(weights, prepared, cost_bps=5).iloc[2] < result.iloc[2]
+    missing = contracts.loc[~((contracts.date == days[3]) & (contracts.symbol == "A2409"))]
+    with pytest.raises(ValueError, match="date=2024-01-05 symbol=A2409"):
+        _holding_proxy_stream(
+            weights, DirectionalProductionAcceptance().prepare_contracts(missing), cost_bps=0
+        )
 
 
 def _history(periods: int = 220):
@@ -472,6 +508,84 @@ def test_robust_meta_score_requires_stress_survival_but_preserves_base_ranking()
     assert np.isfinite(final[1])
     assert final[0] > final[1]
     assert np.isnan(final[2])
+
+
+def test_score_source_crossover_dispatch_is_fixed_and_requires_history(monkeypatch):
+    import afuture.execution_aligned_policy as module
+
+    opening, closing = _history(periods=16)
+    seen = []
+    monkeypatch.setattr(
+        DirectionalProductionAcceptance, "prepare_contracts", lambda self, data: object()
+    )
+
+    def proxy(source):
+        def stream(*args, cost_bps, **kwargs):
+            seen.append((source, cost_bps))
+            weights = args[0] if source == "H" else args[2]
+            return pd.Series(0.002, index=weights.index)
+        return stream
+
+    monkeypatch.setattr(module, "_intraday_proxy_stream", proxy("I"))
+    monkeypatch.setattr(module, "_holding_proxy_stream", proxy("H"))
+    combinations = (
+        (module.META_SCORE_SOURCE, ("I", "I")),
+        (module.HOLDING_SCORE_SOURCE, ("H", "H")),
+        (module.C3_STRESS_SCORE_SOURCE, ("I", "H")),
+        (module.C3_BASE_SCORE_SOURCE, ("H", "I")),
+    )
+    for name, expected in combinations:
+        seen.clear()
+        policy = ExecutionAlignedAggressivePolicy(
+            products=tuple(closing.columns), meta_score_source=name
+        )
+        if "H" in expected:
+            with pytest.raises(ValueError, match="specific-contract history"):
+                policy.weight_history(opening, closing)
+        policy.weight_history(
+            opening, closing, specific_contracts=pd.DataFrame({"date": []})
+        )
+        assert len(seen) == 2 * len(policy.template_ids)
+        assert seen[:2] == [(expected[0], module.BASE_COST_BPS),
+                            (expected[1], module.STRESS_COST_BPS)]
+        assert all(seen[i:i+2] == seen[:2] for i in range(0, len(seen), 2))
+
+
+def test_crossover_runtime_requires_completed_specific_contract_day():
+    import afuture.execution_aligned_policy as module
+    from afuture.execution_aligned_runtime import (
+        ExecutionAlignedDirectionalPortfolioManager, ExecutionAlignedSignalHistory,
+    )
+
+    dates = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    history = ExecutionAlignedSignalHistory(
+        pd.DataFrame({"A": [100., 101.]}, index=dates),
+        pd.DataFrame({"A": [100., 101.]}, index=dates),
+    )
+
+    class SpyPolicy:
+        def __init__(self, source):
+            self.meta_score_source = source
+            self.kwargs = None
+
+        def target_weights(self, *args, **kwargs):
+            self.kwargs = kwargs
+            return {}
+
+    for source in (module.C3_STRESS_SCORE_SOURCE, module.C3_BASE_SCORE_SOURCE):
+        manager = object.__new__(ExecutionAlignedDirectionalPortfolioManager)
+        policy = SpyPolicy(source)
+        manager.policy = policy
+        manager.config = types.SimpleNamespace(max_gross_leverage=2.0)
+        manager.holding_contract_provider = None
+        with pytest.raises(RuntimeError, match="history provider"):
+            manager._next_target_weights(history)
+        manager.holding_contract_provider = lambda day: pd.DataFrame({"date": [dates[0]]})
+        with pytest.raises(RuntimeError, match="completed signal day"):
+            manager._next_target_weights(history)
+        manager.holding_contract_provider = lambda day: pd.DataFrame({"date": [dates[1]]})
+        assert manager._next_target_weights(history) == {}
+        assert policy.kwargs["priced_through"] == dates[1]
 
 
 def test_execution_proxy_changes_meta_evidence_without_future_leakage():
