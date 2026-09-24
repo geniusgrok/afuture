@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from afuture.directional_acceptance import DirectionalProductionAcceptance
+from afuture.execution_aligned_policy import _holding_proxy_stream
 from afuture.execution_aligned_policy import (
     _EXECUTION_TEMPLATE_IDS,
     _EXECUTION_TEMPLATES,
@@ -20,6 +22,40 @@ from afuture.execution_aligned_policy import (
     _signal_scores,
     _template_weight_path,
 )
+
+
+def test_holding_proxy_gap_roll_and_missing_exit_price():
+    days = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"])
+    rows = [
+        (days[0], "A2405", 100, 100, 50000),
+        (days[1], "A2405", 110, 110, 50000),
+        (days[1], "A2409", 200, 200, 60000),
+        (days[2], "A2405", 120, 120, 50000),
+        (days[2], "A2409", 200, 190, 60000),
+        (days[3], "A2409", 180, 180, 60000),
+    ]
+    contracts = pd.DataFrame(
+        [
+            dict(date=day, symbol=symbol, product="A", open=opening, close=closing,
+                 volume=30000 if symbol.endswith("09") else 20000, hold=hold,
+                 delivery="2024-09-15" if symbol.endswith("09") else "2024-05-15")
+            for day, symbol, opening, closing, hold in rows
+        ]
+    )
+    prepared = DirectionalProductionAcceptance().prepare_contracts(contracts)
+    weights = pd.DataFrame({"A": [0.0, 1.0, -1.0, 0.0]}, index=days)
+    result = _holding_proxy_stream(weights, prepared, cost_bps=0)
+    assert result.iloc[0] == 0
+    assert result.iloc[1] == 0  # a new entry cannot earn the prior 100 -> 110 gap
+    gap = 500000 / 110 * 10
+    assert abs(result.iloc[2] - (gap + (500000 + gap) / 200 * 10) / 500000) < 1e-12
+    assert result.iloc[3] > 0  # yesterday's short owes its 190 -> 180 gap before exit
+    assert _holding_proxy_stream(weights, prepared, cost_bps=5).iloc[2] < result.iloc[2]
+    missing = contracts.loc[~((contracts.date == days[3]) & (contracts.symbol == "A2409"))]
+    with pytest.raises(ValueError, match="date=2024-01-05 symbol=A2409"):
+        _holding_proxy_stream(
+            weights, DirectionalProductionAcceptance().prepare_contracts(missing), cost_bps=0
+        )
 
 
 def _history(periods: int = 220):
