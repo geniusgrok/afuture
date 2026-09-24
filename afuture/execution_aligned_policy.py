@@ -28,6 +28,10 @@ META_COUNT = 3
 META_ANNUALIZED_WEIGHT = 0.25
 META_SHARPE_WEIGHT = 1.0
 META_SCORE_SOURCE = "continuous_intraday_base_rank_stress_survival"
+HOLDING_SCORE_SOURCE = "specific_holding_base_rank_stress_survival"
+C3_STRESS_SCORE_SOURCE = "continuous_intraday_base_specific_holding_stress_survival"
+C3_BASE_SCORE_SOURCE = "specific_holding_base_continuous_intraday_stress_survival"
+HOLDING_SCORE_SOURCES = (HOLDING_SCORE_SOURCE, C3_STRESS_SCORE_SOURCE, C3_BASE_SCORE_SOURCE)
 
 # Frozen alphabetic 50-product universe shared by the base policy and Stress-90.
 FROZEN_PRODUCTS = (
@@ -423,6 +427,122 @@ def _intraday_proxy_stream(
     return pnl - turnover * float(cost_bps) / 10000.0
 
 
+def _holding_proxy_stream(
+    weights: pd.DataFrame,
+    contracts,
+    *,
+    cost_bps: float,
+    priced_through: pd.Timestamp | None = None,
+    selection_cache: dict | None = None,
+) -> pd.Series:
+    """Fractional-lot reference path using the account's causal contract selection.
+
+    This is a template scoring proxy, not a broker position or a risk-gated account.
+    The caller may leave one synthetic next target day unpriced for live planning;
+    every completed day in the supplied weight history must be fully priced.
+    """
+    from .directional_acceptance import (
+        PRODUCT_MULTIPLIERS,
+        DirectionalProductionAcceptance,
+        ProductionMechanicsConfig,
+    )
+
+    selector = DirectionalProductionAcceptance(ProductionMechanicsConfig())
+    context = contracts
+    if not np.isfinite(cost_bps) or cost_bps < 0:
+        raise ValueError("holding proxy cost must be finite and non-negative")
+    if weights.index.has_duplicates or not weights.index.is_monotonic_increasing:
+        raise ValueError("holding proxy days must be unique and sorted")
+    by_day = context.by_day_symbol
+    activity = context.available_activity_days
+    equity = 500000.0
+    lots: dict[str, float] = {}
+    previous_close: dict[str, float] = {}
+    output: list[float] = []
+    last_priced = pd.Timestamp(priced_through) if priced_through is not None else None
+
+    for day, row in weights.iterrows():
+        day = pd.Timestamp(day).normalize()
+        if last_priced is not None and day > last_priced:
+            if day != weights.index[-1] or day <= last_priced:
+                raise ValueError("only the final synthetic target day may be unpriced")
+            output.append(0.0)  # ranking uses only completed prior days
+            continue
+        starting_equity = equity
+        current_prices: dict[str, tuple[float, float]] = {}
+
+        def prices(symbol: str) -> tuple[float, float]:
+            if symbol not in current_prices:
+                record = by_day.get((day, symbol))
+                if record is None:
+                    raise ValueError(
+                        f"holding proxy missing contract: date={day.date()} symbol={symbol}"
+                    )
+                current_prices[symbol] = (float(record["open"]), float(record["close"]))
+            return current_prices[symbol]
+
+        for symbol, quantity in lots.items():
+            opening, _ = prices(symbol)  # an exit still owes the overnight gap
+            equity += (
+                quantity * (opening - previous_close[symbol])
+                * PRODUCT_MULTIPLIERS[selector._product(symbol)]
+            )
+        if not np.isfinite(equity) or equity <= 0.0:
+            raise ValueError(f"holding proxy opening equity is invalid: date={day.date()}")
+
+        prior_position = int(activity.searchsorted(day, side="left")) - 1
+        snapshot = context.activity_by_day[activity[prior_position]] if prior_position >= 0 else None
+        preferred = {selector._product(symbol): symbol for symbol in lots}
+        cache_key = (day, tuple(sorted(preferred.items())))
+        if selection_cache is not None and cache_key in selection_cache:
+            selected = selection_cache[cache_key]
+        else:
+            selected = (
+                selector._select_contracts_from_snapshot(snapshot, day, preferred_symbols=preferred)
+                if prior_position >= 0 else {}
+            )
+            if selection_cache is not None:
+                selection_cache[cache_key] = selected
+        target: dict[str, float] = {}
+        for product, weight in row.items():
+            if abs(float(weight)) <= 1e-15:
+                continue
+            symbol = selected.get(str(product))
+            if symbol is None:
+                if snapshot is None or not snapshot["product"].eq(product).any():
+                    raise ValueError(
+                        f"holding proxy missing prior activity: date={day.date()} product={product}"
+                    )
+                # A real, observed liquidity rejection is not a missing price.
+                for incumbent, quantity in lots.items():
+                    if selector._product(incumbent) == product:
+                        target[incumbent] = quantity
+                continue
+            opening, _ = prices(symbol)
+            target[symbol] = (
+                float(weight) * equity / (opening * PRODUCT_MULTIPLIERS[str(product)])
+            )
+
+        for symbol in lots.keys() | target.keys():
+            opening, _ = prices(symbol)
+            change = target.get(symbol, 0.0) - lots.get(symbol, 0.0)
+            equity -= (
+                abs(change) * opening * PRODUCT_MULTIPLIERS[selector._product(symbol)]
+                * cost_bps / 10000.0
+            )
+        for symbol, quantity in target.items():
+            opening, closing = prices(symbol)
+            equity += (
+                quantity * (closing - opening) * PRODUCT_MULTIPLIERS[selector._product(symbol)]
+            )
+        if not np.isfinite(equity) or equity <= 0.0:
+            raise ValueError(f"holding proxy reference equity is invalid: date={day.date()}")
+        output.append(equity / starting_equity - 1.0)
+        previous_close = {symbol: prices(symbol)[1] for symbol in target}
+        lots = target
+    return pd.Series(output, index=weights.index, dtype=float)
+
+
 @dataclass(frozen=True)
 class ExecutionAlignedAggressivePolicy:
     products: tuple[str, ...]
@@ -441,7 +561,7 @@ class ExecutionAlignedAggressivePolicy:
             self.meta_lookback != META_LOOKBACK
             or self.meta_rebalance != META_REBALANCE
             or self.meta_count != META_COUNT
-            or self.meta_score_source != META_SCORE_SOURCE
+            or self.meta_score_source not in (META_SCORE_SOURCE, *HOLDING_SCORE_SOURCES)
         ):
             raise ValueError("execution-aligned meta policy is frozen")
 
@@ -449,7 +569,12 @@ class ExecutionAlignedAggressivePolicy:
         self,
         open_prices: pd.DataFrame,
         close: pd.DataFrame,
+        *,
+        specific_contracts: pd.DataFrame | None = None,
+        priced_through: pd.Timestamp | None = None,
     ) -> pd.DataFrame:
+        if self.meta_score_source in HOLDING_SCORE_SOURCES and specific_contracts is None:
+            raise ValueError("holding score requires verified specific-contract history")
         proxy_close = _ordered_prices(close, self.products)
         proxy_open = _ordered_prices(open_prices, self.products)
         close = proxy_close.where(proxy_close > 0.0)
@@ -460,15 +585,36 @@ class ExecutionAlignedAggressivePolicy:
         base_streams: dict[str, pd.Series] = {}
         stress_streams: dict[str, pd.Series] = {}
         paths: dict[str, pd.DataFrame] = {}
+        selection_cache: dict = {}
+        base_holding = self.meta_score_source in (HOLDING_SCORE_SOURCE, C3_BASE_SCORE_SOURCE)
+        stress_holding = self.meta_score_source in (HOLDING_SCORE_SOURCE, C3_STRESS_SCORE_SOURCE)
+        if base_holding or stress_holding:
+            from .directional_acceptance import DirectionalProductionAcceptance
+
+            contract_context = DirectionalProductionAcceptance().prepare_contracts(
+                specific_contracts
+            )
         for template_id, template in zip(self.template_ids, _EXECUTION_TEMPLATES, strict=True):
             weights = _template_weight_path(returns, template)
             paths[template_id] = weights
-            base_streams[template_id] = _intraday_proxy_stream(
-                proxy_open, proxy_close, weights, cost_bps=BASE_COST_BPS
-            )
-            stress_streams[template_id] = _intraday_proxy_stream(
-                proxy_open, proxy_close, weights, cost_bps=STRESS_COST_BPS
-            )
+            if base_holding:
+                base_streams[template_id] = _holding_proxy_stream(
+                    weights, contract_context, cost_bps=BASE_COST_BPS,
+                    priced_through=priced_through, selection_cache=selection_cache,
+                )
+            else:
+                base_streams[template_id] = _intraday_proxy_stream(
+                    proxy_open, proxy_close, weights, cost_bps=BASE_COST_BPS
+                )
+            if stress_holding:
+                stress_streams[template_id] = _holding_proxy_stream(
+                    weights, contract_context, cost_bps=STRESS_COST_BPS,
+                    priced_through=priced_through, selection_cache=selection_cache,
+                )
+            else:
+                stress_streams[template_id] = _intraday_proxy_stream(
+                    proxy_open, proxy_close, weights, cost_bps=STRESS_COST_BPS
+                )
 
         base_frame = pd.DataFrame(base_streams).sort_index().fillna(0.0)
         stress_frame = (
@@ -524,8 +670,14 @@ class ExecutionAlignedAggressivePolicy:
         self,
         open_prices: pd.DataFrame,
         close: pd.DataFrame,
+        *,
+        specific_contracts: pd.DataFrame | None = None,
+        priced_through: pd.Timestamp | None = None,
     ) -> dict[str, float]:
-        history = self.weight_history(open_prices, close)
+        history = self.weight_history(
+            open_prices, close, specific_contracts=specific_contracts,
+            priced_through=priced_through,
+        )
         if history.empty:
             return {}
         latest = history.iloc[-1]
