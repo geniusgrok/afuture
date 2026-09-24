@@ -492,14 +492,20 @@ def _holding_proxy_stream(
 
         prior_position = int(activity.searchsorted(day, side="left")) - 1
         snapshot = context.activity_by_day[activity[prior_position]] if prior_position >= 0 else None
+        target_products = {
+            str(product) for product, weight in row.items() if abs(float(weight)) > 1e-15
+        }
         preferred = {selector._product(symbol): symbol for symbol in lots}
-        cache_key = (day, tuple(sorted(preferred.items())))
+        cache_key = (day, tuple(sorted(preferred.items())), tuple(sorted(target_products)))
         if selection_cache is not None and cache_key in selection_cache:
             selected = selection_cache[cache_key]
         else:
             selected = (
-                selector._select_contracts_from_snapshot(snapshot, day, preferred_symbols=preferred)
-                if prior_position >= 0 else {}
+                selector._select_contracts_from_snapshot(
+                    snapshot.loc[snapshot["product"].isin(target_products)],
+                    day, preferred_symbols=preferred,
+                )
+                if prior_position >= 0 and target_products else {}
             )
             if selection_cache is not None:
                 selection_cache[cache_key] = selected
