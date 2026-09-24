@@ -244,6 +244,38 @@ def _robust_trailing_scores(
     return result
 
 
+def _balanced_trailing_scores(
+    base_frame: pd.DataFrame,
+    stress_frame: pd.DataFrame,
+    product_net: dict[str, pd.DataFrame],
+    *,
+    lookback: int = META_LOOKBACK,
+) -> np.ndarray:
+    """Discount a template score by its largest positive product contribution."""
+    scores = _robust_trailing_scores(base_frame, stress_frame, lookback=lookback)
+    for column, name in enumerate(base_frame.columns):
+        contributions = product_net[name]
+        if not contributions.index.equals(base_frame.index):
+            raise ValueError("product contribution dates must match template scores")
+        if not np.allclose(
+            contributions.sum(axis=1).to_numpy(float),
+            base_frame[name].to_numpy(float),
+            rtol=0.0,
+            atol=1e-12,
+        ):
+            raise ValueError("product contributions do not reconcile with Base costs")
+        for day in range(lookback, len(base_frame)):
+            if not np.isfinite(scores[day, column]):
+                continue
+            positive = contributions.iloc[day - lookback : day].sum(axis=0).clip(lower=0.0)
+            total = float(positive.sum())
+            if total <= 0.0:
+                scores[day, column] = np.nan
+            else:
+                scores[day, column] /= 1.0 + float(positive.max()) / total
+    return scores
+
+
 _EXECUTION_TEMPLATE_IDS = (
     "breakout_s120_f0_k1_r1_g2",
     "tsmom_s40_f0_k1_r2_g2",
@@ -431,12 +463,15 @@ class ExecutionAlignedAggressivePolicy:
     meta_count: int = META_COUNT
     meta_score_source: str = META_SCORE_SOURCE
     template_ids: tuple[str, ...] = _EXECUTION_TEMPLATE_IDS
+    balanced_meta: bool = False
 
     def __post_init__(self) -> None:
         if not self.products:
             raise ValueError("execution-aligned policy products cannot be empty")
         if self.template_ids != _EXECUTION_TEMPLATE_IDS:
             raise ValueError("execution-aligned template pool is frozen")
+        if not isinstance(self.balanced_meta, bool):
+            raise ValueError("balanced meta selection must be explicit")
         if (
             self.meta_lookback != META_LOOKBACK
             or self.meta_rebalance != META_REBALANCE
@@ -460,6 +495,7 @@ class ExecutionAlignedAggressivePolicy:
         base_streams: dict[str, pd.Series] = {}
         stress_streams: dict[str, pd.Series] = {}
         paths: dict[str, pd.DataFrame] = {}
+        product_net: dict[str, pd.DataFrame] = {}
         for template_id, template in zip(self.template_ids, _EXECUTION_TEMPLATES, strict=True):
             weights = _template_weight_path(returns, template)
             paths[template_id] = weights
@@ -469,6 +505,13 @@ class ExecutionAlignedAggressivePolicy:
             stress_streams[template_id] = _intraday_proxy_stream(
                 proxy_open, proxy_close, weights, cost_bps=STRESS_COST_BPS
             )
+            if self.balanced_meta:
+                intraday = (proxy_close.div(proxy_open) - 1.0).reindex_like(weights)
+                intraday = intraday.where(np.isfinite(intraday), 0.0)
+                turnover = weights.diff().abs().fillna(weights.abs())
+                product_net[template_id] = (
+                    weights * intraday - turnover * BASE_COST_BPS / 10000.0
+                )
 
         base_frame = pd.DataFrame(base_streams).sort_index().fillna(0.0)
         stress_frame = (
@@ -476,7 +519,12 @@ class ExecutionAlignedAggressivePolicy:
             .reindex(index=base_frame.index, columns=base_frame.columns)
             .fillna(0.0)
         )
-        scores = _robust_trailing_scores(base_frame, stress_frame, lookback=self.meta_lookback)
+        if self.balanced_meta:
+            scores = _balanced_trailing_scores(
+                base_frame, stress_frame, product_net, lookback=self.meta_lookback
+            )
+        else:
+            scores = _robust_trailing_scores(base_frame, stress_frame, lookback=self.meta_lookback)
         names = list(base_frame.columns)
         final = pd.DataFrame(0.0, index=close.index, columns=close.columns)
         selected: list[int] = []
