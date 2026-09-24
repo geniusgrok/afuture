@@ -31,6 +31,7 @@ from .directional_runtime import (
     DirectionalPortfolioManager,
 )
 from .execution_aligned_policy import FROZEN_PRODUCTS as _FROZEN_PRODUCTS
+from .execution_aligned_policy import HOLDING_SCORE_SOURCE
 from .execution_aligned_policy import ExecutionAlignedAggressivePolicy
 from .models import ContractInfo
 
@@ -119,6 +120,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         ohlc_cache_path: str | Path | None = None,
         activity_tracker: DirectionalActivityTracker | None = None,
         completed_returns_provider=None,
+        holding_contract_provider=None,
         **kwargs,
     ):
         if policy is None:
@@ -151,6 +153,7 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         else:
             self.activity_tracker = None
         self.completed_returns_provider = completed_returns_provider
+        self.holding_contract_provider = holding_contract_provider
         self._catalog_by_symbol: dict[str, ContractInfo] = {}
 
     @property
@@ -410,9 +413,21 @@ class ExecutionAlignedDirectionalPortfolioManager(DirectionalPortfolioManager):
         synthetic_close.index = pd.DatetimeIndex([synthetic_index])
         synthetic_open = close.iloc[[-1]].copy()
         synthetic_open.index = pd.DatetimeIndex([synthetic_index])
+        history_kwargs = {}
+        if getattr(self.policy, "meta_score_source", None) == HOLDING_SCORE_SOURCE:
+            if self.holding_contract_provider is None:
+                raise RuntimeError("holding score requires a specific-contract history provider")
+            contracts = self.holding_contract_provider(last.date())
+            if not isinstance(contracts, pd.DataFrame) or "date" not in contracts:
+                raise RuntimeError("specific-contract history is invalid")
+            dates = pd.to_datetime(contracts["date"], errors="raise")
+            if dates.isna().any() or (dates > last).any():
+                raise RuntimeError("specific-contract history includes incomplete or invalid dates")
+            history_kwargs = {"specific_contracts": contracts, "priced_through": last}
         weights = self.policy.target_weights(
             pd.concat([open_prices, synthetic_open]),
             pd.concat([close, synthetic_close]),
+            **history_kwargs,
         )
         gross = sum(abs(float(value)) for value in weights.values())
         if gross > self.config.max_gross_leverage + 1e-10:
