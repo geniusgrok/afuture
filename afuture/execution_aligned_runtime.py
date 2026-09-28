@@ -31,8 +31,7 @@ from .directional_runtime import (
     DirectionalPortfolioManager,
 )
 from .execution_aligned_policy import FROZEN_PRODUCTS as _FROZEN_PRODUCTS
-from .execution_aligned_policy import HOLDING_SCORE_SOURCES
-from .execution_aligned_policy import ExecutionAlignedAggressivePolicy
+from .execution_aligned_policy import HOLDING_SCORE_SOURCES, ExecutionAlignedAggressivePolicy
 from .models import ContractInfo
 
 

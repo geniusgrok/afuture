@@ -743,9 +743,7 @@ def step_stress90_candidate(
         }
     )
     post_state = Stress90CandidateState(
-        policy_definition_digest=_candidate_policy_digest(
-            definition, retain_cost_approved_budget
-        ),
+        policy_definition_digest=_candidate_policy_digest(definition, retain_cost_approved_budget),
         products_manifest_digest=definition.products_manifest_digest,
         last_completed_target_day=target_day,
         last_decision_digest=decision_digest,

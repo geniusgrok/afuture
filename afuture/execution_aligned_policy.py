@@ -461,6 +461,18 @@ def _holding_proxy_stream(
     output: list[float] = []
     last_priced = pd.Timestamp(priced_through) if priced_through is not None else None
 
+    def prices(
+        symbol: str, day: pd.Timestamp, current_prices: dict[str, tuple[float, float]]
+    ) -> tuple[float, float]:
+        if symbol not in current_prices:
+            record = by_day.get((day, symbol))
+            if record is None:
+                raise ValueError(
+                    f"holding proxy missing contract: date={day.date()} symbol={symbol}"
+                )
+            current_prices[symbol] = (float(record["open"]), float(record["close"]))
+        return current_prices[symbol]
+
     for day, row in weights.iterrows():
         day = pd.Timestamp(day).normalize()
         if last_priced is not None and day > last_priced:
@@ -471,27 +483,20 @@ def _holding_proxy_stream(
         starting_equity = equity
         current_prices: dict[str, tuple[float, float]] = {}
 
-        def prices(symbol: str) -> tuple[float, float]:
-            if symbol not in current_prices:
-                record = by_day.get((day, symbol))
-                if record is None:
-                    raise ValueError(
-                        f"holding proxy missing contract: date={day.date()} symbol={symbol}"
-                    )
-                current_prices[symbol] = (float(record["open"]), float(record["close"]))
-            return current_prices[symbol]
-
         for symbol, quantity in lots.items():
-            opening, _ = prices(symbol)  # an exit still owes the overnight gap
+            opening, _ = prices(symbol, day, current_prices)  # exit owes overnight gap
             equity += (
-                quantity * (opening - previous_close[symbol])
+                quantity
+                * (opening - previous_close[symbol])
                 * PRODUCT_MULTIPLIERS[selector._product(symbol)]
             )
         if not np.isfinite(equity) or equity <= 0.0:
             raise ValueError(f"holding proxy opening equity is invalid: date={day.date()}")
 
         prior_position = int(activity.searchsorted(day, side="left")) - 1
-        snapshot = context.activity_by_day[activity[prior_position]] if prior_position >= 0 else None
+        snapshot = (
+            context.activity_by_day[activity[prior_position]] if prior_position >= 0 else None
+        )
         target_products = {
             str(product) for product, weight in row.items() if abs(float(weight)) > 1e-15
         }
@@ -503,9 +508,11 @@ def _holding_proxy_stream(
             selected = (
                 selector._select_contracts_from_snapshot(
                     snapshot.loc[snapshot["product"].isin(target_products)],
-                    day, preferred_symbols=preferred,
+                    day,
+                    preferred_symbols=preferred,
                 )
-                if prior_position >= 0 and target_products else {}
+                if prior_position >= 0 and target_products
+                else {}
             )
             if selection_cache is not None:
                 selection_cache[cache_key] = selected
@@ -524,27 +531,28 @@ def _holding_proxy_stream(
                     if selector._product(incumbent) == product:
                         target[incumbent] = quantity
                 continue
-            opening, _ = prices(symbol)
-            target[symbol] = (
-                float(weight) * equity / (opening * PRODUCT_MULTIPLIERS[str(product)])
-            )
+            opening, _ = prices(symbol, day, current_prices)
+            target[symbol] = float(weight) * equity / (opening * PRODUCT_MULTIPLIERS[str(product)])
 
         for symbol in lots.keys() | target.keys():
-            opening, _ = prices(symbol)
+            opening, _ = prices(symbol, day, current_prices)
             change = target.get(symbol, 0.0) - lots.get(symbol, 0.0)
             equity -= (
-                abs(change) * opening * PRODUCT_MULTIPLIERS[selector._product(symbol)]
-                * cost_bps / 10000.0
+                abs(change)
+                * opening
+                * PRODUCT_MULTIPLIERS[selector._product(symbol)]
+                * cost_bps
+                / 10000.0
             )
         for symbol, quantity in target.items():
-            opening, closing = prices(symbol)
+            opening, closing = prices(symbol, day, current_prices)
             equity += (
                 quantity * (closing - opening) * PRODUCT_MULTIPLIERS[selector._product(symbol)]
             )
         if not np.isfinite(equity) or equity <= 0.0:
             raise ValueError(f"holding proxy reference equity is invalid: date={day.date()}")
         output.append(equity / starting_equity - 1.0)
-        previous_close = {symbol: prices(symbol)[1] for symbol in target}
+        previous_close = {symbol: prices(symbol, day, current_prices)[1] for symbol in target}
         lots = target
     return pd.Series(output, index=weights.index, dtype=float)
 
@@ -605,8 +613,11 @@ class ExecutionAlignedAggressivePolicy:
             paths[template_id] = weights
             if base_holding:
                 base_streams[template_id] = _holding_proxy_stream(
-                    weights, contract_context, cost_bps=BASE_COST_BPS,
-                    priced_through=priced_through, selection_cache=selection_cache,
+                    weights,
+                    contract_context,
+                    cost_bps=BASE_COST_BPS,
+                    priced_through=priced_through,
+                    selection_cache=selection_cache,
                 )
             else:
                 base_streams[template_id] = _intraday_proxy_stream(
@@ -614,8 +625,11 @@ class ExecutionAlignedAggressivePolicy:
                 )
             if stress_holding:
                 stress_streams[template_id] = _holding_proxy_stream(
-                    weights, contract_context, cost_bps=STRESS_COST_BPS,
-                    priced_through=priced_through, selection_cache=selection_cache,
+                    weights,
+                    contract_context,
+                    cost_bps=STRESS_COST_BPS,
+                    priced_through=priced_through,
+                    selection_cache=selection_cache,
                 )
             else:
                 stress_streams[template_id] = _intraday_proxy_stream(
@@ -681,7 +695,9 @@ class ExecutionAlignedAggressivePolicy:
         priced_through: pd.Timestamp | None = None,
     ) -> dict[str, float]:
         history = self.weight_history(
-            open_prices, close, specific_contracts=specific_contracts,
+            open_prices,
+            close,
+            specific_contracts=specific_contracts,
             priced_through=priced_through,
         )
         if history.empty:

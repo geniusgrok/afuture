@@ -290,7 +290,8 @@ def test_research_budget_retains_cost_approved_amount_and_separate_state_identit
     }
     assert reallocate_survivor_row(**kwargs) == {"A": 2.0, "M": 0.0}
     assert reallocate_survivor_row(**kwargs, retain_cost_approved_budget=True) == {
-        "A": 1.0, "M": 0.0
+        "A": 1.0,
+        "M": 0.0,
     }
     kwargs["oi_weights"] = {"A": 1.0, "M": 0.0}
     kwargs["approved_weights"] = {"A": 0.5, "M": 0.0}

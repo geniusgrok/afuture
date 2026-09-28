@@ -8,7 +8,6 @@ import pandas as pd
 import pytest
 
 from afuture.directional_acceptance import DirectionalProductionAcceptance
-from afuture.execution_aligned_policy import _holding_proxy_stream
 from afuture.execution_aligned_policy import (
     _EXECUTION_TEMPLATE_IDS,
     _EXECUTION_TEMPLATES,
@@ -16,6 +15,7 @@ from afuture.execution_aligned_policy import (
     META_SHARPE_WEIGHT,
     ExecutionAlignedAggressivePolicy,
     _clean_prices,
+    _holding_proxy_stream,
     _intraday_proxy_stream,
     _normalized_price,
     _parse_template_id,
@@ -36,9 +36,16 @@ def test_holding_proxy_gap_roll_and_missing_exit_price():
     ]
     contracts = pd.DataFrame(
         [
-            dict(date=day, symbol=symbol, product="A", open=opening, close=closing,
-                 volume=30000 if symbol.endswith("09") else 20000, hold=hold,
-                 delivery="2024-09-15" if symbol.endswith("09") else "2024-05-15")
+            dict(
+                date=day,
+                symbol=symbol,
+                product="A",
+                open=opening,
+                close=closing,
+                volume=30000 if symbol.endswith("09") else 20000,
+                hold=hold,
+                delivery="2024-09-15" if symbol.endswith("09") else "2024-05-15",
+            )
             for day, symbol, opening, closing, hold in rows
         ]
     )
@@ -524,6 +531,7 @@ def test_score_source_crossover_dispatch_is_fixed_and_requires_history(monkeypat
             seen.append((source, cost_bps))
             weights = args[0] if source == "H" else args[2]
             return pd.Series(0.002, index=weights.index)
+
         return stream
 
     monkeypatch.setattr(module, "_intraday_proxy_stream", proxy("I"))
@@ -542,25 +550,26 @@ def test_score_source_crossover_dispatch_is_fixed_and_requires_history(monkeypat
         if "H" in expected:
             with pytest.raises(ValueError, match="specific-contract history"):
                 policy.weight_history(opening, closing)
-        policy.weight_history(
-            opening, closing, specific_contracts=pd.DataFrame({"date": []})
-        )
+        policy.weight_history(opening, closing, specific_contracts=pd.DataFrame({"date": []}))
         assert len(seen) == 2 * len(policy.template_ids)
-        assert seen[:2] == [(expected[0], module.BASE_COST_BPS),
-                            (expected[1], module.STRESS_COST_BPS)]
-        assert all(seen[i:i+2] == seen[:2] for i in range(0, len(seen), 2))
+        assert seen[:2] == [
+            (expected[0], module.BASE_COST_BPS),
+            (expected[1], module.STRESS_COST_BPS),
+        ]
+        assert all(seen[i : i + 2] == seen[:2] for i in range(0, len(seen), 2))
 
 
 def test_crossover_runtime_requires_completed_specific_contract_day():
     import afuture.execution_aligned_policy as module
     from afuture.execution_aligned_runtime import (
-        ExecutionAlignedDirectionalPortfolioManager, ExecutionAlignedSignalHistory,
+        ExecutionAlignedDirectionalPortfolioManager,
+        ExecutionAlignedSignalHistory,
     )
 
     dates = pd.to_datetime(["2024-01-02", "2024-01-03"])
     history = ExecutionAlignedSignalHistory(
-        pd.DataFrame({"A": [100., 101.]}, index=dates),
-        pd.DataFrame({"A": [100., 101.]}, index=dates),
+        pd.DataFrame({"A": [100.0, 101.0]}, index=dates),
+        pd.DataFrame({"A": [100.0, 101.0]}, index=dates),
     )
 
     class SpyPolicy:
