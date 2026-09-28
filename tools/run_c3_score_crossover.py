@@ -20,11 +20,13 @@ from afuture.directional_stress90_policy import STRESS90_POLICY, build_stress90_
 from afuture.directional_concentration_freeze import ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance as Account
 from afuture.directional_acceptance import ProductionMechanicsConfig
 from afuture.execution_aligned_policy import (
-    C3_BASE_SCORE_SOURCE, C3_STRESS_SCORE_SOURCE, ExecutionAlignedAggressivePolicy,
+    C3_BASE_SCORE_SOURCE, C3_STRESS_SCORE_SOURCE, META_SCORE_SOURCE,
+    ExecutionAlignedAggressivePolicy,
 )
 
 cli = argparse.ArgumentParser()
-cli.add_argument('label', choices=('C3S', 'C3R', 'C3S_exAG', 'C3R_exAG'))
+cli.add_argument('label', choices=('C3S', 'C3R', 'C3S_exAG', 'C3R_exAG',
+                                   'C4B', 'C4R', 'C4B_exAG', 'C4R_exAG'))
 cli.add_argument('--evidence', type=Path, required=True)
 cli.add_argument('--path-only', action='store_true')
 opts = cli.parse_args()
@@ -76,7 +78,9 @@ def metrics(result, cost):
 
 def run(label, exclude_ag):
     products = tuple(p for p in STRESS90_POLICY.products if not (exclude_ag and p == 'AG'))
-    source = C3_STRESS_SCORE_SOURCE if label.startswith('C3S') else C3_BASE_SCORE_SOURCE
+    source = (C3_STRESS_SCORE_SOURCE if label.startswith('C3S') else
+              META_SCORE_SOURCE if label.startswith('C4B') else C3_BASE_SCORE_SOURCE)
+    retain_budget = label.startswith('C4')
     base = ExecutionAlignedAggressivePolicy(
         products=products, meta_score_source=source,
     ).weight_history(
@@ -92,7 +96,7 @@ def run(label, exclude_ag):
     print(json.dumps({'stage':'selector', 'label': label, 'days':len(base)}), flush=True)
     target_days = frozen_base.index.append(frozen_new_base.index)
     assert len(target_days) == 980 and target_days.is_unique
-    path = build_stress90_candidate_path(base_weights=base.loc[target_days], completed_close_prices=pipeline.continuous_close_panel(continuous,list(STRESS90_POLICY.products)),confirming_flow=all_flow)
+    path = build_stress90_candidate_path(base_weights=base.loc[target_days], completed_close_prices=pipeline.continuous_close_panel(continuous,list(STRESS90_POLICY.products)),confirming_flow=all_flow, retain_cost_approved_budget=retain_budget)
     weights = path.survivor_weights
     weights.to_csv(ROOT / (label + '_survivor_weights.csv'))
     path.oi_confirmed_weights.to_csv(ROOT / (label + '_oi_confirmed_weights.csv'))
@@ -116,6 +120,7 @@ def run(label, exclude_ag):
     output = {
         'label': label, 'score_source': source, 'days': len(full),
         'path_digest': candidate_weight_digest(weights),
+        'candidate_policy_digest': path.final_state.policy_definition_digest,
         'data_sha256': D1_HASHES,
         'policy_sha256': hashlib.sha256((SOURCE / 'afuture/execution_aligned_policy.py').read_bytes()).hexdigest(),
         'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
