@@ -471,6 +471,33 @@ def test_stress90_hard_daily_loss_uses_verified_prebalance_after_rollover(tmp_pa
     assert engine.state.kill_reason == "daily loss limit reached"
 
 
+def test_stress90_tick_cannot_reset_daily_loss_before_settlement_roll_forward(tmp_path):
+    risk = RiskManager(RiskConfig(max_daily_loss_ratio=0.05, max_total_drawdown_ratio=0.30))
+    broker, manager, engine = _engine(tmp_path, risk=risk)
+    manager.runtime_policy_id = "directional.stress90"
+    manager.requires_explicit_settlement_roll_forward = True
+    engine.state.trading_day = "20260824"
+    engine.state.day_start_equity = 100_000.0
+    risk.set_day_start_equity(100_000.0, "20260824")
+    broker.account = AccountSnapshot(
+        balance=94_000.0,
+        equity=94_000.0,
+        available=94_000.0,
+        margin=0.0,
+        realized_pnl=-6_000.0,
+        unrealized_pnl=0.0,
+        trading_day="20260825",
+    )
+
+    engine.on_tick(_tick())
+
+    assert manager.observe_calls == []
+    assert engine.halted
+    assert engine.state.kill_switch
+    assert engine.state.trading_day == "20260824"
+    assert risk._day_start_equity == 100_000.0
+
+
 @pytest.mark.parametrize(
     ("settlement_id", "previous_settlement_equity"),
     [(11, 1_000_000.0), (10, 1_100_000.0)],
