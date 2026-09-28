@@ -808,6 +808,7 @@ class DirectionalProductionAcceptance:
         *,
         cost_bps: float,
         prepared: PreparedDirectionalContracts | None = None,
+        pre_reserve_scale: bool = False,
     ) -> ProductionSimulationResult:
         cost_bps = float(cost_bps)
         if not isfinite(cost_bps) or cost_bps < 0:
@@ -851,10 +852,21 @@ class DirectionalProductionAcceptance:
         first_divergence = ""
         output_rows: list[dict] = []
         event_rows: list[dict] = []
+        pre_reserve_scales: list[float] = []
         cost_rate = cost_bps / 10000.0
 
         for day, weight_row in weight_frame.iterrows():
             day = pd.Timestamp(day).normalize()
+            reserve_scale = 1.0
+            if pre_reserve_scale:
+                transition = self.config.max_daily_loss_ratio
+                reserve = self.config.max_total_drawdown_ratio - transition
+                if reserve <= transition:
+                    raise ValueError("pre-reserve transition needs reserve above daily loss")
+                completed_drawdown = max(0.0, 1.0 - equity / high_watermark)
+                reserve_scale = max(0.0, min(1.0, (reserve - completed_drawdown) / transition))
+                weight_row = weight_row * reserve_scale
+                pre_reserve_scales.append(reserve_scale)
             previous_equity = equity
             day_start_equity = previous_equity
             turnover_notional = 0.0
@@ -1380,6 +1392,8 @@ class DirectionalProductionAcceptance:
             )
         else:
             daily.set_index("date", inplace=True)
+        if pre_reserve_scale:
+            daily["pre_reserve_scale"] = pre_reserve_scales
         events = pd.DataFrame(event_rows, columns=AUDIT_EVENT_COLUMNS)
         return ProductionSimulationResult(
             daily=daily,
