@@ -395,8 +395,9 @@ def reallocate_survivor_row(
     oi_weights: Mapping[str, float],
     approved_weights: Mapping[str, float],
     prior_survivor: Mapping[str, float],
+    retain_cost_approved_budget: bool = False,
 ) -> dict[str, float]:
-    """Restore OI gross on eligible support using the frozen lexicographic tie-break."""
+    """Apply the frozen OI restoration or retain the approved budget for research."""
 
     original = _normalized_values(oi_weights, name="OI-confirmed")
     approved = _normalized_values(approved_weights, name="cost-approved")
@@ -421,6 +422,9 @@ def reallocate_survivor_row(
             raise Stress90InvariantError("cost-approved weights created new support")
         if np.sign(approved_row[index]) != np.sign(original_row[index]):
             raise Stress90InvariantError("cost-approved weights changed target sign")
+
+    if retain_cost_approved_budget:
+        return approved
 
     original_gross = float(np.abs(original_row).sum())
     if original_gross <= _NUMERIC_EPS or not bool(support.any()):
@@ -501,10 +505,14 @@ class Stress90CandidateState:
     def initial(
         cls,
         definition: Stress90PolicyDefinition = STRESS90_POLICY,
+        *,
+        retain_cost_approved_budget: bool = False,
     ) -> Stress90CandidateState:
         zeros = {product: 0.0 for product in definition.products}
         return cls(
-            policy_definition_digest=definition.policy_definition_digest,
+            policy_definition_digest=_candidate_policy_digest(
+                definition, retain_cost_approved_budget
+            ),
             products_manifest_digest=definition.products_manifest_digest,
             last_completed_target_day=None,
             last_decision_digest=None,
@@ -566,11 +574,27 @@ def _canonical_day(raw: str | date | datetime, *, name: str) -> str:
     return value
 
 
+def _candidate_policy_digest(
+    definition: Stress90PolicyDefinition, retain_cost_approved_budget: bool
+) -> str:
+    if not retain_cost_approved_budget:
+        return definition.policy_definition_digest
+    return _canonical_digest(
+        {
+            "parent_policy": definition.policy_definition_digest,
+            "survivor_budget": "cost_approved_without_oi_gross_restoration",
+        }
+    )
+
+
 def _validated_prior_state(
     state: Stress90CandidateState,
     definition: Stress90PolicyDefinition,
+    retain_cost_approved_budget: bool = False,
 ) -> None:
-    if state.policy_definition_digest != definition.policy_definition_digest:
+    if state.policy_definition_digest != _candidate_policy_digest(
+        definition, retain_cost_approved_budget
+    ):
         raise Stress90InvariantError("policy definition digest mismatch")
     if state.products_manifest_digest != definition.products_manifest_digest:
         raise Stress90InvariantError("products manifest digest mismatch")
@@ -615,10 +639,11 @@ def step_stress90_candidate(
     completed_close_day: str | date | datetime,
     completed_oi_day: str | date | datetime,
     definition: Stress90PolicyDefinition = STRESS90_POLICY,
+    retain_cost_approved_budget: bool = False,
 ) -> Stress90Decision:
     """Advance the frozen Base→OI→cost→survivor→HHI candidate exactly once in memory."""
 
-    _validated_prior_state(prior_state, definition)
+    _validated_prior_state(prior_state, definition, retain_cost_approved_budget)
     target_day = _canonical_day(target_trading_day, name="target trading day")
     close_day = _canonical_day(completed_close_day, name="completed close day")
     oi_day = _canonical_day(completed_oi_day, name="completed OI day")
@@ -679,6 +704,7 @@ def step_stress90_candidate(
         oi_weights=oi,
         approved_weights=approved,
         prior_survivor=prior_state.last_survivor_weights,
+        retain_cost_approved_budget=retain_cost_approved_budget,
     )
     current_hhi, prior_hhi_median, freeze, concentrations = advance_concentration_history(
         prior_state.completed_concentrations,
@@ -704,7 +730,9 @@ def step_stress90_candidate(
     }
     decision_digest = _canonical_digest(
         {
-            "policy_definition_digest": definition.policy_definition_digest,
+            "policy_definition_digest": _candidate_policy_digest(
+                definition, retain_cost_approved_budget
+            ),
             "target_trading_day": target_day,
             "input_days": input_days,
             "input_digests": input_digests,
@@ -715,7 +743,9 @@ def step_stress90_candidate(
         }
     )
     post_state = Stress90CandidateState(
-        policy_definition_digest=definition.policy_definition_digest,
+        policy_definition_digest=_candidate_policy_digest(
+            definition, retain_cost_approved_budget
+        ),
         products_manifest_digest=definition.products_manifest_digest,
         last_completed_target_day=target_day,
         last_decision_digest=decision_digest,
@@ -777,6 +807,7 @@ def build_stress90_candidate_path(
     confirming_flow: pd.DataFrame,
     initial_state: Stress90CandidateState | None = None,
     definition: Stress90PolicyDefinition = STRESS90_POLICY,
+    retain_cost_approved_budget: bool = False,
 ) -> Stress90CandidatePath:
     """Replay batch inputs through the exact incremental production transition."""
 
@@ -802,7 +833,9 @@ def build_stress90_candidate_path(
         require_finite=False,
     ).reindex(index=base.index)
 
-    state = initial_state or Stress90CandidateState.initial(definition)
+    state = initial_state or Stress90CandidateState.initial(
+        definition, retain_cost_approved_budget=retain_cost_approved_budget
+    )
     decisions: list[Stress90Decision] = []
     for target_day in base.index:
         history = close.loc[close.index < target_day]
@@ -826,6 +859,7 @@ def build_stress90_candidate_path(
             completed_close_day=input_day,
             completed_oi_day=input_day,
             definition=definition,
+            retain_cost_approved_budget=retain_cost_approved_budget,
         )
         decisions.append(decision)
         state = decision.post_state
