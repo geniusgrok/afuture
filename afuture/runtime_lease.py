@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import IO
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+# Linux UAPI asm-generic/fcntl.h; some Python builds omit this exported name.
+# The kernel call below remains authoritative and fails closed if unsupported.
+_LINUX_F_OFD_SETLK = 37
 
 
 class RuntimeLeaseError(RuntimeError):
@@ -30,8 +33,6 @@ def _locking_api():
         import fcntl
     except ImportError as exc:
         raise RuntimeLeaseError("order-capable runtime requires Linux OFD locking") from exc
-    if not hasattr(fcntl, "F_OFD_SETLK"):
-        raise RuntimeLeaseError("order-capable runtime requires Linux OFD locking")
     return fcntl
 
 
@@ -63,7 +64,7 @@ class AccountExclusiveRuntimeLease:
         offset = int(identity_digest, 16) % ((1 << 63) - 1)
         flock = struct.pack("hhqqi4x", fcntl.F_WRLCK, os.SEEK_SET, offset, 1, 0)
         try:
-            fcntl.fcntl(lock_fd, fcntl.F_OFD_SETLK, flock)
+            fcntl.fcntl(lock_fd, getattr(fcntl, "F_OFD_SETLK", _LINUX_F_OFD_SETLK), flock)
         except OSError as exc:
             os.close(lock_fd)
             if exc.errno in {errno.EACCES, errno.EAGAIN}:
