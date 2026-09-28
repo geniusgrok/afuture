@@ -35,6 +35,23 @@ def test_account_exclusive_runtime_lease_rejects_second_process_owner(tmp_path: 
     second.release()
 
 
+def test_linux_kernel_ofd_lease_when_python_omits_constant(tmp_path: Path, monkeypatch):
+    import fcntl
+    from afuture.runtime_lease import AccountExclusiveRuntimeLease, RuntimeLeaseError
+
+    monkeypatch.delattr(fcntl, "F_OFD_SETLK", raising=False)
+    first = AccountExclusiveRuntimeLease(tmp_path / "a", "a" * 64, role="live")
+    duplicate = AccountExclusiveRuntimeLease(tmp_path / "b", "a" * 64, role="live")
+    first.acquire()
+    try:
+        for path in first.paths:
+            path.unlink()
+        with pytest.raises(RuntimeLeaseError, match="already owned"):
+            duplicate.acquire()
+    finally:
+        first.release()
+
+
 def test_account_lease_exposes_exact_technical_activation_capability(tmp_path: Path):
     from afuture.runtime_lease import AccountExclusiveRuntimeLease
 
