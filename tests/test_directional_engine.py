@@ -615,7 +615,7 @@ def test_stress90_unproven_target_day_gap_enters_reduce_only_when_exposed(tmp_pa
     assert manager.completed_account_returns == []
 
 
-def test_stress90_weekend_rollover_rejects_without_official_session_ledger(tmp_path):
+def test_stress90_weekend_rollover_rejects_without_verified_session_and_settlement(tmp_path):
     _broker, manager, engine = _engine(tmp_path)
     manager.runtime_policy_id = "directional.stress90"
     manager.verified_completed_account_transitions.add(("20260821", "20260824"))
@@ -638,7 +638,7 @@ def test_stress90_weekend_rollover_rejects_without_official_session_ledger(tmp_p
         settlement_id=91,
     )
 
-    with pytest.raises(RuntimeError, match="trading-day gap"):
+    with pytest.raises(RuntimeError, match="requires verified session continuity"):
         engine._advance_trading_day(account)
 
     assert manager.completed_account_returns == []

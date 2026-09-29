@@ -414,8 +414,8 @@ class DirectionalTradingEngine(TradingEngine):
                 raise RuntimeError("Stress-90 trading-day gap identity is invalid") from exc
             if natural_days != 1:
                 raise RuntimeError(
-                    "Stress-90 trading-day gap is non-adjacent and requires an official "
-                    "immutable session ledger"
+                    "Stress-90 trading-day gap is non-adjacent and requires verified "
+                    "session continuity and explicit settlement roll-forward"
                 )
             continuity = getattr(
                 self.directional_manager,
