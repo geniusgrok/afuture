@@ -1173,6 +1173,36 @@ def test_runtime_prepares_candidate_once_from_cache_and_completed_oi(tmp_path: P
     assert record.state.completed_concentrations == (0.5,)
 
 
+def test_halted_candidate_prepares_zero_base_without_order_authority(tmp_path: Path):
+    from afuture.directional import DirectionalConfig
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_stress90_runtime import prepare_halted_stress90_candidate
+    from afuture.execution_aligned_policy import FROZEN_PRODUCTS
+    from afuture.risk import RiskConfig
+
+    _write_seed_state(tmp_path)
+    _write_completed_oi(tmp_path)
+    index = pd.date_range(end="2026-08-24", periods=170, freq="D")
+    flat = pd.DataFrame(100.0, index=index, columns=FROZEN_PRODUCTS)
+    DirectionalOHLCCacheStore(tmp_path / "directional_ohlc_cache.json").save(
+        FROZEN_PRODUCTS, flat, flat
+    )
+
+    prepared = prepare_halted_stress90_candidate(
+        directional_config=DirectionalConfig(
+            enabled=True, policy="stress90", products=FROZEN_PRODUCTS
+        ),
+        risk_config=RiskConfig(margin_estimate_buffer=1.25),
+        runtime_dir=tmp_path,
+        current_ctp_trading_day="20260825",
+        required_activity_day="20260824",
+    )
+
+    assert prepared.target_trading_day == "20260825"
+    assert set(prepared.base_weights) == set(FROZEN_PRODUCTS)
+    assert set(prepared.base_weights.values()) == {0.0}
+
+
 def test_runtime_refuses_candidate_when_ctp_rollover_was_not_observed(tmp_path: Path):
     from types import SimpleNamespace
 
