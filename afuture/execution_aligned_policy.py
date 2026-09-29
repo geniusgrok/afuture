@@ -511,7 +511,7 @@ def _holding_proxy_stream(
                     day,
                     preferred_symbols=preferred,
                 )
-                if prior_position >= 0 and target_products
+                if snapshot is not None and target_products
                 else {}
             )
             if selection_cache is not None:
