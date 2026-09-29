@@ -25,6 +25,7 @@ DATES = (
 WEEKLY_DATES = ("20220930", "20240208", "20240927", "20250627", "20250926", "20260925")
 OLD_URL = "https://tsite.shfe.com.cn/data/dailydata/{day}{kind}.dat"
 NEW_URL = "https://www.shfe.com.cn/data/tradedata/future/dailydata/{day}{kind}.dat"
+NEW_WEEKLY_URL = "https://www.shfe.com.cn/data/tradedata/future/weeklydata/{day}weeklystock.dat"
 MAX_BYTES = 2_000_000
 
 
@@ -33,7 +34,10 @@ def probe(output: Path, *, weekly_only: bool = False) -> list[dict[str, object]]
     records: list[dict[str, object]] = []
     kind = "weeklystock" if weekly_only else "dailystock"
     for day in WEEKLY_DATES if weekly_only else DATES:
-        urls = [OLD_URL, NEW_URL] if day <= "20250630" else [NEW_URL]
+        if weekly_only:
+            urls = [NEW_WEEKLY_URL]
+        else:
+            urls = [OLD_URL, NEW_URL] if day <= "20250630" else [NEW_URL]
         row: dict[str, object] = {"day": day, "kind": kind, "attempts": []}
         for template in urls:
             url = template.format(day=day, kind=kind)
