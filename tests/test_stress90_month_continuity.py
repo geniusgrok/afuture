@@ -14,6 +14,7 @@ def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path
     """Synthetic account evidence exercises persistent transaction state, not CTP finality."""
     from afuture.runtime_calendar import RuntimeTradingCalendar
     from afuture.stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionError,
         Stress90LifecycleTransactionStore,
         apply_stress90_lifecycle_transaction,
         build_stress90_settlement_roll_forward_targets,
@@ -57,6 +58,20 @@ def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path
             settlement_verified=True,
             settlement_id=43 + index,
         )
+        if index == 9:
+            with pytest.raises(Stress90LifecycleTransactionError):
+                build_stress90_settlement_roll_forward_targets(
+                    generic.state,
+                    policy.state,
+                    replace(account, settlement_verified=False),
+                )
+            with pytest.raises(Stress90LifecycleTransactionError):
+                build_stress90_settlement_roll_forward_targets(
+                    generic.state,
+                    policy.state,
+                    replace(account, deposit=1.0),
+                )
+            assert generic_store.load_required_record() == generic
         targets = build_stress90_settlement_roll_forward_targets(
             generic.state, policy.state, account
         )
