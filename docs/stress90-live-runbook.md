@@ -695,7 +695,7 @@ afuture watchdog --config <config> --once --max-age-seconds 15
 
 systemd live 模板使用 `Restart=on-failure`，异常/不确定重启使用退出码 75 并列入 `RestartPreventExitStatus`。启动先持有账户/runtime 互斥锁，再检查进程证据。未清洁退出默认失效技术许可并保持 HALTED/kill switch，只有本手册 Doctor 许可章节定义的同次 activation 提交窄窗口可按原证据续接；损坏、身份不符或已有账户状态丢失时保留证据并只读阻断。不得自动采用 `.prev` 或重建空账户。watchdog timer 只读证据并告警，不控制账户、不平仓、不解除 HALTED。
 
-`deploy/systemd/afuture-prepare-session.{service,timer}` 是待目标机审批后安装的盘前只读模板：北京时间工作日 08:45 与 20:55 各运行一次 `prepare-session --refresh-ohlc`，结果原子写入 `/var/lib/afuture/session-preflight.json`。节假日、柜台未就绪或资料不完整时命令失败关闭；定时器不追补停机期间错过的运行。服务失败须按退出码及该报告人工处理，报告写入失败以 stdout/journal 的 `report_error` 为准。模板不会执行 roll-forward/rebase、签发技术许可、启动 live、解除 HALTED 或证明账户跨日资金连续性；运行日期和权威交易日仍以柜台与经核验的日历为准。
+`deploy/systemd/afuture-prepare-session.{service,timer}` 是待目标机审批后安装的柜台零报单盘前模板：北京时间工作日 08:45 与 20:55 各运行一次 `prepare-session --refresh-ohlc`，可写入行情 OHLC 缓存，结果原子写入 `/var/lib/afuture/session-preflight.json`。这两个时点只是待目标柜台验证的模板值；若柜台交易日尚未切换或资料未齐，应失败关闭并据现场证据调整定时，而不能以本机时钟推断许可。节假日、柜台未就绪或资料不完整时命令失败关闭；定时器不追补停机期间错过的运行。服务失败须按退出码及该报告人工处理，报告写入失败以 stdout/journal 的 `report_error` 为准。模板不会执行 roll-forward/rebase、签发技术许可、启动 live、解除 HALTED 或证明账户跨日资金连续性；运行日期和权威交易日仍以柜台与经核验的日历为准。
 
 ## 结算格式与无人值守验收边界
 

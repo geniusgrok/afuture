@@ -1,5 +1,5 @@
 [Unit]
-Description=afuture read-only session preparation
+Description=afuture zero-order session preparation
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/afuture/afuture.toml
