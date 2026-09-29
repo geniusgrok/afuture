@@ -1,11 +1,9 @@
 name: research-shfe-warrant-probe
 
 on:
-  push:
-    branches: [codex/economic-rebuild-20260928]
-    paths:
-      - tools/probe_shfe_warrant.py
-      - .github/workflows/research-shfe-warrant-probe.yml
+  workflow_dispatch:
+
+# Research-only historical evidence; not a forecast or promotional claim.
 
 permissions:
   contents: read
