@@ -77,9 +77,10 @@ def test_prepare_session_failure_replaces_stale_success_report(
         raise RuntimeError("config unavailable")
 
     monkeypatch.setattr(command_router, "load_config", invalid_config)
-    assert command_router._run_new(
+    code = command_router._run_new(
         "prepare-session", ["--config", "missing", "--output", str(report)]
-    ) == 3
+    )
+    assert code == 3
     result = json.loads(report.read_text(encoding="utf-8"))
     assert result["passed"] is False
     assert result["error"] == "config unavailable"
@@ -95,12 +96,14 @@ def test_prepare_session_failure_does_not_follow_report_symlink(
     target.write_text('{"passed":true}', encoding="utf-8")
     report = tmp_path / "preflight.json"
     report.symlink_to(target)
+
     def invalid_config(*_args, **_kwargs):
         raise RuntimeError("config unavailable")
 
     monkeypatch.setattr(command_router, "load_config", invalid_config)
-    assert command_router._run_new(
+    code = command_router._run_new(
         "prepare-session", ["--config", "missing", "--output", str(report)]
-    ) == 3
+    )
+    assert code == 3
     assert target.read_text(encoding="utf-8") == '{"passed":true}'
     assert "report_error" in json.loads(capsys.readouterr().out)
