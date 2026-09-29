@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,11 @@ from afuture.models import AccountSnapshot
 
 def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path) -> None:
     """Synthetic account evidence exercises persistent transaction state, not CTP finality."""
+    from afuture.directional_activity import (
+        ContractActivity,
+        DirectionalActivitySnapshot,
+        DirectionalActivityStore,
+    )
     from afuture.directional_stress90_policy import STRESS90_POLICY
     from afuture.directional_stress90_state import (
         Stress90DecisionInputs,
@@ -83,6 +89,7 @@ def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path
     policy = policy_store.load_required_record()
     calendar = RuntimeTradingCalendar.load()
     store = Stress90LifecycleTransactionStore(tmp_path / "stress90_lifecycle_transaction.json")
+    activity_store = DirectionalActivityStore(tmp_path / "directional_activity.json")
     days = [
         day for day in calendar.open_days["SHFE"] if "2026-08-25" < day.isoformat() <= "2026-09-28"
     ]
@@ -99,6 +106,24 @@ def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path
             completed_account_day=source_day,
             current_ctp_trading_day=target_day,
         )
+        activity_store.save(
+            DirectionalActivitySnapshot(
+                source_day,
+                {
+                    "A2612": ContractActivity(
+                        "A2612",
+                        "DCE",
+                        "A",
+                        source_day,
+                        20_000.0,
+                        30_000.0,
+                        datetime.strptime(source_day, "%Y%m%d").replace(tzinfo=timezone.utc),
+                    )
+                },
+            )
+        )
+        completed_activity = activity_store.load()
+        assert completed_activity is not None and completed_activity.trading_day == source_day
         equity = 699_000.0 if index == 11 else 700_000.0 + index * 100.0
         account = AccountSnapshot(
             balance=equity,
@@ -168,7 +193,7 @@ def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path
             position_reconciliation_digest="1" * 64,
             session_ownership_digest="2" * 64,
             ctp_order_journal_digest="3" * 64,
-            activity_latest_completed_day=source_day,
+            activity_latest_completed_day=completed_activity.trading_day,
             market_continuity=market,
         )
         if index == 9:
