@@ -347,12 +347,6 @@ class DirectionalTradingEngine(TradingEngine):
         current_day = str(getattr(account, "trading_day", "") or "")
         if not marker or not current_day or current_day == marker:
             return False
-        if (
-            getattr(self.directional_manager, "requires_explicit_settlement_roll_forward", False)
-            and self.state.trading_day != current_day
-        ):
-            # A fresh account snapshot cannot grant the next day's order authority.
-            return False
         if not self.halted or self.state.runtime_mode != RuntimeMode.HALTED.value:
             return False
         if not self.broker.is_ready() or self.broker.get_active_orders():
