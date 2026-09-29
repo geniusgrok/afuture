@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python tools/probe_shfe_warrant.py shfe-warrant-probe
+      - run: python tools/probe_shfe_warrant.py shfe-warrant-probe --weekly-only
       - uses: actions/upload-artifact@v4
         if: always()
         with:
