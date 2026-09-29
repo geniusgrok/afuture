@@ -271,15 +271,21 @@ def _run_new(command: str, argv: list[str]) -> int:
                 _canonical_print(payload)
                 return code
             except Exception as exc:
-                _canonical_print(
-                    {
-                        "passed": False,
-                        "command": command,
-                        "error": str(exc),
-                        "orders_sent": 0,
-                        "cancels_sent": 0,
-                    }
-                )
+                from .session_preflight import _write_payload
+
+                failure = {
+                    "passed": False,
+                    "command": command,
+                    "error": str(exc),
+                    "orders_sent": 0,
+                    "cancels_sent": 0,
+                    "entered_running": False,
+                }
+                try:
+                    _write_payload(Path(args.output), failure)
+                except Exception as report_exc:
+                    failure["report_error"] = str(report_exc)
+                _canonical_print(failure)
                 return 3
         if command == "ctp-settlement-capture":
             from .settlement_capture import capture_test_settlement
