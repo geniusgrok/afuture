@@ -433,8 +433,9 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             pd.concat([close_history, synthetic_close]),
         )
         normalized = {str(product).upper(): float(value) for product, value in weights.items()}
-        if set(normalized) != set(STRESS90_POLICY.products):
+        if not set(normalized).issubset(STRESS90_POLICY.products):
             raise RuntimeError("Stress-90 Base target product manifest mismatch")
+        normalized = {product: normalized.get(product, 0.0) for product in STRESS90_POLICY.products}
         gross = sum(abs(value) for value in normalized.values())
         if gross > STRESS90_POLICY.max_gross_leverage + 1e-10:
             raise RuntimeError("Stress-90 Base target exceeds 2x gross")
