@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from test_stress90_lifecycle_transaction import _stores
+from test_stress90_operator_roll_forward import _market_stores
 
 from afuture.models import AccountSnapshot
 
@@ -16,6 +17,9 @@ def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path
         Stress90LifecycleTransactionStore,
         apply_stress90_lifecycle_transaction,
         build_stress90_settlement_roll_forward_targets,
+    )
+    from afuture.stress90_operator_continuity import (
+        load_stress90_operator_account_day_continuity_evidence,
     )
 
     generic_store, policy_store, generic, policy = _stores(tmp_path)
@@ -32,6 +36,15 @@ def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path
     assert any(day.month == 9 for day in days)
     assert any((right - left).days > 1 for left, right in zip(days, days[1:], strict=False))
     for index, day in enumerate(days, 1):
+        source_day = generic.state.trading_day
+        target_day = day.strftime("%Y%m%d")
+        ohlc_store, oi_store = _market_stores(source_day=source_day, target_day=target_day)
+        market = load_stress90_operator_account_day_continuity_evidence(
+            ohlc_store,
+            oi_store,
+            completed_account_day=source_day,
+            current_ctp_trading_day=target_day,
+        )
         account = AccountSnapshot(
             balance=700_000.0 + index * 100.0,
             equity=700_000.0 + index * 100.0,
@@ -39,7 +52,7 @@ def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path
             margin=0.0,
             realized_pnl=0.0,
             unrealized_pnl=0.0,
-            trading_day=day.strftime("%Y%m%d"),
+            trading_day=target_day,
             previous_settlement_equity=700_000.0 + index * 100.0,
             settlement_verified=True,
             settlement_id=43 + index,
@@ -56,7 +69,7 @@ def test_one_runtime_rolls_across_month_and_holiday_without_reset(tmp_path: Path
             trading_day=account.trading_day,
             account_identity_digest="b" * 64,
             account_snapshot=account,
-            account_day_continuity_digest="e" * 64,
+            account_day_continuity_digest=market.continuity_digest,
             operation_nonce=f"{index:064x}",
             operator_reason="synthetic offline continuity",
         )
