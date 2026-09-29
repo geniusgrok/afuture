@@ -192,6 +192,11 @@ def load_stress90_operator_account_day_continuity_evidence(
             "source_trading_day": transition.source_trading_day,
             "target_trading_day": transition.target_trading_day,
             "completed_oi_evidence_digest": transition.completed_oi_evidence_digest,
+            **(
+                {"session_continuity": asdict(transition.session_continuity)}
+                if getattr(transition, "session_continuity", None) is not None
+                else {}
+            ),
         }
     )
     identity = {

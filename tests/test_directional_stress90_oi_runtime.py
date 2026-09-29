@@ -6,6 +6,7 @@ import os
 import stat
 from dataclasses import replace
 from datetime import datetime
+from hashlib import sha256
 from multiprocessing import get_context
 from pathlib import Path
 from threading import BrokenBarrierError, Timer
@@ -1097,13 +1098,130 @@ def test_persisted_raw_transition_cannot_forge_a_weekend_session_ledger(
 
     with pytest.raises(
         OiEvidenceIntegrityError,
-        match="official immutable session ledger",
+        match="verified session evidence",
     ):
+        store.load_required_record()
+
+
+def test_verified_weekend_raw_transition_survives_store_reload_and_rejects_forgery(
+    tmp_path: Path,
+) -> None:
+    from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
+        Stress90OiEvidenceAggregator,
+        Stress90OiEvidenceStore,
+        VerifiedSessionContinuity,
+    )
+
+    catalog = _catalog()
+
+    def observe_friday(aggregator) -> None:
+        aggregator.set_expected_contracts("20260828", catalog)
+        for contract in catalog:
+            aggregator.observe_raw_tick(
+                _tick(contract, "20260828", datetime(2026, 8, 27, 21, tzinfo=_CHINA)),
+                contract,
+            )
+            aggregator.observe_raw_tick(
+                _tick(
+                    contract, "20260828", datetime(2026, 8, 28, 14, 59, tzinfo=_CHINA), volume=20
+                ),
+                contract,
+            )
+
+    # The external session schedule and its expected source OI digest are fixed
+    # before the store-under-test sees the target day.
+    fixture = Stress90OiEvidenceAggregator()
+    observe_friday(fixture)
+    fixture.set_expected_contracts("20260829", catalog)
+    expected_digest = fixture.completed_evidence("20260828").evidence_digest
+    source_identity = sha256(b"independent-test-counter-session-v1").hexdigest()
+    allowed = ("20260828", "20260831", expected_digest)
+
+    def verified_source(source: str, target: str, digest: str) -> VerifiedSessionContinuity:
+        if (source, target, digest) != allowed:
+            raise ValueError("not in fixed test session ledger")
+        return VerifiedSessionContinuity(
+            source,
+            target,
+            digest,
+            "test-counter-sessions",
+            "v1",
+            source_identity,
+            ("CZCE", "DCE", "INE", "SHFE"),
+            "20260828",
+            "20260831",
+            sha256(b"test-counter-night-mapping-v1").hexdigest(),
+        )
+
+    path = tmp_path / "stress90_oi_evidence.json"
+    store = Stress90OiEvidenceStore(path, session_verifier=verified_source)
+    aggregator = Stress90OiEvidenceAggregator(store=store)
+    aggregator.note_raw_market_connection(connected=True, generation=1)
+    observe_friday(aggregator)
+    aggregator.checkpoint()
+    with pytest.raises(OiEvidenceIntegrityError, match="source cannot verify"):
+        aggregator.set_expected_contracts("20260901", catalog)
+    assert aggregator.in_progress_contract(catalog[0].symbol).trading_day == "20260828"
+    aggregator.set_expected_contracts("20260831", catalog)
+    aggregator.observe_raw_tick(
+        _tick(catalog[0], "20260831", datetime(2026, 8, 31, 9, tzinfo=_CHINA)),
+        catalog[0],
+    )
+    aggregator.checkpoint()
+    restored = Stress90OiEvidenceStore(
+        path, session_verifier=verified_source
+    ).load_required_record()
+    assert len(restored.state.observed_transitions) == 1
+    assert restored.state.observed_transitions[0].session_continuity is not None
+    assert (
+        Stress90OiEvidenceAggregator(
+            store=Stress90OiEvidenceStore(path, session_verifier=verified_source)
+        )
+        .completed_evidence("20260828")
+        .complete
+    )
+    import pandas as pd
+
+    from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+    from afuture.directional_stress90_policy import STRESS90_POLICY
+    from afuture.directional_stress90_runtime import load_stress90_account_day_continuity_evidence
+    from afuture.stress90_operator_continuity import (
+        load_stress90_operator_account_day_continuity_evidence,
+    )
+
+    index = pd.date_range(end="2026-08-28", periods=140, freq="B")
+    close = pd.DataFrame(100.0, index=index, columns=STRESS90_POLICY.products)
+    ohlc = DirectionalOHLCCacheStore(tmp_path / "directional_ohlc_cache.json")
+    ohlc.save(STRESS90_POLICY.products, close, close)
+    verified_store = Stress90OiEvidenceStore(path, session_verifier=verified_source)
+    continuity = load_stress90_account_day_continuity_evidence(
+        ohlc,
+        verified_store,
+        completed_account_day="20260828",
+        current_ctp_trading_day="20260831",
+    )
+    operator = load_stress90_operator_account_day_continuity_evidence(
+        ohlc,
+        verified_store,
+        completed_account_day="20260828",
+        current_ctp_trading_day="20260831",
+    )
+    assert continuity.completed_oi_evidence_digest == expected_digest
+    assert operator.natural_day_gap == 3
+    with pytest.raises(OiEvidenceIntegrityError, match="verified session evidence"):
+        Stress90OiEvidenceStore(path).load_required_record()
+
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    envelope["state"]["observed_transitions"][0]["session_continuity"]["source_version"] = "forged"
+    _rewrite_oi_envelope(path, state=envelope["state"])
+    with pytest.raises(OiEvidenceIntegrityError, match="differs from verified source"):
         store.load_required_record()
 
 
 def test_restart_cannot_invent_unobserved_ctp_trading_day_transition(tmp_path: Path):
     from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
         Stress90OiEvidenceAggregator,
         Stress90OiEvidenceStore,
     )
@@ -1124,11 +1242,12 @@ def test_restart_cannot_invent_unobserved_ctp_trading_day_transition(tmp_path: P
     first.checkpoint()
 
     restarted = Stress90OiEvidenceAggregator(store=Stress90OiEvidenceStore(path))
-    restarted.set_expected_contracts("20260825", catalog)
+    with pytest.raises(OiEvidenceIntegrityError, match="source day is incomplete"):
+        restarted.set_expected_contracts("20260825", catalog)
     restarted.checkpoint()
 
     record = Stress90OiEvidenceStore(path).load_required_record()
-    assert record.state.completed[-1].trading_day == "20260821"
+    assert record.state.in_progress.trading_day == "20260821"
     assert record.state.observed_transitions == ()
 
 
@@ -1136,6 +1255,7 @@ def test_same_process_unproven_ctp_day_jump_cannot_invent_transition(tmp_path: P
     """A live process can remain up while MD disconnects across a real target day."""
 
     from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
         Stress90OiEvidenceAggregator,
         Stress90OiEvidenceStore,
     )
@@ -1158,23 +1278,21 @@ def test_same_process_unproven_ctp_day_jump_cannot_invent_transition(tmp_path: P
     # Even an uninterrupted MD generation cannot prove that 20260824 was a
     # holiday rather than an entirely missed session. Fail closed rather than
     # manufacturing a 20260821 -> 20260825 authoritative transition.
-    aggregator.observe_raw_tick(
-        _tick(
+    with pytest.raises(OiEvidenceIntegrityError, match="verified before raw tick callback"):
+        aggregator.observe_raw_tick(
+            _tick(first, "20260825", datetime(2026, 8, 24, 21, tzinfo=_CHINA)),
             first,
-            "20260825",
-            datetime(2026, 8, 24, 21, 0, tzinfo=_CHINA),
-        ),
-        first,
-    )
+        )
     aggregator.checkpoint()
 
     record = Stress90OiEvidenceStore(path).load_required_record()
-    assert record.state.completed[-1].trading_day == "20260821"
+    assert record.state.in_progress.trading_day == "20260821"
     assert record.state.observed_transitions == ()
 
 
 def test_ctp_md_disconnect_breaks_same_process_day_continuity(tmp_path: Path):
     from afuture.directional_stress90_oi_runtime import (
+        OiEvidenceIntegrityError,
         Stress90OiEvidenceAggregator,
         Stress90OiEvidenceStore,
     )
@@ -1191,15 +1309,15 @@ def test_ctp_md_disconnect_breaks_same_process_day_continuity(tmp_path: Path):
     )
     aggregator.note_raw_market_connection(connected=False, generation=1)
     aggregator.note_raw_market_connection(connected=True, generation=2)
-    aggregator.observe_raw_tick(
-        _tick(first, "20260825", datetime(2026, 8, 24, 21, 0, tzinfo=_CHINA)),
-        first,
-    )
+    with pytest.raises(OiEvidenceIntegrityError, match="verified before raw tick callback"):
+        aggregator.observe_raw_tick(
+            _tick(first, "20260825", datetime(2026, 8, 24, 21, tzinfo=_CHINA)),
+            first,
+        )
     aggregator.checkpoint()
 
     record = Stress90OiEvidenceStore(path).load_required_record()
-    assert record.state.completed[-1].complete is False
-    assert "raw_market_connection_interrupted" in record.state.completed[-1].issues
+    assert "raw_market_connection_interrupted" in record.state.in_progress.issues
     assert record.state.observed_transitions == ()
 
 
@@ -1476,7 +1594,7 @@ def test_oi_store_path_identity_normalizes_parent_aliases(tmp_path: Path) -> Non
     assert symlinked.lineage_path == canonical.lineage_path
 
 
-def test_oi_store_schema3_chain_and_duplicate_current_prev_crash_layout(
+def test_oi_store_schema4_chain_and_duplicate_current_prev_crash_layout(
     tmp_path: Path,
 ) -> None:
     from afuture.directional_stress90_oi_runtime import (
@@ -1489,9 +1607,13 @@ def test_oi_store_schema3_chain_and_duplicate_current_prev_crash_layout(
     first_envelope = json.loads(store.path.read_text(encoding="utf-8"))
     assert first.sequence == 1
     assert first.parent_checksum is None
-    assert first_envelope["schema_version"] == 3
+    assert first_envelope["schema_version"] == 4
     assert first_envelope["parent_checksum"] is None
     assert not store.previous_path.exists()
+
+    # An existing v3 record remains readable; the next CAS write advances to v4.
+    _rewrite_oi_envelope(store.path, schema_version=3)
+    first = store.load_required_record()
 
     second = store.save_state(
         Stress90OiEvidenceState(raw_ticks_observed=1),
@@ -1940,7 +2062,7 @@ def test_oi_store_rejects_malformed_or_wrong_identity_chain_records(
     elif corruption == "kind":
         _rewrite_oi_envelope(store.path, kind="wrong")
     elif corruption == "schema":
-        _rewrite_oi_envelope(store.path, schema_version=4)
+        _rewrite_oi_envelope(store.path, schema_version=5)
     else:
         envelope = json.loads(store.path.read_text(encoding="utf-8"))
         envelope["checksum"] = "0" * 64

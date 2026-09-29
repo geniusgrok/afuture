@@ -925,7 +925,7 @@ def test_completed_account_continuity_rejects_nonadjacent_endpoint_evidence(
         checksum="a" * 64,
     )
 
-    with pytest.raises(RuntimeError, match="official immutable session ledger"):
+    with pytest.raises(RuntimeError, match="verified session evidence"):
         load_stress90_account_day_continuity_evidence(
             ohlc_store,
             SimpleNamespace(load_required_record=lambda: oi_record),
