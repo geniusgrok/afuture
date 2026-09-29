@@ -173,6 +173,40 @@ def test_daily_loss_circuit_flattens_then_recovers_only_on_next_trading_day(tmp_
     assert engine.state.directional_daily_circuit_day == ""
 
 
+def test_stress90_daily_circuit_cannot_resume_before_explicit_settlement(tmp_path):
+    broker, manager, engine = _engine(
+        tmp_path,
+        RiskManager(RiskConfig(max_daily_loss_ratio=0.05, max_total_drawdown_ratio=0.30)),
+    )
+    manager.risk = True
+    manager.requires_explicit_settlement_roll_forward = True
+    broker.account = AccountSnapshot(
+        balance=94_000,
+        equity=94_000,
+        available=94_000,
+        margin=0,
+        realized_pnl=-6_000,
+        unrealized_pnl=0,
+        trading_day="20260825",
+    )
+    engine.on_tick(_tick())
+    _finish_reduce_only(manager, engine)
+    broker.account = AccountSnapshot(
+        balance=94_000,
+        equity=94_000,
+        available=94_000,
+        margin=0,
+        realized_pnl=0,
+        unrealized_pnl=0,
+        trading_day="20260826",
+    )
+
+    assert engine._try_daily_circuit_recovery(broker.account) is False
+    assert engine.halted and engine.state.kill_switch
+    assert engine.state.directional_daily_circuit_day == "20260825"
+    assert engine.state.trading_day == "20260825"
+
+
 def test_same_day_restart_bootstraps_directional_manager_when_next_day_recovers(tmp_path):
     broker, manager, engine = _engine(
         tmp_path,
