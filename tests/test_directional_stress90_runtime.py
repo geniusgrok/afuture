@@ -1429,6 +1429,7 @@ def _mechanical_manager(
     concentration_freeze: bool = False,
     quality_recorder=None,
     max_gross_leverage: float = 2.0,
+    real_inputs: bool = False,
 ):
     from types import SimpleNamespace
 
@@ -1442,35 +1443,69 @@ def _mechanical_manager(
 
     seed_path, state_path = _write_seed_state(tmp_path)
     _bind_seed_state_to_test_account(state_path)
+    oi_path = tmp_path / "oi.json"
+    ohlc_path = None
+    if real_inputs:
+        import numpy as np
+
+        from afuture.directional_ohlc_cache import DirectionalOHLCCacheStore
+
+        oi_path = _write_completed_oi(tmp_path)
+        ohlc_path = tmp_path / "directional_ohlc_cache.json"
+        index = pd.bdate_range(end="2026-08-24", periods=400)
+        step = np.arange(len(index))
+        prices = pd.DataFrame(
+            {
+                product: 100 * np.exp(np.cumsum(0.0015 + 0.002 * np.sin(step * 0.17 + i * 0.6)))
+                for i, product in enumerate(FROZEN_PRODUCTS)
+            },
+            index=index,
+        )
+        DirectionalOHLCCacheStore(ohlc_path).save(FROZEN_PRODUCTS, prices * 0.999, prices)
     intent_path = tmp_path / "stress90_execution_intent.json"
     now = datetime(2026, 8, 24, 21, 0, tzinfo=_CHINA)
-    contract = ContractInfo("A2612", "DCE", "A", "2026-12-15")
-    tick = Tick(
-        "A2612",
-        "DCE",
-        now,
-        999.0,
-        1001.0,
-        1000.0,
-        1000.0,
-        1000.0,
-        "20260825",
-        volume=20_000.0,
-        open_interest=30_000.0,
-    )
-    spec = ContractSpec("A2612", "DCE", 10.0, 1.0, 0.10, 0.10)
+    from afuture.directional_sessions import PRODUCT_SESSION_MANIFEST
+
+    products = ("AU", "B", "BC") if real_inputs else ("A",)
+    catalog = [
+        ContractInfo(
+            f"{product}2612", PRODUCT_SESSION_MANIFEST[product].exchange, product, "2026-12-15"
+        )
+        for product in products
+    ]
+    ticks = {
+        contract.symbol: Tick(
+            contract.symbol,
+            contract.exchange,
+            now,
+            999.0,
+            1001.0,
+            1000.0,
+            1000.0,
+            1000.0,
+            "20260825",
+            volume=20_000.0,
+            open_interest=30_000.0,
+        )
+        for contract in catalog
+    }
+    specs = {
+        contract.symbol: ContractSpec(contract.symbol, contract.exchange, 10.0, 1.0, 0.10, 0.10)
+        for contract in catalog
+    }
     activity = DirectionalActivitySnapshot(
         "20260824",
         {
-            "A2612": ContractActivity(
-                "A2612",
-                "DCE",
-                "A",
+            contract.symbol: ContractActivity(
+                contract.symbol,
+                contract.exchange,
+                contract.product,
                 "20260824",
                 20_000.0,
                 30_000.0,
                 now,
             )
+            for contract in catalog
         },
     )
 
@@ -1537,14 +1572,15 @@ def _mechanical_manager(
         historical_mode=True,
         policy_state_path=state_path,
         seed_path=seed_path,
-        oi_evidence_path=tmp_path / "oi.json",
+        oi_evidence_path=oi_path,
+        ohlc_cache_path=ohlc_path,
         execution_intent_path=intent_path,
         activity_tracker=SimpleNamespace(completed_snapshot=activity),
-        static_specs={"A2612": spec},
+        static_specs=specs,
         quality_recorder=quality_recorder,
     )
     weights = {product: 0.0 for product in STRESS90_POLICY.products}
-    weights["A"] = target_weight
+    weights[products[0]] = target_weight
     prepared = SimpleNamespace(
         previous_target_trading_day="20260824",
         target_trading_day="20260825",
@@ -1558,11 +1594,12 @@ def _mechanical_manager(
         concentration_freeze=concentration_freeze,
         input_days={"completed_close": "20260824", "completed_oi": "20260824"},
     )
-    manager._prepare_decision_for_current_day = lambda current, **kwargs: prepared
+    if not real_inputs:
+        manager._prepare_decision_for_current_day = lambda current, **kwargs: prepared
     manager._initialized = True
-    manager._catalog = [contract]
-    manager._catalog_by_symbol = {contract.symbol: contract}
-    manager._ticks = {tick.symbol: tick}
+    manager._catalog = catalog
+    manager._catalog_by_symbol = {contract.symbol: contract for contract in catalog}
+    manager._ticks = ticks
     return manager, broker, intent_path, now
 
 
@@ -1616,6 +1653,99 @@ def test_runtime_records_one_complete_quality_decision_before_first_order(tmp_pa
     assert rows[0]["stress90_margin_fitted_target"] == {"A2612": 10}
     assert rows[0]["stress90_decision_digest"] == "d" * 64
     assert len(broker.orders) == 2
+
+
+def test_real_policy_completed_market_input_reaches_nonzero_offline_order(tmp_path: Path):
+    """Use the production candidate preparer and planner with isolated Broker I/O."""
+    from afuture.directional_stress90_state import Stress90PolicyStateStore
+
+    manager, broker, intent_path, now = _mechanical_manager(
+        tmp_path, target_weight=0.0, real_inputs=True
+    )
+    prepared = manager._prepare_decision_for_current_day("20260825")
+    assert any(abs(weight) > 0 for weight in prepared.base_weights.values())
+    assert prepared.base_weights["B"] > 0
+    result = manager.maybe_rebalance(now)
+    assert result.action == "open"
+    assert broker.orders
+    assert intent_path.exists()
+    assert (
+        Stress90PolicyStateStore(tmp_path / "stress90_policy_state.json")
+        .load_required()
+        .prepared_decision
+        == prepared
+    )
+
+
+def test_real_policy_order_fills_settles_and_recovers_one_account(tmp_path: Path):
+    """Carry one production policy decision through durable simulated Broker truth."""
+    from afuture.broker.sim import SimBroker
+    from afuture.models import Offset
+
+    manager, _recording_broker, intent_path, now = _mechanical_manager(
+        tmp_path, target_weight=0.0, real_inputs=True
+    )
+    broker_path = tmp_path / "sim_broker.json"
+    catalog = manager._catalog
+    specs = manager._specs
+
+    class AccountBoundSimBroker(SimBroker):
+        def get_account_identity_digest(self):
+            return _ACCOUNT_IDENTITY
+
+    broker = AccountBoundSimBroker(
+        100_000.0,
+        specs,
+        conservative=True,
+        latency_ticks=1,
+        contract_catalog=catalog,
+        state_path=broker_path,
+    )
+    broker.start()
+    broker.synchronize_trading_day("20260825")
+    for tick in manager._ticks.values():
+        with broker.market_batch(trading_day=tick.trading_day):
+            broker.publish_tick(tick)
+    manager.broker = broker
+
+    result = manager.maybe_rebalance(now)
+    assert result.action == "open"
+    assert intent_path.exists()
+    assert any(order.request.offset is Offset.OPEN for order in broker.get_orders())
+    assert not broker.get_trades()
+    assert broker.get_active_orders()
+    assert manager.maybe_rebalance(now).action == "wait"
+    for tick in manager._ticks.values():
+        with broker.market_batch(trading_day=tick.trading_day):
+            broker.publish_tick(replace(tick, timestamp=tick.timestamp.replace(minute=1)))
+    assert broker.get_trades()
+    assert broker.get_positions()
+    filled_positions = broker.get_positions()
+    filled_trade_ids = {trade.trade_id for trade in broker.get_trades()}
+    completed_equity = broker.get_account().equity
+    broker.synchronize_trading_day("20260826")
+    settled = broker.get_account()
+    assert settled.previous_settlement_equity == pytest.approx(completed_equity)
+    assert settled.settlement_verified and settled.settlement_id == 1
+    settled_positions = broker.get_positions()
+    assert all(position.long_today == position.short_today == 0 for position in settled_positions)
+    assert settled_positions
+    broker.stop()
+
+    restarted = AccountBoundSimBroker(
+        100_000.0,
+        specs,
+        conservative=True,
+        latency_ticks=1,
+        contract_catalog=catalog,
+        state_path=broker_path,
+    )
+    assert restarted.get_positions() == settled_positions
+    assert restarted.get_account() == settled
+    assert restarted.get_account_identity_digest() == _ACCOUNT_IDENTITY
+    assert filled_trade_ids
+    assert filled_positions != settled_positions
+    assert restarted.get_trades() == []  # completed session is compacted into broker truth
 
 
 def test_runtime_persists_execution_intent_before_order_and_reuses_it_after_partial_fill(
