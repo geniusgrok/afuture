@@ -1,0 +1,11 @@
+[Unit]
+Description=Prepare afuture sessions without issuing trading permits
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:45:00 Asia/Shanghai
+OnCalendar=Mon..Fri *-*-* 20:55:00 Asia/Shanghai
+Persistent=false
+Unit=afuture-prepare-session.service
+
+[Install]
+WantedBy=timers.target
