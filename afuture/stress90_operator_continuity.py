@@ -101,7 +101,7 @@ def load_stress90_operator_account_day_continuity_evidence(
     completed_account_day: str,
     current_ctp_trading_day: str,
 ) -> Stress90OperatorAccountDayContinuityEvidence:
-    """Prove one observed market-session transition without guessing a trading calendar."""
+    """Require an observed transition and a covered expected exchange day."""
 
     from .directional_ohlc_refresh import load_stress90_completed_ohlc
     from .directional_stress90_policy import STRESS90_POLICY
@@ -116,6 +116,19 @@ def load_stress90_operator_account_day_continuity_evidence(
     source = source_dt.strftime("%Y%m%d")
     target = target_dt.strftime("%Y%m%d")
     natural_gap = (target_dt.date() - source_dt.date()).days
+    from .runtime_calendar import RuntimeCalendarError, RuntimeTradingCalendar
+
+    try:
+        calendar = RuntimeTradingCalendar.load()
+        exchanges = {calendar.products[product].exchange for product in STRESS90_POLICY.products}
+        if any(calendar.next_trading_day(source, exchange) != target for exchange in exchanges):
+            raise Stress90OperatorContinuityError(
+                "operator continuity skipped an expected exchange trading day"
+            )
+    except (RuntimeCalendarError, KeyError) as exc:
+        raise Stress90OperatorContinuityError(
+            "operator continuity exchange trading day coverage is unavailable"
+        ) from exc
     try:
         entry = load_stress90_completed_ohlc(
             ohlc_store,
