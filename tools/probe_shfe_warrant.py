@@ -22,19 +22,21 @@ DATES = (
     "20260925",
     "20260928",
 )
-OLD_URL = "https://tsite.shfe.com.cn/data/dailydata/{day}dailystock.dat"
-NEW_URL = "https://www.shfe.com.cn/data/tradedata/future/dailydata/{day}dailystock.dat"
+WEEKLY_DATES = ("20220930", "20240208", "20240927", "20250627", "20250926", "20260925")
+OLD_URL = "https://tsite.shfe.com.cn/data/dailydata/{day}{kind}.dat"
+NEW_URL = "https://www.shfe.com.cn/data/tradedata/future/dailydata/{day}{kind}.dat"
 MAX_BYTES = 2_000_000
 
 
-def probe(output: Path) -> list[dict[str, object]]:
+def probe(output: Path, *, weekly_only: bool = False) -> list[dict[str, object]]:
     output.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, object]] = []
-    for day in DATES:
+    kind = "weeklystock" if weekly_only else "dailystock"
+    for day in WEEKLY_DATES if weekly_only else DATES:
         urls = [OLD_URL, NEW_URL] if day <= "20250630" else [NEW_URL]
-        row: dict[str, object] = {"day": day, "attempts": []}
+        row: dict[str, object] = {"day": day, "kind": kind, "attempts": []}
         for template in urls:
-            url = template.format(day=day)
+            url = template.format(day=day, kind=kind)
             attempt: dict[str, object] = {"source_url": url}
             try:
                 request = urllib.request.Request(
@@ -49,8 +51,8 @@ def probe(output: Path) -> list[dict[str, object]]:
                     raise ValueError("official file exceeds probe bound")
                 payload = json.loads(raw)
                 if not isinstance(payload, dict) or not isinstance(payload.get("o_cursor"), list):
-                    raise ValueError("official response is not a daily warrant JSON table")
-                name = f"{day}dailystock.dat"
+                    raise ValueError("official response is not a stock JSON table")
+                name = f"{day}{kind}.dat"
                 (output / name).write_bytes(raw)
                 row.update(
                     source_url=url,
@@ -80,7 +82,10 @@ def probe(output: Path) -> list[dict[str, object]]:
 
 
 if __name__ == "__main__":
-    result = probe(Path(sys.argv[1] if len(sys.argv) > 1 else "shfe-warrant-probe"))
+    result = probe(
+        Path(sys.argv[1] if len(sys.argv) > 1 else "shfe-warrant-probe"),
+        weekly_only="--weekly-only" in sys.argv[2:],
+    )
     print(json.dumps(result, ensure_ascii=False))
     if not any("sha256" in row for row in result):
         sys.exit("no official original could be downloaded")
