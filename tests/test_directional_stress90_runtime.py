@@ -1075,7 +1075,7 @@ def test_base_weight_transition_uses_exact_authoritative_target_index(tmp_path: 
         def target_weights(self, open_prices, close):
             self.open_index = open_prices.index.copy()
             self.close_index = close.index.copy()
-            return {product: 0.0 for product in FROZEN_PRODUCTS}
+            return {"A": 0.5}
 
     manager = Stress90DirectionalPortfolioManager(
         DirectionalConfig(enabled=True, policy="stress90", products=FROZEN_PRODUCTS),
@@ -1086,6 +1086,7 @@ def test_base_weight_transition_uses_exact_authoritative_target_index(tmp_path: 
         seed_path=tmp_path / "seed.json",
         oi_evidence_path=tmp_path / "oi.json",
     )
+    base_policy = manager.policy
     spy = SpyPolicy()
     manager.policy = spy
     index = pd.date_range("2026-01-01", periods=170, freq="D")
@@ -1099,9 +1100,28 @@ def test_base_weight_transition_uses_exact_authoritative_target_index(tmp_path: 
     )
 
     assert set(weights) == set(FROZEN_PRODUCTS)
+    assert weights["A"] == 0.5
+    assert all(value == 0.0 for product, value in weights.items() if product != "A")
     assert spy.open_index[-1] == pd.Timestamp("2026-09-30")
     assert spy.close_index[-1] == pd.Timestamp("2026-09-30")
     assert spy.close_index[-2] == index[-2]
+
+    manager.policy = base_policy
+    flat = pd.DataFrame(100.0, index=index, columns=FROZEN_PRODUCTS)
+    assert set(
+        manager._base_weights_for_transition(
+            SimpleNamespace(open=flat, close=flat),
+            completed_input_day=index[-2].strftime("%Y%m%d"),
+            target_trading_day="20260930",
+        ).values()
+    ) == {0.0}
+    manager.policy = SimpleNamespace(target_weights=lambda *_: {"UNKNOWN": 1.0})
+    with pytest.raises(RuntimeError, match="product manifest mismatch"):
+        manager._base_weights_for_transition(
+            entry,
+            completed_input_day=index[-2].strftime("%Y%m%d"),
+            target_trading_day="20260930",
+        )
 
 
 def test_runtime_prepares_candidate_once_from_cache_and_completed_oi(tmp_path: Path):
