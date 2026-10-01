@@ -291,7 +291,7 @@ Stress-90 Shadow 使用 `runtime/shadow/` 下单独 bootstrap、activation 和�
 
 ### 11.1 Stress-90 账户连续性模式
 
-Stress-90 默认 `directional.account_continuity_mode = "strict"`。未配置该字段时行为与原有严格模式完全一致：缺少 prior-day final funding/settlement witness 或权威 nonadjacent session ledger 时继续 fail closed，现有 `stress90-settlement-roll-forward` 的含义不变。
+Stress-90 默认 `directional.account_continuity_mode = "strict"`。缺少 prior-day final funding/settlement witness 或权威 nonadjacent session ledger 时继续 fail closed。正常日终协调器与 `stress90-settlement-roll-forward` 复用内部服务；首次阶段授权、完整结算事实、账户 lease、原子事务、市场准备及风险检查全部合格后才能技术续行。真实 CTP 最终结算来源未认证、未配置，因此该自动跨日能力保持关闭；离线通过不构成现场或实盘授权。
 
 `operator_managed` 只面向个人专用、单账户、`account_exclusive=true` 的 live Stress-90 runtime。它记录本地 `stress90_operator_continuity.json` receipt，把当前 CTP 交易日、账户/epoch/runtime、registry/TDE、完整 session ownership、order journal、Broker/local 持仓对账、Deposit/Withdraw、OHLC/activity/OI/policy 对齐和操作者的“无人工交易、无外部委托、无入金、无出金”声明绑定在同一 checksum 链中。该 receipt 的 authority 是 `operator_trust`，**不是**交易所/Broker 官方结算见证或官方 session ledger；`external_activation_gates_completed` 始终保持 `false`。
 

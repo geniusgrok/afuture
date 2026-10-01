@@ -707,6 +707,9 @@ class DirectionalPortfolioManager:
     ) -> None:
         # This runs after sizing/authorization and before EVERY child write.
         # A previous check is not authority to send through a later fault.
+        authority = getattr(self, "day_end_order_authority", None)
+        if callable(authority):
+            authority(request)
         if not self.broker.is_ready():
             raise RuntimeError("broker is not ready")
         health = getattr(self.broker, "health_error", None)

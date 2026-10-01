@@ -11,7 +11,7 @@
 
 ## Current routing state
 
-- The unattended 24×7 implementation task resumes PR #55 in `ychenracing/afuture`; inspect its current remote branch, diff, checks and reviews before acting. Do not create a replacement PR for that task.
+- The normal day-end engineering task resumes PR #55 in `geniusgrok/afuture`; inspect its current remote branch, diff, checks and reviews before acting. Do not create a replacement PR for that task. The 2026-09-30 owner authorization permits engineering merge once offline acceptance, preservation and actual repository protection pass; it does not authorize deployment or real gateways/orders. Research PR #63 remains separate.
 - Match any available local Git commits and recovery bundle against the remote before overwriting or assuming the PR body contains unpushed work. Unpushed work is not remote-saved work.
 - For other authorized tasks, resolve the matching active PR or latest `main` and follow `AGENTS.md`.
 
@@ -26,4 +26,4 @@
 
 Before acting on mutable state, verify the current `main`, matching open PRs, relevant checks, and the explicit task contract. If this index conflicts with current GitHub state or a later authorized task, GitHub/task authority wins and this file should be updated narrowly.
 
-_Last reviewed: 2026-09-23._
+_Last reviewed: 2026-10-01._

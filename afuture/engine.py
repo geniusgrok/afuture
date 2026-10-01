@@ -473,7 +473,7 @@ class TradingEngine:
             return False
         try:
             trade.validate()
-            trading_day = self._synchronize_trading_day_for_trade()
+            trading_day = self._trade_trading_day(trade)
             identity = self._trade_identity(trade, trading_day)
         except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             self.emergency_stop(f"invalid trade event: {exc}")
@@ -508,6 +508,9 @@ class TradingEngine:
         self._audit_pair_balance()
         self._cleanup_retired_auto_pairs()
         return True
+
+    def _trade_trading_day(self, trade) -> str:
+        return self._synchronize_trading_day_for_trade()
 
     def _synchronize_trading_day_for_trade(self) -> str:
         """Roll persisted state before applying the first fill reported for a new broker day."""

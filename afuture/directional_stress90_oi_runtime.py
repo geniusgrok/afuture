@@ -1016,7 +1016,7 @@ def _state_from_payload(
             datetime.strptime(target, "%Y%m%d") - datetime.strptime(source, "%Y%m%d")
         ).days
         session = None
-        if natural_days != 1:
+        if natural_days != 1 or "session_continuity" in item:
             if (
                 not completed_source.complete
                 or completed_source.source != CTP_RAW_TICK_SOURCE
@@ -1028,8 +1028,6 @@ def _state_from_payload(
             session = _verified_session_continuity(
                 source, target, digest, session_verifier, item["session_continuity"]
             )
-        elif "session_continuity" in item:
-            raise OiEvidenceIntegrityError("adjacent OI transition has unexpected session evidence")
         transitions.append(ObservedTradingDayTransition(source, target, digest, session))
     transition_keys = tuple(
         (item.source_trading_day, item.target_trading_day) for item in transitions
@@ -1928,6 +1926,42 @@ class Stress90OiEvidenceAggregator:
             self._rollover_unlocked(day, expected)
             self._contract_catalog = catalog
         return expected_symbols
+
+    def arm_verified_session_rollover(self, source_day: str, target_day: str) -> None:
+        """Recover a lost process-local transition from independently verified source data.
+
+        This only arms the existing transition. A validated target raw packet on
+        the current connection must still confirm it; restart never proves continuity.
+        The coordinator calls this from its query worker, outside tick callbacks.
+        """
+        with self._lock:
+            completed = next((x for x in self._completed if x.trading_day == source_day), None)
+            if completed is None or not completed.complete:
+                raise OiEvidenceIntegrityError("verified rollover source OI is incomplete")
+            if any(
+                x.source_trading_day == source_day and x.target_trading_day == target_day
+                for x in self._observed_transitions
+            ):
+                return
+            pending = self._pending_observed_transition
+            if (
+                pending is not None
+                and pending[0].source_trading_day == source_day
+                and pending[0].target_trading_day == target_day
+            ):
+                return
+        session = _verified_session_continuity(
+            source_day, target_day, completed.evidence_digest, self._session_verifier
+        )
+        with self._lock:
+            if self._in_progress is None or self._in_progress.trading_day != target_day:
+                raise OiEvidenceIntegrityError("verified rollover target generation changed")
+            self._pending_observed_transition = (
+                ObservedTradingDayTransition(
+                    source_day, target_day, completed.evidence_digest, session
+                ),
+                self._raw_market_connection_generation,
+            )
 
     def refresh_contract_catalog(
         self,
