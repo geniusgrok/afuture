@@ -801,6 +801,34 @@ def test_starting_only_at_day_session_cannot_claim_complete_night_evidence():
     )
 
 
+@pytest.mark.parametrize("minute,complete", [(0, True), (6, False)])
+def test_calendar_cancelled_night_requires_the_real_day_open(minute, complete):
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceAggregator
+    from afuture.runtime_calendar import RuntimeTradingCalendar
+
+    calendar = RuntimeTradingCalendar.load()
+    assert (
+        calendar.expected_trading_day("A2612", datetime(2026, 9, 24, 21, 0, tzinfo=_CHINA), "DCE")
+        is None
+    )
+    catalog = _catalog()
+    aggregator = Stress90OiEvidenceAggregator()
+    aggregator.set_expected_contracts("20260928", catalog)
+    for contract in catalog:
+        for stamp, volume in (
+            (datetime(2026, 9, 28, 9, minute, tzinfo=_CHINA), 10),
+            (datetime(2026, 9, 28, 14, 59, tzinfo=_CHINA), 20),
+        ):
+            aggregator.observe_raw_tick(_tick(contract, "20260928", stamp, volume=volume), contract)
+    aggregator.set_expected_contracts("20260929", catalog)
+    evidence = aggregator.completed_evidence("20260928")
+    assert evidence.complete is complete
+    if not complete:
+        assert all(
+            "opening_session_boundary_missing" in row.issues for row in evidence.contracts.values()
+        )
+
+
 def test_in_progress_coverage_is_not_complete_before_closing_boundary():
     from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceAggregator
 

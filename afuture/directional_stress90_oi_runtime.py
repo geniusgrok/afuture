@@ -1583,7 +1583,9 @@ def _update_bar(bar: OiBarEvidence, tick: Tick, volume_delta: float) -> OiBarEvi
     )
 
 
-def _contract_boundary_complete(contract: ContractOiEvidence) -> tuple[bool, tuple[str, ...]]:
+def _contract_boundary_complete(
+    contract: ContractOiEvidence, calendar
+) -> tuple[bool, tuple[str, ...]]:
     first_bucket = session_bucket_for_tick(
         contract.product, contract.first_tick_timestamp, contract.trading_day
     )
@@ -1591,7 +1593,19 @@ def _contract_boundary_complete(contract: ContractOiEvidence) -> tuple[bool, tup
         contract.product, contract.last_tick_timestamp, contract.trading_day
     )
     issues = contract.issues
-    first_session = PRODUCT_SESSION_MANIFEST[contract.product].sessions[0]
+    definition = PRODUCT_SESSION_MANIFEST[contract.product]
+    first_session = definition.sessions[0]
+    account_day = datetime.strptime(contract.trading_day, "%Y%m%d").date()
+    if calendar.coverage_start <= account_day <= calendar.coverage_end:
+        opened = calendar.open_days[contract.exchange]
+        if account_day not in opened:
+            issues = _append_issue(issues, "closed_exchange_session")
+        elif definition.has_night_session:
+            previous = max((day for day in opened if day < account_day), default=None)
+            if previous in calendar.no_night_dates[contract.exchange]:
+                # A cancelled prior-open-date night is absent market activity,
+                # not missing coverage. The real day open remains mandatory.
+                first_session = definition.sessions[1]
     if (
         first_bucket is None
         or first_bucket.session != first_session
@@ -1617,12 +1631,15 @@ def _contract_boundary_complete(contract: ContractOiEvidence) -> tuple[bool, tup
 
 
 def _finalize_day(in_progress: InProgressOiEvidence) -> CompletedOiEvidence:
+    from .runtime_calendar import RuntimeTradingCalendar
+
+    calendar = RuntimeTradingCalendar.load()
     expected_symbols = _all_expected_symbols(in_progress.expected_contracts)
     received = set(in_progress.contracts)
     missing = tuple(sorted(expected_symbols - received))
     contracts: dict[str, ContractOiEvidence] = {}
     for symbol, raw in in_progress.contracts.items():
-        complete, issues = _contract_boundary_complete(raw)
+        complete, issues = _contract_boundary_complete(raw, calendar)
         # The frozen batch candidate defines ``first_hold`` as the hold at the
         # end of the first completed 60m bar, not the session-open raw Tick.
         # Normalize the contract summary from completed bar mechanics so live

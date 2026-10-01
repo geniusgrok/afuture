@@ -52,7 +52,16 @@ def _advance(fixture, source, target, *, restart=False):
     fixture.broker.synchronize_trading_day(target)  # external counter input, not runtime WAL
     fixture.engine.run_once()
     assert not fixture.engine.halted, fixture.engine.state.kill_reason
-    assert fixture.engine.day_end_paused
+    assert fixture.engine.day_end_paused, (
+        source,
+        target,
+        fixture.engine._initialized,
+        fixture.broker.is_ready(),
+        fixture.engine.state.trading_day,
+        fixture.engine.state.runtime_mode,
+        fixture.engine.day_end_coordinator.last_error,
+        [event.event_type for event in fixture.broker._events],
+    )
     # Wait only for the background catalog query before publishing raw new-session packets.
     coordinator = fixture.engine.day_end_coordinator
     deadline = monotonic() + 5

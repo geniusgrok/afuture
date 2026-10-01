@@ -11,7 +11,7 @@ import json
 import re
 from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import datetime
 from hashlib import sha256
 from math import isclose, isfinite
@@ -682,8 +682,15 @@ class Stress90DayEndCoordinator:
             self.provider.require_current(facts)
             self._require_stage(engine)
             current = engine.state_store.load_required_record()
-            if current.state != engine.state or not normal_day_end_pause(current.state):
-                raise RuntimeError("runtime changed before day-end technical readiness")
+            if current.state != engine.state:
+                changed = ",".join(
+                    field.name
+                    for field in fields(RuntimeState)
+                    if getattr(current.state, field.name) != getattr(engine.state, field.name)
+                )
+                raise RuntimeError("runtime changed before day-end technical readiness: " + changed)
+            if not normal_day_end_pause(current.state):
+                raise RuntimeError("normal day-end pause changed before technical readiness")
             stage = {
                 **current.state.strategy_states[STAGE_KEY],
                 "last_settlement": {

@@ -507,7 +507,7 @@ nonce receipt 永不删除或淘汰，
 损坏、symlink、marker-only、lock-only 或 current 丢失都属于 OI durable-state incident，`.prev`
 只能用于诊断，绝不提升为 current。
 
-OI evidence 必须满足 schema 3、精确 predecessor checksum 和 lineage 约束。校验失败时保持
+OI evidence 必须满足 schema 3 或 4、精确 predecessor checksum 和 lineage 约束。校验失败时保持
 `HALTED`，保全 current、`.prev`、lock、runtime 目录和外部备份；在新的 pristine runtime 路径
 重新 bootstrap/commission，并从柜台 raw evidence 观察一个完整、权威的 counter trading day。
 在该证据完成前，Stress-90 activation 持续阻断。
@@ -570,7 +570,7 @@ consumption receipt。若在两者之间崩溃，同一 prepared lifecycle 只�
 nonce 不一致仍由 `_require_no_unpersisted_lifecycle_crash_fill_adoption` 阻断。
 
 首次 bootstrap 的 durable 顺序固定为 OHLC cache、activity、bootstrap seed、policy state，最后
-才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。整个 write bootstrap 从 source
+才写 OI schema 4 sequence 1；OI 是 bootstrap commit point。整个 write bootstrap 从 source
 复核、preflight snapshot、先决证据写入、OI save 到 rollback 都持有按 canonical runtime 路径
 派生的稳定 OFD kernel lock；`..` 或安全 parent-symlink alias 不能拆分临界区，dry-run 不创建
 visible lock 或 lineage。任何写入前必须分别通过 OHLC、
@@ -719,6 +719,7 @@ systemd live 模板使用 `Restart=on-failure`，异常/不确定重启使用退
 逐日仅更新结算引用，不重新签发或消费许可。旧日/隔夜风险先检查，再按最终结算重设日损
 基线和今昨仓；generic/policy WAL 中断可幂等恢复，提交后资金更正阻断续行。
 OI 重启关联须由独立受控来源重新验证，并由目标日合格 raw Tick 确认。
+版本化交易日历明确取消前置夜盘时，OI 完整性从真实日盘开盘检查；应有夜盘或日盘开盘缺片仍拒绝。
 
 隔离离线提供者只在测试装配注入；没有 TOML、文件或 CLI 的 `verified/final` 放行开关。
 它使用同一持久模拟账户、原始回报和市场包验证日期跨度一个月的生产消费路径。
