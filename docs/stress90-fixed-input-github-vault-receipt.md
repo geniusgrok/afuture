@@ -8,7 +8,8 @@
 
 ## 归档身份
 
-- Vault repository：`ychenracing/afuture-evidence-vault`
+- 当前恢复仓库：`geniusgrok/afuture-evidence-vault`
+- 原始归档仓库：`ychenracing/afuture-evidence-vault`（2026-10-01 已迁移至 `geniusgrok`）
 - GitHub repository ID：`1352283086`
 - Visibility：已通过 GitHub API 核验为 `private`
 - Vault `main` commit：`5d3c4ba7f941f845e6610028e908166861e18c85`
@@ -17,6 +18,9 @@
 - Candidate SHA-256：`8e38dbf6441b561dd1728df08665b94b15cc3358823257505c2fcb9d63f09f28`
 - Deterministic TAR：52,060,160 bytes，SHA-256
   `05c763b9cc4a05336d8f59e8d73106c941c6ff3ee7afaa45ebfd08df2771c3b0`
+
+迁移后的仓库仍为 private；repository ID、既有 commit、Git blob 和冻结输入字节保持不变。
+恢复历史输入时使用当前仓库地址及本收据固定的 commit、size 和 SHA-256。
 
 ## 固定输入
 

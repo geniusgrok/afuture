@@ -11,7 +11,9 @@
 
 ## Current routing state
 
-- The normal day-end engineering task resumes PR #55 in `geniusgrok/afuture`; inspect its current remote branch, diff, checks and reviews before acting. Do not create a replacement PR for that task. The 2026-09-30 owner authorization permits engineering merge once offline acceptance, preservation and actual repository protection pass; it does not authorize deployment or real gateways/orders. Research PR #63 remains separate.
+- The normal day-end engineering work in PR #55 has completed offline acceptance and merged into `geniusgrok/afuture` main. Reuse applicable engineering results instead of reopening that work. Verify its remote merge and current main before acting.
+- The current continuation completes private preservation and readback of the original engineering evidence and updates evidence-repository locations after the 2026-10-01 transfer. Both repositories now use the personal / geniusgrok connection: `geniusgrok/afuture-evidence-vault` and `geniusgrok/afuture-shadow-evidence`. Preserve historical original bytes, digests and archive-time identities.
+- Research PR #63 remains independent and unmerged; failed economic candidates must not be enabled or merged. This continuation does not authorize deployment, real gateways or real orders; uncertified real-counter sources remain disabled.
 - Match any available local Git commits and recovery bundle against the remote before overwriting or assuming the PR body contains unpushed work. Unpushed work is not remote-saved work.
 - For other authorized tasks, resolve the matching active PR or latest `main` and follow `AGENTS.md`.
 
