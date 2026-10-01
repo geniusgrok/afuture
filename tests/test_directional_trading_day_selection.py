@@ -16,6 +16,7 @@ def _manager(current_trading_day: str):
             products=("A",),
             exchanges=("DCE",),
         ),
+        historical_mode=True,
         broker=object(),
         risk_manager=RiskManager(RiskConfig()),
         signal_provider=object(),

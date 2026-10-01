@@ -39,6 +39,7 @@ from .scanner import SpreadScanner
 from .state import RuntimeState, StateStore
 
 if TYPE_CHECKING:
+    from .runtime_lease import AccountExclusiveRuntimeLease
     from .stress90_session_authority import Stress90SessionOwnershipProof
 
 _LIVE_ACK = "I_UNDERSTAND_FUTURES_RISK"
@@ -756,7 +757,12 @@ def _recover_state(config, args, logger) -> int:
 def _build_alert_manager(config) -> AlertManager:
     sinks: list[AlertSink] = [FileAlertSink(config.alert_path)]
     if config.alert_webhook:
-        sinks.append(WebhookAlertSink(config.alert_webhook))
+        sinks.append(
+            WebhookAlertSink(
+                config.alert_webhook,
+                spool_path=Path(config.alert_path).with_suffix(".outbox.sqlite3"),
+            )
+        )
     return AlertManager(sinks)
 
 
@@ -961,9 +967,25 @@ def _initialize_live_engine_after_snapshot(
     """Consume Stress-90 technical authority before any initialization state save."""
 
     requires_permit = bool(getattr(engine, "requires_technical_activation_permit", False))
+    bind_day_end = getattr(engine, "bind_day_end_lease", None)
+    if callable(bind_day_end):
+        bind_day_end(lease)
     daily_circuit_day = str(
         getattr(getattr(engine, "state", None), "directional_daily_circuit_day", "") or ""
     )
+    day_end = getattr(engine, "day_end_coordinator", None)
+    if (
+        day_end is not None
+        and not engine.halted
+        and (
+            engine.day_end_paused
+            or engine.broker.get_account().trading_day != engine.state.trading_day
+        )
+    ):
+        # The coordinator proves the target generation after the source ledger
+        # commits. Ordinary startup reconciliation would compare pre-roll buckets.
+        engine.initialize_after_ready()
+        return
     if requires_permit:
         if lease is None:
             raise RuntimeError("Stress-90 startup session verification requires the account lease")
@@ -981,21 +1003,31 @@ def _initialize_live_engine_after_snapshot(
     engine.initialize_after_ready()
 
 
-def _run_live(config, args, logger) -> int:
-    """完成柜台、快照、元数据、活动订单和持仓安全门后才进入实时循环。"""
+def _run_live(
+    config, args, logger, *, live_runtime_lease: AccountExclusiveRuntimeLease | None = None
+) -> int:
+    """Hold the account lease before constructing any state-writing engine."""
     from .broker.ctp import CtpBroker
+    from .runtime_lease import AccountExclusiveRuntimeLease
+
+    broker = CtpBroker(config.ctp)
+    account_digest = broker.get_account_identity_digest()
+    runtime = Path(config.state_path).parent
+    if live_runtime_lease is not None:
+        if not isinstance(live_runtime_lease, AccountExclusiveRuntimeLease) or not (
+            live_runtime_lease.authorizes_technical_activation(account_digest, runtime)
+        ):
+            raise RuntimeError("live startup requires the held matching account/runtime lease")
+        return _run_live_leased(config, args, logger, broker, live_runtime_lease)
+    with AccountExclusiveRuntimeLease(runtime, account_digest, role="live") as lease:
+        return _run_live_leased(config, args, logger, broker, lease)
+
+
+def _run_live_leased(config, args, logger, broker, lease) -> int:
+    """The caller owns the lease through construction, execution and shutdown."""
     from .journal import AuditJournal
     from .report import write_account_report
 
-    broker = CtpBroker(config.ctp)
-    from .runtime_lease import AccountExclusiveRuntimeLease
-
-    lease = AccountExclusiveRuntimeLease(
-        Path(config.state_path).parent,
-        broker.get_account_identity_digest(),
-        role="live",
-    )
-    lease.acquire()
     quality = _quality_recorder(config)
     engine = _build_cli_engine(
         config,
@@ -1054,7 +1086,7 @@ def _run_live(config, args, logger) -> int:
                 )
             if not engine.clear_kill_switch_after_reconcile():
                 raise RuntimeError("kill switch remains active because reconciliation did not pass")
-        elif not engine.reconcile_startup():
+        elif not getattr(engine, "day_end_paused", False) and not engine.reconcile_startup():
             raise RuntimeError("startup reconciliation failed")
 
         if config.directional.enabled:
@@ -1089,7 +1121,6 @@ def _run_live(config, args, logger) -> int:
         except Exception as exc:
             logger.error("关闭前账户报告写入失败：%s", exc)
         engine.stop()
-        lease.release()
     return 0
 
 
@@ -5270,7 +5301,7 @@ def _run_stress90_operator_roll_forward(config, args) -> int:
 
 
 def _run_stress90_settlement_roll_forward(config, args) -> int:
-    """Fail closed until authoritative prior-day funding closure is available."""
+    """Use the resident coordinator under the same account lease, without strategy sends."""
 
     _validate_stress90_lifecycle_config(config)
     _require_production_confirmation(config, args)
@@ -5284,12 +5315,38 @@ def _run_stress90_settlement_roll_forward(config, args) -> int:
             "AFUTURE_STRESS90_SETTLEMENT_ACK=ROLL_FORWARD_STRESS90_SETTLEMENT"
         )
     _require_lifecycle_operation_nonce(args)
-    raise RuntimeError(
-        "Stress-90 settlement roll-forward is fail-closed: authoritative prior-day final "
-        "funding/settlement witness is unavailable; D+1 PreBalance/current Deposit/Withdraw, "
-        "CTP TransferSerial alone, opaque SettlementInfo content, and operator assertion are "
-        "insufficient"
-    )
+    from .broker.ctp import CtpBroker
+    from .runtime_lease import AccountExclusiveRuntimeLease
+    from .stress90_day_end import finish_stress90_day_end
+
+    # Check the adapter capability before starting any gateway. No CLI input can
+    # declare a settlement final or install an offline test provider.
+    broker = CtpBroker(config.ctp)
+    if getattr(broker, "stress90_settlement_provider", None) is None:
+        raise RuntimeError(
+            "Stress-90 settlement roll-forward is fail-closed: authoritative prior-day final "
+            "funding/settlement witness is unavailable; D+1 PreBalance/current Deposit/Withdraw, "
+            "CTP TransferSerial alone, opaque SettlementInfo content, and operator assertion "
+            "are insufficient"
+        )
+    if getattr(args, "shadow_account", False):
+        raise RuntimeError("Shadow has no authenticated final settlement provider")
+    paths = _stress90_lifecycle_paths(config, args.runtime_dir)
+    with AccountExclusiveRuntimeLease(
+        paths["runtime"], broker.get_account_identity_digest(), role="stress90-day-end"
+    ) as lease:
+        engine = _build_cli_engine(config, broker, StateStore(paths["state"]))
+        try:
+            engine.bind_day_end_lease(lease)
+            engine.start()
+            _wait_until_ready(broker, args.startup_timeout)
+            wait_for_fresh_snapshot(broker, args.snapshot_wait)
+            finish_stress90_day_end(
+                engine, lease, timeout_seconds=max(0.1, float(args.startup_timeout))
+            )
+        finally:
+            engine.stop()
+    return 0
 
 
 def _run_stress90_account_rebase(config, args) -> int:
@@ -6427,8 +6484,14 @@ def _write_json(payload: dict, output: str | Path | None = None) -> None:
         path.write_text(text + "\n", encoding="utf-8")
 
 
-def run_command(argv: list[str] | None = None) -> int:
+def run_command(
+    argv: list[str] | None = None,
+    *,
+    live_runtime_lease: AccountExclusiveRuntimeLease | None = None,
+) -> int:
     args = build_parser().parse_args(argv)
+    if live_runtime_lease is not None and args.command != "live":
+        raise ValueError("a borrowed live lease is only valid for the live command")
     config = load_config(
         args.config,
         require_ctp_credentials=args.command
@@ -6606,4 +6669,4 @@ def run_command(argv: list[str] | None = None) -> int:
     if config.mode != "live" or config.ctp is None:
         raise ValueError("live command requires system.mode=live")
     _require_production_confirmation(config, args)
-    return _run_live(config, args, logger)
+    return _run_live(config, args, logger, live_runtime_lease=live_runtime_lease)

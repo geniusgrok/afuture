@@ -94,6 +94,9 @@ def build_runtime_engine(
     quality_recorder=None,
     health_clock=None,
     historical_mode: bool = False,
+    settlement_provider=None,
+    continuation_until: str | None = None,
+    runtime_calendar=None,
 ):
     # A prepared Stress-90 lifecycle transaction means the generic runtime and
     # policy state may temporarily describe different revisions.  Every engine
@@ -103,8 +106,24 @@ def build_runtime_engine(
         require_no_pending_stress90_lifecycle_transaction,
     )
 
-    require_no_pending_stress90_lifecycle_transaction(Path(state_store.path).parent)
-    risk_manager = RiskManager(config.risk)
+    provider = settlement_provider or getattr(broker, "stress90_settlement_provider", None)
+    require_no_pending_stress90_lifecycle_transaction(
+        Path(state_store.path).parent,
+        allow_normal_day_end=(
+            config.directional.enabled
+            and config.directional.policy == "stress90"
+            and provider is not None
+        ),
+    )
+    from .runtime_calendar import RuntimeTradingCalendar
+
+    risk_manager = RiskManager(
+        config.risk,
+        runtime_calendar=runtime_calendar
+        or (
+            RuntimeTradingCalendar.load() if config.mode == "live" and not historical_mode else None
+        ),
+    )
     common = dict(
         auto_flatten_imbalance=config.auto_flatten_imbalance,
         aggressive_ticks=config.aggressive_ticks,
@@ -195,6 +214,7 @@ def build_runtime_engine(
                 seed_path=runtime_dir / "stress90_bootstrap_seed.json",
                 oi_evidence_path=runtime_dir / "stress90_oi_evidence.json",
                 execution_intent_path=runtime_dir / "stress90_execution_intent.json",
+                session_verifier=getattr(provider, "oi_session_verifier", None),
                 **manager_common,
             )
             configure_order_journal = getattr(broker, "configure_order_submission_journal", None)
@@ -217,6 +237,15 @@ def build_runtime_engine(
                 runtime_dir,
                 account_registry_path=config.account_registry_path,
                 account_continuity_mode=config.directional.account_continuity_mode,
+                continuation_until=continuation_until,
+            )
+            from .stress90_day_end import Stress90DayEndCoordinator
+
+            common["day_end_coordinator"] = Stress90DayEndCoordinator(
+                runtime_dir,
+                account_registry_path=config.account_registry_path,
+                provider=provider,
+                require_day_evidence=config.mode == "live",
             )
         else:  # validated config and direct-construction defense in depth
             raise ValueError(f"unsupported directional policy: {policy_name}")

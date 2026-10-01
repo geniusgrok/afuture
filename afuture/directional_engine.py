@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from math import isclose, isfinite
 
@@ -10,8 +10,10 @@ from .directional_risk import (
     DirectionalRiskResponseMode,
     DirectionalRiskScaledPolicy,
 )
+from .directional_runtime import DirectionalPortfolioManager
 from .engine import TradingEngine
 from .models import Order, RuntimeMode, Tick, Trade
+from .runtime_calendar import RuntimeCalendarError
 from .state import MAX_RECENT_TRADE_IDS
 
 _DAILY_CIRCUIT_REASON = "daily loss limit reached"
@@ -27,9 +29,18 @@ _ACCOUNT_RISK_REASONS = {
 class DirectionalTradingEngine(TradingEngine):
     """Reuse the production engine while delegating directional portfolio lifecycle."""
 
-    def __init__(self, *args, directional_manager, **kwargs) -> None:
+    def __init__(self, *args, directional_manager, day_end_coordinator=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.directional_manager = directional_manager
+        self.day_end_coordinator = day_end_coordinator
+        if day_end_coordinator is not None:
+            directional_manager.day_end_order_authority = lambda request: (
+                day_end_coordinator.require_order(self, request)
+            )
+        if isinstance(directional_manager, DirectionalPortfolioManager):
+            directional_manager.historical_mode = self.historical_mode
+            directional_manager.health_clock = self.health_clock
+            directional_manager.elapsed_clock = self.executor.elapsed_clock
         self._directional_initialized = False
         self.directional_manager.completed_returns_provider = lambda: tuple(
             self.state.recent_daily_returns
@@ -98,6 +109,25 @@ class DirectionalTradingEngine(TradingEngine):
         return True
 
     def initialize_after_ready(self) -> None:
+        if (
+            self.day_end_coordinator is not None
+            and self.state.trading_day
+            and (
+                self.day_end_paused
+                or self.broker.get_account().trading_day != self.state.trading_day
+            )
+        ):
+            self.day_end_coordinator.pause(self, self.broker.get_account().trading_day)
+            self.risk_manager.set_day_start_equity(
+                self.state.day_start_equity, self.state.trading_day
+            )
+            self.risk_manager.restore_high_watermark(self.state.equity_high_watermark)
+            if not self.directional_manager._initialized:
+                # A paused restart still collects raw market evidence; no
+                # strategy or opening authority is established by bootstrap.
+                self.directional_manager.bootstrap(self._reference_now())
+            self._initialized = True
+            return
         super().initialize_after_ready()
         if not self._initialized:
             return
@@ -169,16 +199,41 @@ class DirectionalTradingEngine(TradingEngine):
                 self.emergency_stop(f"Stress-90 account trading day unavailable: {exc}")
                 return
             if account_day != self.state.trading_day:
-                self.emergency_stop(
-                    "Stress-90 requires explicit settlement roll-forward before ticks"
-                )
-                return
+                if self.day_end_coordinator is None:
+                    self.emergency_stop(
+                        "Stress-90 requires explicit settlement roll-forward before ticks"
+                    )
+                    return
+                try:
+                    self.day_end_coordinator.pause(self, account_day)
+                except Exception as exc:
+                    self.emergency_stop(f"Stress-90 day-end pause failed: {exc}")
+                    return
         try:
             self.directional_manager.observe(tick)
         except Exception as exc:
             self.emergency_stop(f"directional tick handling failed: {exc}")
             return
+        if self.day_end_paused:
+            tick.validate()
+            self.quotes[tick.symbol] = tick
+            return
         super().on_tick(tick)
+
+    @property
+    def day_end_paused(self) -> bool:
+        return "stress90_day_end" in self.state.strategy_states
+
+    def bind_day_end_lease(self, lease) -> None:
+        if self.day_end_coordinator is not None:
+            self.day_end_coordinator.bind_lease(lease)
+
+    def _trade_trading_day(self, trade) -> str:
+        if self.day_end_coordinator is not None:
+            day = self.day_end_coordinator.trade_day(self, trade)
+            if day is not None:
+                return day
+        return super()._trade_trading_day(trade)
 
     def _enforce_realized_gross_after_critical_boundary(self) -> bool:
         if (
@@ -207,7 +262,13 @@ class DirectionalTradingEngine(TradingEngine):
             return False
         return result.action in {"hold", "wait"}
 
-    def run_once(self) -> None:
+    def run_once(self, *, allow_strategy=True) -> None:
+        if self.day_end_coordinator is not None:
+            transaction = self.day_end_coordinator.transactions.load()
+            if transaction is not None and transaction.status == "prepared":
+                # Cross-file recovery runs before any callback can save an unrelated state.
+                self.day_end_coordinator.poll(self)
+                return
         super().run_once()
         checkpoint_orders = getattr(self.broker, "checkpoint_order_submission_journal", None)
         if callable(checkpoint_orders):
@@ -238,6 +299,16 @@ class DirectionalTradingEngine(TradingEngine):
             except Exception as exc:
                 self.emergency_stop(f"directional OI evidence checkpoint failed: {exc}")
                 return
+        if self.day_end_coordinator is not None and not self.halted:
+            try:
+                self.day_end_coordinator.poll(self)
+            except Exception as exc:
+                self.emergency_stop(f"Stress-90 day-end continuation failed: {exc}")
+                return
+            if self.day_end_paused:
+                return
+        if not allow_strategy:
+            return
         self._initialize_directional_manager()
         if (
             self.halted
@@ -249,7 +320,14 @@ class DirectionalTradingEngine(TradingEngine):
         if not self._enforce_realized_gross_after_critical_boundary():
             return
         try:
-            result = self.directional_manager.maybe_rebalance(self._reference_now())
+            now = self._reference_now()
+            if isinstance(self.directional_manager, DirectionalPortfolioManager) and not (
+                self.directional_manager.has_active_runtime_session(now)
+            ):
+                # Do not spend a first-entry intent on an auction, recess or holiday.
+                # Critical callbacks, account checks and risk handling ran above.
+                return
+            result = self.directional_manager.maybe_rebalance(now)
             if result.action == "risk_off":
                 self._record(
                     "directional_rebalance",
@@ -273,6 +351,10 @@ class DirectionalTradingEngine(TradingEngine):
                 )
         except Exception as exc:
             self.emergency_stop(f"directional rebalance failed: {exc}")
+        if self.risk_manager.high_watermark > self.state.equity_high_watermark:
+            # Tick/strategy account checks can observe a new high without an
+            # account callback. Persist that risk evidence before restart/day-end.
+            self._persist()
 
     def _hard_account_risk_reason(self) -> str:
         """Return non-recoverable account risk without letting daily loss mask it."""
@@ -363,6 +445,28 @@ class DirectionalTradingEngine(TradingEngine):
         return True
 
     def _handle_account_event(self, account) -> None:
+        if (
+            self.day_end_coordinator is not None
+            and (
+                self.day_end_paused
+                or (self.state.trading_day and account.trading_day != self.state.trading_day)
+            )
+            and not self.halted
+        ):
+            try:
+                account.validate()
+                self.day_end_coordinator.pause(self, account.trading_day)
+                # Check the old baseline before settlement; never reset it from a D+1 tick.
+                decision = self.risk_manager.check_account(
+                    replace(account, trading_day=self.state.trading_day)
+                )
+                if not decision.allowed:
+                    self.emergency_stop(decision.reason)
+                else:
+                    self._persist()
+            except Exception as exc:
+                self.emergency_stop(f"Stress-90 day-end account failed: {exc}")
+            return
         super()._handle_account_event(account)
         if self.halted and self.state.directional_daily_circuit_day:
             self._try_daily_circuit_recovery(account)
@@ -390,6 +494,9 @@ class DirectionalTradingEngine(TradingEngine):
                     False,
                 )
             ):
+                if self.day_end_coordinator is not None:
+                    self.day_end_coordinator.pause(self, new_day)
+                    return
                 raise RuntimeError(
                     "Stress-90 requires explicit settlement roll-forward before runtime day advance"
                 )
@@ -401,8 +508,8 @@ class DirectionalTradingEngine(TradingEngine):
                 raise RuntimeError("Stress-90 trading-day gap identity is invalid") from exc
             if natural_days != 1:
                 raise RuntimeError(
-                    "Stress-90 trading-day gap is non-adjacent and requires an official "
-                    "immutable session ledger"
+                    "Stress-90 trading-day gap is non-adjacent and requires verified "
+                    "session continuity and explicit settlement roll-forward"
                 )
             continuity = getattr(
                 self.directional_manager,
@@ -574,6 +681,12 @@ class DirectionalTradingEngine(TradingEngine):
         return processed
 
     def _handle_order_event(self, order) -> None:
+        if self.day_end_coordinator is not None and isinstance(order, Order):
+            try:
+                self.day_end_coordinator.require_order_event(self, order)
+            except Exception as exc:
+                self.emergency_stop(f"invalid day-end order binding: {exc}")
+                return
         super()._handle_order_event(order)
         if self.halted:
             return
@@ -585,11 +698,28 @@ class DirectionalTradingEngine(TradingEngine):
 
     def stop(self) -> None:
         try:
+            if self.day_end_coordinator is not None:
+                self.day_end_coordinator.close()
             self.directional_manager.close()
         finally:
-            super().stop()
+            transaction = (
+                self.day_end_coordinator.transactions.load()
+                if self.day_end_coordinator is not None
+                else None
+            )
+            if transaction is not None and transaction.status == "prepared":
+                # Shutdown cannot interleave an unrelated generic state save
+                # with a cross-file commit. Recovery owns that exact revision.
+                try:
+                    self.broker.stop()
+                finally:
+                    self.alerts.close()
+            else:
+                super().stop()
 
     def _market_health_reason(self) -> str:
+        if self.day_end_paused:
+            return ""
         if self.pairs:
             return super()._market_health_reason()
         required = set(self.directional_manager.required_symbols())
@@ -597,6 +727,12 @@ class DirectionalTradingEngine(TradingEngine):
             return ""
         reference = self._health_reference_time()
         if reference is None:
+            return ""
+        try:
+            required = self.risk_manager.active_runtime_symbols(required, reference)
+        except RuntimeCalendarError as exc:
+            return str(exc)
+        if not required:
             return ""
         quotes_ready = required.issubset(self.quotes)
         if not quotes_ready and self._quote_initialization_grace_active():

@@ -1708,6 +1708,7 @@ def test_synthetic_bootstrap_bridge_is_consumed_once_by_first_live_decision(
         DirectionalConfig(enabled=True, policy="stress90", products=FROZEN_PRODUCTS),
         broker,
         RiskManager(RiskConfig(margin_estimate_buffer=1.25)),
+        historical_mode=True,
         policy_state_path=bootstrap.state_path,
         seed_path=bootstrap.seed_path,
         oi_evidence_path=bootstrap.oi_evidence_path,

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 
@@ -23,6 +22,7 @@ _NEW_COMMANDS = frozenset(
         "restore-runtime",
         "prepare-session",
         "watchdog",
+        "ctp-settlement-capture",
     }
 )
 _DEPLOYMENT_GATED_COMMANDS = frozenset({"doctor", "shadow", "live"})
@@ -77,6 +77,12 @@ def _parser(command: str) -> argparse.ArgumentParser:
         parser.add_argument("--output", required=True)
         parser.add_argument("--refresh-ohlc", action="store_true")
         parser.add_argument("--shadow-account", action="store_true")
+    elif command == "ctp-settlement-capture":
+        parser.add_argument("--config", required=True)
+        parser.add_argument("--trading-day", required=True)
+        parser.add_argument("--output", required=True)
+        parser.add_argument("--confirm-test-connection", action="store_true")
+        parser.add_argument("--timeout-seconds", type=float, default=30.0)
     elif command == "watchdog":
         parser.add_argument("--config", required=True)
         parser.add_argument("--once", action="store_true")
@@ -265,16 +271,35 @@ def _run_new(command: str, argv: list[str]) -> int:
                 _canonical_print(payload)
                 return code
             except Exception as exc:
-                _canonical_print(
-                    {
-                        "passed": False,
-                        "command": command,
-                        "error": str(exc),
-                        "orders_sent": 0,
-                        "cancels_sent": 0,
-                    }
-                )
+                from .session_preflight import _write_payload
+
+                failure = {
+                    "passed": False,
+                    "command": command,
+                    "error": str(exc),
+                    "orders_sent": 0,
+                    "cancels_sent": 0,
+                    "entered_running": False,
+                }
+                try:
+                    _write_payload(Path(args.output), failure)
+                except Exception as report_exc:
+                    failure["report_error"] = str(report_exc)
+                _canonical_print(failure)
                 return 3
+        if command == "ctp-settlement-capture":
+            from .settlement_capture import capture_test_settlement
+
+            _canonical_print(
+                capture_test_settlement(
+                    config_path=args.config,
+                    trading_day=args.trading_day,
+                    output_path=args.output,
+                    confirm_test_connection=args.confirm_test_connection,
+                    timeout_seconds=args.timeout_seconds,
+                )
+            )
+            return 0
         if command == "watchdog":
             from .heartbeat_config import heartbeat_settings
             from .watchdog import run_watchdog_once
@@ -448,38 +473,37 @@ def _runtime_heartbeat_context(
     )
 
 
-def _halt_unknown_process_run(config, *, reason: str) -> None:
-    from .state import RuntimeState, StateStore
-    from .stress90_activation_permit import Stress90ActivationPermitStore
-
-    store = StateStore(config.state_path)
-    current = store.load_record()
-    state = RuntimeState() if current is None else current.state
-    halted = replace(
-        state,
-        kill_switch=True,
-        kill_reason=reason,
-        runtime_mode="HALTED",
-        reconciled=False,
-    )
-    store.save(
-        halted,
-        expected_sequence=0 if current is None else current.sequence,
-        expected_checksum="" if current is None else current.checksum,
-    )
-    runtime = Path(config.state_path).resolve(strict=False).parent
-    permit_path = runtime / "stress90_activation_permit.json"
-    previous = permit_path.with_name(permit_path.name + ".prev")
-    if (
-        permit_path.exists()
-        or permit_path.is_symlink()
-        or previous.exists()
-        or previous.is_symlink()
-    ):
-        Stress90ActivationPermitStore(permit_path).invalidate(reason)
-
-
 def _run_live_with_process_fence(argv: list[str]) -> int:
+    from .process_run import PROCESS_FENCE_EXIT_CODE
+    from .runtime_lease import AccountExclusiveRuntimeLease, RuntimeLeaseError
+
+    config = load_config(_extract_option(argv, "--config"), require_ctp_credentials=True)
+    runtime = _runtime_for(config, shadow=False)
+    lease = AccountExclusiveRuntimeLease(
+        runtime, _configured_live_account_digest(config), role="live"
+    )
+    try:
+        lease.acquire()
+    except RuntimeLeaseError:
+        # A duplicate starter must not fence the process that already owns this account.
+        _canonical_print(
+            {
+                "passed": False,
+                "command": "live",
+                "restart_fence": False,
+                "error": "account/runtime already owned; no trading state was changed",
+                "orders_sent": 0,
+                "cancels_sent": 0,
+            }
+        )
+        return PROCESS_FENCE_EXIT_CODE
+    try:
+        return _run_live_with_process_fence_owned(argv, config, lease)
+    finally:
+        lease.release()
+
+
+def _run_live_with_process_fence_owned(argv: list[str], config, lease) -> int:
     from .deployment_identity import DeploymentIdentityStore
     from .process_run import (
         PROCESS_FENCE_EXIT_CODE,
@@ -494,8 +518,6 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
     )
     from .state import StateStore
 
-    config_path = _extract_option(argv, "--config")
-    config = load_config(config_path, require_ctp_credentials=True)
     runtime = _runtime_for(config, shadow=False)
     deployment = DeploymentIdentityStore(runtime / "deployment_identity.json").load_required()
     state_store = StateStore(config.state_path)
@@ -511,6 +533,11 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
         ).encode()
     ).hexdigest()
     process_store = ProcessRunStore(runtime / "process_run.json")
+    from .broker.ctp import CtpBroker
+
+    # Adapter construction is local; an unconfigured real source never earns
+    # the narrow paused-day recovery path and is never started by this precheck.
+    day_end_provider = getattr(CtpBroker(config.ctp), "stress90_settlement_provider", None)
     try:
         fence = apply_unclean_restart_fence(
             process_store=process_store,
@@ -519,13 +546,14 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
             deployment_digest=deployment.checksum,
             runtime_identity_digest=runtime_digest,
             account_identity_digest=account_digest,
+            lease=lease,
+            day_end_provider=day_end_provider,
+            account_registry_path=config.account_registry_path,
         )
     except Exception as exc:
         reason = f"unclean restart fence: local fence failure ({type(exc).__name__})"
-        try:
-            _halt_unknown_process_run(config, reason=reason)
-        except Exception:
-            pass
+        # Corrupt or foreign evidence remains the durable blocking witness.
+        # Do not turn an unverified receipt into an account-state rewrite.
         _canonical_print(
             {
                 "passed": False,
@@ -560,6 +588,7 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
         runtime_identity_digest=runtime_digest,
         account_identity_digest=account_digest,
         start_state_checksum=start_state.checksum,
+        _allow_unclean_parent=fence.resume_activation or fence.resume_day_end,
     )
     process_uuid = record.process_uuid
     set_current_process_uuid(process_uuid)
@@ -580,7 +609,7 @@ def _run_live_with_process_fence(argv: list[str]) -> int:
         )
         from .cli import run_command
 
-        code = run_command(argv)
+        code = run_command(argv, live_runtime_lease=lease)
         final_state = state_store.load_required_record()
         process_store.mark_phase(
             process_uuid,

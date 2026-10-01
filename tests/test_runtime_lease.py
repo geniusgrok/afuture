@@ -35,6 +35,24 @@ def test_account_exclusive_runtime_lease_rejects_second_process_owner(tmp_path: 
     second.release()
 
 
+def test_linux_kernel_ofd_lease_when_python_omits_constant(tmp_path: Path, monkeypatch):
+    import fcntl
+
+    from afuture.runtime_lease import AccountExclusiveRuntimeLease, RuntimeLeaseError
+
+    monkeypatch.delattr(fcntl, "F_OFD_SETLK", raising=False)
+    first = AccountExclusiveRuntimeLease(tmp_path / "a", "a" * 64, role="live")
+    duplicate = AccountExclusiveRuntimeLease(tmp_path / "b", "a" * 64, role="live")
+    first.acquire()
+    try:
+        for path in first.paths:
+            path.unlink()
+        with pytest.raises(RuntimeLeaseError, match="already owned"):
+            duplicate.acquire()
+    finally:
+        first.release()
+
+
 def test_account_lease_exposes_exact_technical_activation_capability(tmp_path: Path):
     from afuture.runtime_lease import AccountExclusiveRuntimeLease
 
@@ -169,3 +187,36 @@ def test_runtime_lease_capability_uses_real_runtime_identity(tmp_path: Path):
         assert lease.authorizes_technical_activation(identity, real_runtime)
     finally:
         lease.release()
+
+
+def test_cli_help_imports_without_fcntl_and_acquire_fails_before_writes(tmp_path: Path):
+    import subprocess
+    import sys
+
+    code = """
+import sys
+sys.modules['fcntl'] = None
+from pathlib import Path
+from afuture.runtime_lease import AccountExclusiveRuntimeLease, RuntimeLeaseError
+from afuture import command_router
+runtime = Path(sys.argv[1]) / 'must-not-be-created'
+lease = AccountExclusiveRuntimeLease(runtime, '9' * 64, role='live')
+try:
+    lease.acquire()
+except RuntimeLeaseError as exc:
+    assert 'Linux OFD' in str(exc)
+else:
+    raise AssertionError('unsupported platform acquired lease')
+assert not runtime.exists()
+lease.release()
+raise SystemExit(command_router.main(['--help']))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout

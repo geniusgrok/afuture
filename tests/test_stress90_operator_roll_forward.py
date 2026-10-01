@@ -8,11 +8,15 @@ import pytest
 
 
 def _market_stores(
-    *, include_intermediate_ohlc: bool = False, include_intermediate_oi: bool = False
+    *,
+    include_intermediate_ohlc: bool = False,
+    include_intermediate_oi: bool = False,
+    source_day: str = "20260828",
+    target_day: str = "20260831",
 ):
     from afuture.directional_stress90_policy import STRESS90_POLICY
 
-    source = pd.Timestamp("2026-08-28")
+    source = pd.Timestamp(source_day)
     index = pd.date_range(end=source, periods=140, freq="D")
     if include_intermediate_ohlc:
         index = index.append(pd.DatetimeIndex([pd.Timestamp("2026-08-30")]))
@@ -29,7 +33,7 @@ def _market_stores(
     ohlc_store = SimpleNamespace(load=lambda _products: entry)
     completed = [
         SimpleNamespace(
-            trading_day="20260828",
+            trading_day=source_day,
             complete=True,
             flows={product: 0 for product in STRESS90_POLICY.oi_products},
             evidence_digest="2" * 64,
@@ -45,8 +49,8 @@ def _market_stores(
             )
         )
     transition = SimpleNamespace(
-        source_trading_day="20260828",
-        target_trading_day="20260831",
+        source_trading_day=source_day,
+        target_trading_day=target_day,
         completed_oi_evidence_digest="2" * 64,
     )
     oi_record = SimpleNamespace(
@@ -79,6 +83,38 @@ def test_operator_market_continuity_accepts_weekend_gap_without_calendar_guessin
     assert evidence.ohlc_content_digest == "1" * 64
     assert evidence.oi_store_checksum == "4" * 64
     assert len(evidence.continuity_digest) == 64
+
+
+def test_operator_market_continuity_refuses_unobserved_open_day_even_with_a_direct_ctp_jump():
+    from afuture.stress90_operator_continuity import (
+        Stress90OperatorContinuityError,
+        load_stress90_operator_account_day_continuity_evidence,
+    )
+
+    ohlc_store, oi_store = _market_stores()
+    oi_store.load_required_record().state.observed_transitions[0].target_trading_day = "20260901"
+    with pytest.raises(Stress90OperatorContinuityError, match="exchange.*day|skipped"):
+        load_stress90_operator_account_day_continuity_evidence(
+            ohlc_store,
+            oi_store,
+            completed_account_day="20260828",
+            current_ctp_trading_day="20260901",
+        )
+
+
+def test_operator_market_continuity_accepts_covered_national_holiday_gap():
+    from afuture.stress90_operator_continuity import (
+        load_stress90_operator_account_day_continuity_evidence,
+    )
+
+    ohlc_store, oi_store = _market_stores(source_day="20260930", target_day="20261008")
+    evidence = load_stress90_operator_account_day_continuity_evidence(
+        ohlc_store,
+        oi_store,
+        completed_account_day="20260930",
+        current_ctp_trading_day="20261008",
+    )
+    assert evidence.natural_day_gap == 8
 
 
 @pytest.mark.parametrize(

@@ -15,7 +15,7 @@ import os
 import re
 import stat
 import struct
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -34,7 +34,7 @@ from .directional_stress90_policy import STRESS90_POLICY, canonical_stress90_dig
 from .models import ContractInfo, Tick
 
 OI_EVIDENCE_KIND = "afuture.directional.stress90.oi-evidence"
-OI_EVIDENCE_SCHEMA_VERSION = 3
+OI_EVIDENCE_SCHEMA_VERSION = 4
 CTP_RAW_TICK_SOURCE = "ctp_raw_tick"
 FIXED_HISTORICAL_60M_SOURCE = "fixed_historical_60m"
 DEFAULT_COMPLETED_RETENTION_DAYS = 512
@@ -182,6 +182,26 @@ class ObservedTradingDayTransition:
     source_trading_day: str
     target_trading_day: str
     completed_oi_evidence_digest: str
+    session_continuity: VerifiedSessionContinuity | None = None
+
+
+@dataclass(frozen=True)
+class VerifiedSessionContinuity:
+    """Identity of independently verified session evidence, not an operator assertion."""
+
+    source_trading_day: str
+    target_trading_day: str
+    completed_oi_evidence_digest: str
+    source_id: str
+    source_version: str
+    source_digest: str
+    scope: tuple[str, ...]
+    coverage_start: str
+    coverage_end: str
+    night_mapping_digest: str
+
+
+SessionContinuityVerifier = Callable[[str, str, str], VerifiedSessionContinuity]
 
 
 @dataclass(frozen=True)
@@ -587,6 +607,24 @@ def _state_payload(state: Stress90OiEvidenceState) -> dict[str, object]:
                 "source_trading_day": item.source_trading_day,
                 "target_trading_day": item.target_trading_day,
                 "completed_oi_evidence_digest": item.completed_oi_evidence_digest,
+                **(
+                    {
+                        "session_continuity": {
+                            "source_trading_day": item.session_continuity.source_trading_day,
+                            "target_trading_day": item.session_continuity.target_trading_day,
+                            "completed_oi_evidence_digest": item.session_continuity.completed_oi_evidence_digest,
+                            "source_id": item.session_continuity.source_id,
+                            "source_version": item.session_continuity.source_version,
+                            "source_digest": item.session_continuity.source_digest,
+                            "scope": list(item.session_continuity.scope),
+                            "coverage_start": item.session_continuity.coverage_start,
+                            "coverage_end": item.session_continuity.coverage_end,
+                            "night_mapping_digest": item.session_continuity.night_mapping_digest,
+                        }
+                    }
+                    if item.session_continuity is not None
+                    else {}
+                ),
             }
             for item in state.observed_transitions
         ],
@@ -852,7 +890,74 @@ def _in_progress_from_payload(raw: object) -> InProgressOiEvidence | None:
     )
 
 
-def _state_from_payload(raw: object) -> Stress90OiEvidenceState:
+def _verified_session_continuity(
+    source: str,
+    target: str,
+    digest: str,
+    verifier: SessionContinuityVerifier | None,
+    claimed: object = None,
+) -> VerifiedSessionContinuity:
+    if verifier is None:
+        raise OiEvidenceIntegrityError(
+            "non-adjacent raw CTP transition requires verified session evidence"
+        )
+    try:
+        evidence = verifier(source, target, digest)
+        from .runtime_calendar import RuntimeTradingCalendar
+
+        calendar = RuntimeTradingCalendar.load()
+        exchanges = tuple(
+            sorted({calendar.products[product].exchange for product in STRESS90_POLICY.products})
+        )
+        if any(calendar.next_trading_day(source, exchange) != target for exchange in exchanges):
+            raise OiEvidenceIntegrityError("OI transition skips an expected open session")
+    except OiEvidenceIntegrityError:
+        raise
+    except Exception as exc:
+        raise OiEvidenceIntegrityError(
+            "session continuity source cannot verify transition"
+        ) from exc
+    if not isinstance(evidence, VerifiedSessionContinuity) or (
+        evidence.source_trading_day,
+        evidence.target_trading_day,
+        evidence.completed_oi_evidence_digest,
+    ) != (source, target, digest):
+        raise OiEvidenceIntegrityError("session continuity source/OI identity mismatch")
+    if (
+        not isinstance(evidence.source_id, str)
+        or not 1 <= len(evidence.source_id) <= 256
+        or not evidence.source_id.strip()
+        or not isinstance(evidence.source_version, str)
+        or not 1 <= len(evidence.source_version) <= 128
+        or not evidence.source_version.strip()
+        or evidence.scope != exchanges
+        or _valid_day(evidence.coverage_start, name="session coverage start") > source
+        or _valid_day(evidence.coverage_end, name="session coverage end") < target
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in (evidence.source_digest, evidence.night_mapping_digest)
+        )
+    ):
+        raise OiEvidenceIntegrityError("session continuity source coverage is invalid")
+    if claimed is not None and claimed != {
+        "source_trading_day": evidence.source_trading_day,
+        "target_trading_day": evidence.target_trading_day,
+        "completed_oi_evidence_digest": evidence.completed_oi_evidence_digest,
+        "source_id": evidence.source_id,
+        "source_version": evidence.source_version,
+        "source_digest": evidence.source_digest,
+        "scope": list(evidence.scope),
+        "coverage_start": evidence.coverage_start,
+        "coverage_end": evidence.coverage_end,
+        "night_mapping_digest": evidence.night_mapping_digest,
+    }:
+        raise OiEvidenceIntegrityError("persisted session continuity differs from verified source")
+    return evidence
+
+
+def _state_from_payload(
+    raw: object, session_verifier: SessionContinuityVerifier | None = None
+) -> Stress90OiEvidenceState:
     if not isinstance(raw, Mapping) or set(raw) != {
         "completed",
         "in_progress",
@@ -885,7 +990,10 @@ def _state_from_payload(raw: object) -> Stress90OiEvidenceState:
             "target_trading_day",
             "completed_oi_evidence_digest",
         }
-        if not isinstance(item, Mapping) or set(item) != fields:
+        if not isinstance(item, Mapping) or set(item) not in (
+            fields,
+            fields | {"session_continuity"},
+        ):
             raise OiEvidenceIntegrityError("observed CTP day transition fields are invalid")
         source = _valid_day(
             item["source_trading_day"],
@@ -907,13 +1015,20 @@ def _state_from_payload(raw: object) -> Stress90OiEvidenceState:
         natural_days = (
             datetime.strptime(target, "%Y%m%d") - datetime.strptime(source, "%Y%m%d")
         ).days
-        if natural_days != 1:
-            raise OiEvidenceIntegrityError(
-                "non-adjacent raw CTP transition requires an official immutable "
-                "session ledger; BDay/local calendar/operator assertion/OHLC endpoints/"
-                "long connection are forbidden"
+        session = None
+        if natural_days != 1 or "session_continuity" in item:
+            if (
+                not completed_source.complete
+                or completed_source.source != CTP_RAW_TICK_SOURCE
+                or "session_continuity" not in item
+            ):
+                raise OiEvidenceIntegrityError(
+                    "non-adjacent raw CTP transition requires verified session evidence"
+                )
+            session = _verified_session_continuity(
+                source, target, digest, session_verifier, item["session_continuity"]
             )
-        transitions.append(ObservedTradingDayTransition(source, target, digest))
+        transitions.append(ObservedTradingDayTransition(source, target, digest, session))
     transition_keys = tuple(
         (item.source_trading_day, item.target_trading_day) for item in transitions
     )
@@ -935,13 +1050,16 @@ def _state_from_payload(raw: object) -> Stress90OiEvidenceState:
 class Stress90OiEvidenceStore:
     """Checksummed interprocess CAS store; ``.prev`` is evidence, never fallback."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self, path: str | Path, *, session_verifier: SessionContinuityVerifier | None = None
+    ) -> None:
         raw_path = os.fspath(path)
         if not isinstance(raw_path, str) or not raw_path:
             raise OiEvidenceIntegrityError("OI evidence path is invalid")
         absolute_path = os.path.abspath(raw_path)
         canonical_parent = Path(os.path.realpath(os.path.dirname(absolute_path)))
         self.path = canonical_parent / os.path.basename(absolute_path)
+        self.session_verifier = session_verifier
 
     @property
     def previous_path(self) -> Path:
@@ -1317,8 +1435,14 @@ class Stress90OiEvidenceStore:
             raise OiEvidenceIntegrityError("OI evidence envelope fields are invalid")
         if raw["kind"] != OI_EVIDENCE_KIND:
             raise OiEvidenceIntegrityError("OI evidence kind is invalid")
-        if raw["schema_version"] != OI_EVIDENCE_SCHEMA_VERSION:
+        if raw["schema_version"] not in (3, OI_EVIDENCE_SCHEMA_VERSION):
             raise OiEvidenceIntegrityError("OI evidence schema is unsupported")
+        if raw["schema_version"] == 3 and isinstance(raw["state"], Mapping):
+            transitions = raw["state"].get("observed_transitions")
+            if isinstance(transitions, list) and any(
+                isinstance(item, Mapping) and "session_continuity" in item for item in transitions
+            ):
+                raise OiEvidenceIntegrityError("v3 OI evidence cannot contain session continuity")
         sequence = raw["sequence"]
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
             raise OiEvidenceIntegrityError("OI evidence sequence must be positive")
@@ -1335,7 +1459,7 @@ class Stress90OiEvidenceStore:
         if not isinstance(checksum, str) or checksum != _checksum(unsigned):
             raise OiEvidenceIntegrityError("OI evidence checksum mismatch")
         return Stress90OiEvidenceRecord(
-            state=_state_from_payload(raw["state"]),
+            state=_state_from_payload(raw["state"], self.session_verifier),
             sequence=sequence,
             checksum=checksum,
             parent_checksum=parent_checksum,
@@ -1349,7 +1473,7 @@ class Stress90OiEvidenceStore:
     ) -> Stress90OiEvidenceRecord:
         # Round-trip validation makes every persisted object obey the same strict parser.
         payload = _state_payload(state)
-        validated = _state_from_payload(payload)
+        validated = _state_from_payload(payload, self.session_verifier)
         with self._exclusive_lock() as lock:
             current = self._load_unlocked(
                 required=False,
@@ -1459,7 +1583,9 @@ def _update_bar(bar: OiBarEvidence, tick: Tick, volume_delta: float) -> OiBarEvi
     )
 
 
-def _contract_boundary_complete(contract: ContractOiEvidence) -> tuple[bool, tuple[str, ...]]:
+def _contract_boundary_complete(
+    contract: ContractOiEvidence, calendar
+) -> tuple[bool, tuple[str, ...]]:
     first_bucket = session_bucket_for_tick(
         contract.product, contract.first_tick_timestamp, contract.trading_day
     )
@@ -1467,7 +1593,19 @@ def _contract_boundary_complete(contract: ContractOiEvidence) -> tuple[bool, tup
         contract.product, contract.last_tick_timestamp, contract.trading_day
     )
     issues = contract.issues
-    first_session = PRODUCT_SESSION_MANIFEST[contract.product].sessions[0]
+    definition = PRODUCT_SESSION_MANIFEST[contract.product]
+    first_session = definition.sessions[0]
+    account_day = datetime.strptime(contract.trading_day, "%Y%m%d").date()
+    if calendar.coverage_start <= account_day <= calendar.coverage_end:
+        opened = calendar.open_days[contract.exchange]
+        if account_day not in opened:
+            issues = _append_issue(issues, "closed_exchange_session")
+        elif definition.has_night_session:
+            previous = max((day for day in opened if day < account_day), default=None)
+            if previous in calendar.no_night_dates[contract.exchange]:
+                # A cancelled prior-open-date night is absent market activity,
+                # not missing coverage. The real day open remains mandatory.
+                first_session = definition.sessions[1]
     if (
         first_bucket is None
         or first_bucket.session != first_session
@@ -1493,12 +1631,15 @@ def _contract_boundary_complete(contract: ContractOiEvidence) -> tuple[bool, tup
 
 
 def _finalize_day(in_progress: InProgressOiEvidence) -> CompletedOiEvidence:
+    from .runtime_calendar import RuntimeTradingCalendar
+
+    calendar = RuntimeTradingCalendar.load()
     expected_symbols = _all_expected_symbols(in_progress.expected_contracts)
     received = set(in_progress.contracts)
     missing = tuple(sorted(expected_symbols - received))
     contracts: dict[str, ContractOiEvidence] = {}
     for symbol, raw in in_progress.contracts.items():
-        complete, issues = _contract_boundary_complete(raw)
+        complete, issues = _contract_boundary_complete(raw, calendar)
         # The frozen batch candidate defines ``first_hold`` as the hold at the
         # end of the first completed 60m bar, not the session-open raw Tick.
         # Normalize the contract summary from completed bar mechanics so live
@@ -1568,6 +1709,7 @@ class Stress90OiEvidenceAggregator:
         ):
             raise ValueError("completed OI retention days are invalid")
         self.store = store
+        self._session_verifier = getattr(store, "session_verifier", None)
         self.completed_retention_days = completed_retention_days
         record = store.load_record() if store is not None else None
         state = record.state if record is not None else Stress90OiEvidenceState()
@@ -1585,7 +1727,7 @@ class Stress90OiEvidenceAggregator:
         self._pending_observed_transition: (
             tuple[
                 ObservedTradingDayTransition,
-                int,
+                int | None,
             ]
             | None
         ) = None
@@ -1669,27 +1811,38 @@ class Stress90OiEvidenceAggregator:
                     )
                 return
             completed = _finalize_day(self._in_progress)
-            self._completed.append(completed)
-            self._completed = self._completed[-self.completed_retention_days :]
             source_generation = self._in_progress_connection_generation
             natural_days = (
                 datetime.strptime(day, "%Y%m%d")
                 - datetime.strptime(completed.trading_day, "%Y%m%d")
             ).days
+            session = None
+            if natural_days != 1:
+                if observed_target_raw_tick:
+                    raise OiEvidenceIntegrityError(
+                        "non-adjacent OI session must be verified before raw tick callback"
+                    )
+                if not completed.complete:
+                    raise OiEvidenceIntegrityError("non-adjacent OI source day is incomplete")
+                session = _verified_session_continuity(
+                    completed.trading_day,
+                    day,
+                    completed.evidence_digest,
+                    self._session_verifier,
+                )
+            self._completed.append(completed)
+            self._completed = self._completed[-self.completed_retention_days :]
             uninterrupted = bool(
                 self._in_progress_observed_in_process
                 and self._raw_market_connected
                 and source_generation is not None
                 and source_generation == self._raw_market_connection_generation
-                # A raw MD socket cannot prove that an entire intervening CTP
-                # trading day was not silently missed.  Non-adjacent civil dates
-                # therefore require a separate authoritative session manifest;
-                # until that authority is wired, fail closed rather than guessing
-                # weekends or exchange holidays.
+                # A raw MD socket cannot prove that an intervening trading day
+                # was not missed; non-adjacent dates require verified source data.
                 and natural_days == 1
             )
-            if uninterrupted:
-                if source_generation is None:
+            if uninterrupted or session is not None:
+                if source_generation is None and session is None:
                     raise OiEvidenceIntegrityError(
                         "OI observed transition source generation is missing"
                     )
@@ -1697,11 +1850,14 @@ class Stress90OiEvidenceAggregator:
                     source_trading_day=completed.trading_day,
                     target_trading_day=day,
                     completed_oi_evidence_digest=completed.evidence_digest,
+                    session_continuity=session,
                 )
-                if observed_target_raw_tick:
-                    self._observed_transitions.append(transition)
-                else:
-                    self._pending_observed_transition = (transition, source_generation)
+                # The target raw tick must pass its own timestamp/session checks
+                # before the observed transition becomes durable.
+                self._pending_observed_transition = (
+                    transition,
+                    self._raw_market_connection_generation if session else source_generation,
+                )
             else:
                 self._pending_observed_transition = None
             retained_days = {item.trading_day for item in self._completed}
@@ -1764,7 +1920,10 @@ class Stress90OiEvidenceAggregator:
         if (
             transition.target_trading_day == day
             and self._raw_market_connected
-            and self._raw_market_connection_generation == generation
+            and (
+                self._raw_market_connection_generation == generation
+                or (transition.session_continuity is not None and generation is None)
+            )
         ):
             self._observed_transitions.append(transition)
 
@@ -1784,6 +1943,42 @@ class Stress90OiEvidenceAggregator:
             self._rollover_unlocked(day, expected)
             self._contract_catalog = catalog
         return expected_symbols
+
+    def arm_verified_session_rollover(self, source_day: str, target_day: str) -> None:
+        """Recover a lost process-local transition from independently verified source data.
+
+        This only arms the existing transition. A validated target raw packet on
+        the current connection must still confirm it; restart never proves continuity.
+        The coordinator calls this from its query worker, outside tick callbacks.
+        """
+        with self._lock:
+            completed = next((x for x in self._completed if x.trading_day == source_day), None)
+            if completed is None or not completed.complete:
+                raise OiEvidenceIntegrityError("verified rollover source OI is incomplete")
+            if any(
+                x.source_trading_day == source_day and x.target_trading_day == target_day
+                for x in self._observed_transitions
+            ):
+                return
+            pending = self._pending_observed_transition
+            if (
+                pending is not None
+                and pending[0].source_trading_day == source_day
+                and pending[0].target_trading_day == target_day
+            ):
+                return
+        session = _verified_session_continuity(
+            source_day, target_day, completed.evidence_digest, self._session_verifier
+        )
+        with self._lock:
+            if self._in_progress is None or self._in_progress.trading_day != target_day:
+                raise OiEvidenceIntegrityError("verified rollover target generation changed")
+            self._pending_observed_transition = (
+                ObservedTradingDayTransition(
+                    source_day, target_day, completed.evidence_digest, session
+                ),
+                self._raw_market_connection_generation,
+            )
 
     def refresh_contract_catalog(
         self,
@@ -1940,8 +2135,6 @@ class Stress90OiEvidenceAggregator:
             if bucket is None:
                 self._mark_day_issue_unlocked(f"outside_fixed_session:{symbol}")
                 raise OiEvidenceIntegrityError(f"raw OI tick outside fixed session: {symbol}")
-            self._confirm_pending_transition_unlocked(day)
-            self._in_progress_observed_in_process = True
             if self._raw_market_connected:
                 generation = self._raw_market_connection_generation
                 if generation is None:  # pragma: no cover - protected by connection setter
@@ -2043,6 +2236,8 @@ class Stress90OiEvidenceAggregator:
                     volume_reset_count=previous.volume_reset_count + int(reset),
                 )
             self._contracts[symbol] = updated
+            self._confirm_pending_transition_unlocked(day)
+            self._in_progress_observed_in_process = True
             self._changed()
 
     def _state_unlocked(self) -> Stress90OiEvidenceState:

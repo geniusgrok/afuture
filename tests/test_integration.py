@@ -53,7 +53,9 @@ def test_executor_blocks_negative_net_edge_then_submits_profitable_dynamic_size(
     near, far = tick("m2609", 3000, 3001), tick("m2701", 2999, 3000)
     broker.publish_tick(near)
     broker.publish_tick(far)
-    executor = PairExecutor(broker, RiskManager(RiskConfig(risk_budget_ratio=0.01)), specs)
+    executor = PairExecutor(
+        broker, RiskManager(RiskConfig(risk_budget_ratio=0.01)), specs, historical_mode=True
+    )
     pair = PairConfig("p", "m2609", "m2701", "DCE", 5, min_net_edge=1e9)
     signal = SpreadSignal("p", SignalAction.SHORT_SPREAD, 3, near.timestamp, 1, 0, 10)
     assert not executor.execute_signal(
@@ -88,7 +90,7 @@ def test_second_leg_failure_rolls_back_filled_first_leg():
     near, far = tick("m2609", 3020, 3021), tick("m2701", 2999, 3000)
     broker.publish_tick(near)
     broker.publish_tick(far)
-    executor = PairExecutor(broker, RiskManager(RiskConfig()), specs)
+    executor = PairExecutor(broker, RiskManager(RiskConfig()), specs, historical_mode=True)
     pair = PairConfig("p", "m2609", "m2701", "DCE", 1)
     signal = SpreadSignal("p", SignalAction.SHORT_SPREAD, 3, near.timestamp, 20, 10, 5)
     result = executor.execute_signal(pair, signal, near, far, open_pair_count=0, spread_std=5)

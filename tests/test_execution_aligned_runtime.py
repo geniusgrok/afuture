@@ -170,6 +170,7 @@ def _manager(
         ),
         _Broker(),
         RiskManager(RiskConfig()),
+        historical_mode=True,
         signal_provider=provider or _Provider(),
         policy=policy or _Policy(),
         activity_tracker=activity_tracker,
@@ -319,6 +320,7 @@ def _activity_lifecycle_engine(
         ),
         broker,
         RiskManager(RiskConfig()),
+        historical_mode=True,
         signal_provider=_Provider(),
         policy=_Policy(),
         activity_tracker=DirectionalActivityTracker(store),
@@ -454,6 +456,7 @@ def test_tick_flood_with_slow_activity_fsync_keeps_critical_fill_within_batch_bu
         ),
         broker,
         RiskManager(RiskConfig()),
+        historical_mode=True,
         signal_provider=_Provider(),
         policy=_Policy(),
         activity_tracker=DirectionalActivityTracker(store),
@@ -1098,6 +1101,7 @@ def test_default_execution_aligned_runtime_requires_the_frozen_50_product_univer
             ),
             _Broker(),
             RiskManager(RiskConfig()),
+            historical_mode=True,
             signal_provider=_Provider(),
         )
 
@@ -1114,6 +1118,7 @@ def test_execution_aligned_flatten_closes_both_sides_when_same_contract_is_hedge
         ),
         broker,
         RiskManager(RiskConfig(max_contract_volume=10)),
+        historical_mode=True,
         signal_provider=_Provider(),
         policy=_Policy(),
     )

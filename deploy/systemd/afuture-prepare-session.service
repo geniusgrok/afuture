@@ -1,0 +1,15 @@
+[Unit]
+Description=afuture zero-order session preparation
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/afuture/afuture.toml
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/afuture
+EnvironmentFile=-/etc/afuture/afuture.env
+StateDirectory=afuture
+UMask=0077
+ExecStart=/opt/afuture/.venv/bin/afuture prepare-session --config /etc/afuture/afuture.toml --confirm-live --refresh-ohlc --output /var/lib/afuture/session-preflight.json
+TimeoutStartSec=300
+NoNewPrivileges=true

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from hashlib import sha256
 from math import isfinite
@@ -30,6 +30,7 @@ from .directional_stress90_execution import (
     prepare_stress90_execution_intent,
 )
 from .directional_stress90_oi_runtime import (
+    SessionContinuityVerifier,
     Stress90OiEvidenceAggregator,
     Stress90OiEvidenceStore,
 )
@@ -96,12 +97,6 @@ def load_stress90_account_day_continuity_evidence(
     natural_days = (
         datetime.strptime(current, "%Y%m%d") - datetime.strptime(previous, "%Y%m%d")
     ).days
-    if natural_days != 1:
-        raise RuntimeError(
-            "non-adjacent account-day continuity requires an official immutable "
-            "session ledger; BDay/local calendar/operator assertion/OHLC endpoints/"
-            "long connection are forbidden"
-        )
     entry = load_stress90_completed_ohlc(
         ohlc_store,
         products=STRESS90_POLICY.products,
@@ -138,10 +133,17 @@ def load_stress90_account_day_continuity_evidence(
     transition = transitions[0]
     if transition.completed_oi_evidence_digest != completed.evidence_digest:
         raise RuntimeError("completed account CTP rollover evidence digest mismatch")
+    if natural_days != 1 and transition.session_continuity is None:
+        raise RuntimeError("non-adjacent account-day continuity lacks verified session evidence")
     transition_payload = {
         "source_trading_day": transition.source_trading_day,
         "target_trading_day": transition.target_trading_day,
         "completed_oi_evidence_digest": transition.completed_oi_evidence_digest,
+        **(
+            {"session_continuity": asdict(transition.session_continuity)}
+            if transition.session_continuity is not None
+            else {}
+        ),
     }
     observed_transition_digest = sha256(
         json.dumps(
@@ -287,6 +289,7 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
         seed_path: str | Path,
         oi_evidence_path: str | Path,
         execution_intent_path: str | Path | None = None,
+        session_verifier: SessionContinuityVerifier | None = None,
         **kwargs,
     ) -> None:
         configured = tuple(sorted({str(item).upper() for item in config.products}))
@@ -302,7 +305,9 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             execution_intent_path
             or Path(policy_state_path).with_name("stress90_execution_intent.json")
         )
-        self.oi_evidence_store = Stress90OiEvidenceStore(oi_evidence_path)
+        self.oi_evidence_store = Stress90OiEvidenceStore(
+            oi_evidence_path, session_verifier=session_verifier
+        )
         self.oi_evidence = Stress90OiEvidenceAggregator(store=self.oi_evidence_store)
         super().__init__(
             config,
@@ -433,8 +438,9 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             pd.concat([close_history, synthetic_close]),
         )
         normalized = {str(product).upper(): float(value) for product, value in weights.items()}
-        if set(normalized) != set(STRESS90_POLICY.products):
+        if not set(normalized).issubset(STRESS90_POLICY.products):
             raise RuntimeError("Stress-90 Base target product manifest mismatch")
+        normalized = {product: normalized.get(product, 0.0) for product in STRESS90_POLICY.products}
         gross = sum(abs(value) for value in normalized.values())
         if gross > STRESS90_POLICY.max_gross_leverage + 1e-10:
             raise RuntimeError("Stress-90 Base target exceeds 2x gross")

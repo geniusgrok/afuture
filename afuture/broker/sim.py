@@ -605,8 +605,10 @@ class SimBroker(Broker):
         self._cash_flow_verified = True
         self._trading_day = trading_day
         if self._durable_session_compaction:
-            self._ticks.clear()
-            self._depth.clear()
+            # Closing marks continue valuing overnight holdings until fresh
+            # quotes arrive. Erasing them would manufacture a loss back to cost.
+            # Old-day quotes have no liquidity and cannot match target-day orders.
+            self._depth = {symbol: [0, 0] for symbol in self._ticks}
             self._compact_session_history(completed_trading_day)
 
     def _compact_session_history(self, completed_trading_day: str) -> None:

@@ -187,6 +187,7 @@ def test_directional_order_expectation_uses_broker_fill_truth_without_position_s
         ),
         broker,
         RiskManager(RiskConfig()),
+        historical_mode=True,
         signal_provider=object(),
         policy=object(),
         quality_recorder=recorder,

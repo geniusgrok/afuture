@@ -241,3 +241,44 @@ def test_watchdog_rejects_unclean_restart_fence(tmp_path: Path) -> None:
     )
     assert not result.passed
     assert "process_run" in {item.name for item in result.checks if not item.passed}
+
+
+@pytest.mark.parametrize(
+    "delivery",
+    [
+        {"persistence_failures": 1, "deliveries": []},
+        {"persistence_failures": 0, "deliveries": [{"failed_count": 1}]},
+        {"persistence_failures": 0, "deliveries": [{"error_category": "DatabaseError"}]},
+    ],
+)
+def test_watchdog_surfaces_failed_critical_notifications(tmp_path, delivery):
+    heartbeat = _healthy_heartbeat(tmp_path)
+    heartbeat["alert_delivery"] = delivery
+    result = evaluate_heartbeat(
+        heartbeat,
+        now_utc=datetime(2026, 8, 28, 0, 0, 6, tzinfo=timezone.utc),
+        max_age_seconds=10,
+        expected_deployment_digest="f" * 64,
+        expected_risk_overlay_digest="e" * 64,
+        process_run_clean=True,
+    )
+    assert "notification_delivery" in {item.name for item in result.checks if not item.passed}
+
+
+def test_watchdog_reports_notification_worker_failure_even_without_exhausted_rows(tmp_path):
+    heartbeat = _healthy_heartbeat(tmp_path)
+    heartbeat["alert_delivery"] = {
+        "persistence_failures": 0,
+        "remote_channel_configured": True,
+        "deliveries": [{"failed_count": 0, "worker_error_category": "OperationalError"}],
+    }
+    result = evaluate_heartbeat(
+        heartbeat,
+        now_utc=datetime(2026, 8, 28, 0, 0, 6, tzinfo=timezone.utc),
+        max_age_seconds=10,
+        expected_deployment_digest="f" * 64,
+        expected_risk_overlay_digest="e" * 64,
+        process_run_clean=True,
+    )
+    assert not result.passed
+    assert any(item.name == "notification_delivery" and not item.passed for item in result.checks)
