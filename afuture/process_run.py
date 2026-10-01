@@ -70,6 +70,7 @@ class RestartFenceResult:
     reason: str = ""
     process_uuid: str = ""
     resume_activation: bool = False
+    resume_day_end: bool = False
 
 
 def current_process_uuid() -> str | None:
@@ -466,6 +467,9 @@ def apply_unclean_restart_fence(
     runtime_identity_digest: str,
     account_identity_digest: str,
     lease=None,
+    day_end_provider=None,
+    account_registry_path=None,
+    clock=None,
 ) -> RestartFenceResult:
     """Halt exact local truth and invalidate technical authority after an unclean run."""
 
@@ -489,6 +493,33 @@ def apply_unclean_restart_fence(
     # never label the previous process clean or invalidate its receipt. Any
     # intervening write/phase advancement follows the normal incident fence.
     current = state_store.load_required_record()
+    from .stress90_day_end import normal_day_end_pause, require_continuation_stage
+
+    if day_end_provider is not None and normal_day_end_pause(current.state):
+        from .directional_stress90_state import Stress90PolicyStateStore
+        from .stress90_activation_permit import Stress90ActivationPermitStore
+
+        # Preserve only a durable technical pause. Fresh final-query/market/risk
+        # validation remains mandatory in the coordinator before any opening.
+        require_continuation_stage(
+            runtime_dir=Path(runtime_dir),
+            state_store=state_store,
+            policy_store=Stress90PolicyStateStore(Path(runtime_dir) / "stress90_policy_state.json"),
+            permit_store=Stress90ActivationPermitStore(
+                Path(runtime_dir) / "stress90_activation_permit.json"
+            ),
+            account_identity_digest=account_identity_digest,
+            account_registry_path=account_registry_path,
+            lease=lease,
+            clock=clock or (lambda: datetime.now(timezone.utc)),
+        )
+        return RestartFenceResult(
+            False,
+            0,
+            "normal day-end requires fresh provider verification",
+            previous.process_uuid,
+            resume_day_end=True,
+        )
     if (
         previous.phase
         in {

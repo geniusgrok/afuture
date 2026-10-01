@@ -1291,7 +1291,7 @@ def test_settlement_roll_forward_requires_strong_confirmation_before_broker(
         _run_stress90_settlement_roll_forward(config, args)
 
 
-def test_settlement_roll_forward_reports_external_funding_witness_blocker_before_broker(
+def test_settlement_roll_forward_reports_external_funding_witness_blocker_before_gateway(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1302,7 +1302,9 @@ def test_settlement_roll_forward_reports_external_funding_witness_blocker_before
     class ForbiddenBroker:
         def __init__(self, credentials):
             del credentials
-            raise AssertionError("external blocker must be checked before Broker construction")
+
+        def start(self):
+            raise AssertionError("external blocker must be checked before gateway start")
 
     monkeypatch.setattr("afuture.broker.ctp.CtpBroker", ForbiddenBroker)
     monkeypatch.setenv(

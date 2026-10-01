@@ -533,6 +533,11 @@ def _run_live_with_process_fence_owned(argv: list[str], config, lease) -> int:
         ).encode()
     ).hexdigest()
     process_store = ProcessRunStore(runtime / "process_run.json")
+    from .broker.ctp import CtpBroker
+
+    # Adapter construction is local; an unconfigured real source never earns
+    # the narrow paused-day recovery path and is never started by this precheck.
+    day_end_provider = getattr(CtpBroker(config.ctp), "stress90_settlement_provider", None)
     try:
         fence = apply_unclean_restart_fence(
             process_store=process_store,
@@ -542,6 +547,8 @@ def _run_live_with_process_fence_owned(argv: list[str], config, lease) -> int:
             runtime_identity_digest=runtime_digest,
             account_identity_digest=account_digest,
             lease=lease,
+            day_end_provider=day_end_provider,
+            account_registry_path=config.account_registry_path,
         )
     except Exception as exc:
         reason = f"unclean restart fence: local fence failure ({type(exc).__name__})"
@@ -581,7 +588,7 @@ def _run_live_with_process_fence_owned(argv: list[str], config, lease) -> int:
         runtime_identity_digest=runtime_digest,
         account_identity_digest=account_digest,
         start_state_checksum=start_state.checksum,
-        _allow_unclean_parent=fence.resume_activation,
+        _allow_unclean_parent=fence.resume_activation or fence.resume_day_end,
     )
     process_uuid = record.process_uuid
     set_current_process_uuid(process_uuid)

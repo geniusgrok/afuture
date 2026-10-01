@@ -68,6 +68,34 @@ def _tick(
     )
 
 
+def test_settlement_preserves_valuation_marks_without_old_day_liquidity(tmp_path: Path) -> None:
+    state_path = tmp_path / "overnight-mark.json"
+    specs = {"A2612": _spec()}
+    broker = SimBroker(100_000, specs, state_path=state_path)
+    broker.start()
+    with broker.market_batch(trading_day="20260825"):
+        broker.publish_tick(_tick())
+    broker.send_order(OrderRequest("A2612", "DCE", OrderSide.BUY, Offset.OPEN, 1, 101))
+    with broker.market_batch(trading_day="20260825"):
+        broker.publish_tick(_tick(minute=1, bid=149, ask=151, last=150))
+    closing = broker.get_account()
+    broker.synchronize_trading_day("20260826")
+    assert broker.get_account().equity == closing.equity
+    assert broker.get_account().previous_settlement_equity == closing.equity
+    broker.stop()
+    broker = SimBroker(100_000, specs, state_path=state_path)
+    broker.start()
+    assert broker.get_account().equity == closing.equity
+    assert broker.get_positions()[0].long_yesterday == 1
+    order_id = broker.send_order(OrderRequest("A2612", "DCE", OrderSide.BUY, Offset.OPEN, 1, 200))
+    assert broker.get_order(order_id).traded == 0
+    with broker.market_batch(trading_day="20260826"):
+        broker.publish_tick(_tick(minute=2, bid=150, ask=152, last=151, trading_day="20260826"))
+    assert broker.get_order(order_id).traded == 1
+    assert broker.get_positions()[0].long_yesterday == broker.get_positions()[0].long_today == 1
+    broker.stop()
+
+
 class _LiveBroker:
     def __init__(
         self,

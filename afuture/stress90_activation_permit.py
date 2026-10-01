@@ -651,6 +651,8 @@ def activate_stress90_from_permit(
     permit_store: Stress90ActivationPermitStore,
     evidence: Stress90ActivationEvidence,
     expected_permit_sequence: int,
+    continuation_until: str | None = None,
+    runtime_dir: Path | None = None,
 ):
     """Commit one activation; a consumed receipt can finish only its unchanged source.
 
@@ -690,6 +692,15 @@ def activate_stress90_from_permit(
         raise Stress90ActivationPermitIntegrityError(
             "daily circuit recovery has separate authority"
         )
+    strategy_states = dict(state.strategy_states)
+    if continuation_until is not None:
+        from .stress90_day_end import STAGE_KEY, continuation_stage
+
+        if runtime_dir is None:
+            raise Stress90ActivationPermitIntegrityError("continuation runtime is missing")
+        strategy_states[STAGE_KEY] = continuation_stage(
+            evidence, permit_record.permit.permit_id, runtime_dir, continuation_until
+        )
     if permit_record.permit.status == "issued":
         permit_store.consume(evidence, expected_sequence=permit_record.sequence)
     running = replace(
@@ -699,6 +710,7 @@ def activate_stress90_from_permit(
         reconciled=True,
         runtime_mode=RuntimeMode.RUNNING.value,
         reduce_reason="",
+        strategy_states=strategy_states,
     )
     return state_store.save(
         running,
@@ -1156,6 +1168,7 @@ class Stress90TechnicalActivationAuthority:
         *,
         account_registry_path: str | Path | None = None,
         account_continuity_mode: str = "strict",
+        continuation_until: str | None = None,
     ) -> None:
         self.runtime_dir = Path(runtime_dir)
         self.account_registry_path = account_registry_path
@@ -1164,6 +1177,7 @@ class Stress90TechnicalActivationAuthority:
                 "technical activation account continuity mode is invalid"
             )
         self.account_continuity_mode = account_continuity_mode
+        self.continuation_until = continuation_until
         self.permit_store = Stress90ActivationPermitStore(
             self.runtime_dir / "stress90_activation_permit.json"
         )
@@ -1217,4 +1231,6 @@ class Stress90TechnicalActivationAuthority:
             permit_store=self.permit_store,
             evidence=evidence,
             expected_permit_sequence=permit.sequence,
+            continuation_until=self.continuation_until,
+            runtime_dir=self.runtime_dir,
         )

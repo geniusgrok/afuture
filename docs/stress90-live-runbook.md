@@ -361,9 +361,11 @@ afuture live \
 
 ## 11. 结算与上一交易日资金闭合门
 
-`stress90-settlement-roll-forward` 当前不可用，即使提供 `--confirm-roll-forward`、强确认环境变量、
-合法 operation id 和 operator reason，也会在构造 Broker 或写入任何 state/lifecycle artifact 前
-失败关闭。不要循环重试或修改本地状态来绕过；运行 `status`/`doctor` 时
+`stress90-settlement-roll-forward` 与常驻循环复用正常日终协调器：持有同一账户 lease，
+只在持久技术暂停、首次阶段授权仍有效、完整查询和市场证据合格时提交原有 lifecycle WAL。
+CLI 排空回报但不执行策略报单。真实 CTP adapter 尚无经过认证的最终结算提供者，命令因此
+在启动 gateway 或写入 state/lifecycle artifact 前失败关闭；确认参数不会替代该来源。
+不要循环重试或修改本地状态来绕过；运行 `status`/`doctor` 时
 `prior_day_final_funding_settlement_witness` 必须继续显示为未验证的外部 activation blocker。
 
 当前锁定的 CTP Python ABI 只有以下相关原语：
@@ -377,7 +379,7 @@ afuture live \
 
 只有目标柜台提供不可变、响应完整且具有明确 finality 的结构化最终记录，绑定账户、币种、
 completed day、SettlementID、request/generation，并给出包括非银期/人工调整在内的最终
-`Deposit` 与 `Withdraw`，才能重新评审该命令。若只能提供结算单文本，还必须有柜台文档化 grammar、
+`Deposit` 与 `Withdraw`，才能装配真实提供者。若只能提供结算单文本，还必须有柜台文档化 grammar、
 真实目标机 fixtures 和独立完整资金台账对账。未知格式、sequence gap、缺少 `bIsLast`、查询
 超时/错误、identity 不一致、未知 transfer code/status 或保留范围不完整都必须保持阻断。
 
@@ -505,7 +507,7 @@ nonce receipt 永不删除或淘汰，
 损坏、symlink、marker-only、lock-only 或 current 丢失都属于 OI durable-state incident，`.prev`
 只能用于诊断，绝不提升为 current。
 
-OI evidence 必须满足 schema 3、精确 predecessor checksum 和 lineage 约束。校验失败时保持
+OI evidence 必须满足 schema 3 或 4、精确 predecessor checksum 和 lineage 约束。校验失败时保持
 `HALTED`，保全 current、`.prev`、lock、runtime 目录和外部备份；在新的 pristine runtime 路径
 重新 bootstrap/commission，并从柜台 raw evidence 观察一个完整、权威的 counter trading day。
 在该证据完成前，Stress-90 activation 持续阻断。
@@ -568,7 +570,7 @@ consumption receipt。若在两者之间崩溃，同一 prepared lifecycle 只�
 nonce 不一致仍由 `_require_no_unpersisted_lifecycle_crash_fill_adoption` 阻断。
 
 首次 bootstrap 的 durable 顺序固定为 OHLC cache、activity、bootstrap seed、policy state，最后
-才写 OI schema 3 sequence 1；OI 是 bootstrap commit point。整个 write bootstrap 从 source
+才写 OI schema 4 sequence 1；OI 是 bootstrap commit point。整个 write bootstrap 从 source
 复核、preflight snapshot、先决证据写入、OI save 到 rollback 都持有按 canonical runtime 路径
 派生的稳定 OFD kernel lock；`..` 或安全 parent-symlink alias 不能拆分临界区，dry-run 不创建
 visible lock 或 lineage。任何写入前必须分别通过 OHLC、
@@ -699,7 +701,7 @@ afuture watchdog --config <config> --once --max-age-seconds 15
 
 `prepare-session` 一次运行后立即退出，不进入常驻循环；它不会签发 permit、恢复 RUNNING、清除 kill switch、修改 risk scale、自动 roll-forward/rebase，也不会从 live 订单路径同步调用外部 OHLC provider。安全阻断退出码为 2，配置/调用错误使用独立非零码。
 
-systemd live 模板使用 `Restart=on-failure`，异常/不确定重启使用退出码 75 并列入 `RestartPreventExitStatus`。启动先持有账户/runtime 互斥锁，再检查进程证据。未清洁退出默认失效技术许可并保持 HALTED/kill switch，只有本手册 Doctor 许可章节定义的同次 activation 提交窄窗口可按原证据续接；损坏、身份不符或已有账户状态丢失时保留证据并只读阻断。不得自动采用 `.prev` 或重建空账户。watchdog timer 只读证据并告警，不控制账户、不平仓、不解除 HALTED。
+systemd live 模板使用 `Restart=on-failure`，异常/不确定重启使用退出码 75 并列入 `RestartPreventExitStatus`。启动先持有账户/runtime 互斥锁，再检查进程证据。未清洁退出默认失效技术许可并保持 HALTED/kill switch；同次 activation 提交窄窗口，或具有受控提供者和有效初始授权的持久正常日终暂停，可保留意图进入原服务复核。它不会把旧进程标为 clean，也不能在新证据/风险检查前开仓。损坏、身份不符或已有账户状态丢失时保留证据并只读阻断。不得自动采用 `.prev` 或重建空账户。watchdog timer 只读证据并告警，不控制账户、不平仓、不解除 HALTED。
 
 `deploy/systemd/afuture-prepare-session.{service,timer}` 是待目标机审批后安装的柜台零报单盘前模板：北京时间工作日 08:45 与 20:55 各运行一次 `prepare-session --refresh-ohlc`，可写入行情 OHLC 缓存，结果原子写入 `/var/lib/afuture/session-preflight.json`。这两个时点只是待目标柜台验证的模板值；若柜台交易日尚未切换或资料未齐，应失败关闭并据现场证据调整定时，而不能以本机时钟推断许可。节假日、柜台未就绪或资料不完整时命令失败关闭；定时器不追补停机期间错过的运行。服务失败须按退出码及该报告人工处理，报告写入失败以 stdout/journal 的 `report_error` 为准。模板不会执行 roll-forward/rebase、签发技术许可、启动 live、解除 HALTED 或证明账户跨日资金连续性；运行日期和权威交易日仍以柜台与经核验的日历为准。
 
@@ -711,7 +713,18 @@ systemd live 模板使用 `Restart=on-failure`，异常/不确定重启使用退
 必须先核验拟运行柜台的真实格式；当前零入出金、PreBalance 差额和结算确认成功都不能
 代替上一交易日完整资金活动证据。生产持仓/账户查询现在只在 request-bound 完成后发布。
 
-当前不能把 strict 命令入口、原人工 operator roll-forward 或 systemd 自动重启描述成
-无人值守跨日已完成。已接入的运行日历和同次许可提交续接不替代阶段授权、正常跨日资金证明、数据准备与维护恢复的联合验收；这些职责仍未形成完整自动闭环，现有日常人工门尚未被整体替换。没有获批目标机与测试账户时，
+正常日终的内部生产路径已接入 `runtime_factory`、常驻事件循环及结算 CLI。
+`stress90_day_end` 是 RUNNING 内的技术暂停标记；它阻止开仓，事务提交期间阻止全部写单，
+不会清除人工或硬风险 kill switch。首次许可绑定账户/epoch/runtime/risk overlay 和到期时间，
+逐日仅更新结算引用，不重新签发或消费许可。旧日/隔夜风险先检查，再按最终结算重设日损
+基线和今昨仓；generic/policy WAL 中断可幂等恢复，提交后资金更正阻断续行。
+OI 重启关联须由独立受控来源重新验证，并由目标日合格 raw Tick 确认。
+版本化交易日历明确取消前置夜盘时，OI 完整性从真实日盘开盘检查；应有夜盘或日盘开盘缺片仍拒绝。
+
+隔离离线提供者只在测试装配注入；没有 TOML、文件或 CLI 的 `verified/final` 放行开关。
+它使用同一持久模拟账户、原始回报和市场包验证日期跨度一个月的生产消费路径。
+复现：`python -m pytest -q tests/test_stress90_normal_day_end.py tests/test_stress90_day_end_recovery.py`。
+该机械验证不评价收益或证明柜台认证；真实提供者和生产阶段授权均默认未配置。
+没有获批目标机与测试账户时，
 不得安装或连接未知柜台；真实一个自然月必须从现场经过时间与执行证据计算，不能用
 本地测试、CI、加速回放或“服务进程存活”代替，更不能自动进入实盘。

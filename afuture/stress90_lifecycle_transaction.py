@@ -14,7 +14,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from math import isclose, isfinite
 from pathlib import Path
@@ -131,6 +131,7 @@ _REACTIVATION_GENERIC_MUTABLE_FIELDS = {
     "recent_daily_returns",
 }
 _SETTLEMENT_GENERIC_MUTABLE_FIELDS = {
+    "positions",
     "kill_reason",
     "trading_day",
     "day_start_equity",
@@ -591,7 +592,17 @@ def build_stress90_settlement_roll_forward_targets(
     policy_source: Stress90PolicyState,
     account_snapshot: AccountSnapshot,
 ) -> Stress90SettlementRollForwardTargets:
-    """Build one zero-cash-flow, HALTED settlement target without order authority."""
+    """Build a halted or fenced normal-pause target without opening authority."""
+
+    from .position import PositionBook
+    from .stress90_day_end import normal_day_end_pause
+
+    normal_pause = normal_day_end_pause(generic_source)
+    positions = generic_source.positions
+    if normal_pause:
+        book = PositionBook([ContractPosition(**item) for item in positions])
+        book.roll_trading_day()
+        positions = [asdict(item) for item in book.all()]
 
     source_day = _day(generic_source.trading_day)
     current_day = _day(account_snapshot.trading_day)
@@ -646,7 +657,12 @@ def build_stress90_settlement_roll_forward_targets(
         recent_returns = [*recent_returns[-1:], completed_return]
     generic_target = replace(
         generic_source,
-        kill_reason=("Stress-90 settlement rolled forward; doctor/Shadow gates remain required"),
+        kill_reason=(
+            generic_source.kill_reason
+            if normal_pause
+            else "Stress-90 settlement rolled forward; doctor/Shadow gates remain required"
+        ),
+        positions=positions,
         trading_day=current_day,
         day_start_equity=transition.day_start_equity,
         equity_high_watermark=transition.equity_high_watermark,
@@ -914,7 +930,12 @@ def _decode_transaction(raw: object) -> Stress90LifecycleTransaction:
         generic_target = StateStore._state_from_payload(generic_raw)
     except (TypeError, ValueError, Stress90StateIntegrityError) as exc:
         raise Stress90LifecycleTransactionError("generic lifecycle target is invalid") from exc
-    if generic_target.runtime_mode != RuntimeMode.HALTED.value or not generic_target.kill_switch:
+    from .stress90_day_end import normal_day_end_pause
+
+    normal_pause = operation == "settlement_roll_forward" and normal_day_end_pause(generic_target)
+    if not normal_pause and (
+        generic_target.runtime_mode != RuntimeMode.HALTED.value or not generic_target.kill_switch
+    ):
         raise Stress90LifecycleTransactionError(
             "lifecycle target must preserve HALTED state and kill switch"
         )
@@ -1009,7 +1030,14 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
     generic = transaction.generic_target
     policy = transaction.policy_target
     account_identity = transaction.account_identity_digest
-    if generic.runtime_mode != RuntimeMode.HALTED.value or not generic.kill_switch:
+    from .stress90_day_end import normal_day_end_pause
+
+    normal_pause = transaction.operation == "settlement_roll_forward" and normal_day_end_pause(
+        generic
+    )
+    if not normal_pause and (
+        generic.runtime_mode != RuntimeMode.HALTED.value or not generic.kill_switch
+    ):
         raise Stress90LifecycleTransactionError(
             "lifecycle target must preserve HALTED state and kill switch"
         )
@@ -1062,6 +1090,18 @@ def _validate_operation_invariants(transaction: Stress90LifecycleTransaction) ->
         raise Stress90LifecycleTransactionError("lifecycle account-day continuity did not advance")
 
     if transaction.operation == "settlement_roll_forward":
+        if normal_pause:
+            from .stress90_day_end import DAY_END_KEY
+
+            phase = generic.strategy_states[DAY_END_KEY]
+            if (
+                phase["source_day"] != transaction.account_day_continuity_source_day
+                or phase["target_day"] != transaction.trading_day
+                or phase["settlement_digest"] != transaction.operation_nonce
+            ):
+                raise Stress90LifecycleTransactionError(
+                    "normal day-end transaction phase identity mismatch"
+                )
         if (
             not transaction.source_account_epoch
             or policy.live_account_epoch != transaction.source_account_epoch
@@ -1392,9 +1432,12 @@ def _validate_begin_source_invariants(
         raise Stress90LifecycleTransactionError(
             "lifecycle authoritative trading day moved backward"
         )
+    from .stress90_day_end import normal_day_end_pause
+
+    normal_pause = operation == "settlement_roll_forward" and normal_day_end_pause(generic)
     if (
-        generic.runtime_mode != RuntimeMode.HALTED.value
-        or not generic.kill_switch
+        not normal_pause
+        and (generic.runtime_mode != RuntimeMode.HALTED.value or not generic.kill_switch)
         or (operation != "activation" and not generic.reconciled)
     ):
         raise Stress90LifecycleTransactionError(
@@ -1655,7 +1698,7 @@ def _validate_operation_transition(
                 "settlement roll-forward policy target does not match completed return"
             )
         if (
-            generic_target.positions != source_generic.positions
+            generic_target.positions != expected_generic.positions
             or generic_target.trading_day != trading_day
             or generic_target.last_account_trading_day != trading_day
             or generic_target.day_start_equity != expected_generic.day_start_equity
@@ -2505,12 +2548,22 @@ def require_matching_stress90_lifecycle_account_evidence(
         )
 
 
-def require_no_pending_stress90_lifecycle_transaction(runtime_dir: str | Path) -> None:
+def require_no_pending_stress90_lifecycle_transaction(
+    runtime_dir: str | Path, *, allow_normal_day_end: bool = False
+) -> None:
     store = Stress90LifecycleTransactionStore(
         Path(runtime_dir) / "stress90_lifecycle_transaction.json"
     )
     transaction = store.load()
     if transaction is not None and transaction.status == "prepared":
+        from .stress90_day_end import normal_day_end_pause
+
+        if (
+            allow_normal_day_end
+            and transaction.operation == "settlement_roll_forward"
+            and normal_day_end_pause(transaction.generic_target)
+        ):
+            return
         raise Stress90LifecycleTransactionError(
             "Stress-90 lifecycle transaction is pending; resume the exact lifecycle CLI"
         )

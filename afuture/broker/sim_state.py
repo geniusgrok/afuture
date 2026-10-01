@@ -466,6 +466,8 @@ def _decode_trade(raw: object) -> Trade:
 
 def _decode_tick(raw: object) -> Tick:
     values = _mapping(raw, set(Tick.__dataclass_fields__), "tick")
+    if not isinstance(values["source_trading_day_verified"], bool):
+        raise SimBrokerStateIntegrityError("tick source day verified must be boolean")
     tick = Tick(
         symbol=_string(values["symbol"], "tick symbol"),
         exchange=_string(values["exchange"], "tick exchange"),
@@ -480,6 +482,14 @@ def _decode_tick(raw: object) -> Tick:
         limit_down=_number(values["limit_down"], "tick lower limit", minimum=0.0),
         volume=_number(values["volume"], "tick volume", minimum=0.0),
         open_interest=_number(values["open_interest"], "tick open interest", minimum=0.0),
+        open_price=_number(values["open_price"], "tick open price", minimum=0.0),
+        source_trading_day=_string(
+            values["source_trading_day"], "tick source trading day", allow_empty=True
+        ),
+        source_action_day=_string(
+            values["source_action_day"], "tick source action day", allow_empty=True
+        ),
+        source_trading_day_verified=values["source_trading_day_verified"],
     )
     try:
         tick.validate()
@@ -498,13 +508,13 @@ def _encode_order(order: Order) -> dict[str, object]:
             "side": request.side.value,
             "offset": request.offset.value,
             "volume": request.volume,
-            "price": request.price,
+            "price": float(request.price),
             "order_type": request.order_type.value,
             "reference": request.reference,
         },
         "status": order.status.value,
         "traded": order.traded,
-        "average_price": order.average_price,
+        "average_price": float(order.average_price),
         "message": order.message,
     }
 
@@ -518,15 +528,29 @@ def _encode_trade(trade: Trade) -> dict[str, object]:
         "side": trade.side.value,
         "offset": trade.offset.value,
         "volume": trade.volume,
-        "price": trade.price,
+        "price": float(trade.price),
         "timestamp": trade.timestamp.isoformat(),
-        "commission": trade.commission,
+        "commission": float(trade.commission),
     }
 
 
 def _encode_tick(tick: Tick) -> dict[str, object]:
     values = asdict(tick)
     values["timestamp"] = tick.timestamp.isoformat()
+    for key in (
+        "bid_price",
+        "ask_price",
+        "last_price",
+        "bid_volume",
+        "ask_volume",
+        "volume",
+        "open_interest",
+        "open_price",
+        "limit_up",
+        "limit_down",
+    ):
+        if values[key] is not None:
+            values[key] = float(values[key])
     return values
 
 
@@ -1075,11 +1099,16 @@ def decode_sim_market_state(
     ticks = {tick.symbol: tick for tick in tick_rows}
     for tick in tick_rows:
         spec = contract_specs.get(tick.symbol)
+        try:
+            tick_day = datetime.strptime(tick.trading_day, "%Y%m%d").strftime("%Y%m%d")
+        except ValueError as exc:
+            raise SimBrokerStateIntegrityError("market tick day is invalid") from exc
         if (
             spec is None
             or spec.exchange != tick.exchange
             or not trading_day
-            or tick.trading_day != trading_day
+            or tick_day != tick.trading_day
+            or tick.trading_day > trading_day
         ):
             raise SimBrokerStateIntegrityError("market tick identity mismatch")
 
@@ -1098,6 +1127,8 @@ def decode_sim_market_state(
         ]
     if set(depth) != set(ticks):
         raise SimBrokerStateIntegrityError("market depth and ticks do not match")
+    if any(t.trading_day < trading_day and depth[t.symbol] != [0, 0] for t in tick_rows):
+        raise SimBrokerStateIntegrityError("prior-day valuation marks have executable depth")
     if (not trading_day and (ticks or tick_sequence)) or tick_sequence < len(ticks):
         raise SimBrokerStateIntegrityError("market tick sequence is inconsistent")
     market_digest = _string(values["market_digest"], "market content digest")
