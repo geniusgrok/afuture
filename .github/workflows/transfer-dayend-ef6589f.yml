@@ -1,0 +1,16 @@
+name: Import verified day-end source objects
+on:
+  push:
+    branches:
+      - codex/transfer-afuture-dayend-20261001
+permissions:
+  contents: write
+jobs:
+  import-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify and import bounded source-only Git pack
+        run: python .github/transfer-dayend-ef6589f/restore.py
