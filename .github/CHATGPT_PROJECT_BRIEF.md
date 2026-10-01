@@ -6,6 +6,8 @@
 
 - 项目名称：afuture
 - GitHub 仓库：`geniusgrok/afuture`
+- 私有研究与工程证据仓库：`geniusgrok/afuture-evidence-vault`
+- 私有 Shadow 证据仓库：`geniusgrok/afuture-shadow-evidence`
 - 默认分支：`main`
 - 系统定位：面向国内商品期货的 Python 交易工程，覆盖数据校验、策略研究、历史回放、Shadow 运行和受控实盘。
 - 项目最终目标：在单用户、单账户边界内，使交易时序、账户记账、风险控制、状态恢复和研究证据可核验。
