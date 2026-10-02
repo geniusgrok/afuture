@@ -35,6 +35,7 @@
 
 ## 当前研究证据
 
+- [`docs/supply-demand-research.md`](supply-demand-research.md) — 供需原件采集、版本资格、S1 信号与离线连续账户入口；不改变默认或授予实盘启用。
 - [`docs/stress90-bounded-research-evidence.md`](stress90-bounded-research-evidence.md) — 有界研究过程、失败路线和防过拟合记录。
 - [`docs/stress90-final-evidence.md`](stress90-final-evidence.md) — 固定离线压力研究候选的完整输入与结果；保留当时 `production_wiring=false`，不能用后来的 wiring 倒写历史。
 - [`docs/stress90-fixed-input-github-vault-receipt.md`](stress90-fixed-input-github-vault-receipt.md) — 五份固定历史输入的私有 GitHub vault、冻结摘要与空目录恢复脱敏收据；不含原始数据，也不授权 live、扩大风险或 prospective evidence。

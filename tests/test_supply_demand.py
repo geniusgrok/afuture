@@ -1,5 +1,7 @@
+import importlib.util
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -9,7 +11,14 @@ from afuture.directional_concentration_freeze import (
     ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance,
 )
 from afuture.supply_demand import SupplyObservation, specific_carry_pairs, warrant_signal
-from tools.collect_supply_demand import capture
+
+COLLECTOR_SPEC = importlib.util.spec_from_file_location(
+    "collect_supply_demand", Path(__file__).resolve().parents[1] / "tools/collect_supply_demand.py"
+)
+assert COLLECTOR_SPEC is not None and COLLECTOR_SPEC.loader is not None
+collector = importlib.util.module_from_spec(COLLECTOR_SPEC)
+COLLECTOR_SPEC.loader.exec_module(collector)
+capture = collector.capture
 
 
 def observations():
