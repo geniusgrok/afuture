@@ -37,3 +37,16 @@ A failed check or candidate calls for diagnosis and an evidence-supported correc
 - Keep large bodies out of model/tool output and arguments: no complete Base64, huge JSON, archives, full logs or chunk-then-giant-request uploads. Prefer file-to-file transfer, selective/range reads and bounded excerpts. String-only connectors are for small recoverable batches.
 - Required large originals still need preservation. Use supported resumable or deterministic multipart transport where necessary, recording order, offsets, raw/encoded lengths and hashes. Verify byte-for-byte reconstruction and expected Git/LFS object identities where applicable. Separate blobs are not append operations; a summary/hash is not a backup.
 - Keep large transfers bounded and serial. Reuse a concise ledger of local/remote locations, identities and verification status; inspect state after interruption before retrying. Verify final local bytes and remote tree/commit/ref or storage manifest, not merely a created blob. Report unpreserved originals and temporary-runtime loss risk while continuing independent work. Never replace required evidence with summaries or rewrite historical evidence.
+
+## Cursor Cloud specific instructions
+
+The image provides Ubuntu Python 3.12. Setup creates `.venv` with `python -m pip install -e ".[dev]" -c constraints/core-dev.txt` and puts that interpreter on the default PATH as `python`, plus `afuture`, `pytest`, `ruff`, and `mypy`. `python3` stays the system interpreter and does not have project dependencies. Live extras (`vnpy`, `vnpy_ctp`, `akshare`) are not installed; do not add them for ordinary engineering checks.
+
+There is no boot service. A representative product check is:
+
+```bash
+afuture validate --config config/afuture.example.toml
+afuture replay --config config/afuture.example.toml --data examples/sample_ticks.csv
+```
+
+The sample replay closes flat with `performance.trade_count == 4`, empty positions, and zero margin. Engineering gates are `python -m pytest -q`, `python -m ruff check .`, `python -m ruff format --check .`, and `python -m mypy afuture`. Replay and research output under `runtime/` is local and gitignored. Replay, research, Shadow, and doctor results do not authorize live trading.
