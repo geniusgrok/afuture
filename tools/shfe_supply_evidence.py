@@ -107,7 +107,7 @@ def parse_report(raw: bytes, kind: str, day: str) -> tuple[dict, list[dict]]:
     for row in payload["o_cursor"]:
         if not isinstance(row, dict):
             raise ValueError("invalid stock row")
-        product = str(row.get("VARID", "")).upper()
+        product = str(row.get("VARID", "")).strip().upper()
         name = str(row.get("VARNAME", "")).split("$$")[0]
         if not product:
             product = next((key for key, label in PRODUCT_NAMES.items() if label == name), "")
@@ -258,8 +258,10 @@ def collect(scope: dict, root: Path, workers: int, refresh: bool) -> None:
     for record in old:
         if record["status"] == "ok":
             parse_report(read_original(root, record), record["kind"], record["report_date"])
-    done = {(r["kind"], r["report_date"]) for r in old if r["status"] == "ok"}
-    tasks = [(kind, day) for day in dates for kind in KINDS if refresh or (kind, day) not in done]
+    attempted = {(r["kind"], r["report_date"]) for r in old}
+    tasks = [
+        (kind, day) for day in dates for kind in KINDS if refresh or (kind, day) not in attempted
+    ]
     target = root / "observations"
     target.mkdir(parents=True, exist_ok=True)
     path = target / f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid4().hex}.jsonl"

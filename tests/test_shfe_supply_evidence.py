@@ -97,6 +97,15 @@ def test_duplicate_total_is_rejected():
         supply.parse_report(report(extra=[payload["o_cursor"][1]]), "weeklystock", "2025-09-26")
 
 
+def test_official_padded_product_code_keeps_the_same_quantity():
+    payload = json.loads(report())
+    for row in payload["o_cursor"]:
+        row["VARID"] = "cu      "
+    rows = supply.parse_report(json.dumps(payload).encode(), "weeklystock", "2025-09-26")[1]
+    assert rows[0]["product"] == "CU"
+    assert rows[0]["inventory_subtotal"] == "100"
+
+
 def test_late_publication_and_revision_do_not_rewrite_history(tmp_path):
     append_observation(tmp_path, report(), "2025-09-29T09:13:01+00:00")
     assert supply.as_of(tmp_path, "2025-09-26T21:00:00+08:00") == []
@@ -174,3 +183,36 @@ def test_future_observation_cannot_qualify_historical_account(tmp_path):
     assert result["economic_candidate_count"] == 0
     assert result["historical_account_status"] == "BLOCKED_NO_CONTEMPORANEOUS_VERSIONS"
     assert len(result["missing_product_reports"]) == 2
+
+
+def test_resume_validates_cache_and_does_not_repeat_failed_paths(tmp_path, monkeypatch):
+    append_observation(tmp_path, report(), "2026-10-02T03:00:00+00:00")
+    with (tmp_path / "observations" / "failed.jsonl").open("w") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "status": "error",
+                    "kind": "dailystock",
+                    "report_date": "2025-09-26",
+                    "error": "HTTP 404",
+                }
+            )
+            + "\n"
+        )
+    raw = b"calendar identity"
+    (tmp_path / "trade-data.js").write_bytes(raw)
+    scope = {
+        "products": sorted(supply.PRODUCT_NAMES),
+        "kinds": list(supply.KINDS),
+        "report_dates": ["2025-09-26"],
+        "calendar_sha256": supply.digest(raw),
+        "collection_window": ["2025-09-26", "2025-09-26"],
+    }
+    monkeypatch.setattr(supply, "weekly_dates", lambda *args: ["2025-09-26"])
+
+    def forbidden_capture(*args):
+        raise AssertionError("resume attempted a completed or known failed download")
+
+    monkeypatch.setattr(supply, "capture", forbidden_capture)
+    supply.collect(scope, tmp_path, 1, False)
+    assert len(supply.records(tmp_path)) == 2
