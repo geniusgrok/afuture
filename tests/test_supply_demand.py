@@ -11,6 +11,7 @@ from afuture.directional_concentration_freeze import (
     ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance,
 )
 from afuture.supply_demand import SupplyObservation, specific_carry_pairs, warrant_signal
+from afuture.supply_demand_cost import SupplyEpisode, episode_cost_gate, net_supply_with_baseline
 
 COLLECTOR_SPEC = importlib.util.spec_from_file_location(
     "collect_supply_demand", Path(__file__).resolve().parents[1] / "tools/collect_supply_demand.py"
@@ -72,6 +73,160 @@ def test_versions_season_and_staleness_are_causal():
         signal(rows, decision_at=datetime(2024, 6, 28))
     with pytest.raises(ValueError, match="invalid supply"):
         replace(rows[-1], value=-1)
+
+
+def test_execution_freshness_uses_chinese_calendar_and_preserves_old_spec():
+    rows = observations()
+    kwargs = dict(
+        completed_day=date(2024, 7, 8), decision_at=datetime(2024, 7, 8, 7, tzinfo=timezone.utc)
+    )
+    assert signal(rows, **kwargs)[0] == 1
+    assert signal(rows, **kwargs, execution_at=datetime(2024, 7, 8, 16, tzinfo=timezone.utc))[
+        1
+    ] == ("stale_at_execution")
+    with pytest.raises(ValueError, match="later than decision"):
+        signal(rows, execution_at=datetime(2024, 6, 28, 7, tzinfo=timezone.utc))
+
+
+def test_episode_estimator_uses_closed_prior_processes_and_complete_roll_costs():
+    episodes = tuple(
+        SupplyEpisode(
+            product="RB",
+            direction=1,
+            entered_at=datetime(2024, 1, i, 1, tzinfo=timezone.utc),
+            completed_at=datetime(2024, 1, i + 1, 1, tzinfo=timezone.utc),
+            known_at=datetime(2024, 1, i + 1, 7, tzinfo=timezone.utc),
+            entry_notional=10000,
+            gross_pnl=40,
+            turnover_notional=20000,
+            episode_id=str(i),
+        )
+        for i in (1, 3, 5, 7)
+    )
+    kwargs = dict(targets={"RB": 0.2}, prior_approved={"RB": 0}, episodes=episodes)
+    assert episode_cost_gate(**kwargs, decision_at=episodes[-1].known_at)[0] == {"RB": 0.2}
+    before = episodes[-1].known_at - timedelta(seconds=1)
+    output, audit = episode_cost_gate(**kwargs, decision_at=before)
+    assert output == {"RB": 0} and audit[0]["completed_samples"] == 3
+    rolled = tuple(replace(e, turnover_notional=40000) for e in episodes)
+    assert episode_cost_gate(**dict(kwargs, episodes=rolled), decision_at=episodes[-1].known_at)[
+        0
+    ] == {"RB": 0}
+    assert episode_cost_gate(
+        targets={"RB": 0.1}, prior_approved={"RB": 0.2}, episodes=(), decision_at=before
+    )[0] == {"RB": 0.1}
+    assert episode_cost_gate(
+        targets={"RB": -0.2}, prior_approved={"RB": 0.2}, episodes=(), decision_at=before
+    )[0] == {"RB": 0}
+    with pytest.raises(ValueError, match="duplicate"):
+        episode_cost_gate(**dict(kwargs, episodes=episodes + episodes[:1]), decision_at=before)
+
+
+def test_shared_targets_cancel_before_rounding_and_use_one_account():
+    spec = importlib.util.spec_from_file_location(
+        "supply_demand_episodes",
+        Path(__file__).resolve().parents[1] / "tools/supply_demand_episodes.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    build_supply_episodes = module.build_supply_episodes
+
+    baseline = {"RB": 1.8, "AL": 0.2}
+    assert net_supply_with_baseline(baseline, {"RB": -0.2, "AL": 0.2}) == {
+        "RB": 1.6,
+        "AL": pytest.approx(0.4),
+    }
+    assert net_supply_with_baseline(baseline, {"RB": 0.2, "AL": 0.2}) == baseline
+    assert net_supply_with_baseline(baseline, {"RB": 0, "AL": 0}) == baseline
+    with pytest.raises(ValueError, match="support"):
+        net_supply_with_baseline(baseline, {"RB": 0})
+    dates = pd.date_range("2024-01-02", periods=4)
+    raw = pd.DataFrame(
+        [
+            dict(
+                date=day,
+                symbol="RB2405",
+                product="RB",
+                exchange="SHFE",
+                open=3100.0,
+                close=3102.0,
+                volume=10000,
+                hold=20000,
+                delivery=pd.Timestamp("2024-05-15"),
+            )
+            for day in dates
+        ]
+    )
+    weights = pd.DataFrame({"RB": [0.2, 0.2, 0]}, index=dates[1:])
+    episodes, rejected = build_supply_episodes(raw, weights)
+    assert not rejected and len(episodes) == 1
+    assert episodes[0].gross_pnl == pytest.approx(0)
+    assert episodes[0].turnover_notional == pytest.approx(62000)
+    # Net opposite requests first: 0.2 - 0.1 fits one lot, not rounded3 - rounded1.
+    combined = net_supply_with_baseline({"RB": 0.2}, {"RB": -0.1})
+    unified = pd.DataFrame([combined, {"RB": 0}], index=dates[1:3])
+    result = ExpandingMedianConcentrationFreezeDirectionalProductionAcceptance().simulate(
+        raw,
+        unified,
+        cost_bps=15,
+    )
+    trades = result.events.loc[result.events.kind.eq("trade")]
+    assert trades.delta_lots.abs().eq(1).all()
+    assert result.daily.equity.iloc[-1] == pytest.approx(500000 - 2 * 31000 * 15 / 10000)
+
+
+def test_paper_episode_counts_both_roll_legs_and_rejects_missing_mark():
+    spec = importlib.util.spec_from_file_location(
+        "supply_demand_episodes",
+        Path(__file__).resolve().parents[1] / "tools/supply_demand_episodes.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    dates = pd.date_range("2024-01-02", periods=4)
+    raw = pd.DataFrame(
+        [
+            dict(
+                date=day,
+                symbol=symbol,
+                product="RB",
+                exchange="SHFE",
+                open=op,
+                close=cl,
+                hold=hold,
+                volume=volume,
+                delivery=pd.Timestamp(delivery),
+            )
+            for i, day in enumerate(dates)
+            for symbol, delivery, op, cl, hold, volume in [
+                (
+                    "RB2405",
+                    "2024-05-15",
+                    [3100, 3100, 3120, 3120][i],
+                    [3100, 3110, 3120, 3120][i],
+                    20000 if i == 0 else 5000,
+                    10000 if i == 0 else 2000,
+                ),
+                (
+                    "RB2410",
+                    "2024-10-15",
+                    [3200, 3200, 3200, 3215][i],
+                    [3200, 3200, 3210, 3215][i],
+                    5000 if i == 0 else 30000,
+                    2000 if i == 0 else 30000,
+                ),
+            ]
+        ]
+    )
+    weights = pd.DataFrame({"RB": [0.2, 0.2, 0]}, index=dates[1:])
+    episodes, rejected = module.build_supply_episodes(raw, weights)
+    assert not rejected and len(episodes) == 1
+    assert episodes[0].gross_pnl == 350
+    assert episodes[0].turnover_notional == 31000 + 31200 + 32000 + 32150
+    missing = raw.loc[~(raw.date.eq(dates[2]) & raw.symbol.eq("RB2405"))]
+    episodes, rejected = module.build_supply_episodes(missing, weights)
+    assert not episodes and rejected[0]["reason"] == "missing episode mark"
 
 
 def test_actual_pairs_and_missing_signal_close_integer_positions_with_cost():

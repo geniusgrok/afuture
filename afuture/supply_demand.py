@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from math import isfinite, log1p
 from statistics import median
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,7 @@ def warrant_signal(
     completed_day: date,
     decision_at: datetime,
     carry: float,
+    execution_at: datetime | None = None,
 ) -> tuple[float, str]:
     """One causal seasonal-state/change/carry hypothesis; missing input is neutral.
 
@@ -59,6 +61,12 @@ def warrant_signal(
     """
     if decision_at.tzinfo is None or decision_at.utcoffset() is None:
         raise ValueError("decision time requires an explicit timezone")
+    if execution_at is not None and (
+        execution_at.tzinfo is None
+        or execution_at.utcoffset() is None
+        or execution_at <= decision_at
+    ):
+        raise ValueError("execution time must be aware and later than decision")
     versions: dict[date, SupplyObservation] = {}
     for row in sorted(observations, key=lambda r: (r.available_at, r.statistical_day)):
         if (
@@ -78,6 +86,14 @@ def warrant_signal(
         return 0.0, "untrusted_latest_version"
     if (completed_day - latest.statistical_day).days > 10:
         return 0.0, "stale"
+    if (
+        execution_at is not None
+        and (
+            execution_at.astimezone(ZoneInfo("Asia/Shanghai")).date() - latest.statistical_day
+        ).days
+        > 10
+    ):
+        return 0.0, "stale_at_execution"
     history = [r for r in versions.values() if r.qualified and r.scope == latest.scope]
     seasonal: list[float] = []
     for year in (latest.statistical_day.year - 2, latest.statistical_day.year - 1):
