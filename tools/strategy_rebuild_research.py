@@ -285,11 +285,12 @@ def diagnose_accounts(result, attempt, candidate, *, excluded=()):
     }
 
 
-def next_hypothesis(history, *, event_qualified=False):
+def next_hypothesis(history):
     """Synthesize the next structure using diagnoses, without threshold sweeps.
 
-    The declared grammar has six executable mechanisms plus a data-qualified
-    event route. Unknown information sources cannot be manufactured by a planner.
+    The declared grammar has eight mechanisms and a conditional shared account.
+    Event qualification is prepared separately until an account recipe is justified.
+    Unknown information sources cannot be manufactured by a planner.
     Intermediate weakness does not terminate independent mechanisms.
     """
     seen = {row["spec"]["id"]: row for row in history}
@@ -398,12 +399,6 @@ def next_hypothesis(history, *, event_qualified=False):
             "parents": [row["spec"]["id"] for row in pair],
             "reason": "two distinct information families have development contribution; allocate shared forecasts with covariance/cost utility in one actual account",
         }
-    if event_qualified and "EVENT1" not in seen:
-        return {
-            "id": "EVENT1",
-            "information": "certified_supply_vintages",
-            "reason": "use only public byte versions whose accepted availability precedes the actual entry clock",
-        }
     return None
 
 
@@ -467,13 +462,14 @@ def main(args):
 
     def select(history):
         history = seed_history + history
-        spec = next_hypothesis(history, event_qualified=event["historical_account_ready"])
+        spec = next_hypothesis(history)
         cycle = {
             "completed_attempts": len(history),
             "research_round": 1 if len(history) < 6 else 2,
             "next_specification": spec,
             "event_route": event["status"],
-            "economic_goal_achieved": any(r["status"] == "candidate_passed" for r in history),
+            "core_candidate_found": any(r["status"] == "candidate_passed" for r in history),
+            "economic_goal_achieved": False,
             "remaining_work": []
             if spec
             else [
