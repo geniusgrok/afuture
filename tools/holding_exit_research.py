@@ -123,14 +123,22 @@ class HoldingExitAccount(Account):
         return replace(baseline, final_lots=final, final_notional=float(notional))
 
 
-def run(recent: Path, market_path: Path, units_path: Path, output: Path, *, historical=False):
+def run(
+    recent: Path,
+    market_path: Path,
+    units_path: Path,
+    output: Path,
+    *,
+    historical=False,
+    parent="B0",
+):
     market = pd.read_csv(market_path, parse_dates=["date", "delivery"])
     units = pd.read_csv(units_path).set_index("product").account_multiplier_used.to_dict()
     PRODUCT_MULTIPLIERS.update(units)
     output.mkdir(exist_ok=False, parents=True)
     summaries, checks = {}, {}
     for pool in ("full", "exAG"):
-        weights = read_weights(recent / f"B0_{pool}_base/all_weights.csv")
+        weights = read_weights(recent / f"{parent}_{pool}_base/all_weights.csv")
         if historical:
             weights = weights.loc[(weights.index >= "2022-09-06") & (weights.index <= "2026-09-22")]
         else:
@@ -138,7 +146,7 @@ def run(recent: Path, market_path: Path, units_path: Path, output: Path, *, hist
         sample = market.loc[market["product"] != "AG"] if pool == "exAG" else market
         warmup = []
         if not historical:
-            all_weights = read_weights(recent / f"B0_{pool}_base/all_weights.csv")
+            all_weights = read_weights(recent / f"{parent}_{pool}_base/all_weights.csv")
             from adaptive_alpha_research import target_weight_concentration
 
             warmup = [
@@ -150,13 +158,14 @@ def run(recent: Path, market_path: Path, units_path: Path, output: Path, *, hist
                 if h is not None
             ]
         prepared = Account().prepare_contracts(sample)
-        variants = ("B0", "E1") if historical else ("E1",)
+        candidate = "E1" if parent == "B0" else "E2"
+        variants = (parent, candidate) if historical else (candidate,)
         for variant in variants:
             for cost_name, cost, margin in (("base", 5, 0.12), ("stress", 15, 0.15)):
                 config = ProductionMechanicsConfig(margin_rate_proxy=margin)
                 account = (
                     HoldingExitAccount(sample, config, completed_concentrations=warmup)
-                    if variant == "E1"
+                    if variant == candidate
                     else Account(config, completed_concentrations=warmup)
                 )
                 label = f"{variant}_{pool}_{cost_name}"
@@ -170,7 +179,7 @@ def run(recent: Path, market_path: Path, units_path: Path, output: Path, *, hist
                 daily.to_csv(folder / "daily.csv", index_label="date")
                 events.to_csv(folder / "events.csv", index=False)
                 holding_episodes(events).to_csv(folder / "holding_episodes.csv", index=False)
-                if variant == "E1":
+                if variant == candidate:
                     pd.DataFrame(account.exit_audit).to_csv(folder / "exit_audit.csv", index=False)
                 summaries[label] = account_metrics(daily, events)
                 checks[label] = verify_events(daily, events, sample, cost)
@@ -186,5 +195,13 @@ if __name__ == "__main__":
     parser.add_argument("--units", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--historical", action="store_true")
+    parser.add_argument("--parent", choices=("B0", "C4B"), default="B0")
     args = parser.parse_args()
-    run(args.recent, args.market, args.units, args.output, historical=args.historical)
+    run(
+        args.recent,
+        args.market,
+        args.units,
+        args.output,
+        historical=args.historical,
+        parent=args.parent,
+    )

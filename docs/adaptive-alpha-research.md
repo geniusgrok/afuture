@@ -55,7 +55,16 @@ python tools/holding_exit_research.py \
 python tools/holding_exit_research.py \
   --recent "$AFUTURE_NEW_RUN/recent" --market "$AFUTURE_SPECIFIC_MARKET" \
   --units "$AFUTURE_UNIT_AUDIT" --output "$AFUTURE_NEW_RUN/E1_historical" --historical
+# 固定C4B预算和同一退出机制在单个账户中的组合：
+python tools/holding_exit_research.py \
+  --recent "$AFUTURE_NEW_RUN/recent" --market "$AFUTURE_SPECIFIC_MARKET" \
+  --units "$AFUTURE_UNIT_AUDIT" --output "$AFUTURE_NEW_RUN/E2_historical" \
+  --historical --parent C4B
 ```
+
+组合版本 E2 只更换已冻结的目标父配置，退出尺度与规则保持 E1。原980日
+同时重跑 C4B 对照，始终由同一个原账户模拟器重算资金与持仓，不能拼接
+C4B 与 E1 的独立账户收益，也不能按成本或是否含白银切换机制。
 
 ## 后续分流
 
