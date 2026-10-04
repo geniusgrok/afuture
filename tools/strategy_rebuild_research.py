@@ -215,6 +215,11 @@ def optimized_weights(predictions, calendar, tape):
 
 
 class RecoveringProjectedAccount(ProjectedCovarianceAccount):
+    def retain_completed_returns(self, completed_returns):
+        # The inherited two-session buffer belongs to the original governor.
+        # Recovery reconstructs its segment, pause and probation from all completed sessions.
+        return list(completed_returns)
+
     def observe_target_state(self, *, day, product_weights):
         super().observe_target_state(day=day, product_weights=product_weights)
         self.risk_governor = DrawdownRecoveryGovernor(self.risk_governor.value)

@@ -36,6 +36,23 @@ def test_outer_planner_continues_after_multiple_economic_failures_and_changes_la
     assert research.next_hypothesis(history) is None
 
 
+def test_recovery_account_retains_history_for_multiday_drawdown_and_full_pause():
+    account = research.RecoveringProjectedAccount(
+        None, market_returns=pd.DataFrame(index=pd.bdate_range("2025-01-01", periods=63))
+    )
+    completed = []
+    for value in [-0.03] * 4:
+        completed = account.retain_completed_returns(completed + [value])
+    assert len(completed) == 4
+    governor = research.DrawdownRecoveryGovernor(1)
+    assert governor.scale(completed) == 0
+    for _ in range(19):
+        completed = account.retain_completed_returns(completed + [0])
+    assert governor.scale(completed) == 0
+    completed = account.retain_completed_returns(completed + [0])
+    assert governor.scale(completed) == 0.25
+
+
 def test_allocator_uses_first_registered_gross_positive_parent_not_best_equity():
     history = []
     for name in ("X1", "T1", "T2", "RV1"):
