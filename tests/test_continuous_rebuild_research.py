@@ -111,6 +111,10 @@ def test_minute_partial_day_is_audited_and_unpriced_exit_fails():
     assert episodes.empty and audit.iloc[0].reason == "incomplete45_bar_day"
     with pytest.raises(ValueError, match="incomplete subsequent session"):
         session_episodes(bars.iloc[:-1], 10.0)
+    bars.loc[5, "volume"] = 0
+    with pytest.raises(ValueError, match="entry lacks executable-volume"):
+        session_episodes(bars, 10.0)
+    bars.loc[5, "volume"] = 100
     bars.loc[8, "volume"] = 0
     with pytest.raises(ValueError, match="held episode"):
         session_episodes(bars, 10.0)

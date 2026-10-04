@@ -67,16 +67,21 @@ def session_episodes(bars: pd.DataFrame, unit: float):
                 continue
             entry = signal + 2
             entry_price = float(quote.open.iloc[entry])
-            if entry_price * unit > 100000 or float(quote.volume.iloc[entry]) < 1:
+            if entry_price * unit > 100000:
                 audit.append(
                     {
                         "date": day,
-                        "reason": "first_signal_unfunded_or_no_volume",
+                        "reason": "first_signal_unfunded",
                         "entry_gross": entry_price * unit,
                     }
                 )
                 found = True
                 break
+            if float(quote.volume.iloc[entry]) < 1:
+                raise ValueError(
+                    f"entry lacks executable-volume quote: {day}; "
+                    "completed entry-bar volume cannot select a skipped trade"
+                )
             exit_position = len(quote) - 1
             reason = "scheduled_day_exit"
             for completed in range(entry, len(quote) - 2):
