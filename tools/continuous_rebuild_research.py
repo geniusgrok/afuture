@@ -330,8 +330,14 @@ def run(
                 pd.DataFrame(account.projection_audit).to_csv(
                     folder / "projection_audit.csv", index=False
                 )
+            if hasattr(account, "risk_audit"):
+                pd.DataFrame(account.risk_audit).to_csv(folder / "risk_audit.csv", index=False)
             if len(events):
                 holding_episodes(events).to_csv(folder / "holding_episodes.csv", index=False)
+            else:
+                pd.DataFrame(columns=["net_pnl"]).to_csv(
+                    folder / "holding_episodes.csv", index=False
+                )
             summaries[label] = {
                 **account_metrics(daily, events),
                 "first_divergence": result.first_divergence,

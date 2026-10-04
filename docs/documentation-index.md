@@ -37,6 +37,7 @@
 
 - [`docs/adaptive-alpha-research.md`](adaptive-alpha-research.md) — 固定预算、持仓退出、双腿观察和失败分流的离线研究工具；不改变生产默认或经济验收。
 - [`docs/continuous-rebuild-research.md`](continuous-rebuild-research.md) — 失败后自动续研、整数仓位、行业相对结构、供需版本与真实分钟检验。
+- [`docs/core-rebuild-roadmap.md`](core-rebuild-roadmap.md) — 核心策略与风控替换、允许中间收益下降的阶段验收及多轮失败分岔。
 - [`docs/stress90-bounded-research-evidence.md`](stress90-bounded-research-evidence.md) — 有界研究过程、失败路线和防过拟合记录。
 - [`docs/stress90-final-evidence.md`](stress90-final-evidence.md) — 固定离线压力研究候选的完整输入与结果；保留当时 `production_wiring=false`，不能用后来的 wiring 倒写历史。
 - [`docs/stress90-fixed-input-github-vault-receipt.md`](stress90-fixed-input-github-vault-receipt.md) — 五份固定历史输入的私有 GitHub vault、冻结摘要与空目录恢复脱敏收据；不含原始数据，也不授权 live、扩大风险或 prospective evidence。
