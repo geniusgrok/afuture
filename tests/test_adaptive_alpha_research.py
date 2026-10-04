@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from adaptive_alpha_research import holding_episodes
+from adaptive_alpha_research import holding_episodes, verify_events
 from holding_exit_research import trailing_step
 from pair_episode_research import paper_episodes, readiness, spread_signal
 
@@ -138,3 +138,61 @@ def test_completed_close_trailing_requires_favorable_move_and_is_symmetric():
     peak, armed, trigger = trailing_step(90.0, -1, 100.0, -100.0, 5.0, False)
     assert armed and not trigger
     assert trailing_step(96.0, -1, 100.0, peak, 5.0, armed)[2]
+
+
+def test_end_of_day_hard_risk_exit_uses_true_close_and_can_only_reduce():
+    day = pd.Timestamp("2024-01-01")
+    market = pd.DataFrame([{"date": day, "symbol": "A2411", "open": 100.0, "close": 90.0}])
+    events = pd.DataFrame(
+        [
+            {
+                "date": day,
+                "product": "A",
+                "symbol": "A2411",
+                "kind": "trade",
+                "action": "entry",
+                "lots_before": 0,
+                "lots_after": 1,
+                "delta_lots": 1,
+                "price": 100.0,
+                "transaction_cost": 0.5,
+                "gross_pnl": 0.0,
+            },
+            {
+                "date": day,
+                "product": "A",
+                "symbol": "A2411",
+                "kind": "pnl",
+                "action": "intraday",
+                "lots_before": 1,
+                "lots_after": 1,
+                "delta_lots": 0,
+                "price": 90.0,
+                "transaction_cost": 0.0,
+                "gross_pnl": -100.0,
+            },
+            {
+                "date": day,
+                "product": "A",
+                "symbol": "A2411",
+                "kind": "trade",
+                "action": "daily_circuit",
+                "lots_before": 1,
+                "lots_after": 0,
+                "delta_lots": -1,
+                "price": 90.0,
+                "transaction_cost": 0.45,
+                "gross_pnl": 0.0,
+            },
+        ]
+    )
+    daily = pd.DataFrame({"equity": [499899.05]}, index=[day])
+    assert verify_events(daily, events, market, 5)["passed"]
+    wrong_price = events.copy()
+    wrong_price.loc[2, "price"] = 100.0
+    with pytest.raises(ValueError, match="phase price"):
+        verify_events(daily, wrong_price, market, 5)
+    increased = events.copy()
+    increased.loc[2, ["lots_after", "delta_lots"]] = [2, 1]
+    with pytest.raises(ValueError, match="must reduce risk"):
+        verify_events(daily, increased, market, 5)

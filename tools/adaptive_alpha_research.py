@@ -68,6 +68,7 @@ def verify_events(
     prior_day = None
     error = 0.0
     for day in daily.index:
+        marked_intraday = set()
         for event in events.loc[events.date == day].to_dict("records"):
             symbol = event["symbol"]
             before, after = int(event["lots_before"]), int(event["lots_after"])
@@ -79,9 +80,15 @@ def verify_events(
                 if delta != after - before or abs(after) > 35:
                     raise ValueError("invalid integer fill")
                 row = prices.loc[(day, symbol)]
-                if abs(float(event["price"]) - float(row.open)) > 1e-9:
-                    raise ValueError("fill is not the true specific-contract open")
-                fee = abs(delta) * float(row.open) * unit * cost_bps / 10000.0
+                if symbol in marked_intraday:
+                    if abs(after) >= abs(before) or before * after < 0:
+                        raise ValueError("post-mark fill must reduce risk")
+                    fill_price = float(row.close)
+                else:
+                    fill_price = float(row.open)
+                if abs(float(event["price"]) - fill_price) > 1e-9:
+                    raise ValueError("fill is not the true specific-contract phase price")
+                fee = abs(delta) * fill_price * unit * cost_bps / 10000.0
                 if abs(fee - event["transaction_cost"]) > 1e-6:
                     raise ValueError("fill fee mismatch")
                 cash -= fee
@@ -96,6 +103,7 @@ def verify_events(
                     change = row.open - prices.loc[(prior_day, symbol), "close"]
                 elif event["action"] == "intraday":
                     change = row.close - row.open
+                    marked_intraday.add(symbol)
                 else:
                     raise ValueError("unknown mark action")
                 pnl = before * change * unit
