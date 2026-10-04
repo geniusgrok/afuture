@@ -109,12 +109,27 @@ def _pool(frame: pd.DataFrame, *, exclude_ag: bool, training: bool) -> pd.DataFr
     symbol_products = result["symbol"].str.extract(r"^([A-Z]+)[0-9]+$", expand=False)
     if symbol_products.isna().any() or symbol_products.ne(result["product"]).any():
         raise ValueError("concrete contract symbol does not match product identity")
-    result["entry_day"] = pd.to_datetime(result["entry_day"].map(_day))
+
+    def session_dates(values, *, missing=False):
+        # Repeated rolling fits receive already parsed dates. Validate these in a
+        # batch instead of constructing a Timestamp for every row on every fit.
+        if pd.api.types.is_datetime64_any_dtype(values.dtype):
+            if (
+                values.dt.tz is not None
+                or not values.dropna().eq(values.dropna().dt.normalize()).all()
+            ):
+                raise ValueError("session days must be timezone-naive calendar dates")
+            if not missing and values.isna().any():
+                raise ValueError("session days must be finite calendar dates")
+            return values.copy()
+        return pd.to_datetime(
+            values.map(lambda value: pd.NaT if missing and pd.isna(value) else _day(value))
+        )
+
+    result["entry_day"] = session_dates(result["entry_day"])
     if training:
         # A still-unobserved maturity is not permission to consume its label.
-        result["maturity_day"] = pd.to_datetime(
-            result["maturity_day"].map(lambda value: pd.NaT if pd.isna(value) else _day(value))
-        )
+        result["maturity_day"] = session_dates(result["maturity_day"], missing=True)
     if result.duplicated(["entry_day", "product"]).any():
         raise ValueError("more than one selected contract per entry day and product")
     if training and (result["maturity_day"] <= result["entry_day"]).any():
