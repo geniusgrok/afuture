@@ -274,6 +274,8 @@ def run(
     output: Path,
     variant: str,
     window: str,
+    *,
+    account_type=None,
 ):
     market = pd.read_csv(market_path, parse_dates=["date", "delivery"])
     PRODUCT_MULTIPLIERS.update(
@@ -310,7 +312,9 @@ def run(
             label = f"{variant}_{pool}_{cost_name}"
             folder = output / label
             folder.mkdir()
-            account_class = FailureExitAccount if variant == "E3" else HoldingExitAccount
+            account_class = account_type or (
+                FailureExitAccount if variant == "E3" else HoldingExitAccount
+            )
             account = account_class(
                 sample,
                 ProductionMechanicsConfig(margin_rate_proxy=margin),
@@ -322,6 +326,10 @@ def run(
             daily.to_csv(folder / "daily.csv", index_label="date")
             events.to_csv(folder / "events.csv", index=False)
             pd.DataFrame(account.exit_audit).to_csv(folder / "exit_audit.csv", index=False)
+            if hasattr(account, "projection_audit"):
+                pd.DataFrame(account.projection_audit).to_csv(
+                    folder / "projection_audit.csv", index=False
+                )
             if len(events):
                 holding_episodes(events).to_csv(folder / "holding_episodes.csv", index=False)
             summaries[label] = {
