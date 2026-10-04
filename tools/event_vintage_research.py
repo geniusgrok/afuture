@@ -5,14 +5,51 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urljoin
 
 import pandas as pd
 from adaptive_alpha_research import write_json
-from usda_revision_research import capture, entry_date_after_archive, parse_report, revision_rows
+from usda_revision_research import (
+    ARCHIVE,
+    capture,
+    entry_date_after_archive,
+    parse_report,
+    release_links,
+    revision_rows,
+)
 
 from afuture.event_vintages import captured_version_available_at
+
+
+def capture_latest_releases(output):
+    """Discover two currently linked releases, preserving at most five requests."""
+    archive = capture(ARCHIVE, output, "current_archive_page")
+    if archive.get("http_status") != 200:
+        raise ValueError("current official archive unavailable")
+    links = release_links((output / archive["file"]).read_text())[-2:]
+    if not links:
+        raise ValueError("official archive has no actual release links")
+    versions = []
+    for position, link in enumerate(links):
+        release = capture(link, output, f"current_release_page_{position}")
+        if release.get("http_status") != 200:
+            raise ValueError("official release page unavailable")
+        text = (output / release["file"]).read_text()
+        urls = sorted(set(urljoin(link, url) for url in re.findall(r'href="([^\"]+\.txt)"', text)))
+        if len(urls) != 1:
+            raise ValueError("missing or ambiguous official text byte-version URL")
+        metadata = capture(urls[0], output, f"current_official_txt_{position}")
+        matched = re.search(r"/(20\d{2}-\d{2}-\d{2})(?:/|$)", link)
+        if matched is None:
+            raise ValueError("official release date identity missing")
+        metadata["report_date"] = matched.group(1)
+        captured_version_available_at(metadata, (output / metadata["file"]).read_bytes())
+        versions.append(metadata)
+    write_json(output / "COLLECTED_VERSIONS.json", versions)
+    return versions
 
 
 def prepare_event_vintages(prior, output, calendar, *, refresh=False):
@@ -25,10 +62,14 @@ def prepare_event_vintages(prior, output, calendar, *, refresh=False):
         raise ValueError("missing preserved official report captures")
     items = [(json.loads(path.read_text()), folder, path) for path in metas]
     if refresh:
-        last = items[-1][0]
-        refreshed = capture(last["url"], output, "latest_known_official_version")
-        refreshed["report_date"] = last["id"].removeprefix("txt_")
-        items.append((refreshed, output, output / "latest_known_official_version.json"))
+        try:
+            refreshed = capture_latest_releases(output)
+            items.extend((entry, output, output / (entry["id"] + ".json")) for entry in refreshed)
+        except ValueError as error:
+            write_json(
+                output / "DISCOVERY_FAILURE.json",
+                {"error": str(error), "other_research_continues": True},
+            )
     rows, panel, identities = [], [], []
     days = [pd.Timestamp(day).date().isoformat() for day in calendar]
     for meta, base, meta_path in items:
