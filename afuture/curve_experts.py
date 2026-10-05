@@ -403,6 +403,11 @@ def choose_mature_expert(
     exclusions = tuple(sorted(set(exclusions)))
     day = _day(decision_day)
     sample = _prepare(_exclude(observations, exclusions), training=True)
+    omitted_mature_unobserved_labels = 0
+    if "label_status" in sample:
+        observed = sample.label_status.eq("observed")
+        omitted_mature_unobserved_labels = int((~observed & (sample.maturity_day < day)).sum())
+        sample = sample.loc[observed].copy()
     mapping = dict(groups)
     if any(not isinstance(g, str) or not g for g in mapping.values()):
         raise ValueError("group identities must be nonempty strings")
@@ -449,6 +454,7 @@ def choose_mature_expert(
         "selection_last_maturity_day": common.maturity_day.max().date().isoformat()
         if len(common)
         else None,
+        "omitted_mature_unobserved_labels": omitted_mature_unobserved_labels,
         "min_group_entry_days": MIN_GROUP_ENTRY_DAYS,
         "one_way_market_proxy_fee": STRESS_ONE_WAY_FEE,
         "utility_contract": "equal_date_group_signed_gross_minus_endpoint_fees_no_signal_zero",

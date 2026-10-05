@@ -282,3 +282,67 @@ def test_selector_rejects_untrustworthy_oof_archives(defect):
         alternative.loc[0, "symbol"] = "A2601"
     with pytest.raises(ValueError, match="duplicate|strictly precede|contract"):
         selector(sample, {"C_T2": parent, "OTHER": alternative})
+
+
+def synthetic_missing_endpoint_inputs():
+    sample = samples()
+    sample["label_status"] = "observed"
+    experts = {
+        "C_T2": archive(sample, mu=0.0),
+        "R_ADD": archive(sample, mu=0.01),
+        "C_SEASON": archive(sample, mu=-0.01),
+    }
+    missing = sample.iloc[:4].copy()
+    missing["entry_day"] = pd.to_datetime(["2024-12-12", "2024-12-19", "2024-12-19", "2024-12-19"])
+    missing["feature_through"] = missing.entry_day - pd.offsets.BDay(1)
+    missing["maturity_day"] = missing.entry_day + pd.offsets.BDay(5)
+    missing["label_status"] = "unavailable_endpoint"
+    missing["gross_return"] = np.nan
+    for name, frame in experts.items():
+        extra = missing[["entry_day", "product", "symbol", "volatility"]].copy()
+        extra["decision_day"] = extra.entry_day
+        extra["training_through"] = missing.feature_through
+        extra["expected_return"] = frame.expected_return.iloc[0]
+        experts[name] = pd.concat([frame, extra], ignore_index=True)
+    return sample, experts, missing
+
+
+def test_known_maturity_missing_endpoints_do_not_enter_selector_training():
+    sample, experts, missing = synthetic_missing_endpoint_inputs()
+    baseline = selector(sample, experts)
+    changed = pd.concat([sample, missing], ignore_index=True)
+    result = selector(changed, experts)
+    pd.testing.assert_frame_equal(baseline.forecasts, result.forecasts)
+    assert result.audit["omitted_mature_unobserved_labels"] == 4
+    assert result.audit["training_entry_days"] == baseline.audit["training_entry_days"]
+    assert result.audit["training_products"] == baseline.audit["training_products"]
+
+
+@pytest.mark.parametrize("row_index", range(4))
+def test_missing_endpoint_falsely_declared_observed_still_fails_closed(row_index):
+    sample, experts, missing = synthetic_missing_endpoint_inputs()
+    invalid = missing.iloc[[row_index]].assign(label_status="observed")
+    changed = pd.concat([sample, invalid], ignore_index=True)
+    with pytest.raises(ValueError, match="missing or non-finite"):
+        selector(changed, experts)
+
+
+def test_observed_label_with_invalid_completed_features_still_fails_closed():
+    sample = samples()
+    sample["label_status"] = "observed"
+    experts = {"C_T2": archive(sample, mu=0), "OTHER": archive(sample, mu=0.01)}
+    sample.loc[len(sample) - 1, "curve_level"] = np.nan
+    with pytest.raises(ValueError, match="missing or non-finite"):
+        selector(sample, experts)
+
+
+def test_unobserved_rows_do_not_supply_selector_readiness_dates():
+    sample = samples()
+    sample["label_status"] = "observed"
+    keep = sample.entry_day.unique()[:125]
+    sample.loc[~sample.entry_day.isin(keep), "label_status"] = "unavailable_endpoint"
+    experts = {"C_T2": archive(sample, mu=0), "OTHER": archive(sample, mu=0.01)}
+    result = selector(sample, experts)
+    assert not result.ready and result.forecasts.empty
+    assert result.audit["training_entry_days"] == 125
+    assert result.audit["omitted_mature_unobserved_labels"] == 175 * len(PRODUCTS)
