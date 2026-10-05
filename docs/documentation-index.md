@@ -36,6 +36,7 @@
 ## 当前研究证据
 
 - [`docs/adaptive-alpha-research.md`](adaptive-alpha-research.md) — 固定预算、持仓退出、双腿观察和失败分流的离线研究工具；不改变生产默认或经济验收。
+- [`docs/new-mechanism-research.md`](new-mechanism-research.md) — 四种新机制的数据资格、三腿备用账户和失败后的继续执行；明确数据阻塞、零交易和经济失败。
 - [`docs/continuous-rebuild-research.md`](continuous-rebuild-research.md) — 失败后自动续研、整数仓位、行业相对结构、供需版本与真实分钟检验。
 - [`docs/core-rebuild-roadmap.md`](core-rebuild-roadmap.md) — 核心策略与风控替换、允许中间收益下降的阶段验收及多轮失败分岔。
 - [`docs/continuous-core-research.md`](continuous-core-research.md) — 已实现的两轮结构续研、期限结构与相对收益核心、联合分配、风险恢复及官方版本资格。
