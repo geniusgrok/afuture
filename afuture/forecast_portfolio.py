@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -35,7 +36,11 @@ def _prox(values, threshold, *, cap=0.25, budget=2.0):
 
 
 def forecast_covariance_portfolio(
-    forecasts: Mapping[str, float], completed_market_returns: pd.DataFrame, *, decision_day
+    forecasts: Mapping[str, float],
+    completed_market_returns: pd.DataFrame,
+    *,
+    decision_day,
+    risk_eligibility: Literal["all_assets", "per_asset"] = "all_assets",
 ) -> ForecastPortfolio:
     """Maximize a fixed five-session return/covariance/cost utility.
 
@@ -45,7 +50,14 @@ def forecast_covariance_portfolio(
     uses exactly63 completed rows, half sample and half diagonal. The optimum is
     subsequently only reduced to the .15 annual risk ceiling; this reduction is
     audited separately. Actual fills and fees remain the account's responsibility.
+
+    ``all_assets`` retains the original all-or-nothing history gate. Research can
+    explicitly select ``per_asset`` to close only products lacking all63 valid
+    observations or nonzero risk. Both modes use the same trailing session rows:
+    missing observations are never dropped to reach further back in history.
     """
+    if risk_eligibility not in ("all_assets", "per_asset"):
+        raise ValueError("unknown risk eligibility policy")
     day = _day(decision_day)
     products = sorted(forecasts)
     if any(not isinstance(p, str) or not p or p != p.strip().upper() for p in products):
@@ -66,7 +78,14 @@ def forecast_covariance_portfolio(
     audit = {
         "decision_day": day.date().isoformat(),
         "products": products,
+        "forecast_products": products,
+        "risk_eligibility": risk_eligibility,
         "observations": len(sample),
+        "risk_history": {},
+        "covariance_products": [],
+        "included_products": [],
+        "risk_window_first": sample.index[0].date().isoformat() if len(sample) else None,
+        "risk_window_through": sample.index[-1].date().isoformat() if len(sample) else None,
     }
 
     def unavailable(reason):
@@ -74,20 +93,67 @@ def forecast_covariance_portfolio(
 
     if not products:
         return ForecastPortfolio(True, {}, {**audit, "status": "no_forecasts"})
-    if len(sample) != 63 or not set(products) <= set(sample.columns):
+    eligible = []
+    invalid_returns = False
+    for product in products:
+        if product not in sample.columns:
+            count, reason = 0, "missing_risk_product"
+        else:
+            history = sample[product].to_numpy(dtype=float)
+            count = int(np.isfinite(history).sum())
+            if len(sample) != 63:
+                reason = "insufficient_completed_risk_history"
+            elif np.isinf(history).any() or (history <= -1).any():
+                reason, invalid_returns = "invalid_market_risk_returns", True
+            elif count == 0:
+                # A column introduced by future rows is absent at this decision.
+                reason = "missing_risk_product"
+            elif not np.isfinite(history).all():
+                reason = "missing_completed_risk_observation"
+            elif np.var(history, ddof=1) <= 0:
+                reason = "zero_observed_risk"
+            else:
+                reason = "eligible"
+                eligible.append(product)
+        audit["risk_history"][product] = {
+            "observations": count,
+            "eligible": reason == "eligible",
+            "included": False,
+            "reason": reason,
+        }
+    audit["eligible_products"] = eligible
+    audit["excluded_products"] = [product for product in products if product not in eligible]
+    if len(sample) != 63 or (
+        risk_eligibility == "all_assets" and not set(products) <= set(sample.columns)
+    ):
         return unavailable("insufficient_completed_risk_history")
-    values = sample[products].to_numpy(dtype=float)
-    if np.isinf(values).any() or (values <= -1).any():
+    if invalid_returns:
         raise ValueError("invalid market risk returns")
-    if not np.isfinite(values).all():
-        return unavailable("missing_completed_risk_observation")
+    if risk_eligibility == "all_assets" and len(eligible) != len(products):
+        reason = (
+            "missing_completed_risk_observation"
+            if any(
+                item["reason"] in ("missing_risk_product", "missing_completed_risk_observation")
+                for item in audit["risk_history"].values()
+            )
+            else "zero_observed_risk"
+        )
+        return unavailable(reason)
+    if not eligible:
+        return unavailable("no_eligible_risk_assets")
+    audit["covariance_products"] = eligible
+    audit["included_products"] = eligible
+    for product in eligible:
+        audit["risk_history"][product]["included"] = True
+    values = sample[eligible].to_numpy(dtype=float)
+    mu = np.array([forecasts[product] for product in eligible], dtype=float)
     covariance = np.atleast_2d(np.cov(values, rowvar=False, ddof=1))
     covariance = 0.5 * covariance + 0.5 * np.diag(np.diag(covariance))
     if (np.diag(covariance) <= 0).any():
         return unavailable("zero_observed_risk")
     quadratic = covariance * (5 / 0.15)
     step = 1.0 / float(np.linalg.eigvalsh(quadratic).max())
-    weights = momentum = np.zeros(len(products))
+    weights = momentum = np.zeros(len(eligible))
     acceleration = 1.0
     converged = False
     residual = 0.0
@@ -117,7 +183,7 @@ def forecast_covariance_portfolio(
         raise ValueError("allocation constraints violated")
     return ForecastPortfolio(
         True,
-        dict(zip(products, deployed.tolist(), strict=True)),
+        {**dict.fromkeys(products, 0.0), **dict(zip(eligible, deployed.tolist(), strict=True))},
         {
             **audit,
             "status": "allocated" if np.abs(deployed).sum() > 0 else "no_net_edge",
