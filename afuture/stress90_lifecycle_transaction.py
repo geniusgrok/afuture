@@ -165,6 +165,7 @@ _REBASE_POLICY_MUTABLE_FIELDS = {
 _SETTLEMENT_POLICY_MUTABLE_FIELDS = {
     "completed_account_wealth",
     "completed_account_high_watermark",
+    "completed_account_reserve_triggered",
     "last_completed_account_day",
     "recent_daily_returns_for_adaptive_margin",
 }
@@ -1572,6 +1573,7 @@ def _pristine_unbound_account_path(state: Stress90PolicyState) -> bool:
     return bool(
         state.completed_account_wealth == 1.0
         and state.completed_account_high_watermark == 1.0
+        and not state.completed_account_reserve_triggered
         and state.last_completed_account_day is None
         and not state.recent_daily_returns_for_adaptive_margin
         and state.live_inception_day is None

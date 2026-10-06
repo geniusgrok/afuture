@@ -105,6 +105,100 @@ def test_policy_state_store_uses_sequence_checksum_atomic_prev_and_no_fallback(t
     assert store.load_previous_record().state == state
 
 
+def test_permanent_reserve_survives_process_restart_and_cannot_be_cleared(tmp_path: Path):
+    import subprocess
+    import sys
+
+    from afuture.directional_stress90_state import (
+        Stress90PolicyStateStore,
+        Stress90StateIntegrityError,
+        record_completed_account_day,
+    )
+
+    _seed, state = _seed_and_state()
+    store = Stress90PolicyStateStore(tmp_path / "state.json")
+    store.save(state)
+    triggered = record_completed_account_day(state, "20260825", -0.25)
+    store.save(triggered, expected_sequence=1)
+    # A fresh interpreter uses the production reader/writer after the saved trigger.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; "
+            "from afuture.directional_stress90_state import "
+            "Stress90PolicyStateStore, record_completed_account_day, "
+            "drawdown_reserve_triggered_from_state; "
+            "s=Stress90PolicyStateStore(sys.argv[1]); r=s.load_required_record(); "
+            "assert drawdown_reserve_triggered_from_state(r.state); "
+            "u=record_completed_account_day(r.state, '20260826', 0.4); "
+            "assert u.completed_account_wealth == u.completed_account_high_watermark; "
+            "assert drawdown_reserve_triggered_from_state(u); "
+            "s.save(u, expected_sequence=r.sequence)",
+            str(store.path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    recovered = store.load_required_record()
+    assert recovered.sequence == 3
+    assert recovered.state.completed_account_reserve_triggered
+    before = (store.path.read_bytes(), store.previous_path.read_bytes())
+    with pytest.raises(Stress90StateIntegrityError, match="cannot be cleared"):
+        store.save(
+            replace(recovered.state, completed_account_reserve_triggered=False),
+            expected_sequence=recovered.sequence,
+        )
+    assert (store.path.read_bytes(), store.previous_path.read_bytes()) == before
+
+
+def test_old_schema_cannot_infer_reserve_history_or_overwrite_evidence(tmp_path: Path):
+    from afuture.directional_stress90_state import (
+        Stress90PolicyStateStore,
+        Stress90StateIntegrityError,
+    )
+
+    _seed, state = _seed_and_state()
+    store = Stress90PolicyStateStore(tmp_path / "state.json")
+    store.save(state)
+    raw = json.loads(store.path.read_bytes())
+    raw["schema_version"] = 5
+    del raw["state"]["completed_account_reserve_triggered"]
+    raw["checksum"] = _checksum_envelope(raw)
+    store.path.write_text(json.dumps(raw), encoding="utf-8")
+    original = store.path.read_bytes()
+    for operation in (
+        store.load_required,
+        lambda: store.save(state),
+        lambda: store.save_new(state),
+    ):
+        with pytest.raises(Stress90StateIntegrityError, match="schema|concurrently"):
+            operation()
+    assert store.path.read_bytes() == original
+    assert not store.previous_path.exists()
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", None])
+def test_reserve_flag_rejects_nonboolean_even_with_valid_checksum(tmp_path: Path, value):
+    from afuture.directional_stress90_state import (
+        Stress90PolicyStateStore,
+        Stress90StateIntegrityError,
+    )
+
+    _seed, state = _seed_and_state()
+    store = Stress90PolicyStateStore(tmp_path / "state.json")
+    store.save(state)
+    raw = json.loads(store.path.read_bytes())
+    raw["state"]["completed_account_reserve_triggered"] = value
+    raw["checksum"] = _checksum_envelope(raw)
+    store.path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(Stress90StateIntegrityError, match="boolean"):
+        store.load_required()
+
+
 def test_policy_state_save_propagates_parent_directory_fsync_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
