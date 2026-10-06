@@ -107,3 +107,52 @@ def test_unknown_groups_and_noncanonical_exclusions_fail_closed():
             grouped=True,
             groups={},
         )
+
+
+def role_samples():
+    sample = samples()
+    sample["symbol_near"] = sample["product"] + "2501"
+    sample["symbol_far"] = sample["product"] + "2505"
+    near = sample["product"].isin(PRODUCTS[:10])
+    sample["symbol"] = np.where(near, sample.symbol_near, sample.symbol_far)
+    sample["curve_level"] = 1.0
+    sample["gross_return"] = np.where(near, 0.02, -0.02)
+    sample["feature_through"] = sample.entry_day - pd.offsets.BDay(1)
+    sample["pair_source_day"] = sample.feature_through
+    target = sample.iloc[:20].drop(columns=["gross_return", "maturity_day"]).copy()
+    target["entry_day"] = pd.Timestamp("2025-01-02")
+    target["feature_through"] = target["pair_source_day"] = pd.Timestamp("2024-12-31")
+    return sample, target
+
+
+def test_contract_role_learns_opposite_responses_without_imposed_trade_direction():
+    sample, target = role_samples()
+    baseline = forecast_from_mature_curve(sample, target, decision_day="2025-01-02")
+    result = forecast_from_mature_curve(
+        sample, target, decision_day="2025-01-02", contract_role=True
+    )
+    assert baseline.forecasts.expected_return.abs().max() < 1e-12
+    near = result.forecasts["product"].isin(PRODUCTS[:10])
+    assert result.forecasts.loc[near, "expected_return"].min() > 0.01
+    assert result.forecasts.loc[~near, "expected_return"].max() < -0.01
+
+
+def test_role_requires_prior_exact_pair_and_ignores_unavailable_labels():
+    sample, target = role_samples()
+    kwargs = dict(decision_day="2025-01-02", contract_role=True)
+    original = forecast_from_mature_curve(sample, target, **kwargs)
+    future = sample.iloc[:20].assign(
+        entry_day=pd.Timestamp("2024-12-26"),
+        maturity_day=pd.Timestamp("2025-01-02"),
+        gross_return=np.nan,
+        symbol_near="invalid",
+        symbol_far="invalid",
+    )
+    changed = forecast_from_mature_curve(pd.concat([sample, future]), target, **kwargs)
+    pd.testing.assert_frame_equal(original.forecasts, changed.forecasts)
+    for corrupted in (
+        target.assign(symbol_far=target.symbol_near),
+        target.assign(pair_source_day=target.entry_day),
+    ):
+        with pytest.raises(ValueError, match="ambiguous or not strictly prior"):
+            forecast_from_mature_curve(sample, corrupted, **kwargs)

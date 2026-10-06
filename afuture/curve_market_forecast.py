@@ -38,6 +38,7 @@ def forecast_from_mature_curve(
     groups: Mapping[str, str] | None = None,
     grouped: bool = False,
     relative: bool = False,
+    contract_role: bool = False,
 ) -> MatureCurveForecast:
     """Fit shared slopes, optionally with fixed, strongly shrunk group deviations.
 
@@ -48,14 +49,20 @@ def forecast_from_mature_curve(
     provide relative information. Group assignments must be specified in advance.
     Exclusions precede numerical reads, centering, date selection and estimation.
     Only labels whose entire maturity session precedes the decision are consumed.
+
+    Contract-role research adds two pooled interactions for whether the predicted
+    contract is the near or far leg of its completed curve. It does not assume
+    a convergence direction or change the label, allocation or account rules.
     """
     if isinstance(excluded_products, str):
         raise ValueError("exclusions must be a collection of product identities")
     exclusions = tuple(sorted(set(excluded_products)))
     if any(not isinstance(p, str) or not p or p != p.strip().upper() for p in exclusions):
         raise ValueError("exclusions must be canonical product identities")
-    if type(grouped) is not bool or type(relative) is not bool:
+    if any(type(flag) is not bool for flag in (grouped, relative, contract_role)):
         raise ValueError("model modes must be boolean")
+    if relative and contract_role:
+        raise ValueError("contract role requires original outright labels")
     day = _day(decision_day)
     renamed = dict(zip(FEATURES, ("x1", "x2", "x3"), strict=True))
 
@@ -99,6 +106,7 @@ def forecast_from_mature_curve(
         "excluded_products": list(exclusions),
         "grouped": grouped,
         "relative": relative,
+        "contract_role": contract_role,
         "training_records": len(sample),
         "training_entry_days": len(counts),
         "training_products": int(sample["product"].nunique()),
@@ -124,14 +132,32 @@ def forecast_from_mature_curve(
         raise ValueError("normalized mature curve label is non-finite")
 
     def design(matrix, frame):
-        if not grouped:
-            return matrix
-        return np.column_stack(
-            [matrix] + [matrix * frame.group.eq(group).to_numpy()[:, None] for group in group_names]
-        )
+        parts = [matrix]
+        if grouped:
+            parts.extend(
+                matrix * frame.group.eq(group).to_numpy()[:, None] for group in group_names
+            )
+        if contract_role:
+            required = {"symbol_near", "symbol_far", "feature_through", "pair_source_day"}
+            if not required.issubset(frame):
+                raise ValueError("contract role requires completed exact pair identities")
+            source = pd.to_datetime(frame.pair_source_day.map(_day))
+            through = pd.to_datetime(frame.feature_through.map(_day))
+            near, far = frame.symbol.eq(frame.symbol_near), frame.symbol.eq(frame.symbol_far)
+            if (
+                not (near ^ far).all()
+                or not source.eq(through).all()
+                or not through.lt(frame.entry_day).all()
+            ):
+                raise ValueError("contract role pair is ambiguous or not strictly prior")
+            role = np.where(near, 1.0, -1.0)
+            parts.append(matrix[:, :2] * role[:, None])
+        return np.column_stack(parts) if len(parts) > 1 else matrix
 
     design_x, design_target = design(x, sample), design(target_x, target)
     penalty = np.r_[np.ones(3), np.full(3 * len(group_names), 20.0)] if grouped else np.ones(3)
+    if contract_role:
+        penalty = np.r_[penalty, np.full(2, 20.0)]
     beta = np.linalg.solve(
         design_x.T @ (design_x * weights[:, None]) + np.diag(penalty),
         design_x.T @ (weights * y),
@@ -148,5 +174,10 @@ def forecast_from_mature_curve(
         if grouped
         else {},
     }
+    if contract_role:
+        audit["contract_role_ridge_penalty"] = 20.0
+        audit["coefficients"]["contract_role_interactions"] = dict(
+            zip(FEATURES[:2], beta[-2:].tolist(), strict=True)
+        )
     forecast["expected_return"] = predicted
     return MatureCurveForecast(True, forecast.reset_index(drop=True), audit)
