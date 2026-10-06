@@ -31,7 +31,7 @@ from .durable_file_creation import (
     durable_file_lock,
 )
 
-STRESS90_STATE_SCHEMA_VERSION = 5
+STRESS90_STATE_SCHEMA_VERSION = 6
 STRESS90_STATE_KIND = "afuture.directional.stress90.policy-state"
 STRESS90_SEED_SCHEMA_VERSION = 2
 STRESS90_SEED_KIND = "afuture.directional.stress90.bootstrap-seed"
@@ -392,6 +392,7 @@ class Stress90PolicyState:
     prepared_decision: Stress90PreparedDecision | None
     completed_account_wealth: float
     completed_account_high_watermark: float
+    completed_account_reserve_triggered: bool
     last_completed_account_day: str | None
     recent_daily_returns_for_adaptive_margin: tuple[float, ...]
     live_inception_day: str | None
@@ -441,6 +442,7 @@ class Stress90PolicyState:
             prepared_decision=prepared_decision,
             completed_account_wealth=1.0,
             completed_account_high_watermark=1.0,
+            completed_account_reserve_triggered=False,
             last_completed_account_day=None,
             recent_daily_returns_for_adaptive_margin=(),
             live_inception_day=None,
@@ -673,6 +675,15 @@ def _validate_state(
             raise Stress90StateIntegrityError(f"{name} must be finite and positive")
     if state.completed_account_wealth > state.completed_account_high_watermark + _WEIGHT_EPS:
         raise Stress90StateIntegrityError("completed account wealth exceeds high watermark")
+    if not isinstance(state.completed_account_reserve_triggered, bool):
+        raise Stress90StateIntegrityError("completed account reserve trigger must be boolean")
+    reserve = definition.hard_drawdown_ratio - definition.daily_loss_ratio
+    if (
+        not state.completed_account_reserve_triggered
+        and 1.0 - state.completed_account_wealth / state.completed_account_high_watermark
+        >= reserve - _WEIGHT_EPS
+    ):
+        raise Stress90StateIntegrityError("completed account reserve trigger is missing")
     account_day = _valid_day(
         state.last_completed_account_day,
         name="last completed account day",
@@ -762,6 +773,7 @@ def _state_payload(state: Stress90PolicyState) -> dict[str, object]:
         "prepared_decision": _prepared_payload(state.prepared_decision),
         "completed_account_wealth": state.completed_account_wealth,
         "completed_account_high_watermark": state.completed_account_high_watermark,
+        "completed_account_reserve_triggered": state.completed_account_reserve_triggered,
         "last_completed_account_day": state.last_completed_account_day,
         "recent_daily_returns_for_adaptive_margin": list(
             state.recent_daily_returns_for_adaptive_margin
@@ -793,6 +805,7 @@ _STATE_FIELDS = {
     "prepared_decision",
     "completed_account_wealth",
     "completed_account_high_watermark",
+    "completed_account_reserve_triggered",
     "last_completed_account_day",
     "recent_daily_returns_for_adaptive_margin",
     "live_inception_day",
@@ -884,6 +897,9 @@ def _state_from_payload(
     supported = raw["supported_oi_products"]
     if not isinstance(supported, list) or any(not isinstance(value, str) for value in supported):
         raise Stress90StateIntegrityError("supported OI products are invalid")
+    reserve_triggered = raw["completed_account_reserve_triggered"]
+    if not isinstance(reserve_triggered, bool):
+        raise Stress90StateIntegrityError("completed account reserve trigger must be boolean")
     state = Stress90PolicyState(
         policy_id=str(raw["policy_id"]),
         policy_definition_digest=str(raw["policy_definition_digest"]),
@@ -916,6 +932,7 @@ def _state_from_payload(
         prepared_decision=_prepared_from_payload(raw["prepared_decision"], definition),
         completed_account_wealth=float(raw["completed_account_wealth"]),
         completed_account_high_watermark=float(raw["completed_account_high_watermark"]),
+        completed_account_reserve_triggered=reserve_triggered,
         last_completed_account_day=(
             None
             if raw["last_completed_account_day"] is None
@@ -1032,7 +1049,10 @@ class Stress90PolicyStateStore:
             or not isinstance(schema, int)
             or schema != STRESS90_STATE_SCHEMA_VERSION
         ):
-            raise Stress90StateIntegrityError("Stress-90 state schema is unsupported")
+            raise Stress90StateIntegrityError(
+                "Stress-90 state schema is unsupported; verified permanent reserve history "
+                "is required, not inferred from current wealth/high watermark"
+            )
         sequence = raw["sequence"]
         if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= 0:
             raise Stress90StateIntegrityError("Stress-90 state sequence must be positive")
@@ -1068,6 +1088,11 @@ class Stress90PolicyStateStore:
         if expected_sequence is not None and expected_sequence != current_sequence:
             raise Stress90StateIntegrityError("Stress-90 state sequence changed concurrently")
         if current is not None:
+            if (
+                current.state.completed_account_reserve_triggered
+                and not state.completed_account_reserve_triggered
+            ):
+                raise Stress90StateIntegrityError("permanent account reserve cannot be cleared")
             previous_bytes = self.path.read_bytes()
         sequence = current_sequence + 1
         unsigned: dict[str, object] = {
@@ -1461,11 +1486,10 @@ def drawdown_reserve_triggered_from_state(
     *,
     definition: Stress90PolicyDefinition = STRESS90_POLICY,
 ) -> bool:
-    """Trigger at the fixed 30%-5%=25% completed-account reserve boundary."""
+    """Keep the permanent reserve after any verified completed-day trigger."""
 
     _validate_state(state, definition)
-    reserve = definition.hard_drawdown_ratio - definition.daily_loss_ratio
-    return completed_account_drawdown(state) >= reserve - _WEIGHT_EPS
+    return state.completed_account_reserve_triggered
 
 
 def record_completed_account_day(
@@ -1498,6 +1522,10 @@ def record_completed_account_day(
     if not isfinite(wealth) or wealth <= 0.0:
         raise Stress90StateIntegrityError("completed account wealth became invalid")
     high_watermark = max(state.completed_account_high_watermark, wealth)
+    reserve_triggered = state.completed_account_reserve_triggered or (
+        1.0 - wealth / high_watermark
+        >= definition.hard_drawdown_ratio - definition.daily_loss_ratio - _WEIGHT_EPS
+    )
     if not isinstance(include_adaptive_margin, bool):
         raise Stress90StateIntegrityError("adaptive-margin inclusion flag must be boolean")
     recent = state.recent_daily_returns_for_adaptive_margin
@@ -1507,6 +1535,7 @@ def record_completed_account_day(
         state,
         completed_account_wealth=float(wealth),
         completed_account_high_watermark=float(high_watermark),
+        completed_account_reserve_triggered=reserve_triggered,
         last_completed_account_day=day,
         recent_daily_returns_for_adaptive_margin=tuple(recent),
         live_inception_day=state.live_inception_day or day,
@@ -1575,7 +1604,7 @@ def rebase_stress90_account(
     account_epoch: str | None = None,
     definition: Stress90PolicyDefinition = STRESS90_POLICY,
 ) -> tuple[Stress90PolicyState, Stress90AccountRebaseAudit]:
-    """Reset only account soft-path statistics after explicit lifecycle gates pass."""
+    """Reset soft-path statistics after lifecycle gates; never clear permanent reserve."""
 
     _validate_state(state, definition)
     gates = (halted, broker_flat, local_flat, no_active_orders, reconciled)

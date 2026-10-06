@@ -103,7 +103,10 @@ def test_completed_account_day_rejects_duplicate_backward_and_invalid_returns():
             record_completed_account_day(_state(), "20260825", invalid)
 
 
-def test_runtime_account_day_persistence_is_idempotent_and_rejects_conflict(tmp_path):
+@pytest.mark.parametrize("daily_return", [-0.10, -0.25])
+def test_runtime_account_day_persistence_is_idempotent_and_rejects_conflict(
+    tmp_path, monkeypatch, daily_return
+):
     from types import SimpleNamespace
 
     from afuture.directional import DirectionalConfig
@@ -156,14 +159,53 @@ def test_runtime_account_day_persistence_is_idempotent_and_rejects_conflict(tmp_
         oi_evidence_path=tmp_path / "oi.json",
     )
 
-    manager.record_completed_account_return("20260825", -0.10)
-    manager.record_completed_account_return("20260825", -0.10)
+    original = manager.policy_state_store.save
+
+    def interrupted_save(*args, **kwargs):
+        original(*args, **kwargs)
+        raise OSError("interrupted after durable policy save")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(manager.policy_state_store, "save", interrupted_save)
+        with pytest.raises(OSError, match="interrupted"):
+            manager.record_completed_account_return("20260825", daily_return)
+    # Rebuild the real manager from durable files; the completed day is replayed once.
+    manager = Stress90DirectionalPortfolioManager(
+        manager.config,
+        SimpleNamespace(),
+        RiskManager(RiskConfig(margin_estimate_buffer=1.25)),
+        historical_mode=True,
+        policy_state_path=state_path,
+        seed_path=seed_path,
+        oi_evidence_path=tmp_path / "oi.json",
+    )
+    manager.record_completed_account_return("20260825", daily_return)
     record = Stress90PolicyStateStore(state_path).load_required_record()
 
     assert record.sequence == 2
-    assert record.state.completed_account_wealth == pytest.approx(0.9)
+    assert record.state.completed_account_wealth == pytest.approx(1.0 + daily_return)
+    assert record.state.completed_account_reserve_triggered is (daily_return == -0.25)
     with pytest.raises(RuntimeError, match="conflicts"):
-        manager.record_completed_account_return("20260825", -0.11)
+        manager.record_completed_account_return("20260825", daily_return - 0.01)
+    manager.record_completed_account_return("20260826", 0.40)
+    recovered = Stress90PolicyStateStore(state_path).load_required()
+    assert recovered.completed_account_wealth == recovered.completed_account_high_watermark
+    assert recovered.completed_account_reserve_triggered is (daily_return == -0.25)
+    from test_directional_stress90_planner import _account, _tick
+
+    from afuture.models import ContractSpec
+
+    stages = manager._plan_lot_stages(
+        account=_account(),
+        prepared=SimpleNamespace(survivor_weights={"A": 1.0}, concentration_freeze=False),
+        product_ticks={"A": _tick("A2612", "A")},
+        specs={"A2612": ContractSpec("A2612", "DCE", 10.0, 1.0, 0.10, 0.10)},
+        current_lots={},
+        symbol_products={"A2612": "A"},
+        unavailable_products=(),
+    )
+    assert stages.margin_fitted_lots["A2612"] > 0
+    assert bool(stages.openings) is (daily_return != -0.25)
 
 
 def test_runtime_records_inception_segment_for_reserve_but_not_adaptive_margin(tmp_path):
@@ -242,7 +284,7 @@ def test_runtime_records_inception_segment_for_reserve_but_not_adaptive_margin(t
     assert completed.state.last_completed_account_day == "20260826"
 
 
-def test_sufficient_statistics_trigger_matches_full_return_list_each_day():
+def test_permanent_trigger_matches_ever_triggered_completed_return_prefix():
     from afuture.directional_drawdown_reserve_freeze import drawdown_reserve_triggered
     from afuture.directional_stress90_state import (
         drawdown_reserve_triggered_from_state,
@@ -252,6 +294,7 @@ def test_sufficient_statistics_trigger_matches_full_return_list_each_day():
     returns = (0.10, -0.10, -0.10, -0.10, 0.20, -0.05)
     state = _state()
     completed = []
+    triggered = False
     for offset, daily_return in enumerate(returns):
         completed.append(daily_return)
         state = record_completed_account_day(
@@ -259,14 +302,16 @@ def test_sufficient_statistics_trigger_matches_full_return_list_each_day():
             f"202609{offset + 1:02d}",
             daily_return,
         )
-        assert drawdown_reserve_triggered_from_state(state) is drawdown_reserve_triggered(
+        triggered = triggered or drawdown_reserve_triggered(
             completed,
             hard_drawdown=0.30,
             daily_loss=0.05,
         )
+        assert drawdown_reserve_triggered_from_state(state) is triggered
 
 
-def test_explicit_rebase_resets_only_live_account_soft_path_and_writes_audit():
+@pytest.mark.parametrize("daily_return", [-0.10, -0.25])
+def test_explicit_rebase_resets_only_live_account_soft_path_and_writes_audit(daily_return):
     from afuture.directional_stress90_policy import candidate_state_digest
     from afuture.directional_stress90_state import (
         REBASE_CONFIRMATION,
@@ -274,7 +319,7 @@ def test_explicit_rebase_resets_only_live_account_soft_path_and_writes_audit():
         record_completed_account_day,
     )
 
-    state = record_completed_account_day(_state(), "20260825", -0.10)
+    state = record_completed_account_day(_state(), "20260825", daily_return)
     candidate_digest = candidate_state_digest(state.candidate_state())
     rebased, audit = rebase_stress90_account(
         state,
@@ -291,6 +336,7 @@ def test_explicit_rebase_resets_only_live_account_soft_path_and_writes_audit():
 
     assert rebased.completed_account_wealth == 1.0
     assert rebased.completed_account_high_watermark == 1.0
+    assert rebased.completed_account_reserve_triggered is (daily_return == -0.25)
     assert rebased.last_completed_account_day is None
     assert rebased.recent_daily_returns_for_adaptive_margin == ()
     assert rebased.live_inception_day == "20260826"

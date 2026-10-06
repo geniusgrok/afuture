@@ -285,8 +285,11 @@ def _settlement_account(*, deposit: float = 0.0, withdrawal: float = 0.0):
     )
 
 
+@pytest.mark.parametrize("point", ["after_policy", "after_generic"])
 def test_settlement_roll_forward_records_inception_loss_for_drawdown_reserve(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    point: str,
 ) -> None:
     from afuture.directional_stress90_state import (
         REBASE_CONFIRMATION,
@@ -295,6 +298,7 @@ def test_settlement_roll_forward_records_inception_loss_for_drawdown_reserve(
     )
     from afuture.stress90_lifecycle_transaction import (
         Stress90LifecycleTransactionStore,
+        apply_stress90_lifecycle_transaction,
         build_stress90_settlement_roll_forward_targets,
     )
 
@@ -333,9 +337,10 @@ def test_settlement_roll_forward_records_inception_loss_for_drawdown_reserve(
         account,
     )
 
-    transaction = Stress90LifecycleTransactionStore(
+    transaction_store = Stress90LifecycleTransactionStore(
         tmp_path / "stress90_lifecycle_transaction.json"
-    ).begin(
+    )
+    transaction = transaction_store.begin(
         operation="settlement_roll_forward",
         generic_source=generic,
         policy_source=policy,
@@ -357,6 +362,34 @@ def test_settlement_roll_forward_records_inception_loss_for_drawdown_reserve(
     assert drawdown_reserve_triggered_from_state(transaction.policy_target) is True
     assert transaction.policy_target.recent_daily_returns_for_adaptive_margin == ()
     assert transaction.generic_target.recent_daily_returns == []
+    owner = policy_store if point == "after_policy" else generic_store
+    original = owner.save
+
+    def saved_then_interrupted(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("interrupted reserve settlement")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(owner, "save", saved_then_interrupted)
+        with pytest.raises(RuntimeError, match="interrupted reserve settlement"):
+            apply_stress90_lifecycle_transaction(
+                transaction_store, generic_store=generic_store, policy_store=policy_store
+            )
+    # Reload the prepared cross-file transaction instead of rebuilding its target.
+    resumed_store = Stress90LifecycleTransactionStore(transaction_store.path)
+    completed = apply_stress90_lifecycle_transaction(
+        resumed_store, generic_store=generic_store, policy_store=policy_store
+    )
+    assert completed.status == "committed"
+    assert policy_store.load_required().completed_account_reserve_triggered
+    sequence = policy_store.load_required_record().sequence
+    assert (
+        apply_stress90_lifecycle_transaction(
+            resumed_store, generic_store=generic_store, policy_store=policy_store
+        )
+        == completed
+    )
+    assert policy_store.load_required_record().sequence == sequence
 
 
 def test_settlement_roll_forward_records_next_fully_owned_completed_day(
