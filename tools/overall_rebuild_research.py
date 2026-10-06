@@ -340,6 +340,30 @@ def incremental_account_targets(legacy, curve):
     return result
 
 
+def conflict_reduced_account_targets(legacy, curve):
+    """Use opposing causal requests only to reduce reserved legacy exposure.
+
+    Compatible additions retain the original incremental allocation. Released
+    capacity stays unused; opposing requests cannot reverse legacy positions.
+    Account HHI, reserve, integer projection and hard limits remain downstream.
+    """
+    baseline = incremental_account_targets(legacy, curve)
+    reduction = curve.abs().clip(upper=legacy.abs()).where(legacy * curve < 0, 0.0)
+    return baseline - np.sign(legacy) * reduction
+
+
+def corroborated_account_targets(legacy, curve):
+    """Reserve legacy capacity only where a mature curve request agrees.
+
+    An absent or opposing curve request grants no legacy reservation. Curve
+    requests then use the unchanged incremental caps in the single account.
+    This is a causal admission rule, not selection by realized component PnL.
+    """
+    incremental_account_targets(legacy, curve)  # Validate both component identities.
+    confirmed = legacy.where(legacy * curve > 0, 0.0)
+    return incremental_account_targets(confirmed, curve)
+
+
 def reduce_incumbent_resizing(final_lots, current_lots):
     """Suppress same-sign incumbent additions while retaining every risk reduction."""
     result = dict(final_lots)

@@ -69,6 +69,37 @@ def test_registered_mechanisms_continue_in_frozen_order_after_economic_failure()
         research.next_registered_recipe([{"id": "same"}, {"id": "same"}], [])
 
 
+def test_conflict_reduction_preserves_compatible_requests_without_recycling_capacity():
+    index = pd.DatetimeIndex(["2025-01-08", "2025-01-09"])
+    old = pd.DataFrame([[0.4, -0.2, 0.0], [0.1, -0.2, 0.0]], index=index)
+    new = pd.DataFrame([[-0.1, 0.3, 0.1], [-0.3, -0.1, 0.1]], index=index)
+    result = research.conflict_reduced_account_targets(old, new)
+    np.testing.assert_allclose(result, [[0.3, 0.0, 0.1], [0.0, -0.25, 0.1]])
+    baseline = research.incremental_account_targets(old, new)
+    assert (result.abs() <= baseline.abs() + 1e-12).all().all()
+    assert (result * old >= -1e-12).all().all()
+    pd.testing.assert_frame_equal(
+        research.conflict_reduced_account_targets(old.iloc[:1], new.iloc[:1]), result.iloc[:1]
+    )
+    with pytest.raises(ValueError, match="identities"):
+        research.conflict_reduced_account_targets(old, new.iloc[:, ::-1])
+    new.iloc[0, 0] = np.nan
+    with pytest.raises(ValueError, match="nonfinite"):
+        research.conflict_reduced_account_targets(old, new)
+
+
+def test_corroboration_requires_current_same_direction_without_a_pnl_selector():
+    index = pd.DatetimeIndex(["2025-01-08", "2025-01-09"])
+    old = pd.DataFrame([[0.8, -0.2, 0.3, 0.0], [0.8, -0.2, 0.3, 0.0]], index=index)
+    new = pd.DataFrame([[0.1, 0.1, 0.0, -0.2], [0.0, -0.1, -0.1, 0.0]], index=index)
+    result = research.corroborated_account_targets(old, new)
+    np.testing.assert_allclose(result, [[0.8, 0.1, 0.0, -0.2], [0.0, -0.25, -0.1, 0.0]])
+    assert (result.abs().sum(axis=1) <= 2).all()
+    pd.testing.assert_frame_equal(
+        research.corroborated_account_targets(old.iloc[:1], new.iloc[:1]), result.iloc[:1]
+    )
+
+
 def test_one_account_combination_nets_targets_before_integer_projection():
     index = pd.DatetimeIndex(["2025-01-08"])
     old = pd.DataFrame([[0.25, -0.25]], index=index, columns=["RB", "CU"])
