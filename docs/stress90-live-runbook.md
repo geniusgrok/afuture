@@ -411,6 +411,13 @@ target 两天，以及跨越 gap 的长连接。不得修改 `natural_days == 1`
 
 ## 12. 充值、出金或更换账户
 
+Stress-90 policy state schema 6 持久保存 `completed_account_reserve_triggered`：
+任何已核验的完整账户日达到25%储备线后永久禁止新增风险。净值恢复、进程重启、
+账户重基或 epoch 变化均不清除锁存；现有减仓、退出及合格同品种移仓边界继续适用。
+旧版 policy state 缺少历史触发证据，必须保持阻断并保留原件；当前净值与高水位
+不能证明历史从未触发，因此没有自动升级、从 seed 重建或采用 `.prev` 的迁移路径。
+历史证据未核实前不能恢复新增风险。本次源码修复不执行生产状态迁移或启用。
+
 运行期间禁止手工交易、其他策略、充值或出金。发生资金或账户生命周期变化后，先人工设置 kill switch 并进入 `HALTED`，清空 Broker 与本地持仓、处理全部活动委托、完成 fresh snapshot 和 reconcile，再执行：
 
 ```bash
