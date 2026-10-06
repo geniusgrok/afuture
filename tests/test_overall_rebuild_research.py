@@ -16,6 +16,12 @@ research = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(research)
 
 
+def test_incremental_budget_does_not_allocate_sum_roundoff():
+    legacy = pd.DataFrame([[2 / 3, 1.0, 1 / 3, 0.0]], columns=list("ABCD"))
+    curve = pd.DataFrame([[0.0, 0.0, 0.0, 0.25]], columns=legacy.columns)
+    pd.testing.assert_frame_equal(research.incremental_account_targets(legacy, curve), legacy)
+
+
 def predictions():
     return pd.DataFrame(
         {

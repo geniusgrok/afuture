@@ -11,6 +11,7 @@ import argparse
 import contextlib
 import json
 from dataclasses import replace
+from math import fsum
 from pathlib import Path
 
 import numpy as np
@@ -321,13 +322,14 @@ def incremental_account_targets(legacy, curve):
         raise ValueError("incremental component identities differ")
     if not np.isfinite(legacy.to_numpy()).all() or not np.isfinite(curve.to_numpy()).all():
         raise ValueError("nonfinite incremental component target")
-    if (legacy.abs().sum(axis=1) > 2 + 1e-10).any():
+    legacy_gross = legacy.abs().apply(fsum, axis=1)
+    if (legacy_gross > 2 + 1e-10).any():
         raise ValueError("legacy target exceeds common gross budget")
     compatible = legacy * curve >= 0
     spare_product = (0.25 - legacy.abs()).clip(lower=0)
     requested = curve.abs().clip(upper=spare_product).where(compatible, 0.0)
-    spare_gross = (2 - legacy.abs().sum(axis=1)).clip(lower=0)
-    total = requested.sum(axis=1)
+    spare_gross = (2 - legacy_gross).clip(lower=0)
+    total = requested.apply(fsum, axis=1)
     scale = (spare_gross / total.replace(0, np.nan)).clip(upper=1).fillna(0)
     additions = np.sign(curve) * requested.mul(scale, axis=0)
     result = legacy + additions
