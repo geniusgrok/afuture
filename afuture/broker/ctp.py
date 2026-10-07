@@ -67,6 +67,19 @@ from .ctp_snapshot_query import CtpSnapshotQuery, CtpSnapshotQueryError
 _CHINA = ZoneInfo("Asia/Shanghai")
 
 
+def _required_rate_value(data: dict, field: str, symbol: str) -> float:
+    raw = data.get(field)
+    if raw is None or isinstance(raw, bool):
+        raise RuntimeError(f"missing or invalid CTP rate field: {symbol}/{field}")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError(f"invalid CTP rate field: {symbol}/{field}") from exc
+    if not isfinite(value) or value < 0:
+        raise RuntimeError(f"invalid CTP rate field: {symbol}/{field}")
+    return value
+
+
 class _RateWaiter(TypedDict):
     kind: str
     event: Event
@@ -2275,7 +2288,7 @@ class CtpBroker(Broker):
     ) -> dict[str, ContractSpec]:
         """从 CTP/VeighNa 获取乘数、tick、保证金和手续费用于启动安全门。
 
-        查询失败、固定金额保证金等无法可靠映射的情况一律报错，由上层 fail-closed。
+        查询失败、缺失费率、相对或固定金额保证金等无法可靠映射的情况一律报错。
         """
         if not self.is_ready() or self._main_engine is None:
             raise RuntimeError("CTP is not ready for metadata query")
@@ -2292,25 +2305,32 @@ class CtpBroker(Broker):
                 raise RuntimeError(f"CTP contract metadata missing: {symbol}")
             margin = self._query_rate(td_api, "margin", symbol, deadline)
             commission = self._query_rate(td_api, "commission", symbol, deadline)
-            long_by_volume = float(margin.get("LongMarginRatioByVolume", 0.0) or 0.0)
-            short_by_volume = float(margin.get("ShortMarginRatioByVolume", 0.0) or 0.0)
+            # Relative rates need an exchange base that this query path does not obtain.
+            if margin.get("IsRelative") not in (0, False):
+                raise RuntimeError(
+                    f"unsupported relative or missing CTP margin IsRelative: {symbol}"
+                )
+            long_by_volume = _required_rate_value(margin, "LongMarginRatioByVolume", symbol)
+            short_by_volume = _required_rate_value(margin, "ShortMarginRatioByVolume", symbol)
             if long_by_volume > 0 or short_by_volume > 0:
                 raise RuntimeError(f"fixed-per-lot margin is unsupported for validation: {symbol}")
             fee = FeeSpec(
-                open_fixed=float(commission.get("OpenRatioByVolume", 0.0) or 0.0),
-                open_rate=float(commission.get("OpenRatioByMoney", 0.0) or 0.0),
-                close_fixed=float(commission.get("CloseRatioByVolume", 0.0) or 0.0),
-                close_rate=float(commission.get("CloseRatioByMoney", 0.0) or 0.0),
-                close_today_fixed=float(commission.get("CloseTodayRatioByVolume", 0.0) or 0.0),
-                close_today_rate=float(commission.get("CloseTodayRatioByMoney", 0.0) or 0.0),
+                open_fixed=_required_rate_value(commission, "OpenRatioByVolume", symbol),
+                open_rate=_required_rate_value(commission, "OpenRatioByMoney", symbol),
+                close_fixed=_required_rate_value(commission, "CloseRatioByVolume", symbol),
+                close_rate=_required_rate_value(commission, "CloseRatioByMoney", symbol),
+                close_today_fixed=_required_rate_value(
+                    commission, "CloseTodayRatioByVolume", symbol
+                ),
+                close_today_rate=_required_rate_value(commission, "CloseTodayRatioByMoney", symbol),
             )
             result[symbol] = ContractSpec(
                 symbol=symbol,
                 exchange=contract.exchange.value,
                 multiplier=float(contract.size),
                 price_tick=float(contract.pricetick),
-                margin_rate_long=float(margin.get("LongMarginRatioByMoney", 0.0) or 0.0),
-                margin_rate_short=float(margin.get("ShortMarginRatioByMoney", 0.0) or 0.0),
+                margin_rate_long=_required_rate_value(margin, "LongMarginRatioByMoney", symbol),
+                margin_rate_short=_required_rate_value(margin, "ShortMarginRatioByMoney", symbol),
                 fee=fee,
             )
         return result
