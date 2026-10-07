@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass
+
+import pandas as pd
 
 from .directional import adaptive_margin_sizing_share, fit_target_lots_to_margin_budget
 from .directional_acceptance import (
     PRODUCT_MULTIPLIERS,
     DirectionalProductionAcceptance,
+    ProductionMechanicsConfig,
     TargetLotStages,
 )
+from .directional_data_validation import validate_daily_index
 from .directional_efficiency import stabilize_one_lot_increases
+from .directional_risk import covariance_risk_budget
 
 
 class MarginAwareDirectionalProductionAcceptance(DirectionalProductionAcceptance):
@@ -135,3 +141,65 @@ class MarginAwareDirectionalProductionAcceptance(DirectionalProductionAcceptance
             current_lots=current_lots,
             completed_returns=completed_returns,
         ).final_lots
+
+
+@dataclass(frozen=True)
+class _ObservedCovarianceScale:
+    value: float
+
+    def scale(self, completed_returns: Iterable[float]) -> float:
+        # Forecasts come from completed market observations, not scaled account PnL.
+        del completed_returns
+        return self.value
+
+
+class CovarianceBudgetDirectionalProductionAcceptance(MarginAwareDirectionalProductionAcceptance):
+    """Replace HHI/reserve/exit soft rules with a prior-market covariance budget.
+
+    The 63-session, 15%-annualized forecast enters the original simulator's target
+    scaling stage. Integer construction, margin feasibility, fills, costs and hard
+    account gates remain owned by the existing account implementation. Missing risk
+    evidence yields a zero target, so incumbents can be reduced by that same path.
+    This optional acceptance class does not change live policy selection.
+    """
+
+    def __init__(
+        self,
+        config: ProductionMechanicsConfig | None = None,
+        *,
+        market_returns: pd.DataFrame,
+    ) -> None:
+        super().__init__(config)
+        frame = market_returns.copy()
+        if len(frame.index):
+            # A sentinel column also validates a dated frame with no product columns.
+            validate_daily_index(pd.DataFrame({"row": 0}, index=frame.index), name="market returns")
+        frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index, errors="raise")).normalize()
+        if frame.index.tz is not None:
+            raise ValueError("market returns require timezone-naive trading-day labels")
+        frame.columns = [str(product).upper() for product in frame.columns]
+        if frame.columns.has_duplicates:
+            raise ValueError("market returns contain duplicate products")
+        self.market_returns = frame
+        self.risk_audit: list[dict] = []
+        self.risk_governor = _ObservedCovarianceScale(0.0)
+
+    def observe_target_state(
+        self,
+        *,
+        day: pd.Timestamp,
+        product_weights: Mapping[str, float],
+    ) -> None:
+        day = pd.Timestamp(day)
+        if pd.isna(day) or day.tzinfo is not None or day != day.normalize():
+            raise ValueError("target day must be a valid timezone-naive trading-day label")
+        completed = self.market_returns.loc[self.market_returns.index < day].iloc[-63:]
+        decision = covariance_risk_budget(product_weights, completed)
+        self.risk_governor = _ObservedCovarianceScale(decision.scale)
+        self.risk_audit.append(
+            {
+                "target_day": day,
+                "prior_through": completed.index[-1] if len(completed) else None,
+                **asdict(decision),
+            }
+        )

@@ -288,6 +288,39 @@ def test_concentration_uses_strictly_prior_median_then_appends_current_hhi():
     assert above == (1.0, 0.4, False, (0.4, 1.0))
 
 
+def test_survivor_sum_preserves_equal_boundary_without_creating_spare_budget():
+    from fractions import Fraction
+
+    from afuture.directional_stress90_policy import (
+        advance_concentration_history,
+        reallocate_survivor_row,
+    )
+
+    original = {"A": -2 / 3, "B": -1.0, "C": -1 / 3}
+    # Oracle uses the exact supplied binary values, not rounded decimal targets.
+    assert float(sum(Fraction(abs(x)) for x in original.values())) == 2.0
+    result = reallocate_survivor_row(
+        oi_weights=original,
+        approved_weights={"A": 0.0, "B": -1.0, "C": -1 / 3},
+        prior_survivor={"C": -1.9999999999999998},
+    )
+    assert result == {"A": 0.0, "B": -1.0, "C": -1.0}
+    assert advance_concentration_history((0.5,), result)[2] is True
+
+
+def test_concentration_keeps_real_sub_epsilon_differences():
+    from afuture.directional_stress90_policy import (
+        advance_concentration_history,
+        target_weight_concentration,
+    )
+
+    diversified = {"A": 1.0, "B": 1.0, "C": 2**-40}
+    below = target_weight_concentration(diversified)
+    assert below is not None and 0 < 0.5 - below < 1e-12
+    # No numerical tolerance may turn genuinely different targets into equality.
+    assert advance_concentration_history((below,), {"A": 1.0, "B": 1.0})[2] is False
+
+
 def _full_weights(**overrides: float) -> dict[str, float]:
     from afuture.directional_stress90_policy import STRESS90_POLICY
 

@@ -7,7 +7,7 @@ import json
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-from math import isfinite
+from math import fsum, isfinite
 from statistics import median
 from types import MappingProxyType
 from typing import TypeAlias
@@ -206,7 +206,7 @@ def _frozen_weights(values: Mapping[str, float]) -> ProductWeights:
 
 
 def _gross(weights: Mapping[str, float]) -> float:
-    return float(sum(abs(float(value)) for value in weights.values()))
+    return fsum(abs(float(value)) for value in weights.values())
 
 
 def _require_gross_cap(
@@ -287,6 +287,7 @@ def _completed_return_sum(
     *,
     lookback: int,
 ) -> float | None:
+    """Sum changes of the supplied price proxy, not returns on owned contracts."""
     values = tuple(float(value) for value in close_values)
     if len(values) < lookback + 1:
         return None
@@ -307,7 +308,11 @@ def apply_cost_gate_row(
     benefit_horizon_sessions: int = 3,
     cost_hurdle_bps: float = 15.0,
 ) -> dict[str, float]:
-    """Use completed close returns to block only entries and same-side adds."""
+    """Use heuristic completed proxy changes to block entries and same-side adds.
+
+    The benefit estimate is a model rule, not certified held-contract alpha or
+    an execution-cost measurement. Actual fills own fees and account P&L.
+    """
 
     weights = _normalized_values(oi_weights, name="OI-confirmed")
     prior = _normalized_values(prior_approved, name="prior cost-approved")
@@ -422,13 +427,13 @@ def reallocate_survivor_row(
         if np.sign(approved_row[index]) != np.sign(original_row[index]):
             raise Stress90InvariantError("cost-approved weights changed target sign")
 
-    original_gross = float(np.abs(original_row).sum())
+    original_gross = fsum(np.abs(original_row))
     if original_gross <= _NUMERIC_EPS or not bool(support.any()):
         return {product: 0.0 for product in products}
 
     signs = np.sign(original_row)
     base = np.where(support, np.abs(original_row), 0.0)
-    residual = max(original_gross - float(base.sum()), 0.0)
+    residual = max(original_gross - fsum(base), 0.0)
     magnitudes = base.copy()
     same_sign_previous = support & (np.sign(previous_row) == signs)
     capacity = np.where(
@@ -436,14 +441,14 @@ def reallocate_survivor_row(
         np.maximum(np.abs(previous_row) - base, 0.0),
         0.0,
     )
-    capacity_total = float(capacity.sum())
+    capacity_total = fsum(capacity)
     if residual > _NUMERIC_EPS and capacity_total > _NUMERIC_EPS:
         used = min(residual, capacity_total)
         magnitudes += capacity * (used / capacity_total)
         residual -= used
 
     if residual > _NUMERIC_EPS:
-        denominator = float(base.sum())
+        denominator = fsum(base)
         if denominator <= _NUMERIC_EPS:
             raise Stress90InvariantError("survivor support has no original magnitude")
         magnitudes += base * (residual / denominator)
@@ -461,10 +466,10 @@ def target_weight_concentration(weights: Mapping[str, float]) -> float | None:
 
     values = _normalized_values(weights, name="target concentration")
     magnitudes = [abs(value) for value in values.values() if value != 0.0]
-    gross = float(sum(magnitudes))
+    gross = fsum(magnitudes)
     if gross <= 0.0:
         return None
-    return float(sum((value / gross) ** 2 for value in magnitudes))
+    return fsum((value / gross) ** 2 for value in magnitudes)
 
 
 def advance_concentration_history(
