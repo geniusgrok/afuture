@@ -10,7 +10,7 @@ from afuture.broker.sim import SimBroker
 from afuture.engine import TradingEngine
 from afuture.fees import calculate_commission
 from afuture.metadata import validate_contract_metadata
-from afuture.models import Offset
+from afuture.models import Offset, OrderRequest, OrderSide, OrderType, RuntimeMode
 from afuture.risk import RiskConfig, RiskManager
 from afuture.state import RuntimeState, StateStore
 
@@ -171,3 +171,75 @@ def test_partial_rates_cannot_clear_restored_kill_switch(rate_boundary, tmp_path
     engine.start()
     assert engine.halted and not engine.state.metadata_verified
     assert not engine.clear_kill_switch_after_reconcile()
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_new_day_revalidates_rates_without_clearing_recovery_gate(rate_boundary, tmp_path, invalid):
+    raw_broker, _, commission, _ = rate_boundary
+    specs = raw_broker.get_live_contract_specs(["al2611"])
+    broker = SimBroker(500_000, specs)
+    broker._trading_day = "20260821"
+    broker.get_live_contract_specs = raw_broker.get_live_contract_specs
+    store = StateStore(tmp_path / "synthetic-state.json")
+    engine = TradingEngine(
+        broker, [], specs, RiskManager(RiskConfig()), store, require_live_metadata=True
+    )
+    engine.start()
+    assert not engine.halted and engine.state.metadata_verified
+    if invalid:
+        del commission["OpenRatioByMoney"]
+    broker._trading_day = "20260822"
+    engine._handle_account_event(broker.get_account())
+    restored = store.load()
+    assert restored.trading_day == "20260822"
+    assert engine.state.metadata_verified is not invalid
+    assert engine.halted is invalid
+    if invalid:
+        assert restored.kill_switch and restored.runtime_mode == RuntimeMode.HALTED.value
+        assert not engine.clear_kill_switch_after_reconcile()
+    else:
+        assert not restored.kill_switch and restored.runtime_mode == RuntimeMode.RUNNING.value
+
+
+def test_rate_rejection_preserves_independent_reduction_submission(rate_boundary, tmp_path):
+    rate_broker, _, commission, td = rate_boundary
+    broker = CtpBroker(CtpCredentials(*["synthetic"] * 8))
+    broker.configure_order_submission_journal(
+        tmp_path / "synthetic-orders.json",
+        policy_id="directional.stress90",
+        policy_definition_digest="a" * 64,
+        products_manifest_digest="b" * 64,
+    )
+    broker.is_ready = rate_broker.is_ready
+    broker._main_engine = rate_broker._main_engine
+    del commission["OpenRatioByMoney"]
+    with pytest.raises(RuntimeError, match="OpenRatioByMoney"):
+        broker.get_live_contract_specs(["al2611"])
+    td.frontid, td.sessionid, td.order_ref = 7, 11, 40
+    td.getTradingDay = lambda: "20260821"
+    broker._to_vnpy_order = lambda request: request
+    calls = []
+
+    def submit(request, _gateway):
+        td.order_ref += 1
+        calls.append(request)
+        return f"CTP.7_11_{td.order_ref}"
+
+    broker._main_engine.send_order = submit
+    opening = OrderRequest(
+        "al2611", "SHFE", OrderSide.BUY, Offset.OPEN, 1, 20_000, reference="directional:synthetic"
+    )
+    with pytest.raises(RuntimeError, match="candidate context is missing"):
+        broker.send_order(opening)
+    reduction = OrderRequest(
+        "al2611",
+        "SHFE",
+        OrderSide.SELL,
+        Offset.CLOSE_TODAY,
+        1,
+        20_000,
+        OrderType.FAK,
+        "directional:synthetic-protection",
+    )
+    assert broker.send_order(reduction) == "CTP.7_11_41"
+    assert calls == [reduction]
