@@ -287,6 +287,7 @@ def _completed_return_sum(
     *,
     lookback: int,
 ) -> float | None:
+    """Sum changes of the supplied price proxy, not returns on owned contracts."""
     values = tuple(float(value) for value in close_values)
     if len(values) < lookback + 1:
         return None
@@ -307,7 +308,11 @@ def apply_cost_gate_row(
     benefit_horizon_sessions: int = 3,
     cost_hurdle_bps: float = 15.0,
 ) -> dict[str, float]:
-    """Use completed close returns to block only entries and same-side adds."""
+    """Use heuristic completed proxy changes to block entries and same-side adds.
+
+    The benefit estimate is a model rule, not certified held-contract alpha or
+    an execution-cost measurement. Actual fills own fees and account P&L.
+    """
 
     weights = _normalized_values(oi_weights, name="OI-confirmed")
     prior = _normalized_values(prior_approved, name="prior cost-approved")

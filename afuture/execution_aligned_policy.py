@@ -8,6 +8,11 @@ Meta candidates must remain positive after both Base and Stress transaction-cost
 endpoints, but surviving candidates retain the Base score ordering so cost robustness
 does not replace the primary Alpha objective. Product ordering is frozen alphabetically.
 Gross target notional is capped at 2x.
+
+The supplied continuous-price changes are signal-index features. Unadjusted quotes
+can include a cross-expiry price difference on rollover; they are neither returns
+on one held contract nor an independently qualified term-structure signal. Account
+P&L must use the actual held contract and charge every execution and rollover leg.
 """
 
 from __future__ import annotations
@@ -113,6 +118,7 @@ def _parse_template_id(raw: str) -> _Template:
 
 
 def _rolling_log_return(returns: pd.DataFrame, window: int) -> pd.DataFrame:
+    """Aggregate supplied proxy price changes, not a tradable holding return."""
     return np.log1p(returns.clip(lower=-0.99)).rolling(window, min_periods=window).sum()
 
 
@@ -123,13 +129,13 @@ def _normalized_price(returns: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(result, index=returns.index, columns=returns.columns)
 
     first = values[0]
-    wealth = np.where(np.isfinite(first), 1.0 + first, 1.0)
-    result[0] = wealth
+    index_level = np.where(np.isfinite(first), 1.0 + first, 1.0)
+    result[0] = index_level
     for position in range(1, len(values)):
         row = values[position]
         valid = np.isfinite(row)
-        wealth = np.where(valid, wealth * (1.0 + row), 1.0)
-        result[position, valid] = wealth[valid]
+        index_level = np.where(valid, index_level * (1.0 + row), 1.0)
+        result[position, valid] = index_level[valid]
     return pd.DataFrame(result, index=returns.index, columns=returns.columns)
 
 
