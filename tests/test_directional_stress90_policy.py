@@ -274,6 +274,37 @@ def test_survivor_reallocation_preserves_support_sign_gross_and_turnover_tie_bre
     assert sum(abs(value) for value in second.values()) == pytest.approx(2.0)
 
 
+def test_research_budget_retains_cost_approved_amount_and_separate_state_identity():
+    from afuture.directional_stress90_policy import (
+        STRESS90_POLICY,
+        Stress90CandidateState,
+        Stress90InvariantError,
+        _validated_prior_state,
+        reallocate_survivor_row,
+    )
+
+    kwargs = {
+        "oi_weights": {"A": 1.0, "M": 1.0},
+        "approved_weights": {"A": 1.0, "M": 0.0},
+        "prior_survivor": {"A": 0.0, "M": 0.0},
+    }
+    assert reallocate_survivor_row(**kwargs) == {"A": 2.0, "M": 0.0}
+    assert reallocate_survivor_row(**kwargs, retain_cost_approved_budget=True) == {
+        "A": 1.0,
+        "M": 0.0,
+    }
+    kwargs["oi_weights"] = {"A": 1.0, "M": 0.0}
+    kwargs["approved_weights"] = {"A": 0.5, "M": 0.0}
+    assert reallocate_survivor_row(**kwargs, retain_cost_approved_budget=True)["A"] == 0.5
+
+    legacy = Stress90CandidateState.initial()
+    research = Stress90CandidateState.initial(retain_cost_approved_budget=True)
+    assert legacy.policy_definition_digest == STRESS90_POLICY.policy_definition_digest
+    assert research.policy_definition_digest != legacy.policy_definition_digest
+    with pytest.raises(Stress90InvariantError, match="policy definition digest"):
+        _validated_prior_state(legacy, STRESS90_POLICY, retain_cost_approved_budget=True)
+
+
 def test_concentration_uses_strictly_prior_median_then_appends_current_hhi():
     from afuture.directional_stress90_policy import advance_concentration_history
 

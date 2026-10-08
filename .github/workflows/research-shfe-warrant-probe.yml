@@ -1,0 +1,27 @@
+name: research-shfe-warrant-probe
+
+on:
+  workflow_dispatch:
+
+# Research-only historical evidence; not a forecast or promotional claim.
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python tools/probe_shfe_warrant.py shfe-warrant-probe --weekly-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shfe-warrant-probe
+          path: shfe-warrant-probe/
+          if-no-files-found: error
+          retention-days: 30

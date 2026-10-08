@@ -39,13 +39,21 @@ class MPVDirectionalProductionAcceptance(MarginAwareDirectionalProductionAccepta
         frame = frame[frame["date"].notna() & (frame["date"] < cutoff)]
         return [dict(row) for row in frame.to_dict(orient="records")]
 
-    def simulate(self, raw, weights, *, cost_bps: float, prepared=None):
+    def simulate(
+        self, raw, weights, *, cost_bps: float, prepared=None, pre_reserve_scale: bool = False
+    ):
         index = pd.DatetimeIndex(pd.to_datetime(getattr(weights, "index", []), errors="coerce"))
         valid = index[~index.isna()]
         self._mpv_observed_event_rows = self._seed_rows_before(valid.min()) if len(valid) else []
         self._mpv_cost_rate = float(cost_bps) / 10000.0
         self.last_mpv_optimization = None
-        return super().simulate(raw, weights, cost_bps=cost_bps, prepared=prepared)
+        return super().simulate(
+            raw,
+            weights,
+            cost_bps=cost_bps,
+            prepared=prepared,
+            pre_reserve_scale=pre_reserve_scale,
+        )
 
     def _pnl_audit_row(self, **kwargs) -> dict:
         row = super()._pnl_audit_row(**kwargs)
