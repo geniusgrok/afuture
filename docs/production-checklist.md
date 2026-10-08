@@ -69,7 +69,7 @@
 - [ ] operator roll-forward 后 runtime 仍为 `HALTED` 且 kill switch 开启，已重新运行 `status`/`doctor` 并签发新 technical permit；外部 activation blockers 仍单独保留。
 - [ ] 目标交易所和品种权限已开通。
 - [ ] `rebalance_window` 经过测试柜台验证。
-- [ ] Stress-90 不用宽泛 `rebalance_window` 追单；每个产品只在固定 session manifest 的首个 entry window 增加风险。
+- [ ] Stress-90 entry/add/reversal 仅用固定 session manifest 的首个 entry window；真实 CTP 后续 session 的纯 replacement roll 满足 runbook 的原 intent、累计成交及整笔预算证明。
 - [ ] 保证金、可用资金、单日亏损和总回撤限制已按真实承受能力确认。
 
 ## D. 上一完整交易日的流动性快照

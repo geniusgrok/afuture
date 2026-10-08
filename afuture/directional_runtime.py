@@ -593,18 +593,8 @@ class DirectionalPortfolioManager:
             quote = self.risk_manager.check_quotes([tick], self._decision_time(now))
             if not quote.allowed:
                 return DirectionalActionResult("reject", quote.reason)
-            market = self.risk_manager.check_contract_entry(
-                tick,
-                side,
-                requested_volume=volume,
-                spec=spec,
-                session_windows=self._entry_session_windows(item.product),
-                now=self._decision_time(now),
-            )
-            if not market.allowed:
-                return DirectionalActionResult("reject", market.reason)
-            requests.append(
-                OrderRequest(
+            try:
+                request = OrderRequest(
                     symbol=symbol,
                     exchange=item.exchange,
                     side=side,
@@ -624,7 +614,22 @@ class DirectionalPortfolioManager:
                         else f"{reference_prefix}:{item.product.upper()}"
                     ),
                 )
+                windows = self._opening_session_windows(
+                    item.product, request, tick, spec, self._decision_time(now)
+                )
+            except (TypeError, ValueError, RuntimeError) as exc:
+                return DirectionalActionResult("reject", f"opening evidence is invalid: {exc}")
+            market = self.risk_manager.check_contract_entry(
+                tick,
+                side,
+                requested_volume=volume,
+                spec=spec,
+                session_windows=windows,
+                now=self._decision_time(now),
             )
+            if not market.allowed:
+                return DirectionalActionResult("reject", market.reason)
+            requests.append(request)
 
         current_volumes = {
             position.symbol: position.long_total + position.short_total for position in positions
@@ -731,13 +736,14 @@ class DirectionalPortfolioManager:
         if not session.allowed:
             raise RuntimeError(session.reason)
         if request.offset is Offset.OPEN:
+            windows = self._opening_session_windows(product, request, tick, spec, current)
             decision = self.risk_manager.check_contract_entry(
                 tick,
                 request.side,
                 requested_volume=request.volume,
                 spec=spec,
-                session_windows=self._entry_session_windows(product),
-                now=current,
+                session_windows=windows,
+                now=self._decision_time(event_time),
             )
             if not decision.allowed:
                 raise RuntimeError(decision.reason)
@@ -758,6 +764,11 @@ class DirectionalPortfolioManager:
     def _entry_session_windows(self, product: str) -> tuple[str, ...]:
         del product
         return (self.config.rebalance_window,)
+
+    def _opening_session_windows(
+        self, product: str, request: OrderRequest, tick: Tick, spec: ContractSpec, now: datetime
+    ) -> tuple[str, ...]:
+        return self._entry_session_windows(product)
 
     def _start_quality_cycle(
         self,
