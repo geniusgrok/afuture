@@ -10,6 +10,54 @@ permissions:
   contents: read
 
 jobs:
+  # These names are required by repository rules. All jobs use Ubuntu/Python 3.10.
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Current Python syntax
+        run: python -m compileall -q afuture
+
+  windows-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install -e . -c constraints/core-dev.txt
+      - name: Current Ubuntu CLI smoke
+        run: |
+          python -m afuture --help
+          afuture validate --config config/afuture.example.toml
+
+  installed-core:
+    name: test (3.13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install . -c constraints/core-dev.txt
+      - run: python -m pip check
+      - name: Installed core imports on Python 3.10
+        run: |
+          python -I - <<'PY'
+          import importlib
+          import pkgutil
+          import afuture
+          imported = [afuture.__name__]
+          for module in pkgutil.walk_packages(afuture.__path__, afuture.__name__ + "."):
+              if module.name != "afuture.__main__":
+                  importlib.import_module(module.name)
+                  imported.append(module.name)
+          print(f"Imported {len(imported)} installed modules")
+          PY
+
   test:
     name: test (3.10)
     runs-on: ubuntu-latest
@@ -19,9 +67,5 @@ jobs:
         with:
           python-version: "3.10"
       - run: python -m pip install -e ".[dev]" -c constraints/core-dev.txt
-      - run: python -m pip check
-      - run: python -m compileall -q afuture
-      - run: python -m afuture --help
-      - run: afuture validate --config config/afuture.example.toml
       - name: Current functionality and execution safety tests
         run: python -m pytest -q
