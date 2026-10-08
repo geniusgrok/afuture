@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from .auto_runtime import MetadataPrefetcher
+from .broker.ctp_order_journal import coerce_ctp_order_fill_evidence
 from .directional_activity import (
     select_contracts_from_activity,
     validate_directional_activity_snapshot,
@@ -50,7 +51,7 @@ from .directional_stress90_state import (
 from .execution_aligned_policy import FROZEN_PRODUCTS, ExecutionAlignedAggressivePolicy
 from .execution_aligned_runtime import ExecutionAlignedDirectionalPortfolioManager
 from .metadata import validate_contract_metadata
-from .models import Offset, Order, OrderRequest, OrderSide
+from .models import ContractSpec, Offset, Order, OrderRequest, OrderSide, Tick
 from .position import PositionBook
 from .stress90_risk_overlay import (
     scale_stress90_product_weights,
@@ -567,6 +568,207 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             return (PRODUCT_SESSION_MANIFEST[normalized].first_entry_window,)
         except KeyError as exc:  # pragma: no cover - frozen manifest invariant
             raise RuntimeError(f"Stress-90 product session is missing: {product}") from exc
+
+    def _opening_session_windows(
+        self, product: str, request: OrderRequest, tick: Tick, spec: ContractSpec, now: datetime
+    ) -> tuple[str, ...]:
+        """Only a durable, bounded replacement may use a later exchange session."""
+        first = self._entry_session_windows(product)
+        if opening_window_status(product, now, action_category="entry") is OpeningWindowStatus.OPEN:
+            return first
+        record = self.execution_intent_store.load_record()
+        if record is None or record.retired:
+            return first
+        intent = record.intent
+        state = self.policy_state_store.load_required()
+        prepared = state.prepared_decision
+        account = self.broker.get_account()
+        account.validate()
+        if (
+            prepared is None
+            or intent.account_identity_digest != self.broker.get_account_identity_digest()
+            or intent.account_identity_digest != state.live_account_identity_digest
+            or intent.account_epoch != state.live_account_epoch
+            or intent.risk_overlay_digest != self.risk_overlay_digest
+            or intent.daily_decision_digest != prepared.daily_decision_digest
+            or intent.daily_decision_digest != state.last_decision_digest
+            or intent.target_trading_day != prepared.target_trading_day
+            or intent.target_trading_day != self.broker.get_trading_day()
+            or intent.target_trading_day != account.trading_day
+            or intent.target_trading_day != tick.trading_day
+            or request.reference
+            != f"directional:stress90:{intent.daily_decision_digest[:12]}:{product}"
+        ):
+            return first
+        transition = next((item for item in intent.transitions if item.product == product), None)
+        if (
+            transition is None
+            or transition.kind != "same_product_roll"
+            or transition.target_symbol != request.symbol
+            or transition.target_sign != (1 if request.side is OrderSide.BUY else -1)
+            or request.offset is not Offset.OPEN
+            or intent.initial_current_lots.get(request.symbol, 0)
+        ):
+            return first
+        for symbol in transition.source_symbols:
+            source = self._catalog_by_symbol.get(symbol)
+            volume = intent.initial_current_lots.get(symbol, 0)
+            if (
+                source is None
+                or source.product.upper() != product
+                or source.exchange != request.exchange
+                or not volume
+                or (1 if volume > 0 else -1) != transition.target_sign
+            ):
+                return first
+        unresolved = getattr(self.broker, "get_unresolved_order_submission_identities", None)
+        pending = getattr(self.broker, "has_pending_critical_events", None)
+        identities = getattr(self.broker, "get_order_submission_identities", None)
+        get_order = getattr(self.broker, "get_order", None)
+        if (
+            not callable(unresolved)
+            or not callable(identities)
+            or not callable(get_order)
+            or not callable(pending)
+            or unresolved()
+            or self.broker.get_active_orders()
+            or pending()
+            or self.risk_manager.runtime_calendar is None
+            or not self.risk_manager.check_runtime_session(
+                request.symbol, request.exchange, now, account.trading_day
+            ).allowed
+        ):
+            return first
+        contract = self._catalog_by_symbol.get(request.symbol)
+        if (
+            contract is None
+            or contract.product.upper() != product
+            or contract.exchange != request.exchange
+            or tick.symbol != request.symbol
+            or tick.exchange != request.exchange
+            or spec.symbol != request.symbol
+            or spec.exchange != request.exchange
+        ):
+            return first
+        multiplier = float(spec.multiplier)
+        mark = float(tick.mid_price)
+        if not all(isfinite(value) and value > 0.0 for value in (multiplier, mark, request.price)):
+            return first
+        held_volume = 0
+        # Read fresh Broker quantities for every child. Snapshot settlement prices
+        # are deliberately not evidence of cumulative OPEN consumption.
+        for position in self.broker.get_positions():
+            position.validate()
+            item = self._catalog_by_symbol.get(position.symbol)
+            if item is None:
+                return first
+            if item.product.upper() != product or position.empty:
+                continue
+            if position.symbol != request.symbol or position.exchange != request.exchange:
+                return first
+            if position.long_yesterday or position.short_yesterday:
+                return first
+            if transition.target_sign > 0:
+                volume, opposing = position.long_total, position.short_total
+            else:
+                volume, opposing = position.short_total, position.long_total
+            if opposing:
+                return first
+            held_volume += volume
+        filled_volume = 0
+        filled_notional = 0.0
+        fill_keys: set[str] = set()
+        for entry in identities():
+            if entry.target_trading_day > intent.target_trading_day:
+                return first
+            if entry.target_trading_day != intent.target_trading_day:
+                continue
+            durable = entry.request
+            if durable.symbol != request.symbol:
+                continue
+            if (
+                entry.account_identity_digest != intent.account_identity_digest
+                or entry.policy_id != self.runtime_policy_id
+                or entry.policy_definition_digest != intent.policy_definition_digest
+                or entry.products_manifest_digest != intent.products_manifest_digest
+                or entry.daily_decision_digest != intent.daily_decision_digest
+                or entry.execution_intent_digest != intent.source_digest
+                or entry.authorization_kind != "candidate"
+                or durable.offset is not Offset.OPEN
+                or durable.side is not request.side
+                or durable.exchange != request.exchange
+                or durable.reference != request.reference
+                or entry.status not in {"terminal", "aborted_before_send"}
+            ):
+                return first
+            if entry.status == "terminal":
+                order = get_order(entry.order_id)
+                if (
+                    not isinstance(order, Order)
+                    or order.order_id != entry.order_id
+                    or order.active
+                    or order.request != durable
+                    or order.traded != entry.filled_volume
+                ):
+                    return first
+            evidence = tuple(coerce_ctp_order_fill_evidence(item) for item in entry.fill_evidence)
+            if (
+                tuple(item.key for item in evidence) != entry.fill_keys
+                or sum(item.volume for item in evidence) != entry.filled_volume
+                or entry.filled_volume > durable.volume
+                or (entry.status == "aborted_before_send" and evidence)
+            ):
+                return first
+            for fill in evidence:
+                if (
+                    fill.key in fill_keys
+                    or not fill.key.startswith(f"{intent.target_trading_day}:{request.exchange}:")
+                    or (fill.order_id, fill.symbol, fill.exchange, fill.side, fill.offset)
+                    != (
+                        entry.order_id,
+                        durable.symbol,
+                        durable.exchange,
+                        durable.side,
+                        durable.offset,
+                    )
+                    or (durable.side is OrderSide.BUY and fill.price > durable.price)
+                    or (durable.side is OrderSide.SELL and fill.price < durable.price)
+                ):
+                    return first
+                fill_keys.add(fill.key)
+                filled_volume += fill.volume
+                filled_notional += fill.volume * fill.price * multiplier
+        authorized = intent.freeze_authorized_lots.get(request.symbol, 0)
+        if (
+            not authorized
+            or (1 if authorized > 0 else -1) != transition.target_sign
+            or filled_volume != held_volume
+            or filled_volume + request.volume > abs(authorized)
+        ):
+            return first
+        # A BUY limit bounds its fill price; a SELL limit is only a lower bound.
+        upper = float(request.price) if request.side is OrderSide.BUY else float(tick.limit_up)
+        if (
+            not isfinite(upper)
+            or upper <= 0.0
+            or upper < max(float(request.price), float(tick.bid_price), float(tick.ask_price))
+            or (
+                request.side is OrderSide.SELL
+                and (
+                    tick.limit_down <= 0.0
+                    or tick.limit_down > min(request.price, tick.bid_price, tick.ask_price)
+                    or tick.limit_up < tick.last_price
+                )
+            )
+            or max(filled_notional, held_volume * mark * multiplier)
+            + request.volume * upper * multiplier
+            > transition.max_replacement_notional
+            or unresolved()
+            or self.broker.get_active_orders()
+            or pending()
+        ):
+            return first
+        return PRODUCT_SESSION_MANIFEST[product].sessions
 
     def _opening_policy_rejection(
         self,

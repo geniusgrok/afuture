@@ -357,7 +357,9 @@ afuture live \
   --confirm-live
 ```
 
-错过首个 entry window 时当日不得追开，但 reductions 和硬风险退出继续允许。每轮 reductions 后必须等待 Broker 成交、重新读账户/持仓并重新运行 `RiskManager`，才可 opening。
+错过首个 entry window 时当日不得追开 entry、add 或 reversal，但 reductions 和硬风险退出继续允许。每轮 reductions 后必须等待 Broker 成交、重新读账户/持仓并重新运行 `RiskManager`，才可 opening。
+
+真实 CTP 的纯同品种、同方向换月可在该交易日后续真实 session 完成原有持久化 intent：旧腿必须已平，新腿在初始 intent 中必须为空且当前只有今仓。每笔 opening 前认证现有 CTP journal 和终态订单，累计新腿 OPEN 成交数量必须等于当前持仓；出现新腿 CLOSE、未知委托或未落盘成交时拒绝。累计 OPEN 成交名义与当前持仓 mark 名义取较大值，再加整笔拟开仓上界，必须不超过原 intent 的 incumbent 替代预算。BUY 使用实际 limit，SELL 保守使用可信涨停价；超过预算整笔拒绝，不拆单。首窗内行为保持原规则，entry、add 和 reversal 仍限首窗。Sim/Shadow 未提供这些 CTP 日志凭据，继续使用原首窗限制。此例外保留全部风险、报价、日终及运行状态门；只能阻断已可见的回报竞争，不能证明未来不会出现迟到回报。
 
 ## 11. 结算与上一交易日资金闭合门
 

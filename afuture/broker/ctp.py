@@ -1559,6 +1559,19 @@ class CtpBroker(Broker):
 
         return self._order_submission_entries.get(order_id)
 
+    def get_order_submission_identities(self) -> tuple[CtpOrderSubmissionEntry, ...]:
+        """Read the existing hot/recent durable rows without querying or new state.
+
+        The runtime archive retains every row from its latest two trading days;
+        exceeding that capacity fails closed rather than dropping same-day fills.
+        """
+
+        if self._order_submission_journal is None:
+            raise RuntimeError("durable CTP order submission evidence is unavailable")
+        with self._order_submission_lock:
+            with self._order_submission_status_lock:
+                return tuple(self._order_submission_entries.values())
+
     def get_unresolved_order_submission_identities(self):
         """Return nonterminal exact identities; callers wait rather than resubmit ambiguously."""
 
