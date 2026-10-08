@@ -1,11 +1,4 @@
-"""Deterministic, fixed-input bootstrap for the production Stress-90 state machine.
-
-This module is deliberately independent of ``tools/`` and evaluator entrypoints.  It
-validates immutable source bytes before parsing and replays the same incremental
-primitives used by live runtime.  The byte-pinned historical archive carries a narrow,
-audited gap manifest; every other input profile remains complete-by-construction.  Only
-the documented historical profile may create a live seed/state.
-"""
+"""Build verified Stress-90 seed/state from five fixed inputs; no trading authority."""
 
 from __future__ import annotations
 

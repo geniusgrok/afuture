@@ -1,125 +1,70 @@
-# 故障排查
+# 排障与恢复
 
-本手册只给出安全诊断和恢复顺序。任何会改变持仓、解除停机或采用本地状态的操作，都必须先以 CTP 账户、持仓、活动委托和成交回报为真相重新核对。状态含义见 [`glossary.md`](glossary.md)，正常启动流程见 [`live-trading.md`](live-trading.md)。
+账户、持仓、委托和成交以柜台事实为准。故障先停止新增风险，保存原件，再核对原因；不能用重启、删除状态、手写 checksum、调低阈值或改本机日期绕过。正常流程见[CTP 运行](live-trading.md)，Stress-90 维护见[手册](stress90-live-runbook.md)。
 
-## 1. 通用排查顺序
+## 检查顺序
 
-1. 停止新的 `live` 或 `shadow` 进程，确认没有重复实例；
-2. 执行只读 `afuture status --config <配置>`；
-3. 保存错误输出、日志末尾、状态文件和审计记录，不先删除或覆盖；
-4. 需要柜台事实时执行无报单 `afuture doctor --config <配置> --confirm-live`；
-5. 核对账户、完整持仓、活动委托、交易日、合约参数和最近成交；
-6. 只有根因清楚且对账通过后，才决定恢复、继续只减仓或保持停机。
+1. 确认实例与账户/runtime 锁，避免重复启动干扰已有进程。
+2. `afuture status --config CONFIG` 只读本地，保留退出码及首个失败项。
+3. 保存 current/`.prev`/lineage/lock/pending、日志、审计、输入原件及外部备份；不先移动、覆盖或删除。
+4. 需要新柜台事实时，在获连接许可的环境运行 `afuture doctor --config CONFIG --confirm-live`。
+5. 核对 fresh account、完整持仓/活动委托/成交、权威交易日和参数；只比较净仓不够。
+6. 处理根因后再次对账，按具体停机原因及许可决定继续只减仓、恢复或停机。
 
-不要通过删除状态文件、修改校验和、清空停机原因、降低风险阈值或重复启动进程来“恢复”。
+## 常见阻断
 
-## 2. 常见症状
+| 失败 | 处理 |
+| --- | --- |
+| state/schema/sequence/checksum/identity/lineage 错误 | 保全 current 和全部 sidecars；不自动提升 `.prev`、新建空账户或重建 marker。Stress-90 使用专用 recovery/WAL 或同身份已验证备份。 |
+| activity/OHLC/OI 缺失、坏 digest 或 required day 不齐 | 保留原件/来源响应，查采集完整性和持久化；不开新风险。Stress-90 不得按普通缓存流程移除后自动重建。 |
+| provider 修订重叠历史 | 保存新响应与旧 cache/digests，查明修订；仅仍覆盖 required completed day 的合格旧缓存可回退。不能 ffill、删失败日期或重签。 |
+| CTP 交易日、快照或今昨仓不一致 | 重新取得 TD API 交易日及完整查询，检查夜盘/重连；本机日期、旧缓存不是权威。 |
+| active/unknown 委托、未解释成交或持仓漂移 | 保持 HALTED，核对来源/终态和 trade/order identity；必要撤单须获授权并等最终回报。不能靠重启赌结果。 |
+| margin/commission/metadata/quote 缺失或成本过高 | 查真实参数、乘数、盘口和实际冻结；接受缩量/不开仓，不猜手续费为零或扩大风险弥补。 |
+| critical backlog 持续上升 | 读 `delivery_counters()`、定位消费/磁盘延迟；正常 Tick coalescing 不是成交丢失。停止新增风险。 |
+| REDUCE_ONLY | 等待减仓确认并重读 Broker；不手改 RUNNING。 |
+| HALTED / hard kill | 查首个硬失败，交易日推进或净值恢复不能自动解锁。 |
+| 路径/磁盘/审计不可写 | 修复持久存储和权限，不换到临时目录。持久化/通知失败不能阻止已决定的必要风险退出。 |
+| 原生 live import/login 失败 | 最终目标机按 constraints 安装并验 ABI；开发机替身/CI 不代替。 |
 
-| 症状 | 常见原因 | 安全处理 |
-| --- | --- | --- |
-| `status` 返回 2 或 `state_integrity` 失败 | 状态 JSON 截断、非 UTF-8、版本/序号/校验和错误或重复持仓 | 保留 current 和 `.prev`；确认磁盘和进程状态；不要自动回退。需要重建时走人工 `recover-state`。 |
-| `status` 报路径不可写或磁盘不足 | 权限变化、目录不存在、磁盘接近耗尽 | 停止实盘进程，释放空间或修复目标目录权限；再次运行 `status`。不要把运行文件临时改到不持久的目录。 |
-| `doctor` 报交易日或快照不一致 | CTP 尚未推送完整快照、夜盘交易日映射异常、断线重连未完成 | 等待新的账户和完整持仓事件；核对柜台交易日。不能用本机自然日期强行替换。 |
-| `doctor` 报活动委托 | 上次进程退出前委托未结束，或账户存在外部委托 | 在柜台确认委托来源和状态；必要时人工撤单并等待最终回报，再重新预检。 |
-| `doctor` 报持仓对账失败 | 今昨仓、多空、合约或交易所不一致，或有手工/其他程序交易 | 以柜台完整持仓为准查明差异。未解释差异前保持 `HALTED`，不要只比较净仓。 |
-| 合约参数或目录检查失败 | 乘数、最小变动价位、保证金、手续费缺失或与静态配置冲突 | 从柜台和结算资料核对；不要猜测保证金或沿用过期静态参数开仓。 |
-| 方向组合没有流动性快照 | 新部署、没有跨过完整交易日、状态文件缺失或快照身份不一致 | 连续运行 Shadow 至少一个完整柜台交易日；核对品种、合约、交易所和到期日覆盖。 |
-| `directional_activity.json` schema/checksum 失败 | 文件被手工修改、截断，或 envelope、identity、数值不完整 | 保存诊断副本；不要补写 checksum。移走无效文件后连续 Shadow 一个完整柜台交易日，重建 `completed` + `in_progress` envelope。 |
-| Directional OHLC cache integrity 失败 | `directional_ohlc_cache.json` 被截断/篡改，schema、品种、日期、shape、正有限值、content digest 或 envelope checksum 不符 | 停止相关 runtime，保留 `status` 输出并把损坏文件明确移动到只读诊断位置；不要重签名或从研究文件拼接。确认 provider 已修复后，在原路径确实不存在 cache 的状态下启动一次，让首次可信结果 bootstrap 新文件，再运行 `status`/`doctor`。只修复 provider 不会覆盖仍留在原路径的损坏 cache。 |
-| provider 历史修订被拒绝 | 新数据与已验证缓存的重叠开盘/收盘值不同 | 同时保留 cache、provider 原始响应、digest 和日期范围，向数据源确认修订原因。运行时只可继续使用仍覆盖 required day 的旧缓存，不能自动接受修订。 |
-| 方向信号被判为过期 | 价格历史/已验证缓存未覆盖快照交易日、数据提供方停更、时间戳在未来 | 核对 `status` 的 cache latest date/digest 和 `doctor` required date；恢复数据后重新预检。不能用向前填充或修改系统时间绕过。 |
-| 行情被判为 stale 或两腿不同步 | CTP 断线、单腿停更、时间戳时区错误或跨腿延迟过大 | 检查行情连接和两腿最新时间；恢复完整新行情前不增加风险。 |
-| CTP live extra 无法导入或只在开发机通过 | `vnpy_ctp` 原生扩展与目标机 OS/CPU/Python ABI 不匹配，或目标机未安装 `.[live]` | 在最终部署机的同一虚拟环境重新安装并执行 import、无报单 doctor、Shadow 和重连验证；测试替身通过不能替代。 |
-| 关键事件积压持续上升 | callback 消费不足、目标机阻塞，或单轮 100 条上限下关键事件产生率持续过高 | 读取 `delivery_counters()`，区分 `critical_backlog` 与正常 `ticks_coalesced`；停止新增风险并定位消费延迟。不要把 Tick 合并误判为成交丢失。 |
-| 进入 `REDUCE_ONLY` | 单日熔断、实际总敞口超限、数据/执行证据不足但仍有风险 | 只允许系统或人工安全减仓；等待成交确认并重新读取真实持仓，不能手工改状态为 `RUNNING`。 |
-| 进入 `HALTED` | 总回撤、保证金、可用资金、非正权益、对账、状态或基础设施硬失败 | 保持停机，定位首个硬失败。交易日切换不会自动清除这些原因。 |
-| 保证金开仓被拒绝 | 目标超过保证金/可用资金门，缺少每手保证金，或保守缓冲后无容量 | 核对账户权益、各方向保证金率、价格、乘数和缓冲。接受缩量或不开仓，不降低硬门追求目标收益。 |
-| 重复报单或成交疑虑 | 活动委托状态延迟、重连重复事件、外部程序共同交易 | 立即停止新增风险，核对 order ID、trade ID、活动委托和完整成交；不要通过重启赌重复事件会消失。 |
-| 审计或告警文件写入失败 | 磁盘、权限、Webhook 或轮转异常 | 本地审计不可写属于运行风险；先修复持久化。Webhook 失败不能影响本地事实记录。 |
+## 普通状态恢复
 
-## 3. CTP 断线与重连
+`recover-state` 仅用于普通策略路径，明确拒绝 Stress-90；不能用它替代 durable order/intent、crash-fill 或 lifecycle recovery。
 
-断线后不要假定本地的最后状态仍然最新。原生 CTP 当前交易日必须重新来自交易 API `getTradingDay()`；缺少 gateway、td_api、getter 或合法 `YYYYMMDD` 时保持失败关闭，不能使用本机自然日期或上次缓存值。重连必须重新取得：
-
-- 当前柜台交易日；
-- 新的账户快照；
-- 完整持仓快照，而不是增量片段；
-- 活动委托及其最终状态；
-- 断线期间可能发生的成交；
-- 当前合约参数和最新行情。
-
-上述事实没有全部到齐时，系统应保持只减仓或停机。多次重连仍失败时停止进程，使用柜台客户端人工核对，不连续重启制造更多未知订单状态。
-
-## 4. 人工状态恢复
-
-只有本地状态无法可信加载、且柜台事实已经独立核验时才使用：
+柜台事实已独立核验且 local state 无法可信加载时，普通路径可按授权运行：
 
 ```bash
-AFUTURE_RECOVERY_ACK=I_VERIFIED_CTP_POSITIONS \
-afuture recover-state \
-  --config config/afuture.directional-live.example.toml \
-  --confirm-live \
-  --confirm-adopt-state
+AFUTURE_RECOVERY_ACK=I_VERIFIED_CTP_POSITIONS afuture recover-state --config CONFIG --confirm-live --confirm-adopt-state
 ```
 
-恢复过程会检查合约参数和活动委托；发现活动委托时会尝试撤单并保持停机，不会直接采用状态。成功重建本地预期持仓后，停机开关仍然保留。随后必须再次运行 `status` 和 `doctor`，完成第二次独立对账，再按停机原因决定是否恢复运行。
+它检查参数与活动委托；发现活动委托会尝试撤单并继续停机，不直接采用。重建后仍保留 kill switch，须再 `status`/`doctor` 做第二次对账。`.prev` 是事故证据，不复制为 current 后直接交易。
 
-`.prev` 只是上一份通过校验的诊断证据，不是自动恢复源。不能把它复制覆盖 current 后直接实盘。
+## Stress-90 专用事故
 
+- reserve schema 6 的触发锁存不因 rebase/epoch/净值恢复清除；旧 schema 缺历史证据持续阻断。
+- prepared lifecycle、crash-fill checkpoint、已消费 permit 或 journal epoch 中断，须同 OP_ID、同参数/账户证据精确重试；换 nonce、abort、删 artifact 不构成恢复。
+- registry/nonce/lineage 缺失、orphan sidecar、cache `.pending` 或写入/`fsync` 歧义保全全部原件和核验过的备份，不重新初始化。
+- `operator_managed` receipt、account/epoch/runtime、registry/TDE 链不匹配保持 HALTED。外部订单/成交、资金活动或无法解释权益使 operator continuity 失效，先查明，再执行必要 account rebase。
+- `stress90_risk_overlay_identity` 失配，即使 scale 更小，也须原 intent 完成/退役、HALTED/kill、flat/reconciled 后重新 `stress90-activate`；不改 bound digest。
+- capacity exit 2 查看 `hard_safety_failures`、`risk_manager_preview` 及缺失参数；全零 commission 不等于无费，整数零目标可为安全结果。
+- 严格最终结算/非相邻 session provider 尚未认证，不能用 Deposit/Withdraw=0、PreBalance 或操作者确认填证据。operator trust 不提升官方 verified 字段。
 
-### 4.1 Stress-90 operator-managed 连续性故障
+## 重连、部署与备份
 
-`status`/`doctor` 会把严格外部门与 operator trust receipt 分开显示。`operator_managed` 下若报告 receipt 缺失、checksum/`.prev`/lineage 损坏、account/epoch/runtime 不匹配、registry/TDE 不再绑定、需要 roll-forward、需要 rebase 或需要新 permit，保持 `HALTED`，不要删除 artifact、复制 `.prev`、手改 checksum 或修改本机日期。
+断线后重取权威交易日、fresh account、完整 positions、委托最终状态、遗漏成交、合约参数及新行情。事实未齐保持收缩/停机；多次失败用柜台客户端查明，不连续重启制造未知结果。
 
-若 CTP 当前 Deposit/Withdraw 非零、出现人工/外部订单或成交、Broker/local 持仓漂移、unknown order/trade 或无法解释的权益变化，operator continuity 不再成立。先用柜台事实查明原因；发生合法外部资金/账户活动时走 `stress90-account-rebase`，然后重新建立 continuity。`stress90-operator-roll-forward` 本身绝不发送订单或撤单；成功后也不会解除 kill switch，必须重新运行 `status`、`doctor` 并签发新 technical permit。
+`deployment-verify` 的 changes 表示源码/config/constraints/native/runtime/registry/bundle/overlay 漂移。保持停机，确认合法变化和账户证据后才重新 seal，旧 permit 失效。
 
-## 5. 日志和证据
+`verify-backup` 拒绝成员/尺寸/checksum/语义/身份问题时保留失败备份，不覆盖运行目录、不拼 `.prev`。`restore-runtime` 只允许空目标和同 canonical registry/runtime 身份；不为了成功而清空正在使用的目录。恢复仍 HALTED/kill，按 `status→deployment-verify→prepare-session→doctor→新 permit` 复核。
 
-定位问题至少保留：
+## Heartbeat 与异常退出
 
-- 错误命令、退出码和完整错误文本；
-- 发生时间、柜台交易日和运行模式；
-- 状态文件及 `.prev`、`directional_activity.json`、`directional_ohlc_cache.json` 的副本；
-- OHLC cache 的 content digest、latest date、required date 和 provider 原始响应日期范围；
-- `delivery_counters()` 快照；
-- 对应的日志、审计和告警片段；
-- CTP 账户、完整持仓、活动委托和成交查询结果；
-- 使用的配置文件摘要，但不包含密码、认证码或完整 Webhook 密钥。
+watchdog 非零时看具体 missing/corrupt/stale、broker/queue、identity、HALTED 或 unclean check；restart/rebase/permit 不是通用修复。heartbeat 的 symlink/非普通文件、写入/fsync 失败是路径事故，不能当解除风控的理由。
 
-先寻找时间最早的根因，后续大量拒单和停机日志通常只是同一故障的结果。不要在多个位置重复打印同一异常，也不要删除能解释账户状态变化的原始证据。
+未 clean shutdown 的 process receipt 默认使 live 在 gateway 启动/真实连接前以 75 阻断、失效旧 permit；损坏或丢 current 但有 `.prev` 亦阻断。完整证据支持的同次 activation 或认证日终续接只适用于手册窄条件。不要用 systemd restart loop 或删 receipt 绕过。
 
-## 6. 何时不能自行恢复
+## 保留什么
 
-出现以下任一情况时保持停机，并通过柜台客户端或期货公司确认：
+保留命令/退出码、发生时间与柜台交易日、源码/config/input 摘要、状态和 sidecars、完整查询及 order/trade IDs、provider 原响应/日期/digest、delivery counters、日志/审计/告警和备份。私有资料不带入公共报告，密码/AuthCode/webhook 密钥不输出。
 
-- 柜台持仓、成交和结算单彼此不一致；
-- 无法确认是否存在活动或已成交委托；
-- 保证金、手续费、乘数或交易规则来源不可信；
-- 本地与柜台差异无法解释；
-- 状态损坏同时缺少完整审计证据；
-- 交易所、柜台或网络持续异常；
-- 账户权益或可用资金出现无法解释的变化。
-
-生产上线前的逐项证据要求见 [`production-checklist.md`](production-checklist.md)。
-
-## Stress-90 risk overlay mismatch or capacity failure
-
-If status/Doctor reports `stress90_risk_overlay_identity` failed, do not delete state or edit the bound digest. Stop the runtime, keep it HALTED/kill-switched, finish or retire any current execution intent under its original digest, verify Broker/local flatness and zero active orders, reconcile, then run the explicit `stress90-activate` lifecycle to bind the new overlay. A smaller scale is still an identity change because old orders must retain their original interpretation.
-
-If `stress90-capacity-report` exits `2`, inspect `hard_safety_failures`, `risk_manager_preview`, missing contract capacity/cost evidence and clipped products. Missing margin or all-zero commission evidence is not treated as zero cost. Integer zeroing can be a valid safe target; it is not a reason to enlarge scale automatically.
-
-## Deployment / backup / restore 故障
-
-`deployment-verify` 失败时先查看 `changes`。Git HEAD、tracked source、配置、constraints、Python/OS/CPU/executable、canonical runtime、machine registry、bundle、risk overlay 或 `vnpy_ctp` 任一变化都属于部署身份变化；保持 `HALTED`，确认变化是预期且 runtime 仍与 bundle/policy 一致后才能重新 seal。重新 seal 会要求 fresh Doctor permit，不能保留旧 permit 继续交易。
-
-`verify-backup` 因 archive member、checksum、journal、registry、TradingDayEvidence、deployment 或跨文件 identity 失败时，把原 backup 当事故证据保留，不解压覆盖 current，不删除失败成员，不从 `.prev` 拼接 current。路径穿越、绝对路径、重复项、链接成员、未知成员、超限、截断、尾随字节都按损坏或篡改处理。
-
-`restore-runtime` 报目标非空、runtime/registry identity 不一致或 registry staging 不安全，是预期的 fail-closed 边界。不要为了“恢复成功”清空仍在使用的目录或改 manifest；先确认旧进程停止、目标确实为空且备份对应同一 canonical runtime/registry。恢复完成后仍处于 `HALTED` 且 kill switch 开启，permit 失效属于设计行为；下一步只能是 `status`、`deployment-verify`、无报单 `doctor` 和 fresh permit。
-
-## Heartbeat、Watchdog 与异常重启
-
-`afuture watchdog --config <config> --once --max-age-seconds <N>` 非零时先读取 canonical JSON 中的失败 check，不要用 restart、rebase、roll-forward 或 permit 作为通用修复。常见分类包括 heartbeat missing/corrupt/stale、broker unhealthy、account/position/quote stale、critical backlog、state/deployment/risk digest mismatch、HALTED 严重原因和 unclean restart fence。
-
-heartbeat 路径为 symlink、FIFO/device/目录或无法原子 fsync 时视为本机路径安全故障。修复权限/路径后重新执行 `prepare-session` 和 `doctor`；不要把 heartbeat 写入失败当成解除风控或跳过撤单/减仓的理由。
-
-若 `process_run.json` 表示上一进程没有 clean shutdown receipt，或 current 损坏/缺失而 `.prev` 存在，Live 会在 Broker 构造前以退出码 75 fail closed。此时确认 generic state 为 HALTED、kill switch=true、旧 permit 已失效；随后按 runbook 重新执行 `deployment-verify`、`prepare-session`、必要人工 continuity/rebase、`doctor`、capacity review 和新 permit。不要通过 systemd restart loop 绕过该流程。
+柜台持仓/成交/结算不一致、未知订单、无法解释资金、规则不可信或审计不足时保持停机并与柜台确认；不能把未评估写成没有风险。现场复核清单见[上线检查](production-checklist.md)。

@@ -1,18 +1,5 @@
 """交易系统健康监控。"""
 
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class HealthSnapshot:
-    """系统健康快照。"""
-
-    connected: bool
-    market_delay_seconds: float
-    account_ready: bool
-    position_ready: bool
-    quotes_ready: bool = True
-
 
 class HealthMonitor:
     """把连接、账户、持仓和行情健康统一成 fail-closed 判断。"""
@@ -41,12 +28,3 @@ class HealthMonitor:
         if max_quote_age > self.max_market_delay_seconds:
             return "market quote is stale"
         return ""
-
-    def is_healthy(self, snapshot: HealthSnapshot) -> bool:
-        return not self.evaluate(
-            connected=snapshot.connected,
-            account_ready=snapshot.account_ready,
-            position_ready=snapshot.position_ready,
-            quotes_ready=snapshot.quotes_ready,
-            max_quote_age=snapshot.market_delay_seconds,
-        )

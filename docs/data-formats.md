@@ -81,4 +81,16 @@ CTP 行情由适配器直接构造相同的 `Tick` 模型，不先写入 CSV。�
 - 合约乘数、最小变动价位、保证金和手续费来自可信柜台元数据；
 - 断线或快照不完整时拒绝增加风险。
 
-数据在系统中的可见时点和研究窗口见 [`data-and-backtest.md`](data-and-backtest.md)，字段相关术语见 [`glossary.md`](glossary.md)。
+## 6. 日频输入与缓存
+
+方向价格历史的开盘/收盘索引必须在转换前为无时区自然日午夜、唯一递增且完全对齐；正有限数值能无损规范成 `float64`。`directional_ohlc_cache.json` 保存共享日期向量、开盘/收盘矩阵、品种 manifest、content SHA-256 和 envelope SHA-256。provider 追加须保留缓存全部日期及规范值，修订、删日期、损坏或缺 required completed day 均阻止新风险。Stress-90 live 只由独立 `directional-ohlc-refresh` 访问 provider，订单与回调路径只读 validated cache。
+
+activity 保存 `completed` 与 `in_progress`；OI 保存 expected/observed/missing 合约 coverage。潜在 dominant 合约未观察、缺首/末区间不能当作合法 `flow=0`。target day 来自 CTP，上一完整日及 gap 必须由持久证据确认；不能用工作日推算或未来数据补齐。
+
+对活跃敞口的当日 OHLC，缺失、非正、非有限或绝对日内变化超过 20% 均失败关闭；仅零敞口且与当前目标无关的异常单元不会妨碍其他已验证风险收缩，不能用于新开仓。
+
+## 7. 单位与回放限制
+
+名义价值为价格×合约乘数×手数；gross 为多空名义绝对值之和，保证金不是名义价值。1 bp=0.01%，手续费与滑点须以同一乘数、数量和金额单位记账。HHI 为各品种绝对权重占比平方和。
+
+公开日线不能重现真实一档深度、排队、拒单、部分成交、柜台逐日费率和保证金。回放账户由成交推进，不能把连续合约跳空计为可交易收益。各验证窗口从独立账户状态开始；汇总窗口可能与子窗口重叠，已用于选择的样本不再是纯净样本外。历史结果不能替代实际柜台或新发生数据。

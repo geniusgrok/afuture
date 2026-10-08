@@ -1,14 +1,4 @@
-"""Frozen 96-template execution-aligned directional portfolio policy.
-
-This is the only production directional signal policy. The template pool was selected on
-the already-observed 2024-08-21..2026-08-20 specific-contract next-open history. Daily
-live rotation remains causal: template signals use the previous close and the meta
-allocator ranks templates only from completed continuous-contract open->close returns.
-Meta candidates must remain positive after both Base and Stress transaction-cost
-endpoints, but surviving candidates retain the Base score ordering so cost robustness
-does not replace the primary Alpha objective. Product ordering is frozen alphabetically.
-Gross target notional is capped at 2x.
-"""
+"""Frozen 96-template execution-aligned policy using completed-session inputs."""
 
 from __future__ import annotations
 

@@ -1,206 +1,58 @@
-# 架构与数据流
+# 架构与账户边界
 
-本文描述当前代码的职责边界、依赖方向和不可违反的事件顺序。术语和公式统一定义在 [`glossary.md`](glossary.md)。
+固定/自动跨期与方向组合互斥地使用同一套账户、执行和风控基础设施。
 
-## 1. 系统边界
-
-`afuture` 有两条账户互斥的正式运行链：
-
-- 跨期价差：固定组合或自动选择相邻月份合约；
-- 方向组合：根据已完成数据生成品种目标，再选择具体合约和手数。
-
-两条链共享唯一的账户和执行真相：
-
-| 组件 | 权限和职责 |
+| 组件 | 职责 |
 | --- | --- |
-| Broker / CTP | 提供订单、成交、账户和柜台持仓的权威事件 |
-| `PositionBook` | 根据 Broker 成交维护本地持仓镜像 |
-| `RiskManager` | 执行账户限制、只减仓状态和硬停机 |
-| `StateStore` | 保存带版本、序号和校验和的重启证据 |
-| Directional activity / OHLC / Stress-90 OI sidecars | 保存带 schema、digest/checksum 的市场输入证据；不拥有账户或 Broker 真相 |
-| `TradingEngine` | 编排事件顺序、对账、持久化和运行观测 |
+| Broker / CTP | 外部订单、成交、账户与柜台持仓真相 |
+| `PositionBook` | 成交驱动的本地持仓镜像 |
+| `RiskManager` | 账户硬限制、`REDUCE_ONLY` 和 `HALTED` |
+| `StateStore` | 已校验的重启证据 |
+| Activity / OHLC / OI sidecars | 市场输入证据，不能拥有账户或下单权限 |
+| `TradingEngine` | 事件、对账、持久化与运行编排 |
 
-策略、研究工具和命令行都不能直接修改真实持仓，也不能绕过 Broker 成交和 `RiskManager`。
+依赖由模型/配置、纯计算、策略/风控和运行编排，进入 Broker/持久化/CLI。VeighNa 动态类型限制在 CTP 适配边界，内部使用统一模型。策略只产生意图；审计、告警和报告只观测。
 
-## 2. 依赖方向
+## 数据到订单
 
-稳定依赖方向是：
+跨期链从已挂牌目录选择相邻月份，在同步两腿行情上计算可成交价差，经账户检查后生成双腿订单。候选退役不会删除已有持仓，已有风险须继续管理直到 Broker 确认退出。
 
-```text
-统一数据模型和配置
-→ 无外部副作用的计算与策略规则
-→ 策略、风控和订单计划
-→ 运行时编排
-→ Broker、持久化、命令行和报告
-```
-
-当前包没有已知循环导入。VeighNa 的动态类型只存在于 `broker/ctp.py` 适配边界，进入系统后统一转换为 `models.py` 中的枚举和数据类。
-
-项目没有为单一实现增加 Repository、Factory、Service 或依赖注入层。`TradingEngine` 的事件、成交、风控和状态顺序彼此紧密相关，目前保留显式编排并用测试保护，避免为拆分而拆分。
-
-## 3. 跨期价差主链路
+方向链使用完整 D 日价格产生 D+1 品种目标；上一完整交易日成交量和持仓量决定具体合约。目标按权益、价格、乘数和保证金拟合为整数手数，只允许向下缩减。
 
 ```text
-CTP 合约目录和行情
-→ 选择同品种、相邻月份且流动性合格的组合
-→ 根据价差历史生成开仓、退出或止损意图
-→ 检查账户和组合风险
-→ 生成双腿订单；先减仓，后开仓
-→ Broker 返回成交、部分成交、撤单或拒单
-→ 更新持仓、资金、状态和执行质量
+验证输入 → 保存 prepared decision → 读取 Broker truth
+→ 计算并保存 execution intent → 先减仓 → 等待确认
+→ 重读持仓 → 检查每笔开仓 → 成交记账 → 状态 checkpoint
 ```
 
-自动选择模块只决定候选组合和是否允许新增仓位。组合失去候选资格后，已有仓位仍由系统管理直至安全退出，不能因为扫描结果消失而成为无人管理的风险。
+普通方向策略使用 `execution_aligned`；Stress-90 使用独立 manager 和同一纯候选核心：Base→九品种 completed 60m Price×OI→20/3/15bp cost gate→survivor reallocation→raw HHI。它使用 1x raw candidate，completed-path 25% reserve 与 HHI 只冻结新增风险，不重复应用普通模式的 0.25 缩放。decision、HHI 与 candidate state 不随订单或重试重复推进。
 
-## 4. 方向组合主链路
+## 成交与回调顺序
 
-```text
-provider 的已完成交易日品种价格
-→ 校验品种、日期、开盘/收盘和有限正值
-→ 与已验证 OHLC 缓存的重叠历史逐值一致
-→ 原子更新市场输入缓存；provider 故障时只允许合格缓存回退
-→ 生成品种目标权重
+- 订单请求、撤单或拒单不改变持仓；部分成交只按实际数量记账。
+- 引擎与 CTP 以 `(trading_day, exchange, trade_id)` 去重；启动前注入持久化身份。缺 exchange 的旧身份冲突须停机对账。
+- 反转先平旧方向；SHFE/INE 平今、平昨不能互相借量。
+- 合约、交易所、方向、开平、状态、数量和单位须精确；非法枚举、非整数数量、NaN/无穷值拒绝，不能猜测。
+- 持仓镜像和快照串行化；交易日只能向前推进。延迟旧日 account event 不能改写今昨仓。
 
-上一完整交易日的成交量和持仓量
-→ 为下一交易日选择具体合约
+order/trade/position/account/error 使用关键 FIFO；尚未投递的 Tick 按合约与交易所合并，每轮有界投递并优先关键事件。`delivery_counters()` 显示投递和积压。Stress-90 raw observer 在合并前观察有效 Tick，以权威交易日和 session manifest 聚合；activity/OI 在批次、日切或正常停机时 checkpoint。崩溃不声称恢复未落盘 Tick。
 
-柜台持仓、实时行情和合约参数
-→ 把目标权重转换成整数手数
-→ 在保证金和可用资金范围内只向下缩减目标
-→ 先执行减仓
-→ Broker 确认减仓后再允许开仓
-→ 每笔订单再次通过账户硬限制
-→ 成交驱动记账
-→ 检查实际总敞口、单日亏损和硬停机
-→ 保存状态、审计和执行质量
-```
+CTP 当前交易日来自 TD API `getTradingDay()`，缺失或非法即失败关闭，不使用本机日期。运行日历由 `runtime_calendar.json` 提供版本、来源、完整开休市覆盖和摘要；未知日期/合约、身份冲突或损坏日历拒绝每笔报单。
 
-`DirectionalPortfolioManager` 不维护第二套账户。`directional_ohlc_cache.json` 也只保存共享日期向量、开盘/收盘矩阵、品种 manifest、内容 SHA-256 和 envelope SHA-256，不保存目标或仓位。provider 的开盘/收盘索引必须在任何转换前都是无时区的自然日午夜、完全对齐、唯一且递增；数值必须能无损规范成 `float64`。新的 provider 结果必须保留缓存中的每个交易日，并且这些日期的规范值完全不变，才可作为向后追加的新权威；删日期或静默修订都会被拒绝。provider 暂时不可用时，只有 schema、品种、索引、正有限值、digest/checksum 和必需完整交易日都通过的缓存才能继续；已有风险但证据不足时进入风险收缩，空账户则拒绝新增仓位。
+## 风险与开仓边界
 
-`PortfolioRiskAnalyzer` 的 UNKNOWN correlation 不是零相关：存在已有 incumbent 时，时间桶不足、非有限或近零方差等未知相关性一律拒绝新增风险；没有 incumbent 的首个组合不需要相关性对照。它不以旧的序号对齐伪造相关性，也不放松同风险组限制。
+`RUNNING` 遇可恢复风险进入 `REDUCE_ONLY`；硬风险或人工停机进入 `HALTED`。解除停机必须处理原因、重新对账并满足相应许可。风险响应只能缩减目标，无法绕过最终 `RiskManager`。
 
-生产 Directional 必须显式选择 `execution_aligned` 或 `stress90`。普通模式继续使用 `ExecutionAlignedDirectionalPortfolioManager` 和既有 0.25 target scaling；Stress-90 使用独立 manager、1x raw candidate 和 freeze-only risk response capability，不允许引擎重复包装缩放。两者共享 adaptive margin envelope、reduction-first 执行、Broker truth 和最终 `RiskManager`。
+Stress-90 首次入场只允许预定义首窗。首窗外纯换月仅限真实 CTP、已持久认证的同日/epoch/decision/overlay 意图：旧腿全平，新腿累计认证成交等于当前持仓，无新腿 CLOSE、未知或活动委托，累计数量及保守名义价值不超初始授权。其余 entry/add/reversal 不获得该例外；Sim/Shadow 保持首窗限制。该校验覆盖已可见事件，不保证尚未收到的未来迟到回报不存在。
 
-Stress-90 的单一候选核心位于 `directional_stress90_policy.py`：
+## 状态、身份与恢复
 
-```text
-ExecutionAlignedAggressivePolicy Base（50 品种、96 templates、11/3/3）
-→ 九品种 completed 60m Price×OI confirmation
-→ completed close 20/3/15bp cost gate
-→ lexicographic survivor reallocation
-→ raw product HHI / strictly-prior expanding median
-```
+状态、registry、seed、policy、OI、intent、permit、order journal 和 lifecycle transaction 分别验证精确 schema、正 sequence、checksum、parent chain 与账户/部署/runtime 身份。推进依赖原子持久写、锁和 CAS；registry 的多 binding 保护账户切换、退役身份及 Shadow/live 隔离，不能当重复账户状态删除。
 
-研究 batch wrapper、固定 bootstrap replay 和 live incremental transition 都调用同一组纯 primitives。核心不读取 Broker、账户、文件、网络、本机日期或当前 PnL；live runtime 不导入 `tools/` 或 acceptance CLI。
+通用 state 的 `.prev` 仅是事故证据，不自动提升。专用 store 按其 schema 校验 predecessor。损坏当前文件不能被覆盖或拼接修复；普通 `recover-state` 仍保持停机且明确拒绝 Stress-90，后者仅走专用恢复/核验备份。OHLC cache 仅保存市场数据，provider 追加必须保留所有已验证日期及规范数值；缺 required day 或静默修订阻止新风险。
 
-Stress-90 raw observer 在 CTP Tick 成功转换后、Tick coalescing 前收到每个有效 Tick。它只做有界内存聚合，按权威 CTP `trading_day` 和固定 session manifest 构造 in-progress/completed 60m evidence；磁盘 checkpoint 发生在一个有界 broker event batch 完成后。九个支持品种保存 expected/observed/missing contract coverage，因此没有观察到潜在 dominant contract 时不能生成伪 `flow=0`。
+Stress-90 seed 不继承历史账户收益。prepared decision 与 execution intent 可用于同次崩溃续接；order journal 在 official send 前持久化授权和最坏成交容量，terminal entries 进入 immutable archive。容量/账户切换须显式 HALTED epoch 事务，跨 epoch 保留订单身份防重。详细操作见[Stress-90 手册](stress90-live-runbook.md)。
 
-Stress-90 target day 的状态顺序是：校验完整输入，原子保存 exactly-once prepared decision，读取 Broker truth，生成 raw/margin-fitted integer lots，依次应用 completed-path 25% drawdown reserve freeze 和 HHI freeze，保存 execution intent，再生成 reduction-first orders。崩溃恢复复用同一 decision/intent；HHI 与候选 state 不随订单、成交或账户结果重复推进。详细边界见 [`stress90-live-productionization.md`](stress90-live-productionization.md)。
+## 观测与支持范围
 
-## 5. 离线账户验证
-
-`DirectionalProductionAcceptance` 是确定性账户模拟器：相同输入必定产生相同结果。它从固定目标和历史具体合约数据模拟：
-
-- 前收盘到次开盘的已有仓位盈亏；
-- 先减仓、后开仓的订单顺序；
-- 整数手数、合约乘数、手续费和换手；
-- 现金、已实现和未实现盈亏、权益；
-- 保证金、可用资金、总敞口、风控拒绝和停机；
-- 训练、验证、样本外、前序区间和汇总窗口的独立账户结果。
-
-固定 Stress-90 候选在该模拟器上验证，并已作为显式可选 runtime policy 接线。历史文件仍如实保存当时 `production_wiring=false`；当前接线与现场 activation 是后续、彼此独立的证据。完整历史假设和结果见 [`stress90-final-evidence.md`](stress90-final-evidence.md)，当前生产化边界见 [`stress90-live-productionization.md`](stress90-live-productionization.md)。
-
-## 6. 时间和研究窗口
-
-- D 日完整价格数据只能影响 D+1 及以后的品种目标；
-- D 日最终成交量和持仓量只能决定 D+1 的具体合约；
-- 当前交易日尚未完成的盈亏不能影响当前目标；
-- 连续合约换月产生的价格跳空不能计入可交易收益；
-- D 到 D+1 的收益必须来自 D 日已经选定的同一具体合约；
-- 验证和样本外模拟不继承同一矩阵其他结果行的账户状态；
-- 汇总窗口覆盖训练、验证和样本外区间，与它们存在重叠，不是独立留出集；
-- 样本外区间一旦被用于选择候选，必须标记为不再纯净。
-
-## 7. 执行与账户记账
-
-- 提交订单请求不改变持仓；只有 Broker 成交事件可以改变持仓；
-- 撤单、拒单和未成交不改变持仓、现金或盈亏；
-- 部分成交只按实际成交量记账，重试不能产生重复成交；
-- CTP 和引擎分别按 `(trading_day, exchange, trade_id)` 去重；引擎、`doctor` 和 `recover-state` 在 adapter 启动前注入已持久的复合 identity，阻止重启 replay 先修改持仓 mirror。缺少 exchange 的 identity 无法证明交易所，命中时必须停机对账，不能静默吞掉同 ID 的跨交易所新成交；
-- 反转必须先平旧方向再开新方向；
-- 上期所和能源中心的平今、平昨独立校验，不能跨今昨仓借量；
-- 手续费、滑点、名义价值、保证金和敞口必须使用明确的合约乘数和单位；
-- 无法识别的 CTP 方向、开平、订单类型或状态必须报错，不能猜测；
-- 数量必须能无损转换成整数；非法标识、NaN 和无穷值在进入风控和记账前拒绝；
-- 本地和柜台持仓按“合约 + 交易所”对账，重复记录或交易所不一致必须失败关闭；
-- 流动性快照的合约、品种和交易所必须与合约目录一致。
-
-CTP callback 不再共享一个可被 Tick 洪峰填满的混合队列。关键 order/trade/position/account/error 进入 FIFO；Tick 按 `(symbol, exchange)` 只保存尚未投递的最新值。`poll_events()` 每轮按可配置上限（默认 100）先投递关键 FIFO，再投递合并后的 Tick。`delivery_counters()` 暴露 critical/tick 的接收、合并、投递和 backlog 计数。持仓 mirror 与 position snapshot 另有串行锁，确保 snapshot 和成交事件顺序对应同一份 `(symbol, exchange)` 真相。Stress-90 raw evidence observer 在 coalescing 前看到有效 Tick，但不改变 critical FIFO；Directional activity 和 OI evidence 只在每轮有界事件批次后合并落盘一次，并在交易日切换和正常停机前强制 checkpoint；不在每个 Tick callback 中 `fsync`。
-
-交易日只能向前推进；延迟的旧日 account event 保持原今/昨仓 bucket 并失败关闭。
-
-原生 CTP 的当前交易日来自交易 API `getTradingDay()`。已启动 adapter 缺少 gateway、td_api、getter 或合法 `YYYYMMDD` 时失败关闭，不使用本机自然日期或缓存日期猜测。没有该接口的测试 Broker 使用已验证的 `AccountSnapshot.trading_day`。
-
-## 8. 风险状态
-
-```text
-RUNNING（正常运行）
-→ 出现可恢复风险
-→ REDUCE_ONLY（只允许减仓）
-→ 完成减仓并通过全部安全检查
-→ RUNNING
-
-RUNNING 或 REDUCE_ONLY
-→ 出现硬风险或人工停机
-→ HALTED（硬停机）
-→ 人工处理、柜台对账和恢复
-→ RUNNING
-```
-
-方向组合示例配置的硬限制是：目标和实际总敞口不超过账户权益的 2 倍、保证金不超过 35%、可用资金不低于 25%、单日亏损达到 5% 时停止新增风险、总回撤达到 30% 时硬停机、单合约不超过 35 手。所有风险收缩层只能降低目标。
-
-## 9. 状态与恢复
-
-`StateStore` 使用 schema 3 的精确 envelope 和完整 payload；registry 使用 schema 3、lineage marker 与认证 nonce anchor。Stress-90 permit、execution intent、lifecycle transaction 和 trading-day evidence 分别校验自己的精确字段、schema、identity、sequence 和 checksum。任何校验失败都保留原始证据并阻止运行继续。
-
-状态推进使用 atomic durable write、kernel/file locks、CAS、sequence、checksum、parent chain、account/deployment/runtime identity 和 nonce。通用 `StateStore` 的 `.prev` 是人工 incident evidence，绝不自动提升；要求 predecessor chain 的专用 store 还会按各自 schema 自动校验 `.prev` 与 `parent_checksum`。
-
-启动时，系统把柜台账户、完整持仓和活动委托与本地预期状态对比。今昨仓、多空方向、合约身份和关键风险标记全部一致后，才能标记为已对账。
-
-Directional 流动性 sidecar 同时持久化 `completed` 与 `in_progress`，因此日内重启继续已有观察；证据校验失败时必须重新观察完整柜台交易日。OHLC sidecar 是另一份独立市场证据，provider 刷新和回退都要重新验证，不得复制成账户状态或绕过 required-day 门。
-
-Stress-90 另有不可变 bootstrap seed、exactly-once policy state、raw OI evidence、execution intent 和 CTP order journal envelope。policy state 保留最后三层 weights、全部 prior HHI、prepared decision 和 live account wealth/HWM sufficient statistics；seed 不包含历史回测账户收益或任何凭证。order journal 在 official send 前原子持久化授权和最坏 fill 容量预留，terminal entries 进入 immutable archive；容量或账户切换通过显式 HALTED epoch 事务封存，跨 epoch 仍继承全局 order identity 防重。通用 state 还保存 policy activation identity。schema、sequence、checksum、policy digest、产品 manifest 或 seed identity 不一致均进入 `HALTED`。
-
-状态文件的 JSON、版本、正序号、校验和、持仓数量、均价或成交去重历史不可信时：
-
-- `load` 拒绝加载；
-- `save` 不允许覆盖损坏文件；
-- 原文件保留用于人工诊断；
-- 每次成功推进前，把上一份已验证文件原样保存为 `<state>.prev`；
-- `.prev` 只用于人工检查，运行时永不自动回退；
-- `recover-state` 保持停机开关，不能直接恢复交易。
-
-## 10. 可观测性
-
-- `status`：不连接 Broker，只读检查当前状态、Directional OHLC cache、Stress-90 seed/policy/OI/intent identity、target/account/freeze facts、路径和磁盘；`.prev` 只显示证据，绝不加载为当前状态；
-- `doctor`：连接 CTP 取得新快照，检查账户、风险比率、权威交易日、活动委托、合约参数、持仓对账、OHLC/OI/activity 对齐、live cost 和完整整数 plan preview，全程保持 `orders_sent=0`；
-- CTP `delivery_counters()`：报告关键事件与 Tick 的接收、合并、投递和 backlog，不拥有流控或交易权限；
-- `AuditJournal`：记录信号、订单、成交、风险和恢复事件；
-- `AlertManager`：向本地文件和可选 webhook 发送告警；
-- `ExecutionQualityRecorder`：记录计划与实际成交、滑点、手续费、延迟、部分成交和换手；
-- 报告：汇总账户、持仓、绩效、保证金和执行质量。
-
-审计、告警和报告只负责观测，不拥有下单或风控权限。
-
-## 11. 非目标
-
-当前不需要数据库、消息队列、Web 服务、微服务或第二套账户状态机。研究数据不会直接成为实盘数据源。`vnpy_ctp` 的原生扩展、目标机 ABI、实际登录和 callback 顺序不能由通用 CI/测试替身证明，必须在最终部署机完成 import、doctor、Shadow、重连和订单生命周期门。架构变化必须由已经复现的正确性、容量或维护问题驱动；下一批高价值证据来自新发生数据、多日 Shadow、测试柜台和小资金，而不是扩大同一历史上的参数搜索。
-
-Windows smoke 只证明受约束的核心纯 Python 安装和定向回归，不证明目标机 CTP ABI、原生扩展、真实柜台状态或订单生命周期。`#11/#21` 的权威分类是 historical closed-without-merge，相关分支留存作为历史证据；这一分类不等于合并批准、运行时激活或生产许可。任何 CI、研究、文档或本任务的完成都不授权真钱交易。
-
-Python `>=3.10`、`tomli` fallback、3.10/3.13 CI 和 Windows core/replay/config-validation smoke 都是
-当前项目支持契约；仅凭“单用户”不能删除。实际 production Python 版本仍须由最终目标机验证，因而
-不在本轮提高 baseline。Windows 只支持 core/replay，不宣称 Stress-90 live 或 CTP ABI portability；
-live 在 POSIX target 上按当前门失败关闭。registry 的多 binding layout 也不是未来多账户 facade：
-它当前保护 account switch/rebase、Shadow/live isolation、retired identity evidence 与 crash recovery。
-0/1-active-binding 的重设计留作单独 follow-up，不能在本轮切穿 lifecycle safety。
+`status` 只读本地；`doctor` 连接新柜台快照但 `orders_sent=0`；capacity report、Shadow 和报告不能签发真实资金许可。Python ≥3.10、受约束依赖与 Windows core/replay 支持保留；CTP live 只针对经验证的 POSIX 目标机。原生 ABI、实际回调、结算和整机失联通知须由现场证据证明，通用 CI 无法认证。

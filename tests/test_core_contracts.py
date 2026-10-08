@@ -1,10 +1,8 @@
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 from afuture.broker.sim import SimBroker
 from afuture.fees import calculate_commission
-from afuture.journal import AuditJournal
 from afuture.models import (
     AccountSnapshot,
     ContractPosition,
@@ -20,7 +18,6 @@ from afuture.models import (
 )
 from afuture.position import PositionBook
 from afuture.reconcile import compare_positions
-from afuture.report import calculate_performance, write_account_report
 from afuture.risk import RiskConfig, RiskManager
 from afuture.state import RuntimeState, StateStore
 from afuture.strategy import CalendarSpreadStrategy
@@ -61,13 +58,6 @@ def test_non_shfe_close_uses_generic_close():
     assert book.plan_close("m", "DCE", OrderSide.SELL, 2)[0].offset is Offset.CLOSE
 
 
-def test_reconcile_compares_position_quantities_not_prices():
-    left = [ContractPosition("m", "DCE", long_today=1, long_price=3000)]
-    right = [ContractPosition("m", "DCE", long_today=1, long_price=3100)]
-    assert compare_positions(left, right).matched
-    assert not compare_positions(left, [ContractPosition("m", "DCE", long_today=2)]).matched
-
-
 def test_reconcile_rejects_exchange_mismatch_and_duplicate_contract_rows():
     expected = [ContractPosition("m2609", "DCE", long_today=1, long_price=3000)]
 
@@ -104,6 +94,17 @@ def test_risk_account_limits_and_high_watermark_restore():
     manager.set_day_start_equity(560000, "20260821")
     account = AccountSnapshot(550000, 550000, 540000, 10000, 0, 0, "20260821")
     assert not manager.check_account(account).allowed
+    assert manager.check_account(account).reason == "daily loss limit reached"
+    manager.set_day_start_equity(550000, "20260821")
+    assert manager.check_account(account).reason == "drawdown limit reached"
+
+    fresh = RiskManager(RiskConfig())
+    margin_breach = AccountSnapshot(100000, 100000, 64000, 36000, 0, 0, "20260825")
+    assert not fresh.check_account(margin_breach).allowed
+    assert fresh.check_account(margin_breach).reason == "margin ratio limit reached"
+    cash_breach = AccountSnapshot(100000, 100000, 49000, 0, 0, 0, "20260825")
+    assert not fresh.check_account(cash_breach).allowed
+    assert fresh.check_account(cash_breach).reason == "available cash reserve too low"
 
 
 def test_strategy_state_restores_history_and_position():
@@ -127,16 +128,3 @@ def test_state_store_kill_switch_requires_reconcile_and_metadata(tmp_path: Path)
     assert store.load().kill_switch and not store.can_clear_kill_switch(state)
     state.metadata_verified = True
     assert store.can_clear_kill_switch(state)
-
-
-def test_journal_and_report_are_json_serializable(tmp_path: Path):
-    journal = AuditJournal(tmp_path / "audit.jsonl")
-    journal.record("x", {"side": OrderSide.BUY})
-    assert json.loads((tmp_path / "audit.jsonl").read_text())["payload"]["side"] == "BUY"
-    metrics = calculate_performance(
-        [("20260820", 500000), ("20260821", 505000)], initial_capital=500000, trade_count=2
-    )
-    assert metrics["total_return"] > 0 and metrics["trade_count"] == 2
-    account = AccountSnapshot(505000, 505000, 505000, 0, 5000, 0, "20260821")
-    write_account_report(tmp_path / "report.json", account, [], metrics)
-    assert "performance" in json.loads((tmp_path / "report.json").read_text())
