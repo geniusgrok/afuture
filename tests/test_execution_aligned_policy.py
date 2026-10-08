@@ -518,3 +518,25 @@ def test_l4_weight_generator_matches_production_policy(monkeypatch):
         check_names=False,
         check_freq=False,
     )
+
+
+def test_balanced_meta_uses_only_completed_cost_adjusted_product_contributions():
+    from afuture.execution_aligned_policy import _balanced_trailing_scores
+
+    index = pd.date_range("2026-01-01", periods=13)
+    base = pd.DataFrame({"single": [0.01] * 13, "spread": [0.01] * 13}, index=index)
+    stress = base * 0.9
+    product_net = {
+        "single": pd.DataFrame({"A": [0.01] * 13, "B": [0.0] * 13}, index=index),
+        "spread": pd.DataFrame({"A": [0.005] * 13, "B": [0.005] * 13}, index=index),
+    }
+    scores = _balanced_trailing_scores(base, stress, product_net)
+    assert scores[11, 1] > scores[11, 0]
+    assert scores[12, 1] > scores[12, 0]
+    altered = {key: value.copy() for key, value in product_net.items()}
+    altered["spread"].iloc[-1] = [0.009, 0.001]
+    assert _balanced_trailing_scores(base, stress, altered)[12, 1] == scores[12, 1]
+    renamed = {key: value.set_axis(["B", "A"], axis=1) for key, value in product_net.items()}
+    np.testing.assert_array_equal(
+        scores, _balanced_trailing_scores(base, stress, renamed)
+    )
