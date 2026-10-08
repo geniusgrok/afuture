@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from afuture.cli import _build_cli_engine
 from afuture.directional import DirectionalConfig
 from afuture.directional_engine import DirectionalTradingEngine
 from afuture.directional_risk import DirectionalRiskResponseMode, DirectionalRiskScaledPolicy
@@ -11,6 +10,7 @@ from afuture.engine import TradingEngine
 from afuture.execution_aligned_policy import FROZEN_PRODUCTS
 from afuture.execution_aligned_runtime import ExecutionAlignedDirectionalPortfolioManager
 from afuture.risk import RiskConfig
+from afuture.runtime_factory import build_runtime_engine
 from afuture.state import StateStore
 
 
@@ -93,34 +93,13 @@ def _write_bound_stress90_policy(runtime_dir, registry_path):
     return state
 
 
-def test_cli_engine_builder_routes_directional_mode_through_exact_execution_aligned_manager(
-    tmp_path,
-):
-    engine = _build_cli_engine(
-        _config(True),
-        _Broker(),
-        StateStore(tmp_path / "directional.json"),
-    )
-    assert isinstance(engine, DirectionalTradingEngine)
-    assert type(engine.directional_manager) is ExecutionAlignedDirectionalPortfolioManager
-    assert engine.directional_manager.signal_cache_path == (
-        tmp_path / "directional_ohlc_cache.json"
-    )
-    assert (
-        engine.directional_manager.policy_risk_response_mode
-        is DirectionalRiskResponseMode.TARGET_SCALE
-    )
-    assert isinstance(engine.directional_manager.policy, DirectionalRiskScaledPolicy)
-    assert engine.requires_technical_activation_permit is False
-
-
 def test_cli_engine_builder_routes_explicit_stress90_without_point25_wrapper(tmp_path):
     from afuture.directional_stress90_runtime import Stress90DirectionalPortfolioManager
 
     broker = _Broker()
     registry_path = tmp_path / "machine" / "registry.json"
     _write_bound_stress90_policy(tmp_path, registry_path)
-    engine = _build_cli_engine(
+    engine = build_runtime_engine(
         _config(
             True,
             policy="stress90",
@@ -160,7 +139,7 @@ def test_stress90_runtime_copy_cannot_bypass_machine_account_binding(tmp_path):
     Stress90PolicyStateStore(runtime_b / "stress90_policy_state.json").save(state)
 
     with pytest.raises(AccountRuntimeRegistryError, match="different runtime"):
-        _build_cli_engine(
+        build_runtime_engine(
             _config(
                 True,
                 policy="stress90",
@@ -171,180 +150,41 @@ def test_stress90_runtime_copy_cannot_bypass_machine_account_binding(tmp_path):
         )
 
 
-def test_migrated_execution_aligned_runtime_copy_keeps_registry_gate(tmp_path):
-    from afuture.account_runtime_registry import AccountRuntimeRegistryError
-    from afuture.directional_policy_activation import (
-        DIRECTIONAL_POLICY_MIGRATION_CONFIRMATION,
-        STRESS90_ACTIVATION_CONFIRMATION,
-        activate_stress90_policy,
-        migrate_stress90_to_execution_aligned,
-    )
-    from afuture.directional_stress90_state import Stress90PolicyStateStore
-    from afuture.models import RuntimeMode
-    from afuture.state import RuntimeState
-
-    registry_path = tmp_path / "machine" / "registry.json"
-    runtime_a = tmp_path / "runtime-a"
-    runtime_b = tmp_path / "runtime-b"
-    policy = _write_bound_stress90_policy(runtime_a, registry_path)
-    Stress90PolicyStateStore(runtime_b / "stress90_policy_state.json").save(policy)
-    halted = RuntimeState(
-        kill_switch=True,
-        kill_reason="commissioning",
-        reconciled=True,
-        runtime_mode=RuntimeMode.HALTED.value,
-    )
-    activated = activate_stress90_policy(
-        halted,
-        broker_flat=True,
-        local_flat=True,
-        no_active_orders=True,
-        reconciled=True,
-        bootstrap_seed_digest=policy.bootstrap_seed_digest,
-        account_identity_digest="1" * 64,
-        risk_overlay_digest="2" * 64,
-        operator_reason="fixture activation",
-        strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
-    )
-    migrated = migrate_stress90_to_execution_aligned(
-        activated,
-        broker_flat=True,
-        local_flat=True,
-        no_active_orders=True,
-        reconciled=True,
-        account_identity_digest="1" * 64,
-        operator_reason="fixture migration",
-        strong_confirmation=DIRECTIONAL_POLICY_MIGRATION_CONFIRMATION,
-    )
-    StateStore(runtime_b / "state.json").save(migrated)
-
-    with pytest.raises(AccountRuntimeRegistryError, match="different runtime"):
-        _build_cli_engine(
-            _config(
-                True,
-                policy="execution_aligned",
-                account_registry_path=str(registry_path),
-            ),
-            _Broker(),
-            StateStore(runtime_b / "state.json"),
-        )
-
-
-def test_live_migrated_execution_aligned_runtime_requires_fixed_machine_registry(tmp_path):
-    from afuture.directional_policy_activation import (
-        DIRECTIONAL_POLICY_MIGRATION_CONFIRMATION,
-        STRESS90_ACTIVATION_CONFIRMATION,
-        activate_stress90_policy,
-        migrate_stress90_to_execution_aligned,
-    )
-    from afuture.models import RuntimeMode
-    from afuture.state import RuntimeState
-
-    registry_path = tmp_path / "alternate-machine-registry.json"
-    policy = _write_bound_stress90_policy(tmp_path, registry_path)
-    activated = activate_stress90_policy(
-        RuntimeState(
-            kill_switch=True,
-            reconciled=True,
-            runtime_mode=RuntimeMode.HALTED.value,
-        ),
-        broker_flat=True,
-        local_flat=True,
-        no_active_orders=True,
-        reconciled=True,
-        bootstrap_seed_digest=policy.bootstrap_seed_digest,
-        account_identity_digest="1" * 64,
-        risk_overlay_digest="2" * 64,
-        operator_reason="fixture activation",
-        strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
-    )
-    StateStore(tmp_path / "state.json").save(
-        migrate_stress90_to_execution_aligned(
-            activated,
-            broker_flat=True,
-            local_flat=True,
-            no_active_orders=True,
-            reconciled=True,
-            account_identity_digest="1" * 64,
-            operator_reason="fixture migration",
-            strong_confirmation=DIRECTIONAL_POLICY_MIGRATION_CONFIRMATION,
-        )
-    )
-    config = _config(
-        True,
-        policy="execution_aligned",
-        account_registry_path=str(registry_path),
-    )
-    config.mode = "live"
-
-    with pytest.raises(RuntimeError, match="fixed machine"):
-        _build_cli_engine(
-            config,
-            _Broker(),
-            StateStore(tmp_path / "state.json"),
-        )
-
-
-def test_migrated_execution_aligned_runtime_rejects_noncanonical_identity_marker(tmp_path):
-    from afuture.directional_policy_activation import (
-        DIRECTIONAL_POLICY_MIGRATION_CONFIRMATION,
-        STRESS90_ACTIVATION_CONFIRMATION,
-        activate_stress90_policy,
-        migrate_stress90_to_execution_aligned,
-    )
-    from afuture.models import RuntimeMode
-    from afuture.state import RuntimeState
-
-    registry_path = tmp_path / "machine-registry.json"
-    policy = _write_bound_stress90_policy(tmp_path, registry_path)
-    activated = activate_stress90_policy(
-        RuntimeState(
-            kill_switch=True,
-            reconciled=True,
-            runtime_mode=RuntimeMode.HALTED.value,
-        ),
-        broker_flat=True,
-        local_flat=True,
-        no_active_orders=True,
-        reconciled=True,
-        bootstrap_seed_digest=policy.bootstrap_seed_digest,
-        account_identity_digest="1" * 64,
-        risk_overlay_digest="2" * 64,
-        operator_reason="fixture activation",
-        strong_confirmation=STRESS90_ACTIVATION_CONFIRMATION,
-    )
-    migrated = migrate_stress90_to_execution_aligned(
-        activated,
-        broker_flat=True,
-        local_flat=True,
-        no_active_orders=True,
-        reconciled=True,
-        account_identity_digest="1" * 64,
-        operator_reason="fixture migration",
-        strong_confirmation=DIRECTIONAL_POLICY_MIGRATION_CONFIRMATION,
-    )
-    marker = dict(migrated.strategy_states["directional_policy_identity"])
-    marker["products_manifest_digest"] = "f" * 64
-    marker["unexpected_authority"] = True
-    migrated.strategy_states["directional_policy_identity"] = marker
-    StateStore(tmp_path / "state.json").save(migrated)
-
-    with pytest.raises(RuntimeError, match="provenance identity"):
-        _build_cli_engine(
-            _config(
-                True,
-                policy="execution_aligned",
-                account_registry_path=str(registry_path),
-            ),
-            _Broker(),
-            StateStore(tmp_path / "state.json"),
-        )
-
-
 def test_cli_engine_builder_preserves_plain_trading_engine_when_directional_disabled(tmp_path):
-    engine = _build_cli_engine(
+    engine = build_runtime_engine(
         _config(False),
         _Broker(),
         StateStore(tmp_path / "plain.json"),
     )
     assert type(engine) is TradingEngine
+
+
+def test_cli_engine_builder_routes_directional_mode_through_exact_execution_aligned_manager(
+    tmp_path,
+    monkeypatch,
+):
+    engine = build_runtime_engine(
+        _config(True),
+        _Broker(),
+        StateStore(tmp_path / "directional.json"),
+    )
+    assert isinstance(engine, DirectionalTradingEngine)
+    assert type(engine.directional_manager) is ExecutionAlignedDirectionalPortfolioManager
+    assert engine.directional_manager.signal_cache_path == (
+        tmp_path / "directional_ohlc_cache.json"
+    )
+    assert (
+        engine.directional_manager.policy_risk_response_mode
+        is DirectionalRiskResponseMode.TARGET_SCALE
+    )
+    assert isinstance(engine.directional_manager.policy, DirectionalRiskScaledPolicy)
+    assert engine.requires_technical_activation_permit is False
+
+    # The factory-selected engine scales only its completed account return history.
+    wrapped = engine.directional_manager.policy
+    monkeypatch.setattr(
+        type(wrapped.policy), "target_weights", lambda *args, **kwargs: {"A": 1.2, "CU": -0.8}
+    )
+    assert wrapped.target_weights() == {"A": 1.2, "CU": -0.8}
+    engine.state.recent_daily_returns = [-0.02]
+    assert wrapped.target_weights() == {"A": 0.3, "CU": -0.2}

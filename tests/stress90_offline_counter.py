@@ -48,7 +48,11 @@ from afuture.stress90_day_end import Stress90FinalSettlement
 from afuture.stress90_risk_overlay import stress90_risk_overlay_digest
 
 CHINA = ZoneInfo("Asia/Shanghai")
+
+
 ACCOUNT = "a" * 64
+
+
 EPOCH = "b" * 64
 
 

@@ -15,7 +15,7 @@ from .auto import AutoPairManager
 from .economics import estimate_net_edge
 from .execution import PairExecutor
 from .fees import calculate_commission
-from .health.monitor import HealthMonitor
+from .health import HealthMonitor
 from .metadata import validate_contract_metadata
 from .models import (
     ContractPosition,

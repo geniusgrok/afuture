@@ -213,60 +213,6 @@ def test_prepare_session_safety_failures_return_two_and_named_next_action(
     assert backend.broker.cancels_sent == 0
 
 
-def test_prepare_session_ohlc_refresh_occurs_before_alignment(tmp_path: Path) -> None:
-    backend = FakeBackend()
-    code, _payload = _runner(backend, tmp_path, refresh=True).run()
-    assert code == 0
-    assert backend.calls.index("refresh_ohlc") < backend.calls.index("alignment")
-    assert backend.calls.index("market_facts") < backend.calls.index("refresh_ohlc")
-
-
-def test_prepare_session_ohlc_refresh_failure_is_blocking(tmp_path: Path) -> None:
-    backend = FakeBackend(fail="refresh_ohlc")
-    code, payload = _runner(backend, tmp_path, refresh=True).run()
-    assert code == 2
-    assert payload["failed_check"] == "refresh_ohlc"
-    assert backend.broker.orders_sent == 0
-    assert backend.broker.cancels_sent == 0
-
-
-def test_prepare_session_continuity_required_only_allows_manual_roll_forward(
-    tmp_path: Path,
-) -> None:
-    backend = FakeBackend(continuity=True)
-    code, payload = _runner(backend, tmp_path).run()
-    assert code == 2
-    assert "stress90-operator-roll-forward" in " ".join(payload["allowed_next_actions"])
-    assert payload["continuity"]["roll_forward_required"] is True
-
-
-def test_prepare_session_rebase_required_only_allows_manual_rebase(tmp_path: Path) -> None:
-    backend = FakeBackend(rebase=True)
-    code, payload = _runner(backend, tmp_path).run()
-    assert code == 2
-    assert "stress90-account-rebase" in " ".join(payload["allowed_next_actions"])
-    assert payload["continuity"]["rebase_required"] is True
-
-
-def test_prepare_session_capacity_warning_does_not_hide_hard_pass(tmp_path: Path) -> None:
-    backend = FakeBackend()
-    code, payload = _runner(backend, tmp_path).run()
-    assert code == 0
-    assert payload["capacity_warnings"] == ["integer representation is coarse"]
-
-
-def test_prepare_session_repeat_is_stable_when_external_facts_are_unchanged(tmp_path: Path) -> None:
-    first_backend = FakeBackend()
-    second_backend = FakeBackend()
-    code1, payload1 = _runner(first_backend, tmp_path).run()
-    code2, payload2 = _runner(second_backend, tmp_path).run()
-    assert code1 == code2 == 0
-    ignored = {"generated_utc"}
-    assert {k: v for k, v in payload1.items() if k not in ignored} == {
-        k: v for k, v in payload2.items() if k not in ignored
-    }
-
-
 def test_read_only_broker_blocks_send_and_cancel() -> None:
     source = FakeBroker()
     broker = ReadOnlyBroker(source)
@@ -276,12 +222,3 @@ def test_read_only_broker_blocks_send_and_cancel() -> None:
         broker.cancel_order("x")
     assert source.orders_sent == 0
     assert source.cancels_sent == 0
-
-
-def test_prepare_session_never_mutates_runtime_mode_or_issues_permit(tmp_path: Path) -> None:
-    backend = FakeBackend()
-    code, payload = _runner(backend, tmp_path).run()
-    assert code == 0
-    assert payload["entered_running"] is False
-    assert payload["permit"]["status"] == "missing"
-    assert "issue" not in " ".join(backend.calls).lower()

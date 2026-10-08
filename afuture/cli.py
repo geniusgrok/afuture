@@ -33,7 +33,6 @@ from .models import (
     Trade,
 )
 from .quality import ExecutionQualityRecorder
-from .research import AcceptanceGate, ResearchConfig, WalkForwardRunner
 from .sample_store import MarketSampleStore
 from .scanner import SpreadScanner
 from .state import RuntimeState, StateStore
@@ -61,32 +60,6 @@ def build_parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan", help="扫描跨期套利研究候选")
     scan.add_argument("--config", required=True)
     scan.add_argument("--data", required=True)
-
-    accept = sub.add_parser("accept", help="执行单 pair Walk-forward/OOS/Stress 晋级验收")
-    accept.add_argument("--config", required=True)
-    accept.add_argument("--data", required=True)
-    accept.add_argument("--pair", required=True)
-    accept.add_argument("--train-days", type=int, default=60)
-    accept.add_argument("--validation-days", type=int, default=20)
-    accept.add_argument("--oos-days", type=int, default=20)
-    accept.add_argument("--step-days", type=int, default=20)
-    accept.add_argument(
-        "--stress-multipliers",
-        default="1.0,1.5,2.0",
-        help="用逗号分隔的交易成本压力倍数",
-    )
-
-    accept_auto = sub.add_parser(
-        "accept-auto", help="对最终 Auto Portfolio 执行 Walk-forward/OOS/鲁棒性验收"
-    )
-    accept_auto.add_argument("--config", required=True)
-    accept_auto.add_argument("--data", required=True)
-    accept_auto.add_argument("--train-days", type=int, default=120)
-    accept_auto.add_argument("--validation-days", type=int, default=40)
-    accept_auto.add_argument("--oos-days", type=int, default=40)
-    accept_auto.add_argument("--step-days", type=int, default=40)
-    accept_auto.add_argument("--stress-multipliers", default="1.0,1.5,2.0")
-    accept_auto.add_argument("--output", default="")
 
     data_check = sub.add_parser("data-check", help="检查 Auto 研究数据覆盖、断档和合约生命周期")
     data_check.add_argument("--config", required=True)
@@ -934,30 +907,6 @@ def _auto_manager(config, *, evidence=None, shadow: bool = False):
     )
 
 
-def _build_cli_engine(
-    config,
-    broker,
-    state_store: StateStore,
-    *,
-    journal=None,
-    alert_manager=None,
-    auto_manager=None,
-    quality_recorder=None,
-):
-    """Create the account-exclusive runtime selected by validated configuration."""
-    from .runtime_factory import build_runtime_engine
-
-    return build_runtime_engine(
-        config,
-        broker,
-        state_store,
-        journal=journal,
-        alert_manager=alert_manager,
-        auto_manager=auto_manager,
-        quality_recorder=quality_recorder,
-    )
-
-
 def _initialize_live_engine_after_snapshot(
     engine,
     lease,
@@ -1029,7 +978,9 @@ def _run_live_leased(config, args, logger, broker, lease) -> int:
     from .report import write_account_report
 
     quality = _quality_recorder(config)
-    engine = _build_cli_engine(
+    from .runtime_factory import build_runtime_engine
+
+    engine = build_runtime_engine(
         config,
         broker,
         StateStore(config.state_path),
@@ -1159,7 +1110,9 @@ def _run_shadow(config, args, logger) -> int:
             role="shadow",
         )
         lease.acquire()
-    engine = _build_cli_engine(
+    from .runtime_factory import build_runtime_engine
+
+    engine = build_runtime_engine(
         config,
         broker,
         StateStore(shadow_state),
@@ -5335,7 +5288,9 @@ def _run_stress90_settlement_roll_forward(config, args) -> int:
     with AccountExclusiveRuntimeLease(
         paths["runtime"], broker.get_account_identity_digest(), role="stress90-day-end"
     ) as lease:
-        engine = _build_cli_engine(config, broker, StateStore(paths["state"]))
+        from .runtime_factory import build_runtime_engine
+
+        engine = build_runtime_engine(config, broker, StateStore(paths["state"]))
         try:
             engine.bind_day_end_lease(lease)
             engine.start()
@@ -6455,26 +6410,6 @@ def _run_directional_ohlc_refresh(config, args) -> int:
     return 0
 
 
-def _research_pairs(config, ticks) -> list[PairConfig]:
-    """研究命令在 auto 模式下使用与实盘相同的相邻月份生成规则。"""
-    if not config.auto.enabled:
-        return list(config.pairs)
-    from .auto import AutoPairSelector
-
-    trading_days = [str(tick.trading_day) for tick in ticks if tick.trading_day]
-    if not trading_days:
-        raise ValueError("auto research requires trading_day in tick data")
-    today = datetime.strptime(max(trading_days), "%Y%m%d").date()
-    return AutoPairSelector(config.auto).build_pairs(config.contract_catalog, today)
-
-
-def _parse_stress_multipliers(raw: str) -> tuple[float, ...]:
-    values = tuple(float(item.strip()) for item in raw.split(",") if item.strip())
-    if not values or any(value <= 0 for value in values):
-        raise ValueError("stress multipliers must be positive")
-    return values
-
-
 def _write_json(payload: dict, output: str | Path | None = None) -> None:
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     print(text)
@@ -6539,73 +6474,21 @@ def run_command(
             max_sync_seconds=config.auto.max_sync_seconds if config.auto.enabled else 2.0,
         )
         rows = []
-        for research_pair in _research_pairs(config, ticks):
+        pairs = list(config.pairs)
+        if config.auto.enabled:
+            from .auto import AutoPairSelector
+
+            trading_days = [str(tick.trading_day) for tick in ticks if tick.trading_day]
+            if not trading_days:
+                raise ValueError("auto research requires trading_day in tick data")
+            today = datetime.strptime(max(trading_days), "%Y%m%d").date()
+            pairs = AutoPairSelector(config.auto).build_pairs(config.contract_catalog, today)
+        for research_pair in pairs:
             candidate = scanner.scan_pair(research_pair, ticks, config.contracts)
             if candidate is not None:
                 rows.append(asdict(candidate))
         print(json.dumps(rows, ensure_ascii=False, indent=2))
         return 0
-
-    if args.command == "accept":
-        ticks = read_ticks(args.data)
-        accepted_pair = next(
-            (item for item in _research_pairs(config, ticks) if item.pair_id == args.pair),
-            None,
-        )
-        if accepted_pair is None:
-            raise ValueError(f"unknown pair: {args.pair}")
-        research_config = ResearchConfig(
-            train_days=args.train_days,
-            validation_days=args.validation_days,
-            oos_days=args.oos_days,
-            step_days=args.step_days,
-            cost_stress_multipliers=_parse_stress_multipliers(args.stress_multipliers),
-        )
-        walk_forward_result = WalkForwardRunner(config.contracts, config.initial_capital).run(
-            accepted_pair, ticks, research_config
-        )
-        acceptance_decision = AcceptanceGate().evaluate(walk_forward_result)
-        print(
-            json.dumps(
-                {
-                    "accepted": acceptance_decision.accepted,
-                    "reasons": acceptance_decision.reasons,
-                    "selected_parameters": walk_forward_result.selected_parameters,
-                    "folds": [asdict(fold) for fold in walk_forward_result.folds],
-                    "stress_results": walk_forward_result.stress_results,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-        return 0 if acceptance_decision.accepted else 2
-
-    if args.command == "accept-auto":
-        from .auto_acceptance import AutoPortfolioAcceptanceGate
-        from .auto_research import AutoPortfolioResearchConfig, AutoPortfolioRunner
-
-        ticks = read_ticks(args.data)
-        research = AutoPortfolioResearchConfig(
-            train_days=args.train_days,
-            validation_days=args.validation_days,
-            oos_days=args.oos_days,
-            step_days=args.step_days,
-            cost_stress_multipliers=_parse_stress_multipliers(args.stress_multipliers),
-        )
-        auto_result = AutoPortfolioRunner(config).run(ticks, research)
-        auto_decision = AutoPortfolioAcceptanceGate().evaluate(auto_result)
-        payload = {
-            "accepted": auto_decision.accepted,
-            "reasons": auto_decision.reasons,
-            "gate_metrics": auto_decision.metrics,
-            "selected_parameters": auto_result.selected_parameters,
-            "folds": [asdict(fold) for fold in auto_result.folds],
-            "stress_results": auto_result.stress_results,
-            "robustness": auto_result.robustness,
-        }
-        output = args.output or _runtime_path(config, "auto_acceptance.json")
-        _write_json(payload, output)
-        return 0 if auto_decision.accepted else 2
 
     if args.command == "data-check":
         from .data_quality import DataQualityAnalyzer

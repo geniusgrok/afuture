@@ -22,10 +22,7 @@ from .directional_stress90_policy import (
     apply_oi_confirmation_row,
 )
 
-# Frozen from coverage workflow 32717335780. Each product has >=80% exact daily 60m
-# coverage in both 2022-08-21..2024-08-20 and 2024-08-21..2026-08-20, and the set spans
-# at least two exchanges. Do not expand this set from later provider responses inside
-# this research phase.
+# The supported product universe is frozen; later provider responses cannot expand it.
 SUPPORTED_PRODUCTS = SUPPORTED_OI_PRODUCTS
 
 _REQUIRED_COLUMNS = {

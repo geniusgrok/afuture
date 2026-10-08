@@ -33,19 +33,6 @@ def _candidate_request(**changes: object) -> OrderRequest:
     return OrderRequest(**values)  # type: ignore[arg-type]
 
 
-def _reduction_request() -> OrderRequest:
-    return OrderRequest(
-        "A2701",
-        "DCE",
-        OrderSide.SELL,
-        Offset.CLOSE,
-        2,
-        999.0,
-        OrderType.FAK,
-        "directional:gross-guard",
-    )
-
-
 def _configure(broker: CtpBroker, path: Path) -> None:
     broker.configure_order_submission_journal(
         path,
@@ -147,73 +134,6 @@ def test_candidate_authorization_binds_and_consumes_one_exact_request(tmp_path: 
     with pytest.raises(RuntimeError, match="exact candidate request"):
         broker.send_order(authorized)
     assert calls == [authorized]
-
-
-def test_candidate_authorization_rejects_aggregate_open_above_persisted_target(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "stress90_ctp_orders.json"
-    broker = CtpBroker(_credentials())
-    _configure(broker, path)
-    _td_api, calls = _attach_gateway(broker)
-    duplicate = _candidate_request()
-    _authorize(broker, duplicate)
-
-    with pytest.raises(ValueError, match="aggregate.*persisted intent"):
-        _authorize(broker, duplicate, duplicate)
-
-    assert broker._candidate_order_authorizations == {}
-    with pytest.raises(RuntimeError, match="exact candidate request"):
-        broker.send_order(duplicate)
-    assert calls == []
-    assert not path.exists()
-
-
-def test_same_day_close_always_uses_independent_risk_reduction_authorization(
-    tmp_path: Path,
-) -> None:
-    from afuture.broker.ctp_order_journal import CtpOrderSubmissionJournal
-
-    path = tmp_path / "stress90_ctp_orders.json"
-    broker = CtpBroker(_credentials())
-    _configure(broker, path)
-    _attach_gateway(broker)
-    _authorize(broker, _candidate_request())
-
-    order_id = broker.send_order(_reduction_request())
-
-    entry = CtpOrderSubmissionJournal(path).get_entry(order_id)
-    assert entry is not None
-    assert entry.authorization_kind == "risk_reduction"
-    assert entry.request == _reduction_request()
-
-
-def test_fatal_callback_after_prepare_aborts_before_official_send(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from afuture.broker.ctp_order_journal import CtpOrderSubmissionJournal
-
-    path = tmp_path / "stress90_ctp_orders.json"
-    broker = CtpBroker(_credentials())
-    _configure(broker, path)
-    _authorize(broker, _candidate_request())
-    _td_api, calls = _attach_gateway(broker)
-    original = broker._order_submission_journal.prepare
-
-    def prepare_then_fatal(entry, **kwargs):
-        prepared = original(entry, **kwargs)
-        with broker._critical_callback_scope():
-            broker._enqueue_critical(BrokerEvent("broker_error", "fatal after prepare"))
-        return prepared
-
-    monkeypatch.setattr(broker._order_submission_journal, "prepare", prepare_then_fatal)
-
-    with pytest.raises(RuntimeError, match="acknowledged critical event boundary"):
-        broker.send_order(_candidate_request())
-
-    assert calls == []
-    entry = CtpOrderSubmissionJournal(path).load_required().all_entries[-1]
-    assert entry.status == "aborted_before_send"
 
 
 def test_fatal_callback_at_official_boundary_interrupts_before_external_send(

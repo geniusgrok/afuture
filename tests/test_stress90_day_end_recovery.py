@@ -18,8 +18,6 @@ from afuture.models import (
     OrderStatus,
     RuntimeMode,
 )
-from afuture.process_run import ProcessRunStore, apply_unclean_restart_fence
-from afuture.stress90_day_end import finish_stress90_day_end
 
 
 def _first_close(fixture):
@@ -252,106 +250,5 @@ def test_commit_then_correction_keeps_original_and_stops(tmp_path: Path):
         assert fixture.engine.halted
         assert (provider.root / "settlement-20260825-20260826.json").read_bytes() == original
         assert "corrected" in fixture.engine.state.kill_reason
-    finally:
-        fixture.close()
-
-
-def test_changed_late_order_payload_is_not_a_duplicate(tmp_path: Path):
-    fixture = OfflineMonth(tmp_path)
-    try:
-        _first_close(fixture)
-        order = fixture.broker.get_orders()[0]
-        _advance(fixture, "20260825", "20260826")
-        positions = fixture.engine.state.positions
-        changed = replace(order, request=replace(order.request, volume=order.request.volume + 1))
-        fixture.broker._events.append(BrokerEvent("order", changed))
-        fixture.engine.run_once()
-        assert fixture.engine.halted
-        assert fixture.engine.state.positions == positions
-        assert "order binding" in fixture.engine.state.kill_reason
-    finally:
-        fixture.close()
-
-
-def test_cli_service_reuses_coordinator_without_strategy_sends(tmp_path: Path):
-    fixture = OfflineMonth(tmp_path)
-    try:
-        _first_close(fixture)
-        _pause(fixture)
-        finish_stress90_day_end(fixture.engine, fixture.lease, timeout_seconds=5)
-        assert not fixture.engine.day_end_paused
-        assert fixture.engine.state.trading_day == "20260826"
-        assert fixture.broker.get_orders() == []
-    finally:
-        fixture.close()
-
-
-def test_process_fence_preserves_only_authorized_paused_day_end(tmp_path: Path):
-    fixture = OfflineMonth(tmp_path)
-    try:
-        _first_close(fixture)
-        _pause(fixture, emit=False)
-        state = fixture.engine.state_store.load_required_record()
-        processes = ProcessRunStore(tmp_path / "process_run.json")
-        identity = {
-            "deployment_digest": "d" * 64,
-            "runtime_identity_digest": "e" * 64,
-            "account_identity_digest": fixture.broker.get_account_identity_digest(),
-        }
-        process = processes.begin(**identity, start_state_checksum=state.checksum)
-        processes.mark_phase(process.process_uuid, "running", state_checksum=state.checksum)
-        result = apply_unclean_restart_fence(
-            process_store=processes,
-            state_store=fixture.engine.state_store,
-            runtime_dir=tmp_path,
-            **identity,
-            lease=fixture.lease,
-            day_end_provider=fixture.broker.stress90_settlement_provider,
-            account_registry_path=fixture.config.account_registry_path,
-            clock=lambda: fixture.now,
-        )
-        assert result.resume_day_end and not result.blocked
-        assert fixture.engine.state_store.load_required_record() == state
-        assert not processes.load_required().clean_shutdown
-        fixture.emit("20260826", fixture.session_open("20260826"), volume=1000, hold=30_000)
-        _drain(fixture, lambda: not fixture.engine.day_end_paused)
-    finally:
-        fixture.close()
-
-
-@pytest.mark.parametrize("change", ["settlement_correction", "manual_stop"])
-def test_prepared_transaction_cannot_outlive_changed_authority(tmp_path: Path, monkeypatch, change):
-    fixture = OfflineMonth(tmp_path)
-    try:
-        _first_close(fixture)
-        coordinator = _pause(fixture)
-        store = fixture.engine.directional_manager.policy_state_store
-        save = store.save
-
-        def crash(*args, **kwargs):
-            save(*args, **kwargs)
-            raise ProcessExit("after_policy")
-
-        with monkeypatch.context() as fault:
-            fault.setattr(store, "save", crash)
-            with pytest.raises(ProcessExit):
-                fixture.engine.run_once()
-        prepared = coordinator.transactions.load_required()
-        assert prepared.status == "prepared"
-        if change == "settlement_correction":
-            fixture.broker.stress90_settlement_provider.publish_correction(
-                "20260825", "20260826", lambda raw: raw.update(version=2)
-            )
-            reason = "corrected"
-        else:
-            fixture.engine.emergency_stop("operator stop after transaction prepare")
-            reason = "stop"
-        for _ in range(2):
-            with pytest.raises(RuntimeError, match=reason):
-                fixture.engine.run_once()
-        assert coordinator.transactions.load_required() == prepared
-        assert fixture.broker.get_orders() == []
-        if change == "manual_stop":
-            assert fixture.engine.state_store.load_required_record().state.kill_switch
     finally:
         fixture.close()

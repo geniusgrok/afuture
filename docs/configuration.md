@@ -226,7 +226,7 @@ CTP 凭证不进入 TOML：
 - `account_exclusive = true`；运行期间禁止手工交易、其他策略、充值和出金；
 - `account_continuity_mode` 默认 `strict`；`operator_managed` 只适用于个人专用、单账户、账户独占运行。其 receipt 明确标记为 `operator_trust`，不能替代官方结算见证或官方 session ledger；
 - `operator_managed` 期间一旦发生人工交易、外部委托、入金或出金，必须保持停机并先执行现有 `stress90-account-rebase`；跨日成功后仍需新的 Doctor 技术 permit；
-- Stress-90 使用不可变的产品/交易所 first-session manifest；错过首个窗口当日不追单，也不接受 `rebalance_window` 配置。
+- Stress-90 使用固定产品/交易所 first-session manifest；entry、add、reversal 错过首窗当日不追开，也不接受 `rebalance_window`。仅真实 CTP、认证持久意图及累计成交/持仓/预算一致的纯同向换月可在后续 session 完成，见[运行手册](stress90-live-runbook.md#换月与日终边界)。
 
 更严格 commissioning 值可以减少风险，但会偏离固定历史矩阵。`status`/`doctor` 会显示该差异；不得把更严格配置下的 live/Shadow 结果表述为历史 Stress-90 的精确复现。
 
@@ -240,11 +240,11 @@ CTP 凭证不进入 TOML：
 
 策略语义见 [`strategies.md`](strategies.md)，输入字段见 [`data-formats.md`](data-formats.md)，通用上线操作见 [`live-trading.md`](live-trading.md)，Stress-90 lifecycle 见 [`stress90-live-runbook.md`](stress90-live-runbook.md)。
 
-## Stress-90 live risk scale and overlay identity
+## Stress-90 风险缩放与身份
 
-`directional.live_risk_scale` defaults to `1.0` and must be finite with `0 < value <= 1`. Only the Stress-90 live/Shadow production lot path consumes it; replay, bootstrap, historical candidate generation and `execution_aligned` ignore it. The production risk-overlay digest includes the scale, directional gross/contract/session-entry limits and all `RiskConfig` fields. A digest change is an identity change, not a hot reload: live/status/Doctor fail closed until explicit HALTED activation/reactivation rebinds it.
+`directional.live_risk_scale` 默认 `1.0`，须有限且满足 `0 < value <= 1`；仅 Stress-90 live/Shadow 目标手数路径使用，回放、bootstrap 和普通方向策略不使用。scale、directional gross/contract/session-entry 限制及全部 `RiskConfig` 字段进入 risk-overlay digest。即使缩小 scale 也须在 HALTED、flat、reconciled 后显式重新 activation，不能热加载或手改 digest。
 
-The checked-in Stress-90 live example is intentionally a personal commissioning starting point (`live_risk_scale=0.05`, one-lot contract caps, 10% margin, 80% available cash, 1% daily loss and 5% total drawdown). These values are not Alpha parameters or permanent policy requirements. Recalibrate them from real one-lot stress loss, live margin/commission and account equity before committing more capital.
+当前 Stress-90 示例为 commissioning 起点：scale `0.05`、单合约 1 手、保证金 10%、可用资金 80%、单日亏损 1%、总回撤 5%。它们不是信号参数；增加资金前须依据真实每手压力损失、保证金、手续费和权益核定。
 
 ## 生产心跳配置
 

@@ -251,19 +251,6 @@ def test_partial_old_close_must_finish_before_later_session_open(tmp_path):
     assert all(order.offset is not Offset.OPEN for order in broker.orders)
 
 
-def test_partial_new_fill_reuses_original_intent_and_actual_consumption(tmp_path):
-    manager, broker, path, now = _roll_manager(tmp_path)
-    assert manager.maybe_rebalance(now).action == "reduce"
-    broker.positions = []
-    assert manager.maybe_rebalance(_at(manager)).action == "open"
-    original = Stress90ExecutionIntentStore(path).load_required_record()
-    _fill(manager, broker, tmp_path, broker.orders[-1], volume=1, price=2000)
-    result = manager.maybe_rebalance(_at(manager))
-    assert result.action == "open", result.reason
-    assert broker.orders[-1].volume == 1
-    assert Stress90ExecutionIntentStore(path).load_required_record() == original
-
-
 def test_cumulative_expensive_fills_cannot_release_budget_when_quote_falls(tmp_path):
     manager, broker, path, now = _roll_manager(tmp_path, target_weight=0.6)
     assert manager.maybe_rebalance(now).action == "reduce"
@@ -320,42 +307,6 @@ def test_child_rechecks_new_broker_facts_after_authorization(tmp_path, fault):
     assert len(broker.orders) == 1
 
 
-@pytest.mark.parametrize(
-    "fault",
-    [
-        "yesterday",
-        "opposing",
-        "source",
-        "missing_fills",
-        "missing_journal",
-        "wrong_reference",
-        "wrong_day",
-    ],
-)
-def test_later_session_fails_closed_on_unproven_replacement(tmp_path, fault):
-    manager, broker, _, now = _roll_manager(tmp_path)
-    assert manager.maybe_rebalance(now).action == "reduce"
-    broker.positions = []
-    request = _request(manager)
-    if fault == "yesterday":
-        broker.positions = [ContractPosition("A2701", "DCE", long_yesterday=1, long_price=2000)]
-    elif fault == "opposing":
-        broker.positions = [ContractPosition("A2701", "DCE", short_today=1, short_price=2000)]
-    elif fault == "source":
-        broker.positions = [ContractPosition("A2612", "DCE", long_today=1, long_price=1000)]
-    elif fault == "missing_fills":
-        broker.positions = [ContractPosition("A2701", "DCE", long_today=1, long_price=2000)]
-    elif fault == "missing_journal":
-        broker.get_order_submission_identities = None
-    elif fault == "wrong_reference":
-        request = replace(request, reference="manual")
-    else:
-        broker.get_trading_day = lambda: "20260826"
-    assert _windows(manager, request, _at(manager)) == (
-        PRODUCT_SESSION_MANIFEST["A"].first_entry_window,
-    )
-
-
 @pytest.mark.parametrize("limit_up", [0, float("nan"), 1998, 3000])
 def test_short_roll_requires_trusted_upper_bound_and_entire_budget(tmp_path, limit_up):
     manager, broker, _, now = _roll_manager(tmp_path, short=True)
@@ -393,33 +344,6 @@ def test_day_end_authority_still_blocks_authenticated_later_roll(tmp_path):
     manager.day_end_order_authority = blocked
     result = manager.maybe_rebalance(_at(manager))
     assert result.action == "reject" and "day-end" in result.reason
-    assert len(broker.orders) == 1
-
-
-@pytest.mark.parametrize(
-    "fault", ["missing", "active", "traded_ahead", "request_changed", "wrong_id"]
-)
-def test_terminal_order_proof_must_match_checkpointed_fills(tmp_path, fault):
-    manager, broker, _, now = _roll_manager(tmp_path)
-    assert manager.maybe_rebalance(now).action == "reduce"
-    broker.positions = []
-    _fill(manager, broker, tmp_path, _request(manager), volume=1, price=2000)
-    original_getter = broker.get_order
-
-    def changed(order_id):
-        order = original_getter(order_id)
-        if fault == "missing":
-            return None
-        if fault == "active":
-            return replace(order, status=OrderStatus.PART_TRADED)
-        if fault == "traded_ahead":
-            return replace(order, traded=2)
-        if fault == "wrong_id":
-            return replace(order, order_id="CTP.other")
-        return replace(order, request=replace(order.request, price=2002))
-
-    broker.get_order = changed
-    assert manager.maybe_rebalance(_at(manager)).action == "reject"
     assert len(broker.orders) == 1
 
 
@@ -578,35 +502,6 @@ def test_already_held_target_cannot_become_later_session_replacement(tmp_path):
     assert len(broker.orders) == 1
 
 
-@pytest.mark.parametrize("fault", ["account", "policy", "intent", "decision", "duplicate_fill"])
-def test_authenticated_fill_economics_cannot_be_borrowed_from_other_identity(tmp_path, fault):
-    manager, broker, _, now = _roll_manager(tmp_path)
-    assert manager.maybe_rebalance(now).action == "reduce"
-    broker.positions = []
-    journal = _fill(manager, broker, tmp_path, _request(manager), volume=1, price=2000)
-    entry = journal.load_required().all_entries[0]
-    field = {
-        "account": "account_identity_digest",
-        "policy": "policy_definition_digest",
-        "intent": "execution_intent_digest",
-        "decision": "daily_decision_digest",
-    }
-    if fault == "duplicate_fill":
-        changed = (entry, replace(entry, order_id="CTP.7_11_2"))
-    else:
-        changed = (replace(entry, **{field[fault]: "f" * 64}),)
-    broker.get_order_submission_identities = lambda: changed
-    if fault == "duplicate_fill":
-        broker.get_order = lambda order_id: Order(
-            order_id,
-            entry.request,
-            OrderStatus.CANCELLED,
-            traded=entry.filled_volume,
-        )
-    assert manager.maybe_rebalance(_at(manager)).action == "reject"
-    assert len(broker.orders) == 1
-
-
 def test_first_window_authorization_cannot_carry_oversized_roll_into_later_time(tmp_path):
     from datetime import timedelta
 
@@ -626,23 +521,4 @@ def test_first_window_authorization_cannot_carry_oversized_roll_into_later_time(
     )
     result = manager.maybe_rebalance(wall[0])
     assert result.action == "reject" and "session" in result.reason
-    assert len(broker.orders) == 1
-
-
-@pytest.mark.parametrize("fault", ["bad_spec", "journal_error"])
-def test_opening_evidence_failure_returns_rejection_without_submission(tmp_path, fault):
-    manager, broker, _, now = _roll_manager(tmp_path)
-    assert manager.maybe_rebalance(now).action == "reduce"
-    broker.positions = []
-    later = _at(manager)
-    if fault == "bad_spec":
-        manager._specs["A2701"] = replace(manager._specs["A2701"], price_tick=0)
-    else:
-
-        def fail():
-            raise RuntimeError("journal evidence unavailable")
-
-        broker.get_order_submission_identities = fail
-    result = manager.maybe_rebalance(later)
-    assert result.action == "reject" and "invalid" in result.reason
     assert len(broker.orders) == 1

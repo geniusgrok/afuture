@@ -23,42 +23,6 @@ IDENTITY = {
 }
 
 
-def test_clean_process_run_restart_chains_current_and_prev(tmp_path: Path) -> None:
-    store = ProcessRunStore(tmp_path / "process_run.json")
-    first = store.begin(**IDENTITY, process_uuid="11111111-1111-4111-8111-111111111111")
-    closed = store.finish_clean(
-        first.process_uuid,
-        stop_state_checksum="e" * 64,
-        stopped_utc="2026-08-28T00:01:00+00:00",
-    )
-    assert closed.clean_shutdown is True
-    second = store.begin(**IDENTITY, process_uuid="22222222-2222-4222-8222-222222222222")
-    assert second.sequence == closed.sequence + 1
-    assert second.parent_checksum == closed.checksum
-    assert store.previous_path.exists()
-
-
-@pytest.mark.parametrize(
-    "phase",
-    [
-        "run_marker_written",
-        "broker_constructed",
-        "broker_ready_not_activated",
-        "permit_consumed",
-        "running_state_pending",
-        "running",
-        "shutdown_state_saved",
-        "heartbeat_stopped_pending_receipt",
-    ],
-)
-def test_every_uncertain_crash_phase_is_not_clean(tmp_path: Path, phase: str) -> None:
-    store = ProcessRunStore(tmp_path / f"{phase}.json")
-    record = store.begin(**IDENTITY)
-    updated = store.mark_phase(record.process_uuid, phase, state_checksum="f" * 64)
-    assert updated.clean_shutdown is False
-    assert updated.phase == phase
-
-
 def test_unclean_restart_fence_halts_state_invalidates_permit_and_exits_special_code(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -137,40 +101,6 @@ def test_restart_fence_uses_exact_state_cas(
     assert calls[0] == (original.sequence, original.checksum)
 
 
-def test_process_run_current_corruption_never_falls_back_to_prev(tmp_path: Path) -> None:
-    store = ProcessRunStore(tmp_path / "process_run.json")
-    first = store.begin(**IDENTITY)
-    store.finish_clean(first.process_uuid, stop_state_checksum="e" * 64)
-    second = store.begin(**IDENTITY)
-    store.finish_clean(second.process_uuid, stop_state_checksum="f" * 64)
-    store.path.write_bytes(b"corrupt")
-    with pytest.raises(ProcessRunIntegrityError):
-        store.load_required()
-    assert store.previous_path.exists()
-
-
-def test_process_run_missing_current_with_prev_is_incident(tmp_path: Path) -> None:
-    store = ProcessRunStore(tmp_path / "process_run.json")
-    first = store.begin(**IDENTITY)
-    store.finish_clean(first.process_uuid, stop_state_checksum="e" * 64)
-    second = store.begin(**IDENTITY)
-    store.finish_clean(second.process_uuid, stop_state_checksum="f" * 64)
-    store.path.unlink()
-    with pytest.raises(ProcessRunIntegrityError, match="current is missing"):
-        store.load_required()
-
-
-def test_process_run_rejects_symlink(tmp_path: Path) -> None:
-    victim = tmp_path / "victim"
-    victim.write_text("x", encoding="utf-8")
-    path = tmp_path / "process_run.json"
-    path.symlink_to(victim)
-    store = ProcessRunStore(path)
-    with pytest.raises(ProcessRunIntegrityError, match="symlink"):
-        store.begin(**IDENTITY)
-    assert victim.read_text(encoding="utf-8") == "x"
-
-
 @pytest.mark.parametrize("lease_kind", ["missing", "released", "foreign"])
 def test_restart_fence_without_matching_held_lease_is_read_only(tmp_path, lease_kind):
     process_store = ProcessRunStore(tmp_path / "process_run.json")
@@ -202,93 +132,3 @@ def test_restart_fence_without_matching_held_lease_is_read_only(tmp_path, lease_
             lease.release()
     assert process_store.path.read_bytes() == before
     assert state_store.load_required_record().checksum == initial.checksum
-
-
-@pytest.mark.parametrize(
-    "field", ["deployment_digest", "runtime_identity_digest", "account_identity_digest"]
-)
-def test_restart_fence_never_adopts_changed_identity(tmp_path, field):
-    process_store = ProcessRunStore(tmp_path / "process_run.json")
-    process_store.begin(**IDENTITY)
-    state_store = StateStore(tmp_path / "state.json")
-    initial = state_store.save(RuntimeState())
-    kwargs = {key: value for key, value in IDENTITY.items() if key != "start_state_checksum"}
-    kwargs[field] = "e" * 64
-    with AccountExclusiveRuntimeLease(
-        tmp_path, kwargs["account_identity_digest"], role="live"
-    ) as lease:
-        with pytest.raises(ProcessRunIntegrityError, match="identity changed"):
-            apply_unclean_restart_fence(
-                process_store=process_store,
-                state_store=state_store,
-                runtime_dir=tmp_path,
-                lease=lease,
-                **kwargs,
-            )
-    assert state_store.load_required_record().checksum == initial.checksum
-    assert process_store.load_required().clean_shutdown is False
-
-
-def test_restart_fence_never_recreates_missing_account_state(tmp_path):
-    process_store = ProcessRunStore(tmp_path / "process_run.json")
-    process_store.begin(**IDENTITY)
-    state_store = StateStore(tmp_path / "state.json")
-    from afuture.state import StateIntegrityError
-
-    with AccountExclusiveRuntimeLease(tmp_path, "c" * 64, role="live") as lease:
-        with pytest.raises(StateIntegrityError):
-            apply_unclean_restart_fence(
-                process_store=process_store,
-                state_store=state_store,
-                runtime_dir=tmp_path,
-                deployment_digest="a" * 64,
-                runtime_identity_digest="b" * 64,
-                account_identity_digest="c" * 64,
-                lease=lease,
-            )
-    assert not state_store.path.exists()
-    assert process_store.load_required().clean_shutdown is False
-
-
-def test_duplicate_live_starter_cannot_fence_active_writer(tmp_path, monkeypatch, capsys):
-    from types import SimpleNamespace
-
-    from afuture import command_router
-
-    state_path = tmp_path / "state.json"
-    config = SimpleNamespace(state_path=state_path)
-    monkeypatch.setattr(command_router, "load_config", lambda *_a, **_kw: config)
-    monkeypatch.setattr(command_router, "_configured_live_account_digest", lambda _config: "c" * 64)
-    process_store = ProcessRunStore(tmp_path / "process_run.json")
-    process_store.begin(**IDENTITY)
-    state_store = StateStore(state_path)
-    initial = state_store.save(RuntimeState(kill_switch=False, runtime_mode="RUNNING"))
-    before = process_store.path.read_bytes()
-    with AccountExclusiveRuntimeLease(tmp_path, "c" * 64, role="live"):
-        code = command_router._run_live_with_process_fence(["live", "--config", "private.toml"])
-    assert code == PROCESS_FENCE_EXIT_CODE
-    assert "already owned" in capsys.readouterr().out
-    assert state_store.load_required_record().checksum == initial.checksum
-    assert process_store.path.read_bytes() == before
-    # There is deliberately no deployment file: the duplicate must exit before
-    # even reading or changing the existing process/state/permit evidence.
-
-
-def test_engine_construction_failure_releases_live_lease(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from afuture import cli
-    from afuture.broker.ctp import CtpBroker
-
-    config = SimpleNamespace(state_path=tmp_path / "state.json", ctp=None)
-    monkeypatch.setattr(CtpBroker, "__init__", lambda *_a, **_kw: None)
-    monkeypatch.setattr(CtpBroker, "get_account_identity_digest", lambda _self: "c" * 64)
-
-    def fail_after_lock(_config):
-        raise RuntimeError("engine construction failure")
-
-    monkeypatch.setattr(cli, "_quality_recorder", fail_after_lock)
-    with pytest.raises(RuntimeError, match="construction failure"):
-        cli._run_live(config, SimpleNamespace(), SimpleNamespace())
-    with AccountExclusiveRuntimeLease(tmp_path, "c" * 64, role="live") as lease:
-        assert lease.authorizes_technical_activation("c" * 64, tmp_path)

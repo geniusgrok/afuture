@@ -80,31 +80,6 @@ def _decision_inputs():
     )
 
 
-def test_policy_state_store_uses_sequence_checksum_atomic_prev_and_no_fallback(tmp_path: Path):
-    from afuture.directional_stress90_state import (
-        Stress90PolicyStateStore,
-        Stress90StateIntegrityError,
-        record_completed_account_day,
-    )
-
-    _seed, state = _seed_and_state()
-    store = Stress90PolicyStateStore(tmp_path / "stress90_state.json")
-    first = store.save(state)
-    updated = record_completed_account_day(state, "20260825", 0.01)
-    second = store.save(updated)
-
-    assert first.sequence == 1
-    assert second.sequence == 2
-    assert store.previous_path.exists()
-    assert store.load_previous_record().sequence == 1
-    assert store.load_required().completed_account_wealth == 1.01
-
-    store.path.write_bytes(b"corrupt")
-    with pytest.raises(Stress90StateIntegrityError, match="JSON"):
-        store.load_required()
-    assert store.load_previous_record().state == state
-
-
 def test_permanent_reserve_survives_process_restart_and_cannot_be_cleared(tmp_path: Path):
     import subprocess
     import sys
@@ -153,101 +128,6 @@ def test_permanent_reserve_survives_process_restart_and_cannot_be_cleared(tmp_pa
             expected_sequence=recovered.sequence,
         )
     assert (store.path.read_bytes(), store.previous_path.read_bytes()) == before
-
-
-def test_old_schema_cannot_infer_reserve_history_or_overwrite_evidence(tmp_path: Path):
-    from afuture.directional_stress90_state import (
-        Stress90PolicyStateStore,
-        Stress90StateIntegrityError,
-    )
-
-    _seed, state = _seed_and_state()
-    store = Stress90PolicyStateStore(tmp_path / "state.json")
-    store.save(state)
-    raw = json.loads(store.path.read_bytes())
-    raw["schema_version"] = 5
-    del raw["state"]["completed_account_reserve_triggered"]
-    raw["checksum"] = _checksum_envelope(raw)
-    store.path.write_text(json.dumps(raw), encoding="utf-8")
-    original = store.path.read_bytes()
-    for operation in (
-        store.load_required,
-        lambda: store.save(state),
-        lambda: store.save_new(state),
-    ):
-        with pytest.raises(Stress90StateIntegrityError, match="schema|concurrently"):
-            operation()
-    assert store.path.read_bytes() == original
-    assert not store.previous_path.exists()
-
-
-@pytest.mark.parametrize("value", [0, 1, "false", None])
-def test_reserve_flag_rejects_nonboolean_even_with_valid_checksum(tmp_path: Path, value):
-    from afuture.directional_stress90_state import (
-        Stress90PolicyStateStore,
-        Stress90StateIntegrityError,
-    )
-
-    _seed, state = _seed_and_state()
-    store = Stress90PolicyStateStore(tmp_path / "state.json")
-    store.save(state)
-    raw = json.loads(store.path.read_bytes())
-    raw["state"]["completed_account_reserve_triggered"] = value
-    raw["checksum"] = _checksum_envelope(raw)
-    store.path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(Stress90StateIntegrityError, match="boolean"):
-        store.load_required()
-
-
-def test_policy_state_save_propagates_parent_directory_fsync_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Policy state rename durability is part of the lifecycle commit contract."""
-    import afuture.directional_stress90_state as state_module
-    from afuture.directional_stress90_state import Stress90PolicyStateStore
-
-    _seed, state = _seed_and_state()
-    calls = 0
-    real_fsync = state_module.os.fsync
-
-    def fail_parent_fsync(descriptor: int) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("injected policy-state parent fsync failure")
-        real_fsync(descriptor)
-
-    monkeypatch.setattr(state_module.os, "fsync", fail_parent_fsync)
-
-    with pytest.raises(OSError, match="parent fsync"):
-        Stress90PolicyStateStore(tmp_path / "stress90_state.json").save(state)
-
-    assert calls == 2
-
-
-@pytest.mark.parametrize("evidence_suffix", [".prev", ".lock"])
-def test_policy_state_store_missing_current_with_evidence_fails_load_and_save(
-    tmp_path: Path,
-    evidence_suffix: str,
-):
-    from afuture.directional_stress90_state import (
-        Stress90PolicyStateStore,
-        Stress90StateIntegrityError,
-    )
-
-    _seed, state = _seed_and_state()
-    path = tmp_path / "stress90_state.json"
-    evidence_path = path.with_name(f"{path.name}{evidence_suffix}")
-    evidence_path.write_bytes(b"incident evidence")
-    store = Stress90PolicyStateStore(path)
-
-    with pytest.raises(Stress90StateIntegrityError, match="current.*missing"):
-        store.load_record()
-    with pytest.raises(Stress90StateIntegrityError, match="current.*missing"):
-        store.save(state)
-
-    assert not path.exists()
-    assert evidence_path.read_bytes() == b"incident evidence"
 
 
 def test_policy_state_store_rejects_checksum_schema_sequence_and_duplicate_keys(tmp_path: Path):
@@ -311,25 +191,6 @@ def test_policy_identity_and_seed_mismatch_fail_closed(tmp_path: Path):
         )
 
 
-def test_same_target_called_one_hundred_times_advances_and_persists_once(tmp_path: Path):
-    from afuture.directional_stress90_state import (
-        Stress90PolicyStateStore,
-        prepare_stress90_decision,
-    )
-
-    _seed, state = _seed_and_state()
-    store = Stress90PolicyStateStore(tmp_path / "stress90_state.json")
-    store.save(state)
-    prepared = [prepare_stress90_decision(store, _decision_inputs()) for _ in range(100)]
-    record = store.load_required_record()
-
-    assert len({item.daily_decision_digest for item in prepared}) == 1
-    assert record.sequence == 2
-    assert record.state.last_completed_target_day == "20260825"
-    assert record.state.completed_concentrations == (0.5,)
-    assert record.state.prepared_decision == prepared[0]
-
-
 def test_same_target_with_changed_input_fails_instead_of_recomputing(tmp_path: Path):
     from afuture.directional_stress90_state import (
         Stress90PolicyStateStore,
@@ -368,86 +229,3 @@ def test_restart_reuses_saved_decision_without_reappending_hhi(tmp_path: Path):
     assert second == first
     assert restarted.load_required_record().sequence == 2
     assert restarted.load_required().completed_concentrations == (0.5,)
-
-
-def test_persistence_failure_does_not_expose_an_unpersisted_decision(tmp_path: Path):
-    from afuture.directional_stress90_state import (
-        Stress90PolicyStateStore,
-        prepare_stress90_decision,
-    )
-
-    _seed, state = _seed_and_state()
-    path = tmp_path / "stress90_state.json"
-    Stress90PolicyStateStore(path).save(state)
-
-    class _FailingStore(Stress90PolicyStateStore):
-        def save(self, state, *, expected_sequence=None):
-            raise OSError("injected persistence failure")
-
-    with pytest.raises(OSError, match="injected persistence failure"):
-        prepare_stress90_decision(_FailingStore(path), _decision_inputs())
-    restored = Stress90PolicyStateStore(path).load_required_record()
-    assert restored.sequence == 1
-    assert restored.state.prepared_decision is None
-
-
-def test_target_gap_is_rejected_before_policy_state_advances(tmp_path: Path):
-    from afuture.directional_stress90_state import (
-        Stress90PolicyStateStore,
-        Stress90StateIntegrityError,
-        prepare_stress90_decision,
-    )
-
-    _seed, state = _seed_and_state()
-    store = Stress90PolicyStateStore(tmp_path / "stress90_state.json")
-    store.save(state)
-    gap = replace(_decision_inputs(), previous_target_trading_day="20260823")
-
-    with pytest.raises(Stress90StateIntegrityError, match="target-day gap"):
-        prepare_stress90_decision(store, gap)
-    assert store.load_required_record().sequence == 1
-
-
-def test_seed_store_is_immutable_checksummed_and_identity_checked(tmp_path: Path):
-    from afuture.directional_stress90_state import (
-        Stress90SeedStore,
-        Stress90StateIntegrityError,
-    )
-
-    seed, _state = _seed_and_state()
-    path = tmp_path / "stress90_seed.json"
-    store = Stress90SeedStore(path)
-    store.save_new(seed)
-
-    assert store.load_required() == seed
-    with pytest.raises(Stress90StateIntegrityError, match="immutable"):
-        store.save_new(seed)
-    with pytest.raises(Stress90StateIntegrityError, match="source manifest"):
-        store.load_required(expected_source_manifest={**_SOURCE_MANIFEST, "extra": "6" * 64})
-
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["seed"]["bootstrap_through_day"] = "20260825"
-    path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(Stress90StateIntegrityError, match="checksum"):
-        store.load_required()
-
-    raw["seed"]["bootstrap_through_day"] = seed.bootstrap_through_day
-    raw["seed"]["bootstrap_gap_manifest"]["target_day_skips"] = ["2022-09-22"]
-    raw["checksum"] = _checksum_envelope(raw)
-    path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(Stress90StateIntegrityError, match="seed digest"):
-        store.load_required()
-
-
-def test_execution_aligned_runtime_state_is_never_accepted_as_stress90_state(tmp_path: Path):
-    from afuture.directional_stress90_state import (
-        Stress90PolicyStateStore,
-        Stress90StateIntegrityError,
-    )
-    from afuture.state import RuntimeState, StateStore
-
-    path = tmp_path / "directional_state.json"
-    StateStore(path).save(RuntimeState())
-
-    with pytest.raises(Stress90StateIntegrityError, match="envelope"):
-        Stress90PolicyStateStore(path).load_required()

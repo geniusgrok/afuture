@@ -21,7 +21,6 @@ from .config_validation import (
     require_string,
     require_string_sequence,
 )
-from .directional_efficiency import stabilize_one_lot_increases
 from .models import (
     AccountSnapshot,
     ContractInfo,
@@ -490,3 +489,47 @@ def _parse_window(raw: str) -> tuple[str, str]:
     if match is None or match.group(1) == match.group(2):
         raise ValueError(f"invalid directional rebalance window: {raw}")
     return match.group(1), match.group(2)
+
+
+def stabilize_one_lot_increases(
+    *,
+    current_lots: Mapping[str, int],
+    target_lots: Mapping[str, int],
+    lot_notionals: Mapping[str, float],
+    per_lot_margin: Mapping[str, float],
+    equity: float,
+    soft_margin_share: float,
+    max_gross_ratio: float,
+) -> dict[str, int]:
+    """Suppress only economically tiny one-lot increases; never suppress reductions.
+
+    The incumbent portfolio must itself remain inside the soft margin envelope and hard
+    gross ceiling. This helper never turns a requested reduction into a hold.
+    """
+    result = {str(symbol): int(volume) for symbol, volume in target_lots.items() if int(volume)}
+    if equity <= 0 or not 0 <= soft_margin_share <= 1 or max_gross_ratio <= 0:
+        return result
+    current_margin = 0.0
+    current_gross = 0.0
+    for symbol, raw_volume in current_lots.items():
+        volume = int(raw_volume)
+        if not volume:
+            continue
+        margin = float(per_lot_margin.get(symbol, 0.0))
+        notional = float(lot_notionals.get(symbol, 0.0))
+        if margin <= 0 or notional <= 0:
+            return result
+        current_margin += abs(volume) * margin
+        current_gross += abs(volume) * notional
+    if current_margin > equity * soft_margin_share + 1e-10:
+        return result
+    if current_gross > equity * max_gross_ratio + 1e-10:
+        return result
+    for symbol, raw_target in list(result.items()):
+        current = int(current_lots.get(symbol, 0))
+        target = int(raw_target)
+        if current == 0 or target == 0 or (current > 0) != (target > 0):
+            continue
+        if abs(target) == abs(current) + 1:
+            result[symbol] = current
+    return {symbol: volume for symbol, volume in result.items() if volume}

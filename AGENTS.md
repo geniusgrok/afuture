@@ -4,7 +4,7 @@
 
 Follow the current task's explicit scope and acceptance criteria within platform permissions; preserve business, safety, data and release contracts. Read applicable nested `AGENTS.md` before editing that directory. Resume still-valid authorization and surface material conflicts rather than silently relaxing them. Historical plans are context, not authority; analysis-only or approval-before-edit requests remain read-only until authorized.
 
-For continuation, read `PROJECT_STATE.md`, resolve mutable branch/PR/SHA/check/artifact facts from GitHub and inspect existing local changes. Resume matching work. Consult `.github/CHATGPT_PROJECT_BRIEF.md` for relevant architecture, commands or boundaries; read the active diff and affected files, expanding only for uncertainty or impact. Reuse unchanged context rather than preloading history, skills or logs.
+For continuation, resolve mutable branch/PR/SHA/check/artifact facts from GitHub and inspect existing local changes. Resume matching work. Use `README.md` and `docs/documentation-index.md` for current commands and boundaries; read the active diff and affected files, expanding only for uncertainty or impact. Reuse unchanged context rather than preloading history, skills or logs.
 
 Skills provide methods, not additional authorization, approval or stopping gates. Respect platform requirements without adding repeated design confirmations, mandatory full workflows or ceremonial announcements to bounded authorized work. Prefer existing implementation/dependencies and the smallest sufficient change. Plan material decisions, batch related edits, and keep one writer per shared file, branch, runtime or evidence identity.
 
