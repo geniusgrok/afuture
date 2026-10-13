@@ -23,16 +23,18 @@ jobs:
 
   windows-smoke:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
       - run: python -m pip install -e . -c constraints/core-dev.txt
-      - name: Windows core CLI smoke (no native CTP)
-        run: |
-          python -m afuture --help
-          afuture validate --config config/afuture.example.toml
+      - name: Windows UTF-8 CLI help (no native CTP)
+        run: python -m afuture --help
+      - name: Windows core config validation (no native CTP)
+        run: afuture validate --config config/afuture.example.toml
 
   installed-core:
     name: test (3.13)

@@ -12,7 +12,7 @@ from .broker.sim import SimBroker
 from .data import read_ticks
 from .engine import TradingEngine
 from .journal import AuditJournal
-from .logging_utils import configure_logging
+from .logging_utils import replay_logging
 from .report import calculate_performance, write_account_report
 from .risk import RiskManager
 from .state import StateStore
@@ -43,9 +43,14 @@ def run_replay(config, data_path: str | Path, *, output_dir: str | Path | None =
         report_path=str(run_dir / "report.json"),
         log_path=str(run_dir / "replay.log"),
     )
-    logger = configure_logging(config.log_path, logger_name=f"replay.{uuid4().hex}")
-    logger.info("回放输出目录：%s", run_dir)
+    with replay_logging(config.log_path) as logger:
+        logger.info("回放输出目录：%s", run_dir)
+        account = _run_replay(config, ticks)
+        logger.info("回放完成：权益 %.2f，保证金 %.2f", account.equity, account.margin)
+        return account
 
+
+def _run_replay(config, ticks):
     broker = SimBroker(
         config.initial_capital,
         config.contracts,
@@ -71,8 +76,8 @@ def run_replay(config, data_path: str | Path, *, output_dir: str | Path | None =
         historical_mode=True,
     )
     equity_curve: list[tuple[str, float]] = []
-    engine.start()
     try:
+        engine.start()
         for _, group in groupby(ticks, key=lambda tick: tick.timestamp):
             batch = list(group)
             for tick in batch:
@@ -94,13 +99,9 @@ def run_replay(config, data_path: str | Path, *, output_dir: str | Path | None =
             broker.get_positions(),
             metrics,
         )
-        logger.info("回放完成：权益 %.2f，保证金 %.2f", account.equity, account.margin)
         return account
     finally:
         engine.stop()
-        for handler in list(logger.handlers):
-            logger.removeHandler(handler)
-            handler.close()
 
 
 def run_replay_command(config, args) -> int:

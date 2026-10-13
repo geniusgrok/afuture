@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -201,6 +201,7 @@ class CtpBroker(Broker):
         self._position_lock = Lock()
         self._critical_enqueued = 0
         self._ticks_received = 0
+        self._quote_generations: dict[tuple[str, str], int] = {}
         self._ticks_coalesced = 0
         self._critical_delivered = 0
         self._ticks_delivered = 0
@@ -209,12 +210,14 @@ class CtpBroker(Broker):
         self._order_submission_lock = Lock()
         self._order_submission_status_lock = Lock()
         self._critical_barrier_lock = RLock()
+        self._market_submission_lock = RLock()
         self._critical_upstream_pending = 0
         self._critical_callbacks_inflight = 0
         self._order_trade_upstream_pending = 0
         self._order_trade_callbacks_inflight = 0
         self._critical_acknowledged = 0
         self._critical_submission_active = False
+        self._opening_submission_symbol: tuple[str, str] | None = None
         self._lifecycle_commit_fence_active = False
         self._order_submission_journal: CtpOrderSubmissionJournal | None = None
         self._order_submission_context: CtpOrderSubmissionContext | None = None
@@ -1427,7 +1430,16 @@ class CtpBroker(Broker):
             {"freeze_authorized_lots": {}, "transitions": []},
         )
 
-    def send_order(self, request: OrderRequest) -> str:
+    def send_order_checked(self, request: OrderRequest, final_check: Callable[[], None]) -> str:
+        """Recheck the existing manager after persistence, with quote ingress fenced."""
+        with self._event_lock:
+            generation = self._quote_generations.get((request.symbol, request.exchange), 0)
+        return self.send_order(request, final_check=final_check, market_generation=generation)
+
+    def send_order(
+        self, request: OrderRequest, *, final_check: Callable[[], None] | None = None,
+        market_generation: int | None = None,
+    ) -> str:
         if not self.is_ready() or self._main_engine is None:
             raise RuntimeError("CTP market/trading session is not ready")
         query_error = self._snapshot_query_error or self._settlement_query.integrity_error
@@ -1527,16 +1539,37 @@ class CtpBroker(Broker):
             td_api._afuture_expected_order_ref = order_ref
             try:
                 try:
-                    with self._critical_order_submission_scope():
+                    with self._critical_order_submission_scope(), self._market_submission_lock:
                         try:
                             self.require_stress90_session_startup_capability_current(consume=True)
                         except RuntimeError as exc:
                             raise _CriticalSubmissionBoundaryError(
                                 "CTP session proof changed before official send"
                             ) from exc
-                        returned = self._main_engine.send_order(
-                            self._to_vnpy_order(request), self.gateway_name
-                        )
+                        if request.offset is Offset.OPEN and final_check is not None:
+                            self._opening_submission_symbol = (request.symbol, request.exchange)
+                        try:
+                            if self._opening_submission_symbol is not None:
+                                with self._event_lock:
+                                    if (
+                                        self._quote_generations.get(self._opening_submission_symbol, 0)
+                                        != market_generation
+                                        or self._opening_submission_symbol in self._latest_ticks
+                                    ):
+                                        raise _CriticalSubmissionBoundaryError(
+                                            "CTP opening quote changed; consume market data and replan"
+                                        )
+                                try:
+                                    final_check()
+                                except Exception as exc:
+                                    raise _CriticalSubmissionBoundaryError(
+                                        f"CTP final opening check failed: {exc}"
+                                    ) from exc
+                            returned = self._main_engine.send_order(
+                                self._to_vnpy_order(request), self.gateway_name
+                            )
+                        finally:
+                            self._opening_submission_symbol = None
                 except _CriticalSubmissionBoundaryError:
                     self._order_submission_journal.update_status(order_id, "aborted_before_send")
                     self._order_submission_entries[order_id] = replace(
@@ -1702,11 +1735,19 @@ class CtpBroker(Broker):
 
     def _enqueue_tick(self, tick: Tick) -> None:
         key = (tick.symbol, tick.exchange)
-        with self._event_lock:
-            self._ticks_received += 1
-            if key in self._latest_ticks:
-                self._ticks_coalesced += 1
-            self._latest_ticks[key] = BrokerEvent("tick", tick)
+        # Journal IO is outside this barrier. Only the short final check/send fences
+        # ingress; a same-thread quote callback interrupts before external submission.
+        with self._market_submission_lock:
+            with self._event_lock:
+                self._ticks_received += 1
+                self._quote_generations[key] = self._ticks_received
+                if key in self._latest_ticks:
+                    self._ticks_coalesced += 1
+                self._latest_ticks[key] = BrokerEvent("tick", tick)
+            if self._opening_submission_symbol == key:
+                raise _CriticalSubmissionBoundaryError(
+                    "CTP opening quote changed during official submission boundary"
+                )
 
     def get_trading_day(self) -> str:
         if self._main_engine is not None:

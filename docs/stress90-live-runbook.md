@@ -108,6 +108,8 @@ entry/add/reversal 限各产品固定首窗，错过不追开；减仓仍须过�
 
 每笔 OPEN 最终提交前，以同次新鲜报价及经验证的当日费率复用 Doctor 的15bp成本估算；超限拒绝含成本和报价日期。技术许可不冻结报价，也不替代该逐单检查；平仓不受新仓成本门阻断。
 
+CTP 在 journal prepare/fsync 后、official send 前调用原 manager 复验报价年龄和成本。等待期间该合约行情 generation 改变或仍有未消费报价时，保留 `aborted_before_send`，先消费行情再重新决策；最终短发送边界阻止新报价插入。此门仅覆盖发送线性化点之前已可见的信息，不预测之后的行情。
+
 普通 CTP 成交从原始 TradingDay 冻结身份，D日排队成交在D日记仓后才随账户事件滚D+1；已记身份跨日保留在有界窗口。来源日缺失或已滚仓后的未知旧日成交停机对账，不用自然时间猜日。
 
 真实 CTP 的纯同品种同方向换月可在后续真实 session 完成原 durable intent：同日/epoch/decision/overlay，旧腿全平，初始新腿为空且当前只有今仓；journal 与终态订单完整认证，累计新腿 OPEN 数量等于当前持仓，无 CLOSE/active/unknown/未落盘成交。`max(累计 OPEN 成交名义, 当前持仓 mark 名义)+整笔 opening 上界` 不超初始 incumbent 替代预算，数量不超原授权。BUY 用实际 limit，SELL 用可信涨停上界；超额整笔拒绝不拆单。Sim/Shadow 仍首窗。关键边界重验已可见事件，不能保证未来迟到回报不存在。
@@ -115,6 +117,7 @@ entry/add/reversal 限各产品固定首窗，错过不追开；减仓仍须过�
 正常日终使用 `stress90_day_end` 技术暂停、原阶段授权和 lifecycle WAL；它阻止新风险，提交期间阻止写单，不能清人工/硬风险 kill switch。最终资金、session、市场和旧日风险均须认证；更正阻断续行。当前真实 CTP 未装配认证最终结算提供者，`stress90-settlement-roll-forward` 在启动 gateway 或写 state 前失败关闭，确认参数不能替代来源。
 
 WAL先持久化前驱再发布current；仅精确相同的current/prev或校验通过的相邻状态允许同OP_ID续接。prev不自动替换current，缺失/损坏/非相邻证据仍拒绝，不删除旧中断现场。
+首次 begin 若 lineage 已落盘而 current 尚未发布，仍保留孤立证据并失败关闭，不能删除 lineage 或宣称所有初始化中断都能自动续接。
 
 D+1 PreBalance、当前 Deposit/Withdraw、TransferSerial、opaque SettlementInfo、operator assertion 均不能证明完整 D 日最终资金；必须有绑定账户/币种/day/SettlementID/request 的 final、完整记录，文本另需正式 grammar、真实 fixtures 与独立台账。资金差异不能计策略收益。
 

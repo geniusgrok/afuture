@@ -841,6 +841,10 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
         if request.offset is Offset.OPEN:
             self._require_open_cost(tick, spec)
 
+    def _require_final_opening_market_evidence(self, tick, spec, event_time) -> None:
+        super()._require_final_opening_market_evidence(tick, spec, event_time)
+        self._require_open_cost(tick, spec)
+
     def record_completed_account_return(
         self,
         trading_day: str,

@@ -110,6 +110,65 @@ def _raw_trade(order_id: str, trade_id: str) -> SimpleNamespace:
     )
 
 
+@pytest.mark.parametrize("during_prepare", ["none", "quote", "delay", "at_send"])
+def test_manager_opening_rechecks_after_journal_before_send(tmp_path, monkeypatch, during_prepare):
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from test_directional_stress90_runtime import _mechanical_manager
+
+    from afuture.models import FeeSpec
+
+    manager, account_broker, _, now = _mechanical_manager(tmp_path, target_weight=1.0)
+    broker = CtpBroker(_credentials())
+    _configure(broker, tmp_path / "ctp.json")
+    broker.set_order_submission_context(
+        target_trading_day="20260825", daily_decision_digest="d" * 64,
+        execution_intent_digest="e" * 64,
+        transition={"freeze_authorized_lots": {"A2612": 1}, "transitions": []},
+    )
+    _, calls = _attach_gateway(broker)
+    broker.get_account = account_broker.get_account
+    broker.get_positions = account_broker.get_positions
+    broker.get_active_orders = account_broker.get_active_orders
+    broker.health_error = lambda: None
+    broker.metadata_query_blocks = False
+    manager.broker = broker
+    manager.historical_mode = False
+    wall = [now]
+    manager.health_clock = lambda: wall[0]
+    tick = replace(manager._ticks["A2612"], bid_price=9999, ask_price=10001, last_price=10000)
+    manager._ticks["A2612"] = tick
+    manager._specs["A2612"] = replace(manager._specs["A2612"], fee=FeeSpec(open_fixed=140))
+    if during_prepare == "at_send":
+        _, calls = _attach_gateway(
+            broker, before_official_send=lambda: broker._enqueue_tick(replace(tick, bid_price=9997))
+        )
+    prepare = broker._order_submission_journal.prepare
+
+    def delayed_prepare(*args, **kwargs):
+        record = prepare(*args, **kwargs)
+        if during_prepare == "quote":
+            broker._enqueue_tick(replace(tick, bid_price=9997))
+        elif during_prepare == "delay":
+            wall[0] += timedelta(seconds=30)
+        return record
+
+    monkeypatch.setattr(broker._order_submission_journal, "prepare", delayed_prepare)
+    result = manager._submit_openings(
+        [], {"A2612": 1}, {"A": manager._catalog_by_symbol["A2612"]}, manager._specs, now,
+        reference_prefix="directional:stress90:" + "d" * 12,
+    )
+    entry = broker._order_submission_journal.get_entry("CTP.7_11_41")
+    assert entry is not None
+    if during_prepare == "none":
+        assert result.action == "open" and len(calls) == 1
+        assert entry.status == "submitted"
+    else:
+        assert result.action == "reject" and calls == []
+        assert entry.status == "aborted_before_send"
+
+
 def test_candidate_authorization_binds_and_consumes_one_exact_request(tmp_path: Path) -> None:
     path = tmp_path / "stress90_ctp_orders.json"
     broker = CtpBroker(_credentials())
