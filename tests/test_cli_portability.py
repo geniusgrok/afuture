@@ -66,6 +66,8 @@ def test_sample_replay_closes_positions_and_releases_margin(tmp_path: Path) -> N
             str(config),
             "--data",
             str(REPOSITORY_ROOT / "examples/sample_ticks.csv"),
+            "--output-dir",
+            str(tmp_path / "new-replay"),
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -73,7 +75,36 @@ def test_sample_replay_closes_positions_and_releases_margin(tmp_path: Path) -> N
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    report = json.loads((tmp_path / "runtime/replay_report.json").read_text(encoding="utf-8"))
+    report = json.loads((tmp_path / "new-replay/report.json").read_text(encoding="utf-8"))
     assert report["performance"]["trade_count"] == 4
     assert report["positions"] == []
     assert report["account"]["margin"] == 0
+
+
+def test_replay_validates_inputs_and_preserves_existing_runtime(tmp_path):
+    from dataclasses import replace
+
+    import pytest
+
+    from afuture.config import load_config
+    from afuture.replay import run_replay
+
+    config = replace(load_config(REPOSITORY_ROOT / "config/afuture.example.toml"),
+                     state_path=str(tmp_path / "state.json"),
+                     report_path=str(tmp_path / "report.json"))
+    current, previous = tmp_path / "state.json", tmp_path / "state.json.prev"
+    current.write_bytes(b"original halted evidence")
+    previous.write_bytes(b"previous evidence")
+    with pytest.raises(ValueError, match="mode"):
+        run_replay(replace(config, mode="live"), tmp_path / "absent.csv")
+    with pytest.raises(FileNotFoundError):
+        run_replay(config, tmp_path / "absent.csv", output_dir=tmp_path / "new")
+    assert not (tmp_path / "new").exists()
+    data = REPOSITORY_ROOT / "examples/sample_ticks.csv"
+    accounts = [run_replay(config, data), run_replay(config, data)]
+    assert [account.equity for account in accounts] == [500040, 500040]
+    assert len(list((tmp_path / "replays").glob("*/report.json"))) == 2
+    with pytest.raises(FileExistsError):
+        run_replay(config, data, output_dir=tmp_path)
+    assert current.read_bytes() == b"original halted evidence"
+    assert previous.read_bytes() == b"previous evidence"

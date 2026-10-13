@@ -81,3 +81,12 @@ def test_load_config_rejects_string_boolean_values(tmp_path: Path) -> None:
                 '\n[execution]\nauto_flatten_imbalance = "false"\n',
             )
         )
+
+
+def test_alert_environment_overrides_toml_without_sending(tmp_path, monkeypatch):
+    path = _write_config(tmp_path, '\n[alert]\nwebhook = "https://toml.invalid"\n')
+    assert load_config(path).alert_webhook == "https://toml.invalid"
+    monkeypatch.setenv("AFUTURE_ALERT_WEBHOOK", "https://environment.invalid")
+    assert load_config(path).alert_webhook == "https://environment.invalid"
+    monkeypatch.setenv("AFUTURE_ALERT_WEBHOOK", "")
+    assert load_config(path).alert_webhook == ""

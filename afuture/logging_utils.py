@@ -5,12 +5,12 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
-def configure_logging(path: str | Path) -> logging.Logger:
+def configure_logging(path: str | Path, *, logger_name: str = "afuture") -> logging.Logger:
     """创建带滚动文件处理器的应用日志记录器。"""
     log_path = Path(path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    logger = logging.getLogger("afuture")
+    logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
     if not logger.handlers:
         handler = RotatingFileHandler(

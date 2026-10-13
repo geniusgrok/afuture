@@ -233,6 +233,7 @@ CTP 凭证不进入 TOML：
 ## 8. 配置选择与修改纪律
 
 - 回放从 `config/afuture.example.toml` 或 `config/afuture.auto-replay.example.toml` 开始；CTP 测试从对应 live 示例复制，不直接编辑仓库示例。
+- `replay` 要求 replay 模式并先验证整个 CSV；输出位于 `paths.report` 父目录的唯一 `replays/<run-id>/`，或 `--output-dir` 指定的新目录。配置中的既有状态、审计和报告不被删除或覆盖。
 - Stress-90 从 `config/afuture.directional-stress90-live.example.toml` 复制；该示例只表达 wiring 和 hard envelope，不构成 activation 许可。
 - 修改手续费、合约乘数、保证金、滑点、杠杆、风控阈值、信号参数或交易窗口会改变经济行为，应重新运行受影响回测和验收。
 - 路径、日志和无行为影响的说明性修改只需运行配置、文档和相关运维测试。

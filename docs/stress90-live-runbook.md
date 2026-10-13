@@ -62,6 +62,8 @@ afuture stress90-prepare-decision --config CONFIG --confirm-live
 
 activation 只绑定身份，结果仍 HALTED/kill switch。OI collector 为零报单 sidecar，完整权威柜台日才能形成 coverage；`--once` 仅一个批次安全检查。prepare-decision 在 HALTED 逐日补齐同源数据并保存 exactly-once decision，不跳 target gap。
 
+raw OI 要求首个60m桶末在既有5分钟边界容差内有实际Tick；缺少时相应 flow 为 UNKNOWN，原因 `first_60m_closing_boundary_missing` 在 status/doctor 的 `oi_coverage.contract_issues` 展示。无成交与丢数据不能仅靠连接存活区分，不以前值填充。旧完整记录若缺该边界会拒绝读取并保留原件；冻结历史60m桥接范围不变。
+
 OHLC refresh 的日期须来自实际 CTP evidence，路径固定为 canonical runtime 下 cache/TDE；取得同账户 lease，重验 account/epoch/registry receipt/lifecycle 后才调用 provider。provider 追加不能删改缓存日期或值，缺 required day 不开仓。`.pending` witness、symlink/identity/CAS 或持久化歧义不能人工清除。
 
 ## Doctor、容量和技术许可
@@ -102,9 +104,17 @@ afuture stress90-oi-compare --config CONFIG --runtime-dir SHADOW_RUNTIME --tradi
 
 entry/add/reversal 限各产品固定首窗，错过不追开；减仓仍须过实时行情、交易日、今昨仓、数量及最终风控。先减后开不变。
 
+节后取消前夜盘时，夜盘品种的固定首窗已错过，当日日盘不补开 entry/add/reversal；这不改变冻结首窗政策。status/doctor 展示 runtime calendar 覆盖终点，越界失败关闭，当前覆盖止于2026-12-31。
+
+每笔 OPEN 最终提交前，以同次新鲜报价及经验证的当日费率复用 Doctor 的15bp成本估算；超限拒绝含成本和报价日期。技术许可不冻结报价，也不替代该逐单检查；平仓不受新仓成本门阻断。
+
+普通 CTP 成交从原始 TradingDay 冻结身份，D日排队成交在D日记仓后才随账户事件滚D+1；已记身份跨日保留在有界窗口。来源日缺失或已滚仓后的未知旧日成交停机对账，不用自然时间猜日。
+
 真实 CTP 的纯同品种同方向换月可在后续真实 session 完成原 durable intent：同日/epoch/decision/overlay，旧腿全平，初始新腿为空且当前只有今仓；journal 与终态订单完整认证，累计新腿 OPEN 数量等于当前持仓，无 CLOSE/active/unknown/未落盘成交。`max(累计 OPEN 成交名义, 当前持仓 mark 名义)+整笔 opening 上界` 不超初始 incumbent 替代预算，数量不超原授权。BUY 用实际 limit，SELL 用可信涨停上界；超额整笔拒绝不拆单。Sim/Shadow 仍首窗。关键边界重验已可见事件，不能保证未来迟到回报不存在。
 
 正常日终使用 `stress90_day_end` 技术暂停、原阶段授权和 lifecycle WAL；它阻止新风险，提交期间阻止写单，不能清人工/硬风险 kill switch。最终资金、session、市场和旧日风险均须认证；更正阻断续行。当前真实 CTP 未装配认证最终结算提供者，`stress90-settlement-roll-forward` 在启动 gateway 或写 state 前失败关闭，确认参数不能替代来源。
+
+WAL先持久化前驱再发布current；仅精确相同的current/prev或校验通过的相邻状态允许同OP_ID续接。prev不自动替换current，缺失/损坏/非相邻证据仍拒绝，不删除旧中断现场。
 
 D+1 PreBalance、当前 Deposit/Withdraw、TransferSerial、opaque SettlementInfo、operator assertion 均不能证明完整 D 日最终资金；必须有绑定账户/币种/day/SettlementID/request 的 final、完整记录，文本另需正式 grammar、真实 fixtures 与独立台账。资金差异不能计策略收益。
 

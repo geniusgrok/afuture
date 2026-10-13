@@ -33,6 +33,10 @@ afuture scan --config config/afuture.auto-replay.example.toml --data examples/re
 afuture status --config config/afuture.directional-stress90-live.example.toml
 ```
 
+`replay` 只接受 `system.mode="replay"`，先完整校验输入，再生成唯一隔离目录
+`paths.report` 所在目录下的 `replays/<run-id>/`。也可用 `--output-dir NEW_DIR`
+指定全新目录；已有目录拒绝覆盖。状态、审计、日志和报告均保存在该目录。
+
 `replay` 使用模拟 Broker；`status` 不连接 Broker，也不改文件。`live`、`doctor` 和读取实时柜台的准备命令有连接及身份确认要求，按[运行说明](docs/live-trading.md)执行。Shadow 接收实时信息，其订单、成交和资金由隔离的模拟 Broker 维护。
 
 | 示例配置 | 用途 |

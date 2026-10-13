@@ -820,6 +820,20 @@ class CtpBroker(Broker):
                         bool(last),
                     )
 
+            def onRtnTrade(self, data):
+                # Keep the native source day through SDK conversion and its event queue.
+                try:
+                    self.gateway._afuture_raw_trade_day = domain_broker._validate_trading_day(
+                        (data or {}).get("TradingDay")
+                    )
+                    return super().onRtnTrade(data)
+                except Exception as exc:
+                    domain_broker._enqueue_critical(
+                        BrokerEvent("broker_error", f"CTP source-day trade conversion failed: {exc}")
+                    )
+                finally:
+                    self.gateway._afuture_raw_trade_day = None
+
             def onRspQrySettlementInfo(self, data, error, reqid, last):
                 callback = getattr(self.gateway, "_afuture_settlement_query_callback", None)
                 if callable(callback):
@@ -915,6 +929,7 @@ class CtpBroker(Broker):
                 self._afuture_critical_ingress_callback = None
                 self._afuture_raw_market_connection_callback = None
                 self._afuture_raw_market_identity = None
+                self._afuture_raw_trade_day = None
                 # super 创建的交易 API 还未连接，直接替换不会遗留会话。
                 self.td_api = TrackedCtpTdApi(self)
                 self.md_api = TrackedCtpMdApi(self)
@@ -929,6 +944,7 @@ class CtpBroker(Broker):
                 super().on_order(order)
 
             def on_trade(self, trade) -> None:
+                trade._afuture_trading_day = self._afuture_raw_trade_day
                 self._mark_critical_ingress("trade")
                 super().on_trade(trade)
 
@@ -2604,7 +2620,7 @@ class CtpBroker(Broker):
     def _on_trade_impl(self, event) -> None:
         try:
             trade = self._convert_trade(event.data)
-            trading_day = self.get_trading_day()
+            trading_day = trade.trading_day
         except Exception as exc:
             self._enqueue_critical(
                 BrokerEvent(
@@ -2645,6 +2661,11 @@ class CtpBroker(Broker):
                 )
             return
         submission = self._order_submission_entries.get(trade.order_id)
+        if trading_day != self.get_trading_day():
+            self._enqueue_critical(
+                BrokerEvent("broker_error", "late CTP source-day fill requires reconciliation")
+            )
+            return
         if self._order_submission_journal is not None:
             if submission is None:
                 self._enqueue_critical(
@@ -2805,6 +2826,7 @@ class CtpBroker(Broker):
             int(numeric_volume),
             price,
             timestamp,
+            trading_day=self._validate_trading_day(getattr(raw, "_afuture_trading_day", None)),
         )
         trade.validate()
         return trade

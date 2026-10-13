@@ -106,6 +106,7 @@ def _raw_trade(order_id: str, trade_id: str) -> SimpleNamespace:
         volume=1,
         price=1_000.0,
         datetime=datetime(2026, 8, 25, 9, 0, tzinfo=_CHINA),
+        _afuture_trading_day="20260825",
     )
 
 
@@ -198,3 +199,36 @@ def test_fill_arriving_during_checkpoint_is_subtracted_not_replayed(
     assert entry.filled_volume == 2
     assert entry.fill_keys == ("20260825:DCE:CTP.T1", "20260825:DCE:CTP.T2")
     assert broker._pending_order_journal_fills == {}
+
+
+def test_source_day_survives_queued_fill_and_old_day_duplicate(tmp_path):
+    from afuture.engine import TradingEngine
+    from afuture.models import AccountSnapshot, ContractPosition
+    from afuture.risk import RiskConfig, RiskManager
+    from afuture.state import StateStore
+
+    broker = CtpBroker(_credentials())
+    td, _ = _attach_gateway(broker)
+    broker._order_references["CTP.O1"] = "directional:A"
+    account = AccountSnapshot(100000, 100000, 100000, 0, 0, 0, "20260825")
+    broker.get_account = lambda: account
+    engine = TradingEngine(broker, [], {}, RiskManager(RiskConfig()), StateStore(tmp_path / "s.json"))
+    engine.state.trading_day = "20260825"
+    raw = _raw_trade("CTP.O1", "T1")
+    broker._on_trade(SimpleNamespace(data=raw))
+    event, = broker.poll_events()
+    assert event.payload.trading_day == "20260825"
+    td.getTradingDay = lambda: "20260826"
+    account = AccountSnapshot(100000, 100000, 100000, 0, 0, 0, "20260826")
+    assert engine._handle_trade_event(event.payload)
+    assert engine.state.recent_trade_ids == ["20260825:DCE:CTP.T1"]
+    engine._advance_trading_day(account)
+    engine._reconcile_runtime_snapshot([ContractPosition("A2701", "DCE", long_yesterday=1, long_price=1000)])
+    assert not engine.halted
+    assert not engine._handle_trade_event(event.payload)
+    broker._on_trade(SimpleNamespace(data=raw))
+    assert broker.poll_events() == []
+    assert broker.get_positions()[0].long_total == 1
+    del raw._afuture_trading_day
+    broker._on_trade(SimpleNamespace(data=raw))
+    assert broker.poll_events()[0].event_type == "broker_error"
