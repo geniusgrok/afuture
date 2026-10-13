@@ -10,7 +10,7 @@ import json
 import re
 from collections import deque
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
 from hashlib import sha256
@@ -1492,14 +1492,32 @@ class CtpBroker(Broker):
             td_api = getattr(gateway, "td_api", None) if gateway is not None else None
             if td_api is None:
                 raise RuntimeError("CTP trading API is unavailable for exact order reservation")
-            try:
-                front_id = int(td_api.frontid)
-                session_id = int(td_api.sessionid)
-                current_order_ref = int(td_api.order_ref)
-            except (AttributeError, TypeError, ValueError) as exc:
-                raise RuntimeError("CTP replayable order identity is unavailable") from exc
-            if min(front_id, session_id) <= 0 or current_order_ref < 0:
-                raise RuntimeError("CTP replayable order identity is unavailable")
+            with getattr(td_api, "_afuture_request_id_lock", nullcontext()):
+                try:
+                    front_id = int(td_api.frontid)
+                    session_id = int(td_api.sessionid)
+                    current_order_ref = int(td_api.order_ref)
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise RuntimeError("CTP replayable order identity is unavailable") from exc
+                if min(front_id, session_id) <= 0 or current_order_ref < 0:
+                    raise RuntimeError("CTP replayable order identity is unavailable")
+                session_entries = [
+                    item for item in self._order_submission_entries.values()
+                    if (item.front_id, item.session_id) == (front_id, session_id)
+                ]
+                if any(
+                    item.order_ref > current_order_ref
+                    and item.status not in {"terminal", "aborted_before_send"}
+                    for item in session_entries
+                ):
+                    raise RuntimeError("CTP counter is behind unresolved reservations; reconcile")
+                # A durable abort consumed an identity without entering the SDK
+                # allocator. Restore that nonce floor before its next exact increment.
+                current_order_ref = max(
+                    current_order_ref,
+                    max((item.order_ref for item in session_entries), default=current_order_ref),
+                )
+                td_api.order_ref = current_order_ref
             order_ref = current_order_ref + 1
             order_id = f"{self.gateway_name}.{front_id}_{session_id}_{order_ref}"
             sequence = len(self._order_submission_entries) + 1
@@ -1575,6 +1593,8 @@ class CtpBroker(Broker):
                     self._order_submission_entries[order_id] = replace(
                         prepared, status="aborted_before_send"
                     )
+                    with getattr(td_api, "_afuture_request_id_lock", nullcontext()):
+                        td_api.order_ref = max(int(td_api.order_ref), order_ref)
                     raise
             finally:
                 td_api._afuture_expected_order_ref = None

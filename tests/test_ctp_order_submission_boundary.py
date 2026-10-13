@@ -127,7 +127,7 @@ def test_manager_opening_rechecks_after_journal_before_send(tmp_path, monkeypatc
         execution_intent_digest="e" * 64,
         transition={"freeze_authorized_lots": {"A2612": 1}, "transitions": []},
     )
-    _, calls = _attach_gateway(broker)
+    td, calls = _attach_gateway(broker)
     broker.get_account = account_broker.get_account
     broker.get_positions = account_broker.get_positions
     broker.get_active_orders = account_broker.get_active_orders
@@ -167,6 +167,71 @@ def test_manager_opening_rechecks_after_journal_before_send(tmp_path, monkeypatc
     else:
         assert result.action == "reject" and calls == []
         assert entry.status == "aborted_before_send"
+
+        # Clear the injected fault, consume a fresh quote, and continue in the same
+        # identity namespace. Restart deliberately restores the old SDK counter.
+        if during_prepare == "at_send":
+            broker = CtpBroker(_credentials())
+            _configure(broker, tmp_path / "ctp.json")
+            broker.set_order_submission_context(
+                target_trading_day="20260825", daily_decision_digest="d" * 64,
+                execution_intent_digest="e" * 64,
+                transition={"freeze_authorized_lots": {"A2612": 1}, "transitions": []},
+            )
+            td, calls = _attach_gateway(broker)
+            broker.get_account = account_broker.get_account
+            broker.get_positions = account_broker.get_positions
+            broker.get_active_orders = account_broker.get_active_orders
+            broker.health_error = lambda: None
+            broker.metadata_query_blocks = False
+            manager.broker = broker
+        else:
+            monkeypatch.setattr(broker._order_submission_journal, "prepare", prepare)
+        broker._enqueue_tick(replace(tick, timestamp=wall[0]))
+        for event in broker.poll_events():
+            manager._ticks[event.payload.symbol] = event.payload
+        if during_prepare == "delay":
+            from afuture.models import ContractPosition
+            from afuture.position import PositionBook
+
+            book = PositionBook([ContractPosition("A2612", "DCE", long_today=1, long_price=10000)])
+            broker.get_positions = book.all
+            resumed = manager._submit_reductions(
+                book.all(), {"A2612": -1}, wall[0], reference="directional:A"
+            )
+            assert resumed.action == "reduce", resumed.reason
+            assert calls[0].offset is Offset.CLOSE
+        else:
+            resumed = manager._submit_openings(
+                [], {"A2612": 1}, {"A": manager._catalog_by_symbol["A2612"]}, manager._specs, wall[0],
+                reference_prefix="directional:stress90:" + "d" * 12,
+            )
+            assert resumed.action == "open", resumed.reason
+        assert resumed.order_ids == ("CTP.7_11_42",) and len(calls) == 1
+        assert td.order_ref == 42
+        assert broker._order_submission_journal.get_entry("CTP.7_11_41") == entry
+        assert broker._order_submission_journal.get_entry("CTP.7_11_42").status == "submitted"
+
+
+def test_restarted_unknown_order_is_not_reissued_under_a_new_reference(tmp_path):
+    def unknown_send():
+        raise RuntimeError("unknown gateway send outcome")
+
+    path = tmp_path / "ctp.json"
+    broker = CtpBroker(_credentials())
+    _configure(broker, path)
+    _attach_gateway(broker, before_official_send=unknown_send)
+    _authorize(broker, _candidate_request())
+    with pytest.raises(RuntimeError, match="unknown gateway send outcome"):
+        broker.send_order(_candidate_request())
+    restarted = CtpBroker(_credentials())
+    _configure(restarted, path)
+    _, calls = _attach_gateway(restarted)
+    with pytest.raises(RuntimeError):
+        restarted.send_order(_candidate_request(offset=Offset.CLOSE, side=OrderSide.SELL, volume=1))
+    assert calls == []
+    assert restarted._order_submission_journal.get_entry("CTP.7_11_41").status == "prepared"
+    assert restarted._order_submission_journal.get_entry("CTP.7_11_42") is None
 
 
 def test_candidate_authorization_binds_and_consumes_one_exact_request(tmp_path: Path) -> None:
