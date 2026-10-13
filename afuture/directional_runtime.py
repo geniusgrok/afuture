@@ -679,7 +679,17 @@ class DirectionalPortfolioManager:
                     product=item.product,
                 )
                 self._require_order_rate(now)
-                order_id = self.broker.send_order(request)
+                checked_send = getattr(self.broker, "send_order_checked", None)
+                if callable(checked_send):
+                    order_id = checked_send(
+                        request,
+                        lambda request=request: self._require_final_opening_market_evidence(
+                            self._ticks[request.symbol],
+                            self._specs.get(request.symbol, specs[request.symbol]), now,
+                        ),
+                    )
+                else:
+                    order_id = self.broker.send_order(request)
                 order_ids.append(order_id)
                 self._register_quality_order(order_id, request, specs[request.symbol], now)
             except Exception as exc:
@@ -747,6 +757,14 @@ class DirectionalPortfolioManager:
             )
             if not decision.allowed:
                 raise RuntimeError(decision.reason)
+
+    def _require_final_opening_market_evidence(self, tick, spec, event_time) -> None:
+        # The journal already contains this prepared child. Recheck market facts only;
+        # re-entering the roll planner would mistake our own prepared row for a blocker.
+        del spec
+        quote = self.risk_manager.check_quotes([tick], self._decision_time(event_time))
+        if not quote.allowed:
+            raise RuntimeError(quote.reason)
 
     def _opening_policy_rejection(
         self,

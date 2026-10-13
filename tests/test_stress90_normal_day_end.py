@@ -26,10 +26,13 @@ def _complete_day(fixture, day):
     if fixture.now.hour == 21:
         fixture.emit(day, fixture.now.replace(minute=1), volume=1200, hold=30_005)
         fixture.engine.run_once()
+        fixture.emit(day, fixture.now.replace(minute=59), volume=1200, hold=30_005)
+        fixture.engine.run_once()
     date = datetime.strptime(day, "%Y%m%d").replace(tzinfo=CHINA)
     for hour, minute, vol, hold in (
         (9, 0, 2000, 30_010),
         (9, 1, 2200, 30_020),
+        (9, 59, 2200, 30_020),
         (14, 59, 20000, 30_100),
     ):
         # Fixed alternating close and rising OI exercise the frozen confirmation

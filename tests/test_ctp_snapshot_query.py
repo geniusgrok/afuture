@@ -55,6 +55,9 @@ def native_boundary(monkeypatch):
             self.reqid += 1
             return self.reqQryInvestorPosition({}, self.reqid)
 
+        def onRtnTrade(self, data):
+            self.gateway.on_trade(data["converted"])
+
         def onRspQryTradingAccount(self, data, _error, _reqid, _last):
             self.gateway.on_account(
                 SimpleNamespace(
@@ -94,6 +97,7 @@ def native_boundary(monkeypatch):
         def __init__(self, event_engine, gateway_name):
             self.event_engine = event_engine
             self.gateway_name = gateway_name
+            self.queued_trades = []
             self.td_api = Td(self)
             self.md_api = Md(self)
 
@@ -102,6 +106,9 @@ def native_boundary(monkeypatch):
 
         def on_account(self, data):
             broker._on_account(SimpleNamespace(data=data))
+
+        def on_trade(self, data):
+            self.queued_trades.append(data)
 
     names = [
         "vnpy",
@@ -134,6 +141,31 @@ def native_boundary(monkeypatch):
     gateway._afuture_account_cash_flow_callback = broker._handle_account_cash_flow
     gateway._afuture_critical_ingress_callback = broker._mark_critical_upstream_pending
     return broker, gateway.td_api
+
+
+def test_native_trade_day_survives_sdk_queue_and_missing_day_fails_closed(native_boundary):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    broker, td = native_boundary
+    raw = SimpleNamespace(
+        vt_tradeid="CTP.T1", vt_orderid="CTP.O1", symbol="rb2610",
+        exchange=SimpleNamespace(value="SHFE"),
+        direction=SimpleNamespace(name="LONG"), offset=SimpleNamespace(name="OPEN"),
+        volume=1, price=100.0,
+        datetime=datetime(2026, 9, 22, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    td.onRtnTrade({"TradingDay": "20260922", "converted": raw})
+    assert td.gateway.queued_trades == [raw]
+    assert td.gateway._afuture_raw_trade_day is None
+    td.day = broker._trading_day = "20260923"
+    assert broker._convert_trade(raw).trading_day == "20260922"
+    broker._on_trade(SimpleNamespace(data=raw))
+    assert broker.get_positions() == []
+    assert "late CTP source-day fill" in broker.poll_events()[0].payload
+    td.onRtnTrade({"converted": raw})
+    assert td.gateway.queued_trades == [raw]
+    assert "source-day trade conversion failed" in broker.poll_events()[0].payload
 
 
 def position(**changes):

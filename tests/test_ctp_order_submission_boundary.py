@@ -106,7 +106,132 @@ def _raw_trade(order_id: str, trade_id: str) -> SimpleNamespace:
         volume=1,
         price=1_000.0,
         datetime=datetime(2026, 8, 25, 9, 0, tzinfo=_CHINA),
+        _afuture_trading_day="20260825",
     )
+
+
+@pytest.mark.parametrize("during_prepare", ["none", "quote", "delay", "at_send"])
+def test_manager_opening_rechecks_after_journal_before_send(tmp_path, monkeypatch, during_prepare):
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from test_directional_stress90_runtime import _mechanical_manager
+
+    from afuture.models import FeeSpec
+
+    manager, account_broker, _, now = _mechanical_manager(tmp_path, target_weight=1.0)
+    broker = CtpBroker(_credentials())
+    _configure(broker, tmp_path / "ctp.json")
+    broker.set_order_submission_context(
+        target_trading_day="20260825", daily_decision_digest="d" * 64,
+        execution_intent_digest="e" * 64,
+        transition={"freeze_authorized_lots": {"A2612": 1}, "transitions": []},
+    )
+    td, calls = _attach_gateway(broker)
+    broker.get_account = account_broker.get_account
+    broker.get_positions = account_broker.get_positions
+    broker.get_active_orders = account_broker.get_active_orders
+    broker.health_error = lambda: None
+    broker.metadata_query_blocks = False
+    manager.broker = broker
+    manager.historical_mode = False
+    wall = [now]
+    manager.health_clock = lambda: wall[0]
+    tick = replace(manager._ticks["A2612"], bid_price=9999, ask_price=10001, last_price=10000)
+    manager._ticks["A2612"] = tick
+    manager._specs["A2612"] = replace(manager._specs["A2612"], fee=FeeSpec(open_fixed=140))
+    if during_prepare == "at_send":
+        _, calls = _attach_gateway(
+            broker, before_official_send=lambda: broker._enqueue_tick(replace(tick, bid_price=9997))
+        )
+    prepare = broker._order_submission_journal.prepare
+
+    def delayed_prepare(*args, **kwargs):
+        record = prepare(*args, **kwargs)
+        if during_prepare == "quote":
+            broker._enqueue_tick(replace(tick, bid_price=9997))
+        elif during_prepare == "delay":
+            wall[0] += timedelta(seconds=30)
+        return record
+
+    monkeypatch.setattr(broker._order_submission_journal, "prepare", delayed_prepare)
+    result = manager._submit_openings(
+        [], {"A2612": 1}, {"A": manager._catalog_by_symbol["A2612"]}, manager._specs, now,
+        reference_prefix="directional:stress90:" + "d" * 12,
+    )
+    entry = broker._order_submission_journal.get_entry("CTP.7_11_41")
+    assert entry is not None
+    if during_prepare == "none":
+        assert result.action == "open" and len(calls) == 1
+        assert entry.status == "submitted"
+    else:
+        assert result.action == "reject" and calls == []
+        assert entry.status == "aborted_before_send"
+
+        # Clear the injected fault, consume a fresh quote, and continue in the same
+        # identity namespace. Restart deliberately restores the old SDK counter.
+        if during_prepare == "at_send":
+            broker = CtpBroker(_credentials())
+            _configure(broker, tmp_path / "ctp.json")
+            broker.set_order_submission_context(
+                target_trading_day="20260825", daily_decision_digest="d" * 64,
+                execution_intent_digest="e" * 64,
+                transition={"freeze_authorized_lots": {"A2612": 1}, "transitions": []},
+            )
+            td, calls = _attach_gateway(broker)
+            broker.get_account = account_broker.get_account
+            broker.get_positions = account_broker.get_positions
+            broker.get_active_orders = account_broker.get_active_orders
+            broker.health_error = lambda: None
+            broker.metadata_query_blocks = False
+            manager.broker = broker
+        else:
+            monkeypatch.setattr(broker._order_submission_journal, "prepare", prepare)
+        broker._enqueue_tick(replace(tick, timestamp=wall[0]))
+        for event in broker.poll_events():
+            manager._ticks[event.payload.symbol] = event.payload
+        if during_prepare == "delay":
+            from afuture.models import ContractPosition
+            from afuture.position import PositionBook
+
+            book = PositionBook([ContractPosition("A2612", "DCE", long_today=1, long_price=10000)])
+            broker.get_positions = book.all
+            resumed = manager._submit_reductions(
+                book.all(), {"A2612": -1}, wall[0], reference="directional:A"
+            )
+            assert resumed.action == "reduce", resumed.reason
+            assert calls[0].offset is Offset.CLOSE
+        else:
+            resumed = manager._submit_openings(
+                [], {"A2612": 1}, {"A": manager._catalog_by_symbol["A2612"]}, manager._specs, wall[0],
+                reference_prefix="directional:stress90:" + "d" * 12,
+            )
+            assert resumed.action == "open", resumed.reason
+        assert resumed.order_ids == ("CTP.7_11_42",) and len(calls) == 1
+        assert td.order_ref == 42
+        assert broker._order_submission_journal.get_entry("CTP.7_11_41") == entry
+        assert broker._order_submission_journal.get_entry("CTP.7_11_42").status == "submitted"
+
+
+def test_restarted_unknown_order_is_not_reissued_under_a_new_reference(tmp_path):
+    def unknown_send():
+        raise RuntimeError("unknown gateway send outcome")
+
+    path = tmp_path / "ctp.json"
+    broker = CtpBroker(_credentials())
+    _configure(broker, path)
+    _attach_gateway(broker, before_official_send=unknown_send)
+    _authorize(broker, _candidate_request())
+    with pytest.raises(RuntimeError, match="unknown gateway send outcome"):
+        broker.send_order(_candidate_request())
+    restarted = CtpBroker(_credentials())
+    _configure(restarted, path)
+    _, calls = _attach_gateway(restarted)
+    with pytest.raises(RuntimeError):
+        restarted.send_order(_candidate_request(offset=Offset.CLOSE, side=OrderSide.SELL, volume=1))
+    assert calls == []
+    assert restarted._order_submission_journal.get_entry("CTP.7_11_41").status == "prepared"
+    assert restarted._order_submission_journal.get_entry("CTP.7_11_42") is None
 
 
 def test_candidate_authorization_binds_and_consumes_one_exact_request(tmp_path: Path) -> None:
@@ -198,3 +323,36 @@ def test_fill_arriving_during_checkpoint_is_subtracted_not_replayed(
     assert entry.filled_volume == 2
     assert entry.fill_keys == ("20260825:DCE:CTP.T1", "20260825:DCE:CTP.T2")
     assert broker._pending_order_journal_fills == {}
+
+
+def test_source_day_survives_queued_fill_and_old_day_duplicate(tmp_path):
+    from afuture.engine import TradingEngine
+    from afuture.models import AccountSnapshot, ContractPosition
+    from afuture.risk import RiskConfig, RiskManager
+    from afuture.state import StateStore
+
+    broker = CtpBroker(_credentials())
+    td, _ = _attach_gateway(broker)
+    broker._order_references["CTP.O1"] = "directional:A"
+    account = AccountSnapshot(100000, 100000, 100000, 0, 0, 0, "20260825")
+    broker.get_account = lambda: account
+    engine = TradingEngine(broker, [], {}, RiskManager(RiskConfig()), StateStore(tmp_path / "s.json"))
+    engine.state.trading_day = "20260825"
+    raw = _raw_trade("CTP.O1", "T1")
+    broker._on_trade(SimpleNamespace(data=raw))
+    event, = broker.poll_events()
+    assert event.payload.trading_day == "20260825"
+    td.getTradingDay = lambda: "20260826"
+    account = AccountSnapshot(100000, 100000, 100000, 0, 0, 0, "20260826")
+    assert engine._handle_trade_event(event.payload)
+    assert engine.state.recent_trade_ids == ["20260825:DCE:CTP.T1"]
+    engine._advance_trading_day(account)
+    engine._reconcile_runtime_snapshot([ContractPosition("A2701", "DCE", long_yesterday=1, long_price=1000)])
+    assert not engine.halted
+    assert not engine._handle_trade_event(event.payload)
+    broker._on_trade(SimpleNamespace(data=raw))
+    assert broker.poll_events() == []
+    assert broker.get_positions()[0].long_total == 1
+    del raw._afuture_trading_day
+    broker._on_trade(SimpleNamespace(data=raw))
+    assert broker.poll_events()[0].event_type == "broker_error"
