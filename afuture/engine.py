@@ -510,7 +510,23 @@ class TradingEngine:
         return True
 
     def _trade_trading_day(self, trade) -> str:
-        return self._synchronize_trading_day_for_trade()
+        day = trade.trading_day
+        if not day:
+            if not self.historical_mode:
+                raise ValueError("trade source trading day is unavailable; reconcile broker")
+            return self._synchronize_trading_day_for_trade()
+        # Consume queued D fills in D before a later account event rolls the book.
+        # An unseen fill after the book already rolled needs external reconciliation.
+        if self._trade_identity(trade, day) in self._recent_trade_id_set:
+            return day
+        if self.state.trading_day and day < self.state.trading_day:
+            raise RuntimeError("late source-day fill requires broker reconciliation")
+        if day != self.state.trading_day:
+            account = self.broker.get_account()
+            if account.trading_day != day:
+                raise RuntimeError("fill/account trading day mismatch requires reconciliation")
+            self._advance_trading_day(account)
+        return day
 
     def _synchronize_trading_day_for_trade(self) -> str:
         """Roll persisted state before applying the first fill reported for a new broker day."""
@@ -875,13 +891,7 @@ class TradingEngine:
             book.roll_trading_day()
             self.state.positions = [asdict(position) for position in book.all()]
             self._sync_strategy_positions(book.all())
-            # A trade callback may be the first authoritative event for the new day.
-            # Preserve identities already assigned to that day while dropping prior-day fills.
-            prefix = f"{new_day}:"
-            self.state.recent_trade_ids = [
-                identity for identity in self.state.recent_trade_ids if identity.startswith(prefix)
-            ]
-            self._recent_trade_id_set = set(self.state.recent_trade_ids)
+            # Keep the bounded source-day identities across rollover for delayed duplicates.
 
         if self.state.day_start_equity <= 0 or (new_day and new_day != old_day):
             self.state.day_start_equity = account.equity

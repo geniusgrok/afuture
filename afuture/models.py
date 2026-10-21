@@ -261,6 +261,7 @@ class Trade:
     price: float
     timestamp: datetime
     commission: float = 0.0
+    trading_day: str = ""
 
     def validate(self) -> None:
         """Validate broker-fill identity and economic values before any book mutation."""
@@ -282,6 +283,10 @@ class Trade:
             raise ValueError("trade price must be finite and positive")
         if self.timestamp.tzinfo is None:
             raise ValueError("trade timestamp must be timezone-aware")
+        if self.trading_day:
+            parsed = datetime.strptime(self.trading_day, "%Y%m%d")
+            if parsed.strftime("%Y%m%d") != self.trading_day:
+                raise ValueError("trade trading day must be a valid YYYYMMDD date")
         if (
             isinstance(self.commission, bool)
             or not isinstance(self.commission, (int, float))

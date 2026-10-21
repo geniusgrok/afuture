@@ -985,6 +985,7 @@ class SimBroker(Broker):
             volume=volume,
             price=price,
             timestamp=tick.timestamp,
+            trading_day=tick.trading_day,
         )
         self._next_trade_sequence += 1
         realized_points = self.position_book.apply_trade(trade)

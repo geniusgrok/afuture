@@ -23,6 +23,8 @@ python -c "import vnpy_ctp"
 
 Windows 核心环境使用 `.venv\Scripts\Activate.ps1` 激活。运行命令从仓库根目录执行；生产配置与运行文件放在私有目录，凭证只通过环境变量提供。
 
+Windows 中文命令输出使用 UTF-8；PowerShell 中先设置 `$env:PYTHONUTF8="1"`。核心 CI 也使用此条件，help 与 validate 各为独立步骤，任一命令失败均使 job 失败。
+
 ## 本地使用
 
 ```bash
@@ -32,6 +34,11 @@ afuture replay --config config/afuture.example.toml --data examples/sample_ticks
 afuture scan --config config/afuture.auto-replay.example.toml --data examples/research_ticks.csv
 afuture status --config config/afuture.directional-stress90-live.example.toml
 ```
+
+`replay` 只接受 `system.mode="replay"`，先完整校验输入，再生成唯一隔离目录
+`paths.report` 所在目录下的 `replays/<run-id>/`。也可用 `--output-dir NEW_DIR`
+指定全新目录；已有目录拒绝覆盖。状态、审计、日志和报告均保存在该目录。
+回放日志包含引擎诊断；同一进程的顺序回放结束后恢复调用者原日志配置。
 
 `replay` 使用模拟 Broker；`status` 不连接 Broker，也不改文件。`live`、`doctor` 和读取实时柜台的准备命令有连接及身份确认要求，按[运行说明](docs/live-trading.md)执行。Shadow 接收实时信息，其订单、成交和资金由隔离的模拟 Broker 维护。
 

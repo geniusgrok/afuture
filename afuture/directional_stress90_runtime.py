@@ -52,6 +52,7 @@ from .execution_aligned_policy import FROZEN_PRODUCTS, ExecutionAlignedAggressiv
 from .execution_aligned_runtime import ExecutionAlignedDirectionalPortfolioManager
 from .metadata import validate_contract_metadata
 from .models import ContractSpec, Offset, Order, OrderRequest, OrderSide, Tick
+from .operations import estimate_stress90_contract_cost
 from .position import PositionBook
 from .stress90_risk_overlay import (
     scale_stress90_product_weights,
@@ -810,7 +811,39 @@ class Stress90DirectionalPortfolioManager(ExecutionAlignedDirectionalPortfolioMa
             gross_notional += abs(int(volume)) * lot_notional
         if gross_notional > (float(account.equity) * float(self.config.max_gross_leverage) + 1e-10):
             return "Stress-90 opening batch would exceed configured gross limit"
+        for request in requests:
+            if request.offset is Offset.OPEN:
+                try:
+                    self._require_open_cost(self._ticks[request.symbol], specs[request.symbol])
+                except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+                    return str(exc)
         return ""
+
+    def _require_open_cost(self, tick, spec) -> None:
+        estimate = estimate_stress90_contract_cost(
+            tick, spec, hurdle_bps=STRESS90_POLICY.cost_hurdle_bps,
+            require_commission_evidence=not self.historical_mode,
+        )
+        if not self.historical_mode and bool(getattr(self.broker, "metadata_query_blocks", True)):
+            if self._stress90_metadata_trading_day != tick.trading_day:
+                raise RuntimeError("Stress-90 cost metadata trading day is unavailable")
+        if estimate["historical_15bp_compatible"] is not True:
+            raise RuntimeError(
+                f"Stress-90 opening cost {estimate['minimum_reasonable_one_way_bps']:.6g}bp "
+                f"exceeds {STRESS90_POLICY.cost_hurdle_bps:g}bp; "
+                f"quote_day={tick.trading_day}, quote_time={tick.timestamp.isoformat()}"
+            )
+
+    def _require_current_order_evidence(self, request, tick, spec, event_time, *, product=""):
+        super()._require_current_order_evidence(
+            request, tick, spec, event_time, product=product,
+        )
+        if request.offset is Offset.OPEN:
+            self._require_open_cost(tick, spec)
+
+    def _require_final_opening_market_evidence(self, tick, spec, event_time) -> None:
+        super()._require_final_opening_market_evidence(tick, spec, event_time)
+        self._require_open_cost(tick, spec)
 
     def record_completed_account_return(
         self,

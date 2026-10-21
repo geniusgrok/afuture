@@ -256,7 +256,9 @@ def load_config(
         alert_path=require_string(paths.get("alert", "runtime/alerts.jsonl"), "paths.alert"),
         account_registry_path=account_registry_path,
         ctp_environment=ctp_environment,
-        alert_webhook=require_string(alert.get("webhook", ""), "alert.webhook"),
+        alert_webhook=require_string(
+            os.environ.get("AFUTURE_ALERT_WEBHOOK", alert.get("webhook", "")), "alert.webhook"
+        ),
         auto=auto,
         directional=directional,
         contract_catalog=contract_catalog,

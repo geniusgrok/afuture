@@ -2014,11 +2014,15 @@ class Stress90LifecycleTransactionStore:
                 )
             previous_bytes = self._read_record_bytes(self.previous_path, "previous")
             previous = self._decode_record_bytes(previous_bytes, "previous")
-            if previous.sequence != current.sequence - 1:
+            if previous_bytes == current_bytes:
+                # The predecessor was published before the next current replace.
+                pass
+            elif previous.sequence != current.sequence - 1:
                 raise Stress90LifecycleTransactionError(
                     "previous lifecycle transaction sequence is not adjacent"
                 )
-            self._validate_adjacent_records(previous, current)
+            else:
+                self._validate_adjacent_records(previous, current)
         elif previous_exists:
             previous_bytes = self._read_record_bytes(self.previous_path, "previous")
             if previous_bytes != current_bytes:
@@ -2341,11 +2345,11 @@ class Stress90LifecycleTransactionStore:
         previous_bytes = None if current is None else self.path.read_bytes()
         if current is None:
             self._create_lineage_marker()
-        # The authoritative current replace is the single commit point. `.prev` is
-        # evidence only and is never required or selected as automatic recovery input.
-        self._atomic_replace(self.path, encoded)
+        # Publish required predecessor evidence first. A crash leaves either an
+        # adjacent pair or identical current/prev; current remains authoritative.
         if previous_bytes is not None:
             self._atomic_replace(self.previous_path, previous_bytes)
+        self._atomic_replace(self.path, encoded)
 
     def _create_lineage_marker(self) -> None:
         descriptor: int | None = None

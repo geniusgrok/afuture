@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from math import isfinite
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .directional_activity import (
     DirectionalActivityStore,
@@ -758,6 +759,12 @@ def _add_stress90_local_status(
                 "received": list(latest.received_contracts),
                 "missing": list(latest.missing_contracts),
                 "complete": latest.complete,
+                "flows": dict(latest.flows),
+                "issues": list(latest.issues),
+                "contract_issues": {
+                    symbol: list(contract.issues)
+                    for symbol, contract in latest.contracts.items() if contract.issues
+                },
             }
             if latest is not None
             else None
@@ -1035,6 +1042,19 @@ def build_local_status(
 ) -> OperationalReport:
     """Inspect local state and evidence without creating files or directories."""
     report = OperationalReport()
+    from .runtime_calendar import RuntimeTradingCalendar
+
+    calendar = RuntimeTradingCalendar.load()
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    report.facts["runtime_calendar"] = {
+        "coverage_start": calendar.coverage_start.isoformat(),
+        "coverage_end": calendar.coverage_end.isoformat(),
+        "digest": calendar.digest,
+    }
+    report.add(
+        "runtime_calendar_coverage", calendar.coverage_start <= today <= calendar.coverage_end,
+        f"runtime calendar covers {calendar.coverage_start} through {calendar.coverage_end}",
+    )
     store = StateStore(config.state_path)
     state_present = store.path.exists()
     state: RuntimeState | None = None
