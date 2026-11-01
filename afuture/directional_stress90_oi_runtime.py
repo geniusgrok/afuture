@@ -858,6 +858,13 @@ def _completed_from_payload(raw: object) -> CompletedOiEvidence:
         raise OiEvidenceIntegrityError("completed OI evidence digest mismatch")
     if evidence.complete != all(value is not None for value in evidence.flows.values()):
         raise OiEvidenceIntegrityError("completed OI completeness/flow mismatch")
+    if evidence.source == CTP_RAW_TICK_SOURCE:
+        for contract in contracts.values():
+            first_bar = contract.bars[0]
+            if contract.complete and (
+                first_bar.bucket_end - first_bar.last_tick_timestamp
+            ).total_seconds() > _BOUNDARY_GRACE_SECONDS:
+                raise OiEvidenceIntegrityError("completed raw OI first 60m boundary is missing")
     if evidence.source == FIXED_HISTORICAL_60M_SOURCE and (
         not evidence.complete
         or evidence.missing_contracts
@@ -1617,6 +1624,9 @@ def _contract_boundary_complete(
     ):
         issues = _append_issue(issues, "opening_session_boundary_missing")
     final_session = PRODUCT_SESSION_MANIFEST[contract.product].sessions[-1]
+    first_bar = contract.bars[0]
+    if (first_bar.bucket_end - first_bar.last_tick_timestamp).total_seconds() > _BOUNDARY_GRACE_SECONDS:
+        issues = _append_issue(issues, "first_60m_closing_boundary_missing")
     if (
         last_bucket is None
         or last_bucket.session != final_session
@@ -1642,8 +1652,8 @@ def _finalize_day(in_progress: InProgressOiEvidence) -> CompletedOiEvidence:
         complete, issues = _contract_boundary_complete(raw, calendar)
         # The frozen batch candidate defines ``first_hold`` as the hold at the
         # end of the first completed 60m bar, not the session-open raw Tick.
-        # Normalize the contract summary from completed bar mechanics so live
-        # flow is byte-for-byte comparable with the historical bridge.
+        # Missing end-of-bucket observations remain UNKNOWN, including no-trade
+        # periods: connection liveness is not evidence of unchanged OI.
         contracts[symbol] = replace(
             raw,
             first_open=raw.bars[0].first_open,

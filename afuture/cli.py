@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     replay = sub.add_parser("replay", help="历史 Tick 回放")
     replay.add_argument("--config", required=True)
     replay.add_argument("--data", required=True)
+    replay.add_argument("--output-dir", help="全新隔离输出目录；默认生成唯一目录")
 
     scan = sub.add_parser("scan", help="扫描跨期套利研究候选")
     scan.add_argument("--config", required=True)
@@ -6452,17 +6453,14 @@ def run_command(
         return _run_directional_policy_migrate(config, args)
     if args.command == "stress90-oi-collect":
         return _run_stress90_oi_collect(config, args)
+    if args.command == "replay":
+        from .replay import run_replay_command
+
+        return run_replay_command(config, args)
     logger = configure_logging(config.log_path)
 
     if args.command == "validate":
         logger.info("配置校验通过")
-        return 0
-
-    if args.command == "replay":
-        from .replay import run_replay
-
-        account = run_replay(config, args.data)
-        logger.info("回放完成：权益 %.2f，保证金 %.2f", account.equity, account.margin)
         return 0
 
     if args.command == "scan":

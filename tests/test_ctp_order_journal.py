@@ -133,6 +133,7 @@ def _raw_trade(
         volume=volume,
         price=price,
         datetime=timestamp,
+        _afuture_trading_day="20260825",
     )
 
 

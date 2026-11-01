@@ -75,7 +75,7 @@ def _stores(runtime_dir: Path):
     return generic_store, policy_store, generic, policy
 
 
-def _targets(generic, policy):
+def _targets(generic, policy, nonce=_OPERATION_NONCE):
     from afuture.stress90_lifecycle_transaction import derive_stress90_account_epoch
 
     generic_target = replace(
@@ -95,7 +95,7 @@ def _targets(generic, policy):
         live_account_identity_digest="b" * 64,
         live_account_epoch=derive_stress90_account_epoch(
             operation="account_rebase",
-            operation_nonce=_OPERATION_NONCE,
+            operation_nonce=nonce,
             policy_source_checksum=policy.checksum,
             account_identity_digest="b" * 64,
             trading_day="20260825",
@@ -104,6 +104,46 @@ def _targets(generic, policy):
         live_inception_equity=700_000.0,
     )
     return generic_target, policy_target
+
+
+@pytest.mark.parametrize("prior_transaction", [False, True])
+@pytest.mark.parametrize("after_current", [False, True])
+def test_wal_retries_original_transaction_at_publication_boundary(tmp_path, monkeypatch, prior_transaction, after_current):
+    from afuture.stress90_lifecycle_transaction import (
+        Stress90LifecycleTransactionStore,
+        apply_stress90_lifecycle_transaction,
+    )
+
+    generic_store, policy_store, generic, policy = _stores(tmp_path)
+    store = Stress90LifecycleTransactionStore(tmp_path / "lifecycle.json")
+    for index in range(1 + int(prior_transaction)):
+        nonce = ("d" if index == 0 else "f") * 64
+        generic_target, policy_target = _targets(generic, policy, nonce)
+        account = replace(_account(), withdrawal=1000.0 * (index + 1))
+        generic_target = replace(generic_target, last_account_withdrawal=account.withdrawal,
+                                 day_start_equity=700000.0-account.withdrawal)
+        transaction = store.begin(operation="account_rebase", generic_source=generic, policy_source=policy,
+            generic_target=generic_target, policy_target=policy_target, trading_day="20260825",
+            account_identity_digest="b" * 64, account_snapshot=account, operation_nonce=nonce)
+        if index < int(prior_transaction):
+            apply_stress90_lifecycle_transaction(store, generic_store=generic_store, policy_store=policy_store)
+            generic, policy = generic_store.load_required_record(), policy_store.load_required_record()
+    original = store._atomic_replace
+    def crash_at_current(path, data):
+        if path == store.path:
+            if after_current:
+                original(path, data)
+            raise RuntimeError("publication crash")
+        original(path, data)
+    monkeypatch.setattr(store, "_atomic_replace", crash_at_current)
+    with pytest.raises(RuntimeError, match="publication crash"):
+        apply_stress90_lifecycle_transaction(store, generic_store=generic_store, policy_store=policy_store)
+    reopened = Stress90LifecycleTransactionStore(store.path)
+    assert reopened.load_required().transaction_id == transaction.transaction_id
+    completed = apply_stress90_lifecycle_transaction(reopened, generic_store=generic_store, policy_store=policy_store)
+    assert completed.status == "committed"
+    assert generic_store.load() == generic_target
+    assert policy_store.load_required() == policy_target
 
 
 def _account():

@@ -66,4 +66,8 @@ afuture ctp-settlement-capture --config TEST_CONFIG --trading-day YYYYMMDD --out
 
 审计、执行质量及关键回调积压需可观测。`AFUTURE_ALERT_WEBHOOK` 可用受限权限 SQLite outbox 持久化通知；目标摘要绑定，不跟随重定向。队列/数据库容量、重试耗尽和写失败会升级，未确认事件不被删。通知至少一次送达，接收端按 event_id/Idempotency-Key 去重；2xx 只代表端点接受。spool 损坏不自动重建，保留原件按事故处理。
 
+环境变量存在时覆盖 `[alert].webhook`，显式空值禁用远端通道；值不写入日志。
+watchdog 服务模板从可选 `/etc/afuture/alert.env` 读取同一变量。文件只用于告警地址，
+由操作者按本机权限维护。
+
 同机 watchdog 无法证明整机断电后送达，独立失联检测须现场验证。异常恢复按[排障](troubleshooting.md)，证据要求按[上线检查](production-checklist.md)。

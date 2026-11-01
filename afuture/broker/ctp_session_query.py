@@ -277,6 +277,7 @@ class CtpSessionTrade:
             self.volume,
             self.price,
             self.timestamp,
+            trading_day=self.trading_day,
         )
         trade.validate()
         return trade

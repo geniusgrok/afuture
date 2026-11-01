@@ -505,6 +505,8 @@ def test_already_held_target_cannot_become_later_session_replacement(tmp_path):
 def test_first_window_authorization_cannot_carry_oversized_roll_into_later_time(tmp_path):
     from datetime import timedelta
 
+    from afuture.models import FeeSpec
+
     manager, broker, _, now = _roll_manager(tmp_path, target_weight=2.0)
     assert manager.maybe_rebalance(now).action == "reduce"
     broker.positions = []
@@ -513,6 +515,11 @@ def test_first_window_authorization_cannot_carry_oversized_roll_into_later_time(
         symbol: replace(tick, timestamp=wall[0]) for symbol, tick in manager._ticks.items()
     }
     manager.historical_mode = False
+    manager._specs = {
+        symbol: replace(spec, fee=FeeSpec(open_fixed=1))
+        for symbol, spec in manager._specs.items()
+    }
+    broker.metadata_query_blocks = False
     manager.health_clock = lambda: wall[0]
     manager.elapsed_clock = lambda: 100.0
     broker.health_error = lambda: None

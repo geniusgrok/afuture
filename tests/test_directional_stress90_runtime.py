@@ -88,6 +88,7 @@ def _write_completed_oi(tmp_path: Path):
     for contract in catalog:
         for timestamp, price, volume, hold in (
             (datetime(2026, 8, 23, 21, 0, tzinfo=_CHINA), 100.0, 10.0, 100.0),
+            (datetime(2026, 8, 23, 21, 59, 59, tzinfo=_CHINA), 100.0, 10.0, 100.0),
             (datetime(2026, 8, 24, 14, 59, tzinfo=_CHINA), 101.0, 20.0, 110.0),
         ):
             aggregator.observe_raw_tick(
@@ -565,6 +566,68 @@ def test_final_opening_batch_rechecks_strict_gross_with_fresh_broker_truth(tmp_p
     )
 
     assert reason == "Stress-90 opening batch would exceed configured gross limit"
+
+
+@pytest.mark.parametrize("fee,spread,cost", [(200, 2, 21), (140, 4, 16)])
+def test_final_open_cost_rejects_changed_fee_or_quote_and_allows_reduction(tmp_path, fee, spread, cost):
+    from afuture.models import FeeSpec, Offset, OrderRequest, OrderSide, OrderType
+    from afuture.operations import estimate_stress90_contract_cost
+
+    manager, broker, _, now = _mechanical_manager(tmp_path, target_weight=1.0, max_gross_leverage=1.0)
+    tick = replace(manager._ticks["A2612"], bid_price=10000-spread/2, ask_price=10000+spread/2,
+                   last_price=10000)
+    spec = replace(manager._specs["A2612"], fee=FeeSpec(open_fixed=fee))
+    manager._ticks["A2612"] = tick
+    request = OrderRequest("A2612", "DCE", OrderSide.BUY, Offset.OPEN, 1, tick.ask_price, OrderType.FAK)
+    assert estimate_stress90_contract_cost(tick, spec)["minimum_reasonable_one_way_bps"] == cost
+    with pytest.raises(RuntimeError, match=f"{cost}bp.*20260825"):
+        manager._require_current_order_evidence(request, tick, spec, now, product="A")
+    manager._require_current_order_evidence(replace(request, offset=Offset.CLOSE), tick, spec, now, product="A")
+    assert broker.orders == []
+
+
+@pytest.mark.parametrize("end_tick", [False, True])
+def test_first_60m_end_is_required_for_raw_oi_confirmation(end_tick):
+    from afuture.directional_sessions import PRODUCT_SESSION_MANIFEST
+    from afuture.directional_stress90_oi_runtime import Stress90OiEvidenceAggregator
+    from afuture.models import ContractInfo, Tick
+
+    aggregator = Stress90OiEvidenceAggregator()
+    catalog = [ContractInfo(f"{p}2612", PRODUCT_SESSION_MANIFEST[p].exchange, p, "2026-12-15")
+               for p in ("A", "C", "EG", "I", "M", "P", "PP", "TA", "Y")]
+    aggregator.set_expected_contracts("20261013", catalog)
+    aggregator.note_raw_market_connection(connected=True, generation=1)
+    for contract in catalog:
+        observations = [(datetime(2026, 10, 12, 21, 0, tzinfo=_CHINA), 100, 1000)]
+        if end_tick:
+            observations.append((datetime(2026, 10, 12, 21, 59, 59, tzinfo=_CHINA), 101, 1400))
+        observations.append((datetime(2026, 10, 13, 14, 59, 59, tzinfo=_CHINA), 102, 1200))
+        for index, (timestamp, price, hold) in enumerate(observations, 1):
+            aggregator.observe_raw_tick(Tick(contract.symbol, contract.exchange, timestamp,
+                price-.5, price+.5, price, 100, 100, "20261013", volume=index,
+                open_interest=hold, open_price=100), contract)
+    aggregator.set_expected_contracts("20261014", catalog)
+    first = catalog[0]
+    aggregator.observe_raw_tick(Tick(first.symbol, first.exchange,
+        datetime(2026, 10, 13, 21, 0, tzinfo=_CHINA), 101.5, 102.5, 102,
+        100, 100, "20261014", volume=1, open_interest=1200, open_price=102), first)
+    completed = aggregator.completed_evidence("20261013")
+    assert completed.complete is end_tick
+    assert completed.flows["A"] == (0 if end_tick else None)
+    from afuture.directional_stress90_policy import (
+        Stress90InputIncomplete,
+        apply_oi_confirmation_row,
+    )
+    if not end_tick:
+        with pytest.raises(Stress90InputIncomplete, match="OI flow"):
+            apply_oi_confirmation_row(raw_weights={"A": 1}, prior_applied={},
+                                      completed_flow=completed.flows, supported_products=("A",))
+    else:
+        assert apply_oi_confirmation_row(raw_weights={"A": 1}, prior_applied={},
+            completed_flow=completed.flows, supported_products=("A",)) == {"A": 0}
+    assert apply_oi_confirmation_row(raw_weights={"A": 0}, prior_applied={"A": 1},
+        completed_flow=completed.flows, supported_products=("A",)) == {"A": 0}
+    assert ("first_60m_closing_boundary_missing" in completed.contracts[first.symbol].issues) is (not end_tick)
 
 
 def test_runtime_reversal_is_reduction_first_then_opens_from_persisted_intent(
